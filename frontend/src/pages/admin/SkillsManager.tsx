@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Plus, Edit2, Trash2, Eye, Search, Sparkles, BookOpen, Lock, FileCode, History, RotateCcw,
 } from 'lucide-react';
@@ -24,14 +24,14 @@ import { useTranslation } from 'react-i18next';
 
 const CATEGORIES = [
   { value: 'nl2sql', label: 'NL2SQL' },
-  { value: 'analysis', label: '数据分析' },
-  { value: 'chart', label: '图表生成' },
-  { value: 'correction', label: 'SQL纠错' },
-  { value: 'prediction', label: '数据预测' },
-  { value: 'custom', label: '自定义' },
+  { value: 'analysis', label: t('k_6450d84327') },
+  { value: 'chart', label: t('k_90253967f2') },
+  { value: 'correction', label: t('k_c7f9710b19') },
+  { value: 'prediction', label: t('k_09d557c31f') },
+  { value: 'custom', label: t('k_c493338e8c') },
 ];
 
-const catLabel = (c: string) => CATEGORIES.find((x) => x.value === c)?.label || c || '未分类';
+const catLabel = (c: string) => CATEGORIES.find((x) => x.value === c)?.label || c || tr('k_b28f13ea3e');
 
 // ── Main Component ─────────────────────────────────────────────────
 
@@ -69,11 +69,11 @@ export default function SkillsManager() {
     if (!versionsFor) return;
     try {
       await skillApi.rollback(versionsFor.name, v.version);
-      toast.success(`已回滚到 ${v.version}（回滚前已自动快照当前版）`);
+      toast.success(t('k_6bab5e3d2f', { p0: v.version }));
       setVersionsFor(null);
       loadSkills();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '回滚失败');
+      toast.error(error?.response?.data?.detail || t('k_22d7b7389c'));
     }
   };
 
@@ -92,7 +92,7 @@ export default function SkillsManager() {
       console.error('Failed to load skills:', error);
       setSkills([]);
       if (status && status >= 500) {
-        toast.error('加载技能列表失败');
+        toast.error(t('k_4a844e2925'));
       }
     } finally {
       setLoading(false);
@@ -104,7 +104,7 @@ export default function SkillsManager() {
       const { data } = await skillApi.get(name);
       setViewing(data);
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '加载技能详情失败');
+      toast.error(error.response?.data?.detail || t('k_bcd0ba34d4'));
     }
   };
 
@@ -112,11 +112,11 @@ export default function SkillsManager() {
     if (!deleting) return;
     try {
       await skillApi.delete(deleting.name);
-      toast.success(`已删除技能 "${deleting.display_name || deleting.name}"`);
+      toast.success(t('k_3d2de756cc', { p0: deleting.display_name || deleting.name }));
       setDeleting(null);
       loadSkills();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '删除失败');
+      toast.error(error.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -141,12 +141,11 @@ export default function SkillsManager() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_d9377286b9")}</h1>
           <p className="text-muted-foreground mt-1">
-            管理 Agent 技能（Qoder「文件夹 + SKILL.md」规范），系统内置 {builtinCount} 个、自定义 {customCount} 个，可在 AS-BOT 中勾选绑定
-          </p>
+            {t('k_df340e4aa9', { p0: builtinCount, p1: customCount })}</p>
         </div>
         <Button onClick={() => setCreating(true)}>
           <Plus className="h-4 w-4 mr-2" />
-          新建技能
+          {t('k_8c339e83ee')}
         </Button>
       </div>
 
@@ -169,7 +168,7 @@ export default function SkillsManager() {
               variant={filterBuiltin === k ? 'default' : 'outline'}
               onClick={() => setFilterBuiltin(k)}
             >
-              {k === 'all' ? '全部' : k === 'builtin' ? '内置' : '自定义'}
+              {k === 'all' ? t('k_778fc8f994') : k === 'builtin' ? t('k_09ceea7644') : t('k_c493338e8c')}
             </Button>
           ))}
         </div>
@@ -187,7 +186,7 @@ export default function SkillsManager() {
           <p className="text-muted-foreground mb-4">{t("k_5f61b651bb")}</p>
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4 mr-2" />
-            新建技能
+            {t('k_8c339e83ee')}
           </Button>
         </div>
       ) : (
@@ -200,7 +199,7 @@ export default function SkillsManager() {
                     <span className="font-semibold truncate">{s.display_name || s.name}</span>
                     {s.is_builtin ? (
                       <Badge className="bg-indigo-100 text-indigo-800">
-                        <Lock className="h-3 w-3 mr-1" />内置
+                        <Lock className="h-3 w-3 mr-1" />{t('k_09ceea7644')}
                       </Badge>
                     ) : (
                       <Badge variant="secondary">{t("k_c493338e8c")}</Badge>
@@ -214,7 +213,7 @@ export default function SkillsManager() {
               </div>
 
               <p className="text-sm text-muted-foreground line-clamp-2 flex-1">
-                {s.description || '（无描述）'}
+                {s.description || t('k_d496aef938')}
               </p>
 
               <div className="flex items-center gap-2">
@@ -264,9 +263,9 @@ export default function SkillsManager() {
                 </div>
               )}
               <div>
-                <div className="text-sm font-medium mb-1">SKILL.md 正文</div>
+                <div className="text-sm font-medium mb-1">{t('k_353fbc6b08')}</div>
                 <pre className="whitespace-pre-wrap break-words text-xs bg-muted/50 rounded-lg p-3 max-h-[50vh] overflow-y-auto">
-                  {viewing.markdown || viewing.system_prompt || '（无内容）'}
+                  {viewing.markdown || viewing.system_prompt || t('k_37ec4ea998')}
                 </pre>
               </div>
             </div>
@@ -292,8 +291,7 @@ export default function SkillsManager() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除自定义技能 "{deleting?.display_name || deleting?.name}" 吗？该操作会移除其 SKILL.md 文件夹，不可撤销。
-            </DialogDescription>
+              {t('k_0514b05550', { p0: deleting?.display_name || deleting?.name })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleting(null)}>{t("k_4d0b4688c7")}</Button>
@@ -306,9 +304,9 @@ export default function SkillsManager() {
       <Dialog open={!!versionsFor} onOpenChange={(o) => !o && setVersionsFor(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>版本历史 · {versionsFor?.display_name || versionsFor?.name}</DialogTitle>
+            <DialogTitle>{t('k_5b7a1ad6bf', { p0: versionsFor?.display_name || versionsFor?.name })}</DialogTitle>
             <DialogDescription>
-              每次保存自动快照当前版，保留最近 20 份；回滚前会先快照现有版本，可再次回滚回来。
+              {t('k_701d41c46e')}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[50vh] overflow-y-auto divide-y">
@@ -328,7 +326,7 @@ export default function SkillsManager() {
                   </pre>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => handleRollback(v)} title={t("k_5fad9becdd")}>
-                  <RotateCcw className="h-3.5 w-3.5 mr-1" />回滚
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />{t('k_d00b485b26')}
                 </Button>
               </div>
             ))}
@@ -353,6 +351,7 @@ function SkillFormDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const isEdit = !!skill;
   const [form, setForm] = useState<SkillUpsert>({
     name: skill?.name || '',
@@ -378,31 +377,31 @@ function SkillFormDialog({
           system_prompt: data.markdown || data.system_prompt || '',
         }));
       })
-      .catch(() => toast.error('加载技能正文失败'))
+      .catch(() => toast.error(t('k_12667a8886')))
       .finally(() => setLoadingDetail(false));
   }, [skill]);
 
   const handleSave = async () => {
     if (!form.name.trim()) {
-      toast.error('请输入技能标识名');
+      toast.error(t('k_137733f469'));
       return;
     }
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(form.name)) {
-      toast.error('标识名仅允许字母/数字/下划线/连字符');
+      toast.error(t('k_198c84800e'));
       return;
     }
     setSaving(true);
     try {
       if (isEdit && skill) {
         await skillApi.update(skill.name, form);
-        toast.success('技能已更新');
+        toast.success(t('k_cb4f51ec77'));
       } else {
         await skillApi.create(form);
-        toast.success('技能已创建');
+        toast.success(t('k_e3dcc867f8'));
       }
       onSaved();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '保存失败');
+      toast.error(error.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -412,15 +411,15 @@ function SkillFormDialog({
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{isEdit ? '编辑技能' : '新建技能'}</DialogTitle>
+          <DialogTitle>{isEdit ? t('k_50b11c408f') : t('k_8c339e83ee')}</DialogTitle>
           <DialogDescription>
-            技能将按 Qoder 规范保存为 config/skills/&#123;name&#125;/SKILL.md（frontmatter + 正文）
+            {t('k_f015ad1c59')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>标识名 (name)</Label>
+            <Label>{t('k_d5384042de')}</Label>
             <Input
               value={form.name}
               disabled={isEdit}
@@ -464,11 +463,11 @@ function SkillFormDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label>SKILL.md 正文 (系统提示词)</Label>
+            <Label>{t('k_fb68f06a1a')}</Label>
             <Textarea
               value={form.system_prompt}
               onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-              placeholder="# 技能说明&#10;&#10;描述该技能何时使用、如何做…"
+              placeholder={t('k_92a179d415')}
               rows={12}
               className="font-mono text-xs"
               disabled={loadingDetail}
@@ -479,7 +478,7 @@ function SkillFormDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={handleSave} disabled={saving || loadingDetail}>
-            {saving ? '保存中...' : '保存'}
+            {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
           </Button>
         </DialogFooter>
       </DialogContent>

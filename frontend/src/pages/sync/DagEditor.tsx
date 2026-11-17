@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   ReactFlow, Background, Controls, MiniMap,
   Handle, Position, applyEdgeChanges, applyNodeChanges,
@@ -32,7 +32,7 @@ import { useTranslation } from 'react-i18next';
 
 // ── 自定义节点 ──────────────────────────────────────────────────
 const TYPE_LABEL: Record<string, string> = {
-  sync: '同步', sql_task: 'SQL 任务', control: '控制',
+  sync: tr('k_e88ab5ba61'), sql_task: tr('k_c250192752'), control: tr('k_34e47d7e3e'),
 };
 
 function DagTaskNode({ data, selected }: NodeProps) {
@@ -94,8 +94,8 @@ function layoutGraph(graph: DagGraph): Node[] {
 
 function nodeHint(n: DagNode): string {
   if (n.type === 'sync') return `${n.config.source_table || ''} → ${n.config.target_table || ''}`;
-  if (n.type === 'sql_task') return n.config.target?.table ? `→ ${n.config.target.table}` : '查询';
-  return n.config.action === 'fail' ? '显式失败' : '通过';
+  if (n.type === 'sql_task') return n.config.target?.table ? `→ ${n.config.target.table}` : tr('k_711363c424');
+  return n.config.action === 'fail' ? tr('k_ff24cedd52') : tr('k_dcc4233255');
 }
 
 function toGraph(rfNodes: Node[], rfEdges: Edge[], existing: DagGraph): DagGraph {
@@ -131,19 +131,19 @@ function NodeConfigPanel({
       {node.type === 'sync' && (
         <>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">源数据源 *</label>
+            <label className="text-xs font-medium text-muted-foreground">{tr('k_6abfc28824')}</label>
             <div className="mt-1"><DatasourceSelect value={config.source_datasource} onChange={v => set({ source_datasource: v })} /></div>
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">源表 *</label>
+            <label className="text-xs font-medium text-muted-foreground">{tr('k_9bd9553623')}</label>
             <Input className="mt-1" value={config.source_table || ''} onChange={e => set({ source_table: e.target.value })} />
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">目标数据源 *</label>
+            <label className="text-xs font-medium text-muted-foreground">{tr('k_ca1e476393')}</label>
             <div className="mt-1"><DatasourceSelect value={config.target_datasource} onChange={v => set({ target_datasource: v })} /></div>
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">目标表 *</label>
+            <label className="text-xs font-medium text-muted-foreground">{tr('k_c7c8c8f4b0')}</label>
             <Input className="mt-1" value={config.target_table || ''} onChange={e => set({ target_table: e.target.value })} />
           </div>
           <div>
@@ -158,7 +158,7 @@ function NodeConfigPanel({
           </div>
           {config.sync_mode === 'incremental' && (
             <div>
-              <label className="text-xs font-medium text-muted-foreground">增量列 *</label>
+              <label className="text-xs font-medium text-muted-foreground">{tr('k_9c885540a5')}</label>
               <Input className="mt-1" value={config.incremental_column || ''} onChange={e => set({ incremental_column: e.target.value })} />
             </div>
           )}
@@ -178,16 +178,15 @@ function NodeConfigPanel({
       {node.type === 'sql_task' && (
         <>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">主数据源 *</label>
+            <label className="text-xs font-medium text-muted-foreground">{tr('k_766b3c92d7')}</label>
             <div className="mt-1"><DatasourceSelect value={config.source_datasource} onChange={v => set({ source_datasource: v })} /></div>
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">
-              SQL *（跨源用 ds.db.table 三段式限定名）
-            </label>
+              {tr('k_f78f6984db')}</label>
             <Textarea className="mt-1 font-mono min-h-[140px]" value={config.sql || ''}
               onChange={e => set({ sql: e.target.value })}
-              placeholder={'SELECT ... FROM 源库表 s\nJOIN 另一数据源.db.table t ON ...\nLIMIT 1000'} />
+              placeholder={tr('k_11bfb5be5f')} />
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">{t("k_7714352a81")}</label>
@@ -282,7 +281,7 @@ export default function DagEditor() {
         setGraph(g);
         setRfNodes(layoutGraph(g));
         setRfEdges(g.edges.map((e, i) => ({ id: `e-${i}`, source: e.from, target: e.to })));
-      }).catch(() => toast.error('工作流加载失败'));
+      }).catch(() => toast.error(tr('k_8ba34adb23')));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId]);
@@ -336,7 +335,7 @@ export default function DagEditor() {
   };
 
   const handleSave = async () => {
-    if (!name.trim()) { toast.error('请填写工作流名称'); return; }
+    if (!name.trim()) { toast.error(tr('k_84b7d3c4cf')); return; }
     const finalGraph = toGraph(rfNodes, rfEdges, graph);
     setSaving(true);
     try {
@@ -344,7 +343,7 @@ export default function DagEditor() {
         const { data } = await dagApi.createWorkflow({
           name, cron_expression: cron || null, graph_json: finalGraph,
         });
-        toast.success('工作流已创建');
+        toast.success(tr('k_84265975db'));
         navigate(`/data/sync/dag/${data.id}`);
       } else {
         await dagApi.updateWorkflow(Number(workflowId), {
@@ -352,28 +351,28 @@ export default function DagEditor() {
         });
         const { data } = await dagApi.getWorkflow(Number(workflowId));
         setVersion(data.version);
-        toast.success('已保存');
+        toast.success(tr('k_f8dfedcd8a'));
       }
       setGraph(finalGraph);
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '保存失败');
+      toast.error(error?.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
   };
 
   const handleRun = async () => {
-    if (isNew) { toast.error('请先保存工作流'); return; }
+    if (isNew) { toast.error(tr('k_f76664781d')); return; }
     try {
       await dagApi.updateWorkflow(Number(workflowId), {
         name, cron_expression: cron || null,
         graph_json: toGraph(rfNodes, rfEdges, graph), version,
       });
       const { data } = await dagApi.runWorkflow(Number(workflowId));
-      toast.success('已进入执行队列');
+      toast.success(tr('k_e2917cf924'));
       navigate(`/data/sync/dag-runs/${data.run_id}`);
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '触发失败');
+      toast.error(error?.response?.data?.detail || tr('k_02b526816d'));
     }
   };
 
@@ -385,9 +384,9 @@ export default function DagEditor() {
       setRfNodes(layoutGraph(g));
       setRfEdges(g.edges.map((e, i) => ({ id: `e-${i}`, source: e.from, target: e.to })));
       setSqlDlgOpen(false);
-      toast.success(`已生成 ${data.node_count} 个节点 / ${data.edge_count} 条依赖`);
+      toast.success(tr('k_a454942a37', { p0: data.node_count, p1: data.edge_count }));
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || 'SQL 解析失败');
+      toast.error(error?.response?.data?.detail || tr('k_b4077309f9'));
     }
   };
 
@@ -397,7 +396,7 @@ export default function DagEditor() {
       setExportSql(data.sql);
       setExportOpen(true);
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '导出失败');
+      toast.error(error?.response?.data?.detail || tr('k_dd51ab5026'));
     }
   };
 
@@ -407,24 +406,19 @@ export default function DagEditor() {
       <div className="flex items-center justify-between gap-3 p-4 border-b">
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => navigate('/data/sync/dag')}>
-            <ArrowLeft className="w-4 h-4 mr-1" />返回
-          </Button>
-          <Input className="w-[220px]" placeholder="工作流名称 *" value={name} onChange={e => setName(e.target.value)} />
+            <ArrowLeft className="w-4 h-4 mr-1" />{tr('k_11d0241540')}</Button>
+          <Input className="w-[220px]" placeholder={tr('k_9e71b468f0')} value={name} onChange={e => setName(e.target.value)} />
           <Input className="w-[160px]" placeholder={t("k_4a7239c74a")} value={cron} onChange={e => setCron(e.target.value)} />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setSqlDlgOpen(true)}>
-            <Wand2 className="w-4 h-4 mr-1" />从 SQL 生成
-          </Button>
+            <Wand2 className="w-4 h-4 mr-1" />{tr('k_751997c519')}</Button>
           <Button variant="outline" size="sm" onClick={handleExportSql}>
-            <Download className="w-4 h-4 mr-1" />导出 SQL
-          </Button>
+            <Download className="w-4 h-4 mr-1" />{tr('k_379d7d22cc')}</Button>
           <Button size="sm" onClick={handleSave} disabled={saving}>
-            <Save className="w-4 h-4 mr-1" />保存
-          </Button>
+            <Save className="w-4 h-4 mr-1" />{tr('k_fadf24dbc5')}</Button>
           <Button size="sm" onClick={handleRun} disabled={isNew}>
-            <Play className="w-4 h-4 mr-1" />运行
-          </Button>
+            <Play className="w-4 h-4 mr-1" />{tr('k_0c3acd446f')}</Button>
         </div>
       </div>
 
@@ -433,17 +427,13 @@ export default function DagEditor() {
         <div className="w-[180px] border-r p-3 space-y-2">
           <p className="text-xs font-medium text-muted-foreground">{t("k_e840cd6f1e")}</p>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('sync')}>
-            <Plus className="w-3.5 h-3.5 mr-1" />同步节点
-          </Button>
+            <Plus className="w-3.5 h-3.5 mr-1" />{tr('k_95753ea661')}</Button>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('sql_task')}>
-            <FileCode2 className="w-3.5 h-3.5 mr-1" />SQL 任务
-          </Button>
+            <FileCode2 className="w-3.5 h-3.5 mr-1" />{tr('k_c250192752')}</Button>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('control')}>
-            <Plus className="w-3.5 h-3.5 mr-1" />控制节点
-          </Button>
+            <Plus className="w-3.5 h-3.5 mr-1" />{tr('k_ab40a96f7c')}</Button>
           <p className="text-xs text-muted-foreground pt-2">
-            拖拽节点右侧锚点到另一节点左侧锚点定义依赖。
-          </p>
+            {tr('k_c76ebae125')}</p>
         </div>
 
         {/* Canvas: 编排图（控制流） / 数据流（源→转换→目标）双视图 */}
@@ -507,9 +497,7 @@ export default function DagEditor() {
           <DialogHeader><DialogTitle>{t("k_4118acbda2")}</DialogTitle></DialogHeader>
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              粘贴多语句 SQL 脚本（支持 SELECT / INSERT INTO...SELECT / CREATE TABLE AS...SELECT）。
-              将按表产出/消费依赖自动拆解为节点，生成后可在画布继续编辑。
-            </p>
+              {tr('k_4371fe3fda')}</p>
             <DatasourceSelect value={sqlDatasource} onChange={setSqlDatasource} placeholder={t("k_4de3d6c8a3")} />
             <Textarea className="font-mono min-h-[220px]" value={sqlScript} onChange={e => setSqlScript(e.target.value)}
               placeholder={'CREATE TABLE agg AS SELECT ...;\nINSERT INTO doris_ds.dwh.agg SELECT ... FROM agg;'} />
@@ -527,9 +515,8 @@ export default function DagEditor() {
           <DialogHeader><DialogTitle>{t("k_6a2ce32a7a")}</DialogTitle></DialogHeader>
           <Textarea className="font-mono min-h-[260px]" readOnly value={exportSql} />
           <DialogFooter>
-            <Button variant="outline" onClick={() => navigator.clipboard.writeText(exportSql).then(() => toast.success('已复制'))}>
-              复制
-            </Button>
+            <Button variant="outline" onClick={() => navigator.clipboard.writeText(exportSql).then(() => toast.success(tr('k_52e6abbe5c')))}>
+              {tr('k_79d3abe929')}</Button>
             <Button onClick={() => setExportOpen(false)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>

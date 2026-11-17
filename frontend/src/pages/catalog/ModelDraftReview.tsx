@@ -25,12 +25,13 @@ import {
   Pencil, Search, Trash2, Undo2,
 } from 'lucide-react';
 import { ontologyApi, type DraftObjectDiff, type DraftStatus } from '@/api/ontology';
+import { useTranslation } from 'react-i18next';
 
 const STATE_META: Record<string, { label: string; cls: string; dot: string }> = {
-  added: { label: '新增', cls: 'border-green-500/40 text-green-600 bg-green-500/5', dot: 'bg-green-500' },
-  changed: { label: '修改', cls: 'border-blue-500/40 text-blue-600 bg-blue-500/5', dot: 'bg-blue-500' },
-  removed: { label: '删除', cls: 'border-red-500/40 text-red-600 bg-red-500/5', dot: 'bg-red-500' },
-  unchanged: { label: '未改动', cls: 'border-border text-muted-foreground', dot: 'bg-muted-foreground/40' },
+  added: { label: t('k_2cd9e6ce81'), cls: 'border-green-500/40 text-green-600 bg-green-500/5', dot: 'bg-green-500' },
+  changed: { label: t('k_c9c77517fe'), cls: 'border-blue-500/40 text-blue-600 bg-blue-500/5', dot: 'bg-blue-500' },
+  removed: { label: t('k_3755f56f2f'), cls: 'border-red-500/40 text-red-600 bg-red-500/5', dot: 'bg-red-500' },
+  unchanged: { label: t('k_bb48ba5958'), cls: 'border-border text-muted-foreground', dot: 'bg-muted-foreground/40' },
 };
 
 type StateFilter = 'all' | 'added' | 'changed' | 'removed' | 'unchanged';
@@ -40,43 +41,44 @@ function deltaSummary(o: DraftObjectDiff): string {
   const d = o.delta;
   if (!d) {
     if (o.state === 'added') {
-      return `${o.property_count ?? 0} 个属性 · ${o.link_count ?? 0} 条关系`;
+      return t('k_107ebf8737', { p0: o.property_count ?? 0, p1: o.link_count ?? 0 });
     }
-    if (o.state === 'removed') return '发布后从对象表/图谱/知识库一并移除';
-    return `${o.property_count ?? 0} 个属性 · ${o.link_count ?? 0} 条关系`;
+    if (o.state === 'removed') return t('k_7f1c2a5b14');
+    return t('k_107ebf8737', { p0: o.property_count ?? 0, p1: o.link_count ?? 0 });
   }
   const parts: string[] = [];
   const pa = d.properties_added?.length || 0;
   const pr = d.properties_removed?.length || 0;
   const pm = d.properties_modified?.length || 0;
   if (pa || pr || pm) {
-    parts.push(`属性 ${[pa ? `+${pa}` : '', pr ? `-${pr}` : '', pm ? `~${pm}` : ''].filter(Boolean).join(' ')}`);
+    parts.push(t('k_74704fd62d', { p0: [pa ? `+${pa}` : '', pr ? `-${pr}` : '', pm ? `~${pm}` : ''].filter(Boolean).join(' ') }));
   }
   const la = d.links_added?.length || 0;
   const lr = d.links_removed?.length || 0;
-  if (la || lr) parts.push(`关系 ${[la ? `+${la}` : '', lr ? `-${lr}` : ''].filter(Boolean).join(' ')}`);
+  if (la || lr) parts.push(t('k_a3790f4089', { p0: [la ? `+${la}` : '', lr ? `-${lr}` : ''].filter(Boolean).join(' ') }));
   const aa = d.aliases_added?.length || 0;
   const ar = d.aliases_removed?.length || 0;
-  if (aa || ar) parts.push(`别名 ${[aa ? `+${aa}` : '', ar ? `-${ar}` : ''].filter(Boolean).join(' ')}`);
-  if (d.renamed_from) parts.push(`显示名「${d.renamed_from}」→「${o.display_name}」`);
-  if (d.table_changed) parts.push('换主表');
-  if (d.description_changed) parts.push('改描述');
-  return parts.join(' · ') || '内容有调整';
+  if (aa || ar) parts.push(t('k_19ed0af3ab', { p0: [aa ? `+${aa}` : '', ar ? `-${ar}` : ''].filter(Boolean).join(' ') }));
+  if (d.renamed_from) parts.push(t('k_83a8fa64e6', { p0: d.renamed_from, p1: o.display_name }));
+  if (d.table_changed) parts.push(t('k_d8dd7beea5'));
+  if (d.description_changed) parts.push(t('k_728c30fe8f'));
+  return parts.join(' · ') || t('k_eaba010237');
 }
 
 function DeltaDetail({ o }: { o: DraftObjectDiff }) {
+  const { t } = useTranslation('ui');
   const d = o.delta;
   if (!d) return null;
   const rows: { kind: 'add' | 'remove' | 'mod'; text: string; sub?: string }[] = [];
-  (d.properties_added || []).forEach((p) => rows.push({ kind: 'add', text: p.name || p.key, sub: '属性' }));
-  (d.properties_removed || []).forEach((p) => rows.push({ kind: 'remove', text: p.name || p.key, sub: '属性' }));
+  (d.properties_added || []).forEach((p) => rows.push({ kind: 'add', text: p.name || p.key, sub: t('k_24d67862f8') }));
+  (d.properties_removed || []).forEach((p) => rows.push({ kind: 'remove', text: p.name || p.key, sub: t('k_24d67862f8') }));
   (d.properties_modified || []).forEach((p) => rows.push({ kind: 'mod', text: p.name || p.key, sub: `${p.from || '—'} → ${p.to || '—'}` }));
-  (d.links_added || []).forEach((l) => rows.push({ kind: 'add', text: l.label, sub: '关系' }));
-  (d.links_removed || []).forEach((l) => rows.push({ kind: 'remove', text: l.label, sub: '关系' }));
-  (d.aliases_added || []).forEach((a) => rows.push({ kind: 'add', text: a, sub: '别名' }));
-  (d.aliases_removed || []).forEach((a) => rows.push({ kind: 'remove', text: a, sub: '别名' }));
+  (d.links_added || []).forEach((l) => rows.push({ kind: 'add', text: l.label, sub: t('k_eefd831645') }));
+  (d.links_removed || []).forEach((l) => rows.push({ kind: 'remove', text: l.label, sub: t('k_eefd831645') }));
+  (d.aliases_added || []).forEach((a) => rows.push({ kind: 'add', text: a, sub: t('k_ec537c546d') }));
+  (d.aliases_removed || []).forEach((a) => rows.push({ kind: 'remove', text: a, sub: t('k_ec537c546d') }));
   if (d.table_changed) {
-    rows.push({ kind: 'mod', text: '主表', sub: `${d.primary_table_from || '—'} → ${d.primary_table_to || '—'}` });
+    rows.push({ kind: 'mod', text: t('k_17dbbad889'), sub: `${d.primary_table_from || '—'} → ${d.primary_table_to || '—'}` });
   }
   if (!rows.length) return null;
   return (
@@ -109,6 +111,7 @@ export default function ModelDraftReview({
   onDiscard: () => void;
   onEditInDraft: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const [filter, setFilter] = useState<StateFilter>('all');
   const [kw, setKw] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -140,7 +143,7 @@ export default function ModelDraftReview({
     try {
       const { data } = await ontologyApi.getDraftContent(modelId);
       if (!data.has_draft) {
-        setJsonError('服务端当前没有该模型的待发布草案（可能刚被发布或被其他会话覆盖）。');
+        setJsonError(t('k_fff858e418'));
         return;
       }
       try {
@@ -149,7 +152,7 @@ export default function ModelDraftReview({
         setJsonText(data.draft_json_content || '');
       }
     } catch (e: any) {
-      setJsonError(e?.response?.data?.detail || '草案正文加载失败');
+      setJsonError(e?.response?.data?.detail || t('k_4104f51904'));
     } finally {
       setJsonLoading(false);
     }
@@ -163,7 +166,7 @@ export default function ModelDraftReview({
       onDiscard();
     } catch (e: any) {
       setDiscarding(false);
-      setJsonError(e?.response?.data?.detail || '丢弃草案失败');
+      setJsonError(e?.response?.data?.detail || t('k_d66df9d32c'));
     } finally {
       setDiscarding(false);
     }
@@ -173,11 +176,11 @@ export default function ModelDraftReview({
     return (
       <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
         <CheckCircle2 className="h-6 w-6 mx-auto mb-2 opacity-40" />
-        当前没有待发布的草案：生效版即线上口径。
+        {t('k_d3f26c60af')}
         {canEdit && (
           <div className="mt-2">
             <Button size="sm" variant="outline" onClick={onEditInDraft}>
-              <Pencil className="h-3.5 w-3.5 mr-1" />在草案中编辑
+              <Pencil className="h-3.5 w-3.5 mr-1" />{t('k_9ffcb205b4')}
             </Button>
           </div>
         )}
@@ -201,10 +204,9 @@ export default function ModelDraftReview({
       <div className="flex items-start gap-3 flex-wrap rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">
-            待发布草案：对象 {draft.effective_object_count} → {draft.draft_object_count}
+            {t('k_4f2e1a4806', { p0: draft.effective_object_count, p1: draft.draft_object_count })}
             <span className="ml-2 text-xs font-normal text-muted-foreground">
-              {draft.draft_updated_by || '未知'} 于 {draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存
-            </span>
+              {t('k_08445af37d', { p0: draft.draft_updated_by || t('k_1622dc9b6b'), p1: draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—' })}</span>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
             <FilterChip value="all" label={t("k_778fc8f994")} n={objects.length} cls={STATE_META.added.cls} />
@@ -216,38 +218,38 @@ export default function ModelDraftReview({
           {draft.base_stale && (
             <div className="mt-2 text-xs text-red-600">
               <AlertTriangle className="h-3.5 w-3.5 mr-1 inline" />
-              生效版在草案写入后又被改动，发布会被并发保护阻断（不覆盖他人工作）：请切到草案视图基于最新生效版重做后再发。
+              {t('k_300ba9e297')}
             </div>
           )}
           {draft.draft_parse_error && (
             <div className="mt-2 text-xs text-red-600">
               <AlertTriangle className="h-3.5 w-3.5 mr-1 inline" />
-              草案正文解析不出对象清单（结构异常）。请查看原始内容或重做草案，勿直接发布。
+              {t('k_cdf29c4450')}
             </div>
           )}
           {jsonError && <div className="mt-2 text-xs text-red-600">{jsonError}</div>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Button size="sm" variant="outline" onClick={openRaw}>
-            <Code2 className="h-3.5 w-3.5 mr-1" />原始内容
+            <Code2 className="h-3.5 w-3.5 mr-1" />{t('k_ea1c18aebf')}
           </Button>
           {canEdit && (
             <Button size="sm" variant="outline" onClick={onEditInDraft}>
-              <Pencil className="h-3.5 w-3.5 mr-1" />在草案中编辑
+              <Pencil className="h-3.5 w-3.5 mr-1" />{t('k_9ffcb205b4')}
             </Button>
           )}
           {canEdit && (
             <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600"
               onClick={() => setDiscardOpen(true)} disabled={publishing}>
-              <Trash2 className="h-3.5 w-3.5 mr-1" />丢弃草案
+              <Trash2 className="h-3.5 w-3.5 mr-1" />{t('k_ec179f83bd')}
             </Button>
           )}
           {canPublish && (
             <Button size="sm" onClick={onPublish}
               disabled={publishing || draft.base_stale || !!draft.draft_parse_error}
-              title={draft.base_stale ? '生效版已再被改动，发布会被阻断' : '发布后级联刷新对象表/部署绑定/图谱（知识库由后台对账重推，可在关系图谱页手动同步）'}>
+              title={draft.base_stale ? t('k_01e1da98e1') : t('k_5a4798f93d')}>
               {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-              发布草案
+              {t('k_5c5ff23458')}
             </Button>
           )}
         </div>
@@ -261,7 +263,7 @@ export default function ModelDraftReview({
             className="h-8 pl-7 text-xs" />
         </div>
         <div className="text-xs text-muted-foreground">
-          共 {visible.length} 项{filter !== 'all' ? '（已按状态筛选）' : ''}
+          {t('k_1e659736f4', { p0: visible.length, p1: filter !== 'all' ? t('k_555f53dcd7') : '' })}
         </div>
       </div>
 
@@ -279,7 +281,7 @@ export default function ModelDraftReview({
                 <div className="flex items-center gap-2 flex-wrap">
                   {hasDetail ? (
                     <button className="shrink-0 text-muted-foreground" onClick={() => setExpanded((p) => ({ ...p, [o.key]: !p[o.key] }))}
-                      title={open ? '收起明细' : '展开变更明细'}>
+                      title={open ? t('k_60940000f9') : t('k_a96aa977f1')}>
                       {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                     </button>
                   ) : <span className="w-3.5 shrink-0" />}
@@ -293,14 +295,13 @@ export default function ModelDraftReview({
                 </div>
                 {o.state === 'removed' && (
                   <div className="mt-1 pl-5 text-[11px] text-muted-foreground">
-                    该对象已从草案中移除；发布后取数与检索都不再命中它（历史版本仍可在「版本管理」找回）。
+                    {t('k_33db4cea91')}
                   </div>
                 )}
                 {open && <DeltaDetail o={o} />}
                 {open && o.state === 'added' && !o.delta && (
                   <div className="mt-2 pl-5 text-[11px] text-muted-foreground">
-                    主表 {o.primary_table || '未绑定'}；展开完整定义请到「对象 · Link」页签的草案视图。
-                  </div>
+                    {t('k_01e3a79217', { p0: o.primary_table || t('k_906ad18b48') })}</div>
                 )}
               </div>
             );
@@ -314,16 +315,14 @@ export default function ModelDraftReview({
           <DialogHeader><DialogTitle>{t("k_a0eb9acff4")}</DialogTitle></DialogHeader>
           <div className="text-sm text-muted-foreground space-y-2">
             <p>
-              将清除 {draft.draft_updated_by || '最近一次保存者'} 于 {draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存的草案
-              （新增 {counts.added} / 修改 {counts.changed} / 删除 {counts.removed}）。
-            </p>
+              {t('k_5d04331aae', { p0: draft.draft_updated_by || t('k_30b927775e'), p1: draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—', p2: counts.added, p3: counts.changed, p4: counts.removed })}</p>
             <p className="text-red-600">{t("k_3b3fcfb34d")}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDiscardOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={confirmDiscard} disabled={discarding}>
               {discarding ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Undo2 className="h-4 w-4 mr-1" />}
-              确认丢弃
+              {t('k_55bfb65260')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -334,12 +333,12 @@ export default function ModelDraftReview({
         <DialogContent className="max-w-3xl">
           <DialogHeader><DialogTitle>{t("k_840aad6766")}</DialogTitle></DialogHeader>
           <div className="text-xs text-muted-foreground">
-            仅供排查结构问题；审阅与判断请以左侧「变更对比」清单为准。
+            {t('k_7b725b4ac7')}
           </div>
           <ScrollArea className="h-[52vh] rounded-md border mt-2">
             {jsonLoading ? (
               <div className="py-6 text-center text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />加载中…
+                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />{t('k_300ee3dee4')}
               </div>
             ) : jsonError ? (
               <div className="py-6 text-center text-sm text-red-600">{jsonError}</div>

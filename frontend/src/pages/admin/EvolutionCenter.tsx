@@ -27,6 +27,7 @@ import { toast } from '@/lib/toast';
 import { Dna, RefreshCw, Play, Check, X } from 'lucide-react';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr , t as tr } from '@/i18n/runtime';
 
 type Kind = 'new_metric' | 'new_dimension' | 'alias' | 'binding_gap' | 'term';
 
@@ -59,37 +60,37 @@ interface Overview {
 }
 
 const KIND_LABEL: Record<Kind, string> = {
-  new_metric: '待开发指标',
-  new_dimension: '待开发维度',
-  alias: '待收编别名',
-  binding_gap: '待核绑定',
-  term: '术语候选',
+  new_metric: i18nTr('k_70ecbecf9e'),
+  new_dimension: i18nTr('k_7386b3b37e'),
+  alias: i18nTr('k_48f08d7815'),
+  binding_gap: i18nTr('k_ab33ea20aa'),
+  term: i18nTr('k_17ad7ca811'),
 };
 
 const KIND_HINT: Record<Kind, string> = {
-  new_metric: '字典里确实没有这个度量，需要新建',
-  new_dimension: '字典里确实没有这个分析维度，需要新建',
-  alias: '概念已存在，只是叫法没登记为别名 —— 收编即可，不要新建重复行',
-  binding_gap: '字典行已存在但对本对象不可达（target_table/bound_object_key 与对象主表不一致）—— 去核对绑定，补别名或新建都没用',
-  term: '纯业务黑话，尚无归属，先进术语缓冲区待建模',
+  new_metric: i18nTr('k_acd1648500'),
+  new_dimension: i18nTr('k_f4db52f0f9'),
+  alias: i18nTr('k_9f522f0895'),
+  binding_gap: i18nTr('k_6ded9d5bbc'),
+  term: i18nTr('k_1ae14b5a15'),
 };
 
 const SOURCE_LABEL: Record<string, string> = {
-  parse_fail: '解析失败回流',
-  feedback: '用户点踩反馈',
-  script: '术语收编脚本',
+  parse_fail: i18nTr('k_1ed09ddaab'),
+  feedback: i18nTr('k_55f66363c6'),
+  script: i18nTr('k_42684640cd'),
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: '待处理', converted: '已执行', rejected: '已驳回',
-  stale: '已转出但未生效', verified: '已验证生效',
+  pending: i18nTr('k_047109def4'), converted: i18nTr('k_c6bc4767c4'), rejected: i18nTr('k_dbf36ddc55'),
+  stale: i18nTr('k_512fdab3f8'), verified: i18nTr('k_579bd49bc6'),
 };
 
 /** 校验接口返回结构：代理未配时 vite 会把请求兑底成 index.html，
  *  `data.items || []` 会把故障掩盖成"空列表"，这里显式抛错。 */
 function expectItems(payload: any, what: string): any[] {
   if (!payload || !Array.isArray(payload.items)) {
-    throw new Error(`接口返回结构异常（期望 items 数组，实际 ${typeof payload}）：${what}`);
+    throw new Error(tr('k_247ea64781', { p0: typeof payload, p1: what }));
   }
   return payload.items;
 }
@@ -124,9 +125,9 @@ export default function EvolutionCenter() {
       const { data } = await client.get('/evolution/candidates', {
         params: { status, kind: kindFilter, limit: 300 },
       });
-      setItems(expectItems(data, '进化候选'));
+      setItems(expectItems(data, tr('k_ea540c8bf9')));
     } catch (e: any) {
-      const msg = e.message || e.response?.data?.detail || '加载候选失败';
+      const msg = e.message || e.response?.data?.detail || tr('k_22889ef6db');
       setError(msg);
       toast.error(msg);
     } finally {
@@ -138,11 +139,11 @@ export default function EvolutionCenter() {
     try {
       const { data } = await client.get('/evolution/overview');
       if (!data || typeof data.pending_by_kind !== 'object') {
-        throw new Error('接口返回结构异常（期望 pending_by_kind 对象）');
+        throw new Error(tr('k_e0f640a638'));
       }
       setOv(data);
     } catch (e: any) {
-      toast.error(e.message || e.response?.data?.detail || '加载进化大盘失败');
+      toast.error(e.message || e.response?.data?.detail || t('k_3b2ade9517'));
     }
   }, []);
 
@@ -154,7 +155,7 @@ export default function EvolutionCenter() {
       setCapabilities(s.data?.capabilities || []);
     }).catch(() => {
       // 评测层清单拉不到只影响"转评测用例"这一个出口，显式告知而不是静默空白
-      toast.warning('评测层清单未能加载，"转评测用例"出口暂不可用');
+      toast.warning(t('k_47e4a9aede'));
     });
   }, [loadOverview]);
 
@@ -162,11 +163,11 @@ export default function EvolutionCenter() {
     setDigesting(true);
     try {
       const { data } = await client.post('/evolution/digest');
-      toast.success(`归纳完成：${data.summary || '无摘要'}`);
+      toast.success(tr('k_b280571b32', { p0: data.summary || tr('k_44f7ba5fa8') }));
       load(); loadOverview();
     } catch (e: any) {
       // 归纳失败必须显式：把"没有新待办"和"归纳挂了"混在一起是最危险的掩盖
-      toast.error(e.response?.data?.detail || '归纳未完成，详见服务端日志');
+      toast.error(e.response?.data?.detail || t('k_d10b113b12'));
     } finally {
       setDigesting(false);
     }
@@ -181,16 +182,16 @@ export default function EvolutionCenter() {
       bound_object_key: c.object_hint || '',
       property_name: '', display_name: c.term, formula: '', agg_type: 'COUNT', unit: '',
       category: '属性', suite: 'semantic', capability: c.kind === 'binding_gap' ? 'governance' : 'resolution',
-      expected: '{"allowed": true}', note: `由进化候选 #${c.id}（${c.term}）固化`,
+      expected: '{"allowed": true}', note: t('k_dada6897bf', { p0: c.id, p1: c.term }),
     });
     if (exit === 'metric' || exit === 'dimension') {
       try {
         const { data } = await client.get('/evolution/objects', {
           params: { datasource_name: c.datasource_name || '' },
         });
-        setObjOptions(expectItems(data, '可归属对象'));
+        setObjOptions(expectItems(data, tr('k_4d9054b950')));
       } catch (e: any) {
-        toast.error(e.message || '对象清单加载失败');
+        toast.error(e.message || t('k_9aa34a93cb'));
       }
     }
   };
@@ -203,9 +204,9 @@ export default function EvolutionCenter() {
       const { data } = await client.get('/evolution/properties', {
         params: { datasource_name: target.datasource_name || '', object_key: objectKey },
       });
-      setPropOptions(expectItems(data, '业务属性清单'));
+      setPropOptions(expectItems(data, tr('k_eb47890f6b')));
     } catch (e: any) {
-      toast.error(e.message || '业务属性清单加载失败');
+      toast.error(e.message || t('k_b33fcc9c4c'));
     }
   };
 
@@ -219,50 +220,50 @@ export default function EvolutionCenter() {
         });
         // 目标字典行不存在不是错误，是"该走另一个出口"：据此改按钮而不是报错
         if (data?.success === false && data?.next_action) {
-          toast.warning(data.message || '目标不存在，请改走"建草稿"出口');
+          toast.warning(data.message || t('k_59e95054a8'));
           setExitKind('');
           openExit({ ...target, kind: data.next_action as Kind },
             data.next_action === 'new_metric' ? 'metric' : 'dimension');
           return;
         }
-        toast.success('别名已收编并触发级联同步');
+        toast.success(t('k_c8586b2abd'));
       } else if (exitKind === 'metric') {
         const { data } = await client.post(`/evolution/candidates/${target.id}/metric-draft`, {
           bound_object_key: form.bound_object_key, display_name: form.display_name,
           agg_type: form.agg_type, formula: form.formula, unit: form.unit,
         });
-        toast.success(data.message || '指标草稿已创建');
+        toast.success(data.message || t('k_027c9e552e'));
         if (data?.needs_completion?.length) {
-          toast.warning(`还需补全：${data.needs_completion.join('、')}（未补前不会进语义层）`);
+          toast.warning(t('k_1feeca1e18', { p0: data.needs_completion.join('、') }));
         }
       } else if (exitKind === 'dimension') {
-        if (!form.property_name) { toast.error('请选择业务属性（不手填物理列名）'); return; }
+        if (!form.property_name) { toast.error(t('k_fa85fe050c')); return; }
         const { data } = await client.post(`/evolution/candidates/${target.id}/dimension-draft`, {
           bound_object_key: form.bound_object_key, property_name: form.property_name,
           display_name: form.display_name, category: form.category,
         });
-        toast.success(data.message || '维度草稿已创建');
+        toast.success(data.message || t('k_37315326aa'));
       } else if (exitKind === 'term') {
         const { data } = await client.post(`/evolution/candidates/${target.id}/to-term`, {
           description: form.note || '',
         });
-        toast.success(data.message || '已转入术语缓冲区');
+        toast.success(data.message || t('k_c85d305d6d'));
       } else if (exitKind === 'eval_case') {
         let expected: object;
         try { expected = JSON.parse(form.expected || '{}'); }
-        catch { toast.error('expected 不是合法 JSON'); return; }
+        catch { toast.error(t('k_4c59fb400b')); return; }
         const { data } = await client.post(`/evolution/candidates/${target.id}/to-eval-case`, {
           suite: form.suite, capability: form.capability, question: target.term,
           payload: { intent: { object: form.bound_object_key || target.object_hint || '',
                                metrics: [target.term], limit: 10 } },
           expected, note: form.note,
         });
-        toast.success(`已登记评测用例 ${data.case_key}，下次运行后回填 verified/stale`);
+        toast.success(t('k_8c39926ff0', { p0: data.case_key }));
       }
       setTarget(null); setExitKind('');
       load(); loadOverview();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '出口动作未完成');
+      toast.error(e.response?.data?.detail || t('k_a5c20b174b'));
     } finally {
       setBusy(false);
     }
@@ -271,10 +272,10 @@ export default function EvolutionCenter() {
   const reject = async (c: Candidate) => {
     try {
       await client.post(`/evolution/candidates/${c.id}/reject`);
-      toast.success('已驳回（保留留痕，便于看出该类信号是否被反复判无效）');
+      toast.success(t('k_397ff0a184'));
       load(); loadOverview();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '驳回失败');
+      toast.error(e.response?.data?.detail || t('k_3e20d5d1ce'));
     }
   };
 
@@ -286,21 +287,19 @@ export default function EvolutionCenter() {
         <Dna className="h-5 w-5" />
         <h1 className="text-lg font-semibold">{t("k_849e449611")}</h1>
         <Badge variant="outline" className="text-[10px]">
-          反馈 / 解析失败 → 归纳候选 → 人工四出口 → 评测回归验证
+          {t('k_46d94e86ab')}
         </Badge>
         <div className="flex-1" />
         <Button variant="outline" size="sm" onClick={() => { load(); loadOverview(); }}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
+          <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_38108eaa1d')}
         </Button>
         <Button size="sm" onClick={runDigest} disabled={digesting}>
-          <Play className="h-3.5 w-3.5 mr-1" />{digesting ? '归纳中…' : '立即归纳'}
+          <Play className="h-3.5 w-3.5 mr-1" />{digesting ? t('k_4f2449291a') : t('k_e87e2177ca')}
         </Button>
       </div>
 
       <p className="text-xs text-muted-foreground">
-        每日 03:30 自动归纳（可在「任务监控」暂停内置任务 <code>evolution_digest</code>）。
-        每条候选都带<b>{t("k_ccabc70a21")}</b>：命中权威名却解析不通的词被判为
-        <b>{t("k_ab33ea20aa")}</b>而非缺资产 —— 给这类词补别名或另建字典行都是错行动。
+        {tr('k_1325d59b1c')}{' '}<code>evolution_digest</code>{tr('k_da74f8b5fc')}<b>{t("k_ccabc70a21")}</b>{tr('k_d816bfdaa6')}{' '}<b>{t("k_ab33ea20aa")}</b>{t('k_4271b04c1a')}
       </p>
 
       {ov && (
@@ -311,8 +310,7 @@ export default function EvolutionCenter() {
               👍 {ov.feedback.up} · 👎 {ov.feedback.down}
             </div>
             <div className={ov.feedback.pending_negative ? 'text-amber-600' : 'text-muted-foreground'}>
-              待归纳负反馈 {ov.feedback.pending_negative} 条
-            </div>
+              {t('k_307eca81e4', { p0: ov.feedback.pending_negative })}</div>
           </div>
           <div className="border rounded-md p-2.5">
             <div className="text-muted-foreground">{t("k_9ab9b98fe5")}</div>
@@ -334,11 +332,11 @@ export default function EvolutionCenter() {
           </div>
           <div className="border rounded-md p-2.5">
             <div className="text-muted-foreground">{t("k_a35dbe4317")}</div>
-            <div className="mt-1 text-green-700">已验证生效 {ov.outcome.verified ?? 0}</div>
+            <div className="mt-1 text-green-700">{t('k_25c0f09d35', { p0: ov.outcome.verified ?? 0 })}</div>
             <div className={ov.outcome.stale ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-              转出但未生效 {ov.outcome.stale ?? 0}
+              {t('k_0af6c4a530', { p0: ov.outcome.stale ?? 0 })}
             </div>
-            <div className="text-muted-foreground">已执行 {ov.outcome.converted ?? 0} · 已驳回 {ov.outcome.rejected ?? 0}</div>
+            <div className="text-muted-foreground">{t('k_5932b93d07', { p0: ov.outcome.converted ?? 0, p1: ov.outcome.rejected ?? 0 })}</div>
           </div>
         </div>
       )}
@@ -366,13 +364,12 @@ export default function EvolutionCenter() {
           {loading && <div className="text-xs text-muted-foreground p-4">{t("k_300ee3dee4")}</div>}
           {!loading && error && (
             <div className="text-xs text-destructive p-4 border border-destructive/40 rounded">
-              加载失败：{error}
+              {t('k_fc3f31a5be', { p0: error })}
             </div>
           )}
           {!loading && !error && items.length === 0 && (
             <div className="text-xs text-muted-foreground p-4 border rounded text-center">
-              该状态无候选。若刚上线自进化，需要先用一段时间积累点踩反馈与解析失败词，
-              或点「立即归纳」消费历史反馈。
+              {t('k_37dd8112e8')}
             </div>
           )}
 
@@ -390,9 +387,9 @@ export default function EvolutionCenter() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium">{c.term}</span>
                         <Badge variant="outline" className="text-[10px]">
-                          {c.datasource_name || '全局/未定源'}
+                          {c.datasource_name || t('k_d881edb46e')}
                         </Badge>
-                        <Badge variant="secondary" className="text-[10px]">命中 {c.hit_count}</Badge>
+                        <Badge variant="secondary" className="text-[10px]">{t('k_029b4888a0', { p0: c.hit_count })}</Badge>
                         <Badge variant="outline" className="text-[10px]">
                           {SOURCE_LABEL[c.source] || c.source}
                         </Badge>
@@ -403,44 +400,44 @@ export default function EvolutionCenter() {
                         {kind === 'alias' && (
                           <Button size="sm" variant="outline" className="h-6 text-[11px]"
                             onClick={() => openExit(c, 'alias')}>
-                            收编别名
+                            {t('k_4d7b245f64')}
                           </Button>
                         )}
                         {kind === 'new_metric' && (
                           <Button size="sm" variant="outline" className="h-6 text-[11px]"
                             onClick={() => openExit(c, 'metric')}>
-                            <Check className="h-3 w-3 mr-1" />建指标草稿
+                            <Check className="h-3 w-3 mr-1" />{t('k_7b3561a815')}
                           </Button>
                         )}
                         {kind === 'new_dimension' && (
                           <Button size="sm" variant="outline" className="h-6 text-[11px]"
                             onClick={() => openExit(c, 'dimension')}>
-                            <Check className="h-3 w-3 mr-1" />建维度草稿
+                            <Check className="h-3 w-3 mr-1" />{t('k_ce353b2d85')}
                           </Button>
                         )}
                         {kind === 'term' && (
                           <Button size="sm" variant="outline" className="h-6 text-[11px]"
                             onClick={() => openExit(c, 'term')}>
-                            转术语
+                            {t('k_0e67e0c015')}
                           </Button>
                         )}
                         {kind === 'binding_gap' && (
                           <Button size="sm" variant="outline" className="h-6 text-[11px]"
                             onClick={() => { setTarget(c); setExitKind('eval_case'); }}>
-                            固化成用例
+                            {t('k_22056c6e98')}
                           </Button>
                         )}
                         <Button size="sm" variant="ghost" className="h-6 text-[11px]"
                           onClick={() => { setTarget(c); setExitKind(''); setForm({
                             bound_object_key: c.object_hint || '', target_type: 'dimension',
                             capability: 'resolution', suite: 'semantic',
-                            expected: '{"allowed": true}', note: `由候选 #${c.id} 固化`,
+                            expected: '{"allowed": true}', note: t('k_ca29eaac1e', { p0: c.id }),
                           }); }}>
-                          转评测用例
+                          {t('k_057cb4672d')}
                         </Button>
                         <Button size="sm" variant="ghost" className="h-6 text-[11px]"
                           onClick={() => reject(c)}>
-                          <X className="h-3 w-3 mr-1" />驳回
+                          <X className="h-3 w-3 mr-1" />{t('k_32525478cd')}
                         </Button>
                       </div>
                       <div className="text-[11px] text-muted-foreground">
@@ -448,23 +445,21 @@ export default function EvolutionCenter() {
                       </div>
                       {Boolean((c.evidence as any)?.question) && (
                         <div className="text-[11px] text-muted-foreground">
-                          证据问句：{String((c.evidence as any).question)}
+                          {t('k_2361a0d37b', { p0: String((c.evidence as any).question) })}
                         </div>
                       )}
                       {Array.isArray((c.evidence as any)?.candidates) &&
                         ((c.evidence as any).candidates as string[]).length > 0 && (
                         <div className="text-[11px] text-muted-foreground">
-                          近似候选：
-                          {((c.evidence as any).candidates as string[]).slice(0, 5).join('、')}
+                          {t('k_e556670542', { p0: ((c.evidence as any).candidates as string[]).slice(0, 5).join('、') })}
                         </div>
                       )}
                       {Array.isArray((c.evidence as any)?.authoritative_hits) &&
                         ((c.evidence as any).authoritative_hits as any[]).length > 0 && (
                         <div className="text-[11px] text-amber-700">
-                          字典现况：
-                          {((c.evidence as any).authoritative_hits as any[])
-                            .map(h => `${h.ref} → 表 ${h.target_table || '?'} / 对象 ${h.object_key || '?'}`)
-                            .join('；')}
+                          {t('k_c4565c3782', { p0: ((c.evidence as any).authoritative_hits as any[])
+                            .map(h => tr('k_54940ce18a', { p0: h.ref, p1: h.target_table || '?', p2: h.object_key || '?' }))
+                            .join('；') })}
                         </div>
                       )}
                     </div>
@@ -486,8 +481,7 @@ export default function EvolutionCenter() {
               </SelectContent>
             </Select>
             <span className="text-[11px] text-muted-foreground">
-              「已转出但未生效」是红字项：候选转成评测用例后该用例仍失败，
-              说明缺口没真补上 —— 这一栏不许被"已执行"糊过去。
+              {t('k_7ea4f64c3e')}
             </span>
           </div>
           <div className="border rounded">
@@ -533,9 +527,9 @@ export default function EvolutionCenter() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {target && `${exitKind === 'alias' ? '收编别名' : exitKind === 'metric' ? '建指标草稿'
-                : exitKind === 'dimension' ? '建维度草稿' : exitKind === 'term' ? '转术语缓冲区'
-                  : '转评测用例'} — ${target.term}`}
+              {target && `${exitKind === 'alias' ? tr('k_4d7b245f64') : exitKind === 'metric' ? tr('k_7b3561a815')
+                : exitKind === 'dimension' ? tr('k_ce353b2d85') : exitKind === 'term' ? tr('k_9abf0019e8')
+                  : tr('k_057cb4672d')} — ${target.term}`}
             </DialogTitle>
           </DialogHeader>
           {target && (
@@ -561,7 +555,7 @@ export default function EvolutionCenter() {
                     <Label className="mb-1 block">{t("k_28223086a8")}</Label>
                     <Input value={form.target_ref}
                       onChange={e => setForm({ ...form, target_ref: e.target.value })}
-                      placeholder={'从上方「≈ xxx」提示里取，或填已登记的字典名 / 对象 key'} />
+                      placeholder={t('k_8468fb9fb8')} />
                   </div>
                 </>
               )}
@@ -579,8 +573,7 @@ export default function EvolutionCenter() {
                   </Select>
                   {objOptions.length === 0 && (
                     <p className="mt-1 text-[11px] text-amber-600">
-                      该数据源下没有可归属的 active 本体对象。此时不应新建字典行（会立刻成为
-                      资产池里的孤儿待办），请先在本体建模里补对象。
+                      {t('k_f67262fdb6')}
                     </p>
                   )}
                 </div>
@@ -604,12 +597,11 @@ export default function EvolutionCenter() {
                         </SelectContent>
                       </Select>
                       <Input value={form.formula} onChange={e => setForm({ ...form, formula: e.target.value })}
-                        placeholder="如 COUNT(CASE WHEN del_flag = 0 THEN id END)；留空则存为待补口径草稿" />
+                        placeholder={t('k_c3702db6c7')} />
                     </div>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    草稿以未启用状态入库：没口径的指标 planner 编译不了，
-                    启用了只会让取数静默降级。补完 formula 再在指标中心启用。
+                    {t('k_480f9d5977')}
                   </p>
                 </>
               )}
@@ -671,8 +663,7 @@ export default function EvolutionCenter() {
                       value={form.expected} onChange={e => setForm({ ...form, expected: e.target.value })} />
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    期望值请人据此判断填写，不由系统猜测；归纳作业会在该用例下次运行后
-                    回填 verified / stale。
+                    {t('k_8149724441')}
                   </p>
                 </>
               )}
@@ -680,7 +671,7 @@ export default function EvolutionCenter() {
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setExitKind(''); setTarget(null); }}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={submit} disabled={busy}>{busy ? '处理中…' : '确认执行'}</Button>
+            <Button onClick={submit} disabled={busy}>{busy ? t('k_cf978c0252') : t('k_d575bfd288')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

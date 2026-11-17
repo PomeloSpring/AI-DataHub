@@ -37,7 +37,6 @@ import { CapacityNotice } from '../components/chat/CapacityNotice';
 import StageCard from '../components/chat/StageCard';
 import { useMotion } from '../hooks/useMotion';
 import { enterClass } from '../lib/motion';
-import DecisionAdviceCard from '../components/chat/DecisionAdviceCard';
 import BotAvatar from '../components/chat/BotAvatar';
 import WaitingIndicator from '../components/chat/WaitingIndicator';
 import SlashCommandMenu, {
@@ -64,6 +63,7 @@ import client from '../api/client';
 // 首页/阅读页带问题跳入问数页的一次性契约（与首页共用同一份实现，不各写一套 sessionStorage 键）
 import { consumeStashedQuestion, type StashedQuestion } from './home/shared';
 import { saveConversationAsReport, createReportDraft } from '../api/report';
+import { t as tr } from '@/i18n/runtime';
 
 // 附件类别文案只存 key，渲染期经 t() 取（模块顶层常量会冻结语言）
 const CATEGORY_LABEL_KEYS: Record<string, 'page.category.image' | 'page.category.table' | 'page.category.document' | 'page.category.model3d'> = {
@@ -217,7 +217,6 @@ export default function Chat() {
     // 分页读窗口：长会话首屏只拿最近一页，“加载更早消息”往前翻
     hasMoreEarlier, loadingEarlier, messageTotal, loadEarlierMessages,
     sendMessage, cancelMessage, respondToAsk, cancelAsk, updateMessageFeedback, setViewMode, analyzeData, predictData,
-    evaluateTurnDecision,
     saveMessageDoc,
     saveMessageReportDraft,
     stopping,
@@ -450,8 +449,8 @@ export default function Chat() {
     if (!msg) return;
     // Extract tables_used from warnings
     // 服务端 warnings 里的固定前缀是后端契约文案（功能性解析，不随界面语言变）
-    const tablesWarning = msg.warnings?.find((w: string) => w.startsWith('\u6d89\u53ca\u8868:'));
-    const tablesUsed = tablesWarning ? tablesWarning.replace('\u6d89\u53ca\u8868: ', '') : '';
+    const tablesWarning = msg.warnings?.find((w: string) => w.startsWith(tr('k_6b5a74a8d2')));
+    const tablesUsed = tablesWarning ? tablesWarning.replace(tr('k_6b5a74a8d2'), '') : '';
     try {
       await client.post('/chat/feedback', {
         question: msg.question || msg.content || '',
@@ -2151,13 +2150,6 @@ export default function Chat() {
                         </div>
                       </div>
                     )}
-
-                    {/* 决策建议卡：结论由服务端 decision 出口判定（done 事件带，
-                        会话回放按 message_uuid 从实例表读回），前端不判“该不该出建议”。 */}
-                    <DecisionAdviceCard
-                      advice={msg.decision_advice}
-                      onEvaluate={(treeKey) => { void evaluateTurnDecision(idx, treeKey); }}
-                    />
 
                     {/* 已转出的文档卡片：点进去继续编辑/复制或下载 */}
                     {msg.doc && (

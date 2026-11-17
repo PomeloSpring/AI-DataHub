@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Eye, ExternalLink, FileText } from 'lucide-react';
 import type { ContentArticle, ContentCategory } from '@/api/content';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /**
  * 首页资讯区与阅读页共用的口径件。
@@ -27,11 +28,11 @@ export function relTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-  if (days <= 0) return '今天';
-  if (days === 1) return '昨天';
-  if (days < 30) return `${days} 天前`;
-  if (days < 365) return `${Math.floor(days / 30)} 个月前`;
-  return `${Math.floor(days / 365)} 年前`;
+  if (days <= 0) return tr('k_800dfdd902');
+  if (days === 1) return tr('k_2f8d6f1584');
+  if (days < 30) return tr('k_9c3df85cc8', { p0: days });
+  if (days < 365) return tr('k_8d109d0627', { p0: Math.floor(days / 30) });
+  return tr('k_d2594984f5', { p0: Math.floor(days / 365) });
 }
 
 /** 阅读数压缩显示：12 万写成 120k，个位数不加噪声 */
@@ -45,8 +46,8 @@ export function viewCount(n: number): string {
  * 对读者都不是需要预告的行为差异；只有外链与附件影响“点开能不能看到东西” */
 export function kindHint(a: Pick<ContentArticle, 'kind' | 'kind_label'>) {
   if (a.kind === 'markdown' || a.kind === 'html') return null;
-  if (a.kind === 'link') return { label: a.kind_label || '原文', icon: ExternalLink };
-  if (a.kind === 'file') return { label: a.kind_label || '附件', icon: FileText };
+  if (a.kind === 'link') return { label: a.kind_label || tr('k_e5729e9463'), icon: ExternalLink };
+  if (a.kind === 'file') return { label: a.kind_label || tr('k_99f6fe6c41'), icon: FileText };
   return null;
 }
 
@@ -92,11 +93,11 @@ export function ReleaseChip({ article }: { article: Pick<ContentArticle, 'releas
   return (
     <span
       title={article.release_count > 1
-        ? `本篇共 ${article.release_count} 期：点进去可翻历史期次`
-        : '本期内容'}
+        ? tr('k_8ee2404286', { p0: article.release_count })
+        : tr('k_b4892010b2')}
       className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400"
     >
-      第 {article.release} 期{article.release_label ? `·${article.release_label}` : ''}
+      {tr('k_f5e7cef264', { p0: article.release, p1: article.release_label ? `·${article.release_label}` : '' })}
     </span>
   );
 }
@@ -130,8 +131,7 @@ export function ReadMeta({ article, unread }: { article: ContentArticle; unread:
   return (
     <span className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1">
-        <Eye className="h-3 w-3" />{viewCount(article.view_count)} 阅读
-      </span>
+        <Eye className="h-3 w-3" />{viewCount(article.view_count)} {tr('k_aac0ef6c1c')}</span>
       <span>·</span>
       <span>{relTime(article.published_at || article.updated_at)}</span>
       {unread && <span className="ml-auto size-1.5 rounded-full bg-primary" title={t("k_1e230aa201")} aria-label={t("k_1e230aa201")} />}

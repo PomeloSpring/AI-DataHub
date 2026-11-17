@@ -15,6 +15,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface DashboardData {
   overall_score: number;
@@ -42,10 +43,10 @@ interface DashboardData {
 }
 
 const SEVERITY_MAP: Record<string, { label: string; color: string }> = {
-  critical: { label: '严重', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  high: { label: '高', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
-  medium: { label: '中', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  low: { label: '低', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  critical: { label: tr('k_e2e27a8725'), color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  high: { label: tr('k_b096b3f5ac'), color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+  medium: { label: tr('k_0869071c92'), color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  low: { label: tr('k_b9ee259b7f'), color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
 };
 
 function getScoreColor(score: number): string {
@@ -82,7 +83,7 @@ export default function QualityOverview() {
       const { data } = await qualityApi.getDashboard(0);
       setDashboard(data);
     } catch {
-      toast.error('加载质量概览失败');
+      toast.error(tr('k_909ffdaf59'));
     } finally {
       setLoading(false);
     }
@@ -94,10 +95,10 @@ export default function QualityOverview() {
     setActionLoading('report');
     try {
       await qualityApi.generateReport(0);
-      toast.success('质量报告生成成功');
+      toast.success(tr('k_97c6d7ae0b'));
       loadDashboard();
     } catch {
-      toast.error('报告生成失败');
+      toast.error(tr('k_5351559231'));
     } finally {
       setActionLoading(null);
     }
@@ -107,10 +108,10 @@ export default function QualityOverview() {
     setActionLoading('checks');
     try {
       await qualityApi.executeAll(0);
-      toast.success('所有检查已触发执行');
+      toast.success(tr('k_efb88c205c'));
       loadDashboard();
     } catch {
-      toast.error('执行检查失败');
+      toast.error(tr('k_d976bd30dd'));
     } finally {
       setActionLoading(null);
     }
@@ -123,14 +124,12 @@ export default function QualityOverview() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_eff2176b6d")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            监控数据质量指标，查看检查报告和问题趋势
-          </p>
+            {tr('k_964fed5186')}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadDashboard} disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
-            刷新
-          </Button>
+            {tr('k_38108eaa1d')}</Button>
           <Button
             variant="outline"
             size="sm"
@@ -138,11 +137,11 @@ export default function QualityOverview() {
             disabled={!!actionLoading}
           >
             <Play className="w-4 h-4 mr-1" />
-            {actionLoading === 'checks' ? '执行中...' : '运行所有检查'}
+            {actionLoading === 'checks' ? tr('k_cf0cffe9f8') : tr('k_5b1e19b75c')}
           </Button>
           <Button size="sm" onClick={handleGenerateReport} disabled={!!actionLoading}>
             <FileText className="w-4 h-4 mr-1" />
-            {actionLoading === 'report' ? '生成中...' : '生成报告'}
+            {actionLoading === 'report' ? tr('k_4d020ba388') : tr('k_ca40d85dff')}
           </Button>
         </div>
       </div>
@@ -162,8 +161,7 @@ export default function QualityOverview() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <TrendingUp className="w-4 h-4" />
-                  综合质量分
-                </CardTitle>
+                  {tr('k_6f1d24f665')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className={`text-4xl font-bold ${getScoreColor(dashboard.overall_score)}`}>
@@ -177,8 +175,7 @@ export default function QualityOverview() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4" />
-                  通过率
-                </CardTitle>
+                  {tr('k_b4582b86da')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className={`text-4xl font-bold ${getScoreColor(dashboard.pass_rate)}`}>
@@ -192,14 +189,12 @@ export default function QualityOverview() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4" />
-                  规则总数
-                </CardTitle>
+                  {tr('k_17cea87ddd')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-4xl font-bold">{dashboard.total_rules}</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  启用 {dashboard.active_rules} 条
-                </p>
+                  {tr('k_d4e9ca3dd4')}{' '}{dashboard.active_rules} {tr('k_cc1bacb511')}</p>
               </CardContent>
             </Card>
 
@@ -207,8 +202,7 @@ export default function QualityOverview() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                   <XCircle className="w-4 h-4" />
-                  问题规则
-                </CardTitle>
+                  {tr('k_7706eb16f6')}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="text-4xl font-bold text-red-500">
@@ -267,8 +261,7 @@ export default function QualityOverview() {
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground text-sm">
-                暂无质量报告
-              </div>
+                {tr('k_64cfe4c702')}</div>
             )}
           </CardContent>
         </Card>
@@ -325,8 +318,7 @@ export default function QualityOverview() {
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground text-sm">
-                暂无问题记录
-              </div>
+                {tr('k_6ac81b1bc3')}</div>
             )}
           </CardContent>
         </Card>

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { AlertTriangle, ClipboardList, Hash, LayoutDashboard, MessageSquareQuote } from 'lucide-react';
 import type { ContentTag } from '@/api/content';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 
 export interface RailStats {
   /** 我的草稿（仅具备编辑权时取） */
@@ -39,9 +39,9 @@ export default function ActionRail({
   onAskAboutFeed: () => void;
 }) {
   const todos = [
-    canManage && { key: 'drafts', label: '我的草稿', hint: '继续修改或提交审核', count: stats.drafts, hot: false },
-    canReview && { key: 'review', label: '待我审核', hint: '软警告要逐条确认才能通过', count: stats.pending, hot: true },
-    canReview && { key: 'expired', label: '到期待复核', hint: '合规与法规类建议按季复核', count: stats.expired, hot: false },
+    canManage && { key: 'drafts', label: tr('k_cb8fe10b39'), hint: tr('k_76b131061c'), count: stats.drafts, hot: false },
+    canReview && { key: 'review', label: tr('k_d1fac8c967'), hint: tr('k_d33daff424'), count: stats.pending, hot: true },
+    canReview && { key: 'expired', label: tr('k_4649228db9'), hint: tr('k_37f82a08b7'), count: stats.expired, hot: false },
   ].filter(Boolean) as Array<{ key: string; label: string; hint: string; count: number | null; hot: boolean }>;
 
   return (
@@ -49,20 +49,18 @@ export default function ActionRail({
       <Panel
         title={t("k_5e976d9d29")}
         icon={LayoutDashboard}
-        action={boards.length ? { label: '全部', onClick: () => onOpenBoard(-1) } : undefined}
+        action={boards.length ? { label: tr('k_778fc8f994'), onClick: () => onOpenBoard(-1) } : undefined}
       >
         {!boards.length && (
           <div className="space-y-2 p-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
             <p className="text-[13px] font-medium text-foreground">{t("k_20d2294838")}</p>
             <p>
-              角色被分配看板组合后，登录会直达数据看板；也可以随时从工作空间侧栏「数据看板」进入。
-              {onConfigureDashboards ? '在「系统配置 → 仪表盘」里创建看板并编排组合、分配角色。' : '可联系管理员为你的角色分配看板组合。'}
+              {tr('k_72ccb15bc7')}{onConfigureDashboards ? tr('k_3854e43d8f') : tr('k_e136046ebb')}
             </p>
             {onConfigureDashboards && (
               <button type="button" onClick={onConfigureDashboards}
                 className="rounded-md border px-2.5 py-1 text-[12px] hover:border-primary/50 hover:text-primary">
-                去配置仪表盘
-              </button>
+                {tr('k_a15fe0320c')}</button>
             )}
           </div>
         )}
@@ -78,17 +76,17 @@ export default function ActionRail({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] font-medium">{b.name}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">{b.description || '暂无描述'}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">{b.description || tr('k_8c3ec9dfd5')}</span>
             </span>
           </button>
         ))}
         {boards.length > 5 && (
-          <div className="px-3.5 py-2 text-[11px] text-muted-foreground">另有 {boards.length - 5} 个，从「全部」查看</div>
+          <div className="px-3.5 py-2 text-[11px] text-muted-foreground">{t('k_f6021b2ebc', { p0: boards.length - 5 })}</div>
         )}
       </Panel>
 
       {!!todos.length && (
-        <Panel title={t("k_58faa68f4b")} icon={ClipboardList} action={{ label: '内容中心', onClick: onGoContent }}>
+        <Panel title={t("k_58faa68f4b")} icon={ClipboardList} action={{ label: tr('k_0841684ad2'), onClick: onGoContent }}>
           {todos.map(t => (
             <button
               key={t.key}
@@ -131,15 +129,12 @@ export default function ActionRail({
       <Panel title={t("k_d9a484d062")} icon={MessageSquareQuote}>
         <div className="space-y-2 p-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
           <p>
-            读到的结论想深挖，文章底部的
-            <button type="button" onClick={onAskAboutFeed} className="text-primary underline-offset-2 hover:underline">{t("k_8ba55fde52")}</button>
-            会带着这篇的标题与栏目进智能问数，不用你复述背景。
-          </p>
+            {tr('k_4266322c4c')}<button type="button" onClick={onAskAboutFeed} className="text-primary underline-offset-2 hover:underline">{t("k_8ba55fde52")}</button>
+            {tr('k_baad992ca2')}</p>
           <p className="flex items-start gap-1.5 rounded-lg border bg-muted/40 p-2.5">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" />
             <span>
-              资讯区只呈现<b className="text-foreground">{t("k_176a2eb4eb")}</b>内容；草稿与待审只出现在有编辑权、审核权的人的「待我处理」里。
-            </span>
+              {tr('k_6588cc1a72')}<b className="text-foreground">{t("k_176a2eb4eb")}</b>{tr('k_ff10b3a367')}</span>
           </p>
         </div>
       </Panel>

@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { t } from '@/i18n/runtime';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -35,11 +34,12 @@ import {
   type PrecheckPayload, type SuiteMeta,
 } from './eval/shared';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /** 接口返回结构异常的显式暴露：代理漏配会被 SPA 兑底成 HTML，不能当成空数据。 */
 function expectObject(payload: any, key: string, what: string): any {
   if (!payload || typeof payload[key] !== 'object') {
-    throw new Error(`接口返回结构异常（期望 ${key} 对象，实际 ${typeof payload}）：${what}`);
+    throw new Error(tr('k_f1c3749a71', { p0: key, p1: typeof payload, p2: what }));
   }
   return payload;
 }
@@ -63,12 +63,12 @@ export default function EvalManagement() {
     try {
       const { data } = await client.get('/eval/suites');
       if (!data || !Array.isArray(data.suites)) {
-        throw new Error('接口返回结构异常（期望 suites 数组）。多半是 /api/eval 代理未配置。');
+        throw new Error(tr('k_1635f6aaac'));
       }
       setSuites(data.suites);
       setCapabilities(Array.isArray(data.capabilities) ? data.capabilities : []);
     } catch (e: any) {
-      const msg = e.message || e.response?.data?.detail || '加载评测层定义失败';
+      const msg = e.message || e.response?.data?.detail || tr('k_55a5fb288c');
       setError(msg);
       toast.error(msg);
     }
@@ -80,10 +80,10 @@ export default function EvalManagement() {
       const { data } = await client.get('/eval/cases', {
         params: { suite: suiteFilter, include_inactive: true },
       });
-      setCases(expectList(data, '评测用例'));
+      setCases(expectList(data, tr('k_c4819b2d07')));
       setError('');
     } catch (e: any) {
-      const msg = e.message || e.response?.data?.detail || '加载用例失败';
+      const msg = e.message || e.response?.data?.detail || tr('k_4d14eab7ca');
       setError(msg);
       toast.error(msg);
     } finally {
@@ -94,18 +94,18 @@ export default function EvalManagement() {
   const loadRuns = useCallback(async () => {
     try {
       const { data } = await client.get('/eval/runs', { params: { limit: 50 } });
-      setRuns(expectList(data, '评测运行记录'));
+      setRuns(expectList(data, tr('k_408cd702ca')));
     } catch (e: any) {
-      toast.error(e.message || e.response?.data?.detail || '加载运行记录失败');
+      toast.error(e.message || e.response?.data?.detail || t('k_21ad12cf48'));
     }
   }, []);
 
   const loadPrecheck = useCallback(async () => {
     try {
       const { data } = await client.get('/eval/precheck');
-      setPrecheck(expectObject(data, 'suites', '发布前检查'));
+      setPrecheck(expectObject(data, 'suites', tr('k_ebd3709151')));
     } catch (e: any) {
-      toast.error(e.message || e.response?.data?.detail || '加载发布前检查失败');
+      toast.error(e.message || e.response?.data?.detail || t('k_22150019be'));
     }
   }, []);
 
@@ -115,16 +115,16 @@ export default function EvalManagement() {
       setCells(Array.isArray(data?.cells) ? data.cells : []);
     } catch (e: any) {
       // 矩阵拉不到时概览会空白，必须显式告知，不能让"没数据"看起来像"没缺口"
-      toast.error(e.message || e.response?.data?.detail || '加载覆盖矩阵失败');
+      toast.error(e.message || e.response?.data?.detail || t('k_3e0d5aa0cd'));
     }
   }, []);
 
   const loadGate = useCallback(async () => {
     try {
       const { data } = await client.get('/eval/gate');
-      setGate(expectList(data, '门禁策略'));
+      setGate(expectList(data, tr('k_743733b78c')));
     } catch (e: any) {
-      toast.error(e.message || e.response?.data?.detail || '加载门禁策略失败');
+      toast.error(e.message || e.response?.data?.detail || t('k_426aa5bc7b'));
     }
   }, []);
 
@@ -150,10 +150,10 @@ export default function EvalManagement() {
         max_live_cases_per_run: row.max_live_cases_per_run ?? null,
         enabled: Number(row.enabled),
       });
-      toast.success('门禁阈值已更新，结论按新阈值即时重算');
+      toast.success(t('k_dea608d178'));
       loadPrecheck(); loadGate();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存门禁阈值失败');
+      toast.error(e.response?.data?.detail || t('k_cac9742148'));
     }
   };
 
@@ -162,25 +162,21 @@ export default function EvalManagement() {
       <div className="flex items-center gap-2">
         <FlaskConical className="h-5 w-5" />
         <h1 className="text-lg font-semibold">{t("k_7ef657c48e")}</h1>
-        <Badge variant="outline" className="text-[10px]">层 × 能力契约 · 双口径门禁</Badge>
+        <Badge variant="outline" className="text-[10px]">{t('k_df39a57c25')}</Badge>
         <div className="flex-1" />
         <Link to="/system/evolution">
           <Button variant="outline" size="sm">
-            <Dna className="h-3.5 w-3.5 mr-1" />进化中心
+            <Dna className="h-3.5 w-3.5 mr-1" />{t('k_849e449611')}
           </Button>
         </Link>
         <Button variant="outline" size="sm" onClick={refreshAll}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
+          <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_38108eaa1d')}
         </Button>
       </div>
 
       <p className="text-xs text-muted-foreground leading-relaxed">
-        四个被测层：<b>{t("k_74dab54146")}</b>（跑 mock 目录，只验 planner 规则回归，
-        <b>{t("k_c4aa974b5b")}</b>）、<b>{t("k_1cc9c0c911")}</b>（真实 binding/字典/敏感与 RLS 基线，
-        intent→闸门改写，<b>{t("k_f80c1d9fec")}</b>）、<b>{t("k_84ab44bf9a")}</b>、
-        <b>{t("k_7a043aa209")}</b>（trace=自录回放 / handler=真实工具 / live=真实模型）。
-        通过与否由确定性断言决定，LLM 评分只辅助评价解释质量；
-        发布结论看 <b>release_ok</b>（相对未回退 AND 达绝对下限）。
+        {tr('k_42a88e92bb')}<b>{t("k_74dab54146")}</b>{tr('k_bb5141bbec')}{' '}<b>{t("k_c4aa974b5b")}</b>）、<b>{t("k_1cc9c0c911")}</b>{tr('k_02049f0530')}<b>{t("k_f80c1d9fec")}</b>）、<b>{t("k_84ab44bf9a")}</b>、
+        <b>{t("k_7a043aa209")}</b>{tr('k_812930da07')}{' '}<b>release_ok</b>{t('k_20fe802002')}
       </p>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -222,11 +218,7 @@ export default function EvalManagement() {
               <Badge variant="outline" className="text-[10px]">{t("k_a2f1012ebd")}</Badge>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              每条策略同时卡两件事：正确率不得低于 <code>floor_accuracy</code>，
-              活跃用例数不得低于 <code>min_cases</code>（后者专拦"删/退役难用例刷通过率"）。
-              某层没有任何启用策略时按<b>{t("k_ea6a4c3883")}</b>处理，不会当作通过。
-              阈值不由 AI 放宽：权限码 <code>eval:gate</code> 为 ai_access=none。
-            </p>
+              {tr('k_a1f2e07174')}{' '}<code>floor_accuracy</code>{tr('k_1b8729d193')}{' '}<code>min_cases</code>{tr('k_7a372c7920')}<b>{t("k_ea6a4c3883")}</b>{tr('k_a1baf62722')}{' '}<code>eval:gate</code> {tr('k_c7aa2164f6')}{' '}</p>
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40">
@@ -241,7 +233,7 @@ export default function EvalManagement() {
               <TableBody>
                 {gate.length === 0 && (
                   <TableRow><TableCell colSpan={6} className="text-center text-xs text-muted-foreground p-4">
-                    无策略 —— 所有层都会被判门禁失效
+                    {t('k_6ce75fc96f')}
                   </TableCell></TableRow>
                 )}
                 {gate.map(row => (
@@ -264,6 +256,7 @@ function GateRow({ row, capabilities, suites, onSave }: {
   suites: SuiteMeta[];
   onSave: (r: any) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [draft, setDraft] = useState(row);
   const [busy, setBusy] = useState(false);
   useEffect(() => setDraft(row), [row]);
@@ -293,14 +286,14 @@ function GateRow({ row, capabilities, suites, onSave }: {
       </TableCell>
       <TableCell className="text-xs p-2">
         <Badge variant={Number(draft.enabled) ? 'secondary' : 'outline'} className="text-[9px]">
-          {Number(draft.enabled) ? '启用' : '停用'}
+          {Number(draft.enabled) ? t('k_d4e9ca3dd4') : t('k_5c56a88945')}
         </Badge>
       </TableCell>
       <TableCell className="p-1.5">
         <Button size="sm" variant={dirty ? 'default' : 'ghost'}
           className="h-6 text-[11px]" disabled={!dirty || busy}
           onClick={async () => { setBusy(true); try { await onSave(draft); } finally { setBusy(false); } }}>
-          {busy ? '保存中…' : dirty ? '保存' : '已保存'}
+          {busy ? t('k_6644f06197') : dirty ? t('k_fadf24dbc5') : t('k_f8dfedcd8a')}
         </Button>
       </TableCell>
     </TableRow>

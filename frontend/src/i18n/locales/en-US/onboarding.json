@@ -1,0 +1,140 @@
+{
+  "guide": {
+    "home": {
+      "label": "Home overview",
+      "steps": {
+        "ask": {
+          "title": "Ask directly",
+          "body": "Type your question here and press Enter to jump into Ask Data with it; on the right is the company profile, where you can see our business focus plus the sites and data sources connected to the platform."
+        },
+        "feed": {
+          "title": "Latest insights",
+          "body": "Everything published lives here: filter by section or tag, search titles and summaries, and open a card to read. Only reviewed and published content appears — drafts never show up."
+        },
+        "quick": {
+          "title": "Module shortcuts",
+          "body": "Shortcuts to what you use most, shown by your permissions. Entries you cannot see mean your role has no access (the header module switcher follows the same rules)."
+        },
+        "releaseNotes": {
+          "title": "Release notes",
+          "body": "See what each release adds and improves here in the header. A red dot means you have unread notes."
+        },
+        "moduleSwitcher": {
+          "title": "Module switcher",
+          "body": "Switch between Home / Workspace / Data Platform / System Config here — no need to go back and hunt for the entry."
+        },
+        "theme": {
+          "title": "Theme",
+          "body": "Colors and chart styles follow the theme; switching applies platform-wide to Ask Data, dashboards and big screens."
+        }
+      }
+    },
+    "workspace": {
+      "label": "Workspace (daily analytics)",
+      "steps": {
+        "selector": {
+          "title": "Switch workspace",
+          "body": "When you have several workspaces, switch them here (dashboards and conversations are grouped per workspace). With only one workspace this control is hidden. Files produced in conversations are backed up to your account, so they survive node changes."
+        },
+        "chat": {
+          "title": "Ask Data",
+          "body": "Ask in business language without writing SQL; metric definitions follow the modeled metrics on the platform."
+        },
+        "dashboards": {
+          "title": "Dashboards",
+          "body": "Your day-to-day entry: it lists dashboard groups you can view; open a card to drill into the actual dashboards."
+        },
+        "input": {
+          "title": "Question box",
+          "body": "Type your data question here and optionally attach files; pick the model, harness and site above before sending."
+        },
+        "reports": {
+          "title": "Reports",
+          "body": "Reports produced by conversations and scheduled tasks are collected here by version, ready to edit or share."
+        }
+      }
+    },
+    "data": {
+      "label": "Data Platform (modeling & governance)",
+      "steps": {
+        "datasources": {
+          "title": "Data sources",
+          "body": "Connected data sources and their physical metadata are maintained here — the prerequisite for modeling."
+        },
+        "ontology": {
+          "title": "Ontology modeling",
+          "body": "Business objects, properties and relationships are modeled here; it is the single authoritative semantic layer for ChatBI."
+        },
+        "metrics": {
+          "title": "Metrics & dimensions",
+          "body": "The authoritative list of metric definitions and dimension dictionaries; aliases and enums are maintained in one place."
+        },
+        "datasets": {
+          "title": "Datasets",
+          "body": "Turn modeled objects into reusable data products that dashboards and reports can reference."
+        },
+        "sensitive": {
+          "title": "Security settings",
+          "body": "Sensitive-field baselines and row-level policies are configured here and apply to everyone."
+        }
+      }
+    },
+    "system": {
+      "label": "System Config (admin)",
+      "steps": {
+        "models": {
+          "title": "Model center",
+          "body": "Available models and harness configuration live here, deciding which model Ask Data and AS-BOTs run on."
+        },
+        "roles": {
+          "title": "Roles & permissions",
+          "body": "Menu and feature permission codes plus data source grants are configured here; page entries show or hide accordingly."
+        },
+        "releaseNotes": {
+          "title": "Release notes",
+          "body": "Register features and updates here when releasing; marking \"major release\" re-triggers the tour for every user."
+        },
+        "settings": {
+          "title": "System settings",
+          "body": "Change the app name, logo and other brand details here — the header and login page follow immediately."
+        }
+      }
+    }
+  },
+  "welcome": {
+    "guideOption": "Welcome overview (first login / upgrade)",
+    "titleUpgrade": "The system was updated — here is what changed",
+    "titleFirst": "Welcome to AI-DataHub",
+    "descUpgradeWithGuide": "Below is what this release adds and improves; read the notes only, or let the tour walk you through them step by step.",
+    "descUpgrade": "Below is what this release adds and improves.",
+    "descGuide": "Take a minute to learn this page: \"{{label}}\" has {{count}} steps that walk through its entries.",
+    "descFirst": "Take a minute to learn how this platform works.",
+    "currentPageGuide": "Tour for this page",
+    "stepsMeta": "{{count}} steps · about {{seconds}}s",
+    "viewNewFeatureGuide": "View the feature tour",
+    "skipAll": "Skip all tours (no more auto prompts; reopen anytime)",
+    "skipAllTitle": "No more auto prompts; reopen anytime from the user menu \"Product tour\"",
+    "later": "Later",
+    "start": "Start tour"
+  },
+  "tour": {
+    "ariaLabel": "{{label}} tour",
+    "defaultLabel": "Product tour",
+    "stepOf": "Step {{index}}/{{total}}",
+    "next": "Next",
+    "finish": "Done",
+    "previous": "Back",
+    "skipStep": "Skip this step",
+    "skipGuide": "Skip this tour",
+    "skipGuideEsc": "Skip this tour (Esc)",
+    "muteAll": "Don't auto-open",
+    "muteAllTitle": "No more auto prompts; reopen anytime from the user menu \"Product tour\"",
+    "close": "Close",
+    "missingWorkspace": "Current workspace is unknown, cannot open that page",
+    "missingTarget": "Entry \"{{title}}\" not found (page changed or window too small); this step was skipped",
+    "finishIncomplete": "This tour was not completed (page elements did not appear); retry from the user menu \"Product tour\"",
+    "finishDone": "Tour completed; reopen anytime from the user menu \"Product tour\"",
+    "noGuideHere": "There is no tour for this page. Open the product tour on Home / Workspace / Data Platform / System Config pages.",
+    "saveFailed": "The operation was not saved and will prompt again next time ({{detail}})"
+  }
+}

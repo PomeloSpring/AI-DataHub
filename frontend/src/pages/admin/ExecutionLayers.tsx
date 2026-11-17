@@ -13,6 +13,7 @@ import { toast } from '@/lib/toast';
 import { Plus, Pencil, Trash2, Terminal, Radar, Wrench, RefreshCw } from 'lucide-react';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // 可走 SDK 安全执行链的 CLI 后端（与后端 manager.build_adapter 的接受集一致）
 const SDK_CLI_NAMES = ['qoder', 'claude'];
@@ -48,10 +49,10 @@ interface DiscoveredCLI {
 }
 
 const LAYER_TYPE_LABELS: Record<string, string> = {
-  builtin: '内置 Harness',
-  cli: 'CLI 进程',
-  docker: 'Docker 容器',
-  remote: '远程 Agent',
+  builtin: tr('k_0b2fe2af7d'),
+  cli: tr('k_02f293ca82'),
+  docker: tr('k_3198129589'),
+  remote: tr('k_c9e60093cd'),
 };
 
 /** 自注册层心跳超时窗口(秒),需与后端 EXEC_LAYER_HEARTBEAT_TIMEOUT 保持一致. */
@@ -71,10 +72,10 @@ function relTime(iso?: string): string {
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return iso;
   const diff = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (diff < 60) return `${diff}秒前`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
-  return `${Math.floor(diff / 86400)}天前`;
+  if (diff < 60) return tr('k_2c0e655cd8', { p0: diff });
+  if (diff < 3600) return tr('k_bbb08663b2', { p0: Math.floor(diff / 60) });
+  if (diff < 86400) return tr('k_699a5dbf95', { p0: Math.floor(diff / 3600) });
+  return tr('k_cf2030274a', { p0: Math.floor(diff / 86400) });
 }
 
 const EMPTY_FORM = {
@@ -165,13 +166,13 @@ export default function ExecutionLayers() {
       const found: DiscoveredCLI[] = Array.isArray(data) ? data : [];
       setDiscovered(found);
       if (found.length === 0) {
-        toast.info('未发现已安装的 CLI 工具(qoder)');
+        toast.info(t('k_41ed32a154'));
       } else {
-        toast.success(`发现 ${found.length} 个 CLI 工具`);
+        toast.success(t('k_80508e99bf', { p0: found.length }));
       }
     } catch {
       setDiscovered([]);
-      toast.info('CLI 发现不可用(后端服务未启动或未更新)');
+      toast.info(t('k_de63c42be4'));
     }
     finally { setDiscovering(false); }
   };
@@ -183,7 +184,7 @@ export default function ExecutionLayers() {
       ...EMPTY_FORM,
       name: `cli-${c.name}`,
       display_name: `${c.name} CLI`,
-      description: c.version ? `版本: ${c.version}` : '',
+      description: c.version ? t('k_16b09a4939', { p0: c.version }) : '',
       cli_name: c.name,
       cli_path: c.path,
     });
@@ -197,8 +198,8 @@ export default function ExecutionLayers() {
   };
 
   const handleSave = async () => {
-    if (!form.name) { toast.error('请输入 Harness 名称'); return; }
-    if (form.layer_type === 'cli' && !form.cli_name) { toast.error('请选择 CLI 类型'); return; }
+    if (!form.name) { toast.error(t('k_a5d38e28dd')); return; }
+    if (form.layer_type === 'cli' && !form.cli_name) { toast.error(t('k_c4668e76b0')); return; }
 
     // 轮次上限留空 = 不写该键（后端浅合并会删键 → 回默认 20）。
     // 0 / 负数会被消费点的 `or` 静默回落成 20（配了等于没配），所以在提交前就拦下来
@@ -208,7 +209,7 @@ export default function ExecutionLayers() {
     if (rawRounds !== '') {
       rounds = Number(rawRounds);
       if (!Number.isInteger(rounds) || rounds < MAX_TOOL_ROUNDS_MIN || rounds > MAX_TOOL_ROUNDS_MAX) {
-        toast.error(`单轮工具调用上限必须是 ${MAX_TOOL_ROUNDS_MIN}~${MAX_TOOL_ROUNDS_MAX} 的整数，留空则沿用默认 20 次`);
+        toast.error(t('k_5017aaecde', { p0: MAX_TOOL_ROUNDS_MIN, p1: MAX_TOOL_ROUNDS_MAX }));
         return;
       }
     }
@@ -228,7 +229,7 @@ export default function ExecutionLayers() {
       if (form.env_text) {
         try {
           config.env = JSON.parse(form.env_text);
-        } catch { toast.error('环境变量不是合法 JSON'); return; }
+        } catch { toast.error(t('k_95f82d4d56')); return; }
       } else {
         config.env = null;
       }
@@ -250,15 +251,15 @@ export default function ExecutionLayers() {
     try {
       if (editing) {
         await client.put(`/admin/execution-layers/${editing.id}`, payload);
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await client.post('/admin/execution-layers', payload);
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       closeForm();
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || t('k_6de920b4e4'));
     }
   };
 
@@ -287,23 +288,23 @@ export default function ExecutionLayers() {
   };
 
   const handleDelete = async (l: ExecutionLayer) => {
-    if (l.layer_type === 'builtin') { toast.error('内置 Harness 不可删除'); return; }
-    if (!confirm(`确定删除 Harness「${l.display_name || l.name}」？`)) return;
+    if (l.layer_type === 'builtin') { toast.error(t('k_221d99534a')); return; }
+    if (!confirm(t('k_ffa1a38782', { p0: l.display_name || l.name }))) return;
     try {
       await client.delete(`/admin/execution-layers/${l.id}`);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       load();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '删除失败'); }
+    } catch (e: any) { toast.error(e.response?.data?.detail || t('k_acf0664a54')); }
   };
 
   const handleSetDefault = async (l: ExecutionLayer) => {
-    if (!confirm(`把「${l.display_name || l.name}」设为系统默认 Harness？\n未绑定 Harness 的 AS-BOT 会全部改走这条 Harness（模型通道与计费口径随之变化）。`)) return;
+    if (!confirm(t('k_536b7b6c44', { p0: l.display_name || l.name }))) return;
     try {
       await client.put(`/admin/execution-layers/${l.id}/default`);
-      toast.success('已设为默认 Harness');
+      toast.success(t('k_9980282ead'));
       load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '设置失败');
+      toast.error(e?.response?.data?.detail || t('k_9f96034c4d'));
     }
   };
 
@@ -311,10 +312,10 @@ export default function ExecutionLayers() {
     setTesting(l.id);
     try {
       const { data } = await client.post(`/admin/execution-layers/${l.id}/test`);
-      if (data.success) toast.success(`连通正常: ${data.message || ''}`);
-      else toast.error(`检测失败: ${data.message || '未知错误'}`);
+      if (data.success) toast.success(t('k_83b1294f17', { p0: data.message || '' }));
+      else toast.error(tr('k_6094cb07f3', { p0: data.message || tr('k_974e748456') }));
       load();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '测试失败'); }
+    } catch (e: any) { toast.error(e.response?.data?.detail || t('k_9710d9b9f1')); }
     finally { setTesting(null); }
   };
 
@@ -327,10 +328,10 @@ export default function ExecutionLayers() {
       setLayers(prev => prev.map(x => (x.id === l.id ? { ...x, tools } : x)));
       const src = data?.source === 'cached' ? 'cached' : 'live';
       setToolsSource(prev => ({ ...prev, [l.id]: src }));
-      if (src === 'cached') toast.info(`适配器实询失败,已展示缓存目录 (${tools.length})`);
-      else toast.success(`已刷新工具目录 (${tools.length})`);
+      if (src === 'cached') toast.info(t('k_4a91f59405', { p0: tools.length }));
+      else toast.success(t('k_8d2ac0d1b9', { p0: tools.length }));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '刷新工具失败');
+      toast.error(e.response?.data?.detail || t('k_b7f2967942'));
     } finally { setToolsLoading(null); }
   };
 
@@ -349,20 +350,20 @@ export default function ExecutionLayers() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Terminal className="h-5 w-5" /> Harness 管理
+            <Terminal className="h-5 w-5" /> {t('k_8e981c9905')}
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
-            配置 AI 任务的执行后端：{defaultLayer
+            {tr('k_950cf38fdd')}{defaultLayer
               ? (defaultLayer.display_name || defaultLayer.name)
-              : '未设置默认 Harness'}
+              : t('k_bda0eac9bd')}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleDiscover} disabled={discovering}>
-            <Radar className="h-4 w-4 mr-1" /> {discovering ? '扫描中...' : '发现本机 CLI'}
+            <Radar className="h-4 w-4 mr-1" /> {discovering ? t('k_e6c2d5d31a') : t('k_66f750dd97')}
           </Button>
           <Button size="sm" onClick={() => { setEditing(null); setForm({ ...EMPTY_FORM }); setFormOpen(true); }}>
-            <Plus className="h-4 w-4 mr-1" /> 新建 Harness
+            <Plus className="h-4 w-4 mr-1" /> {t('k_5a9565451e')}
           </Button>
         </div>
       </div>
@@ -388,11 +389,11 @@ export default function ExecutionLayers() {
       <Dialog open={formOpen} onOpenChange={(open) => { if (!open) closeForm(); }}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑 Harness' : '新建 Harness'}</DialogTitle>
+            <DialogTitle>{editing ? t('k_1f5a5939fb') : t('k_5a9565451e')}</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>名称(唯一标识)</Label>
+              <Label>{t('k_80d9b1d24b')}</Label>
               <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="cli-qoder" />
             </div>
             <div className="space-y-1.5">
@@ -441,8 +442,8 @@ export default function ExecutionLayers() {
                     <Select value={form.mode} onValueChange={v => setForm({ ...form, mode: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="process">子进程(命令模板)</SelectItem>
-                        <SelectItem value="sdk">SDK(支持 MCP/Agent 注入)</SelectItem>
+                        <SelectItem value="process">{t('k_af23c2760a')}</SelectItem>
+                        <SelectItem value="sdk">{t('k_996063b4c1')}</SelectItem>
                       </SelectContent>
                     </Select>
                     {form.mode !== 'sdk' && (
@@ -451,13 +452,13 @@ export default function ExecutionLayers() {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <Label>模型(不选则用 CLI 默认)</Label>
+                  <Label>{t('k_5471395f94')}</Label>
                   <Select value={form.model || 'auto'} onValueChange={v => setForm({ ...form, model: v === 'auto' ? '' : v })}>
                     <SelectTrigger>
-                      <SelectValue placeholder={loadingModels ? '加载中...' : 'Auto(默认)'} />
+                      <SelectValue placeholder={loadingModels ? t('k_26b5bd4947') : t('k_e3698b599a')} />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="auto">Auto(默认)</SelectItem>
+                      <SelectItem value="auto">{t('k_e3698b599a')}</SelectItem>
                       {modelOptions.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                     </SelectContent>
                   </Select>
@@ -465,34 +466,34 @@ export default function ExecutionLayers() {
               </div>
               <div className="grid grid-cols-3 gap-4">
                 <div className="space-y-1.5">
-                  <Label>可执行文件路径(留空自动查找)</Label>
+                  <Label>{t('k_5ecd6bc0b7')}</Label>
                   <Input value={form.cli_path} onChange={e => setForm({ ...form, cli_path: e.target.value })} placeholder="/usr/local/bin/qodercli" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>超时(秒)</Label>
+                  <Label>{t('k_1815aff020')}</Label>
                   <Input type="number" value={form.timeout} onChange={e => setForm({ ...form, timeout: e.target.value })} />
                 </div>
                 {/* 轮次上限与超时是一对：上限到点模型仍会产出完整结论 + 可见告警（主动收尾），
                     跑满超时则是被动中止。只抬一个等于白抬，故同排呈现并给出换算建议。 */}
                 <div className="space-y-1.5">
-                  <Label>单轮工具调用上限(次)</Label>
+                  <Label>{t('k_7ead3de995')}</Label>
                   <Input type="number" min={MAX_TOOL_ROUNDS_MIN} max={MAX_TOOL_ROUNDS_MAX}
                     value={form.max_turns} onChange={e => setForm({ ...form, max_turns: e.target.value })}
                     placeholder={t("k_0aae128334")} />
                   <p className="text-xs text-muted-foreground">
-                    留空沿用默认 20 次；建议 ≤ 超时秒数 × 0.8 ÷ 单次取数耗时，调大超时时同步上调。
+                    {t('k_7ade8f4e45')}
                   </p>
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label>附加环境变量 (JSON,可选)</Label>
+                <Label>{t('k_5d8833a95a')}</Label>
                 <Textarea value={form.env_text} onChange={e => setForm({ ...form, env_text: e.target.value })} rows={2} placeholder='{"OPENAI_API_KEY": "..."}' />
               </div>
             </>
           )}
           {/* 权限白名单:可用工具 + 可执行目录(执行层定义级) */}
           <div className="space-y-1.5">
-            <Label>可用工具(空=不限制)</Label>
+            <Label>{t('k_95310ac95e')}</Label>
             <div className="flex flex-wrap gap-1.5">
               {toolCandidates.map(t => {
                 const active = (form.allowed_tools || []).includes(t.name);
@@ -514,10 +515,10 @@ export default function ExecutionLayers() {
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">候选 = 标准工具目录 ∪ 该 Harness 实测工具;最终生效 = 层级 ∩ 工作空间绑定</p>
+            <p className="text-xs text-muted-foreground">{t('k_9827cc939b')}</p>
           </div>
           <div className="space-y-1.5">
-            <Label>可执行目录(每行一个绝对路径,空=回退工作空间目录)</Label>
+            <Label>{t('k_1901b6f960')}</Label>
             <Textarea
               value={form.dirs_text}
               onChange={e => setForm({ ...form, dirs_text: e.target.value })}
@@ -550,38 +551,38 @@ export default function ExecutionLayers() {
                   <span className="ml-2 text-xs text-muted-foreground">({LAYER_TYPE_LABELS[l.layer_type] || l.layer_type})</span>
                   {l.source === 'self' && <Badge variant="secondary" className="ml-2 text-[10px] font-normal">{t("k_e4bcc0de36")}</Badge>}
                   {l.status !== 'active'
-                    ? <span className="ml-2 text-xs text-destructive">● 已停用</span>
+                    ? <span className="ml-2 text-xs text-destructive">{t('k_39db3c3944')}</span>
                     : healthy
-                      ? <span className="ml-2 text-xs text-green-600">● 在线</span>
-                      : <span className="ml-2 text-xs text-amber-600">● 心跳超时</span>}
+                      ? <span className="ml-2 text-xs text-green-600">{t('k_4805c3dc88')}</span>
+                      : <span className="ml-2 text-xs text-amber-600">{t('k_9676a404b3')}</span>}
                   {l.is_default ? (
                     <Badge variant="secondary" className="ml-2 text-[10px] font-normal">{t("k_f2cf3337e4")}</Badge>
                   ) : null}
-                  {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'success' && <span className="ml-2 text-xs text-green-600">✅ 连通</span>}
-                  {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'failed' && <span className="ml-2 text-xs text-destructive">❌ 不可用</span>}
+                  {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'success' && <span className="ml-2 text-xs text-green-600">{t('k_25eaee7c4d')}</span>}
+                  {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'failed' && <span className="ml-2 text-xs text-destructive">{t('k_b9a3e252f0')}</span>}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {l.layer_type === 'cli' && l.config?.cli_name && (
                     <span className="font-mono mr-2">{l.config.cli_path || l.config.cli_name}</span>
                   )}
                   {l.layer_type === 'cli' && l.config?.model && (
-                    <Badge variant="outline" className="mr-2">模型: {l.config.model}</Badge>
+                    <Badge variant="outline" className="mr-2">{t('k_4c9e5363b5', { p0: l.config.model })}</Badge>
                   )}
                   {/* 只在显式配过时显示：未配就是默认 20，逐条挂一个默认值 Badge 没有信息量 */}
                   {l.config?.max_turns != null && (
-                    <Badge variant="outline" className="mr-2">单轮工具调用上限: {l.config.max_turns}</Badge>
+                    <Badge variant="outline" className="mr-2">{t('k_e37d5fe083', { p0: l.config.max_turns })}</Badge>
                   )}
                   {Array.isArray(l.config?.allowed_tools) && l.config.allowed_tools.length > 0 && (
-                    <Badge variant="outline" className="mr-2">工具白名单: {l.config.allowed_tools.length}</Badge>
+                    <Badge variant="outline" className="mr-2">{t('k_289062957c', { p0: l.config.allowed_tools.length })}</Badge>
                   )}
                   {Array.isArray(l.config?.allowed_dirs) && l.config.allowed_dirs.length > 0 && (
-                    <Badge variant="outline" className="mr-2">目录: {l.config.allowed_dirs.length}</Badge>
+                    <Badge variant="outline" className="mr-2">{t('k_14e949d5d4', { p0: l.config.allowed_dirs.length })}</Badge>
                   )}
                   {l.source === 'self' && (
-                    <span className="mr-2">心跳: {l.last_heartbeat_at ? relTime(l.last_heartbeat_at) : '从未'}</span>
+                    <span className="mr-2">{tr('k_9bc74c370a')}{' '}{l.last_heartbeat_at ? relTime(l.last_heartbeat_at) : t('k_337d58e22b')}</span>
                   )}
                   {l.description}
-                  {l.health_check_at && <span className="ml-2">上次检测: {l.health_check_at}</span>}
+                  {l.health_check_at && <span className="ml-2">{t('k_8ea7526d04', { p0: l.health_check_at })}</span>}
                 </div>
                 {l.capabilities && l.capabilities.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1">
@@ -599,12 +600,12 @@ export default function ExecutionLayers() {
                 {!l.is_default && (
                   <Button size="sm" variant="outline" disabled={l.status !== 'active'}
                     onClick={() => handleSetDefault(l)}
-                    title={l.status !== 'active' ? '请先在「编辑」里启用该 Harness，才能设为默认' : '设为默认 Harness'}>
-                    设为默认
+                    title={l.status !== 'active' ? t('k_6a58fdf985') : t('k_fd71d4e7c0')}>
+                    {t('k_536a009a9b')}
                   </Button>
                 )}
                 <Button size="sm" variant="outline" onClick={() => handleTest(l)} disabled={testing === l.id}>
-                  {testing === l.id ? '检测中...' : '测试'}
+                  {testing === l.id ? t('k_84561cc42f') : t('k_db06c78d1e')}
                 </Button>
                 <Button
                   size="sm"
@@ -625,12 +626,12 @@ export default function ExecutionLayers() {
               <div className="mt-2 border-t border-border pt-2 text-xs">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="font-medium text-muted-foreground">
-                    工具目录 {toolCount > 0 ? `(${toolCount})` : ''}
-                    {toolsSource[l.id] && <span className="ml-2 font-normal">· {toolsSource[l.id] === 'live' ? '实时查询' : '缓存快照'}</span>}
+                    {tr('k_1b79d171a2')}{' '}{toolCount > 0 ? `(${toolCount})` : ''}
+                    {toolsSource[l.id] && <span className="ml-2 font-normal">· {toolsSource[l.id] === 'live' ? t('k_9a7686f9e0') : t('k_0283891b9c')}</span>}
                   </span>
                   <Button size="sm" variant="ghost" onClick={() => handleRefreshTools(l)} disabled={toolsLoading === l.id}>
                     <RefreshCw className={`h-3.5 w-3.5 mr-1 ${toolsLoading === l.id ? 'animate-spin' : ''}`} />
-                    {toolsLoading === l.id ? '刷新中...' : '刷新工具'}
+                    {toolsLoading === l.id ? t('k_6441bd2578') : t('k_63c86263c9')}
                   </Button>
                 </div>
                 {toolCount > 0 ? (
@@ -644,7 +645,7 @@ export default function ExecutionLayers() {
                     ))}
                   </div>
                 ) : (
-                  <div className="text-muted-foreground">暂无工具目录,点击「刷新工具」实询适配器</div>
+                  <div className="text-muted-foreground">{t('k_4529488a6c')}</div>
                 )}
               </div>
             )}
@@ -653,7 +654,7 @@ export default function ExecutionLayers() {
         })}
         {!loading && layers.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-12">
-            暂无 Harness,请先执行迁移 SQL 或点击「发现本机 CLI」添加
+            {t('k_c6ea19a000')}
           </div>
         )}
       </div>

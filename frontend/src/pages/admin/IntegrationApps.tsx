@@ -12,7 +12,6 @@ import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import client from '../../api/client';
 import { useTranslation } from 'react-i18next';
-import { t } from '@/i18n/runtime';
 
 interface Application {
   id: number;
@@ -44,6 +43,7 @@ function MultiSelect({
 
 
 }) {
+  const { t } = useTranslation('ui');
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
 
@@ -69,7 +69,7 @@ function MultiSelect({
         onClick={() => setOpen(!open)}
       >
         {selected.length === 0 && (
-          <span className="text-muted-foreground text-sm py-0.5">{placeholder || '请选择'}</span>
+          <span className="text-muted-foreground text-sm py-0.5">{placeholder || t('k_382f4b5559')}</span>
         )}
         {selected.map(val => {
           const opt = options.find(o => o.value === val);
@@ -85,7 +85,7 @@ function MultiSelect({
         <div className="absolute z-50 mt-1 w-full border rounded-md bg-popover shadow-md">
           <div className="p-2 border-b">
             <Input
-              placeholder="搜索..."
+              placeholder={t('k_64e327ed1f')}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               className="h-7 text-xs"
@@ -164,7 +164,7 @@ export default function IntegrationApps() {
       setApps(data.items || []);
       setTotal(data.total || 0);
     } catch {
-      toast.error('加载应用列表失败');
+      toast.error(t('k_f3cb7ef6b4'));
     } finally {
       setLoading(false);
     }
@@ -213,7 +213,7 @@ export default function IntegrationApps() {
 
   const handleSave = async () => {
     if (!formValues.name.trim()) {
-      toast.error('应用名称不能为空');
+      toast.error(t('k_b6cdcb3f82'));
       return;
     }
     try {
@@ -232,42 +232,42 @@ export default function IntegrationApps() {
 
       if (editingApp) {
         await client.put(`/embed/admin/applications/${editingApp.id}`, payload);
-        toast.success('更新成功');
+        toast.success(t('k_55aa6366c0'));
       } else {
         const { data } = await client.post('/embed/admin/applications', payload);
         setNewKey(data.api_key);
         setKeyModalOpen(true);
         setAppKeys(prev => ({ ...prev, [data.id]: data.api_key }));
-        toast.success('创建成功，请保存API Key');
+        toast.success(t('k_b110d33361'));
       }
       setModalOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || t('k_5fa802bef5'));
     }
   };
 
   const handleDelete = async (app: Application) => {
-    if (!confirm(`确定要删除应用"${app.name}"吗？此操作不可撤销。`)) return;
+    if (!confirm(t('k_77f5d47c4f', { p0: app.name }))) return;
     try {
       await client.delete(`/embed/admin/applications/${app.id}`);
-      toast.success('删除成功');
+      toast.success(t('k_0007d170de'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
   const handleRotateKey = async (appId: number) => {
-    if (!confirm('确定要轮换API Key吗？旧Key将立即失效。')) return;
+    if (!confirm(t('k_1c55b83b6a'))) return;
     try {
       const { data } = await client.post(`/embed/admin/applications/${appId}/rotate-key`);
       setNewKey(data.api_key);
       setKeyModalOpen(true);
       setAppKeys(prev => ({ ...prev, [appId]: data.api_key }));
-      toast.success('Key已轮换，请保存新Key');
+      toast.success(t('k_68c5671003'));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '轮换失败');
+      toast.error(e.response?.data?.detail || t('k_5a471cadcb'));
     }
   };
 
@@ -283,7 +283,7 @@ export default function IntegrationApps() {
     if (apiKey) params.set('apiKey', apiKey);
     window.open(`/test/index.html?${params.toString()}`, '_blank');
     if (!apiKey) {
-      toast.warning('未找到该应用的API Key，请先在创建时保存，或重新轮换Key');
+      toast.warning(t('k_095e36bff3'));
     }
   };
 
@@ -291,16 +291,16 @@ export default function IntegrationApps() {
     const newStatus = app.status === 'active' ? 'disabled' : 'active';
     try {
       await client.put(`/embed/admin/applications/${app.id}`, { status: newStatus });
-      toast.success(newStatus === 'active' ? '已启用' : '已禁用');
+      toast.success(newStatus === 'active' ? t('k_53ace4305f') : t('k_0fe5a98e9f'));
       load();
     } catch {
-      toast.error('操作失败');
+      toast.error(t('k_5fa802bef5'));
     }
   };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    toast.success('已复制到剪贴板');
+    toast.success(t('k_4fb42e6eb1'));
   };
 
   const maskKey = (appId: number) => `ck_****${String(appId).slice(-4)}`;
@@ -313,7 +313,7 @@ export default function IntegrationApps() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Input
-            placeholder="搜索应用..."
+            placeholder={t('k_86cf57819d')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && load(1)}
@@ -324,7 +324,7 @@ export default function IntegrationApps() {
           </Button>
         </div>
         <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-2" />新建应用
+          <Plus className="h-4 w-4 mr-2" />{t('k_6638cae28f')}
         </Button>
       </div>
 
@@ -358,7 +358,7 @@ export default function IntegrationApps() {
                     </td>
                     <td className="p-3">
                       <Badge variant={app.status === 'active' ? 'default' : 'secondary'}>
-                        {app.status === 'active' ? '启用' : '禁用'}
+                        {app.status === 'active' ? t('k_d4e9ca3dd4') : t('k_be70be5a2e')}
                       </Badge>
                     </td>
                     <td className="p-3">
@@ -380,7 +380,7 @@ export default function IntegrationApps() {
                           })
                       }
                     </td>
-                    <td className="p-3">{app.rate_limit}次/分</td>
+                    <td className="p-3">{t('k_65d6797da4', { p0: app.rate_limit })}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-1">
                         <Button variant="ghost" size="sm" onClick={() => openEdit(app)} title={t("k_a7f814c0a4")}>
@@ -389,7 +389,7 @@ export default function IntegrationApps() {
                         <Button variant="ghost" size="sm" onClick={() => handleRotateKey(app.id)} title={t("k_0e7ba9d312")}>
                           <Key className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleToggleStatus(app)} title={app.status === 'active' ? '禁用' : '启用'}>
+                        <Button variant="ghost" size="sm" onClick={() => handleToggleStatus(app)} title={app.status === 'active' ? t('k_be70be5a2e') : t('k_d4e9ca3dd4')}>
                           <Shield className="h-4 w-4" />
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => handlePreview(app)} title={t("k_3a5a1f5a8b")}>
@@ -426,11 +426,11 @@ export default function IntegrationApps() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editingApp ? '编辑应用' : '新建应用'}</DialogTitle>
+            <DialogTitle>{editingApp ? t('k_396fb46d83') : t('k_6638cae28f')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <Label>应用名称 *</Label>
+              <Label>{t('k_bfda9af938')}</Label>
               <Input value={formValues.name} onChange={(e) => setFormValues(v => ({ ...v, name: e.target.value }))} placeholder={t("k_1d3d40d3b8")} />
             </div>
             <div>
@@ -449,7 +449,7 @@ export default function IntegrationApps() {
               <Input type="number" value={formValues.rate_limit} onChange={(e) => setFormValues(v => ({ ...v, rate_limit: Number(e.target.value) }))} />
             </div>
             <div>
-              <Label>可访问仪表盘（留空=全部）</Label>
+              <Label>{t('k_e8c9e2a95a')}</Label>
               <MultiSelect
                 options={dashboardOptions}
                 selected={selectedDashboards}
@@ -458,7 +458,7 @@ export default function IntegrationApps() {
               />
             </div>
             <div>
-              <Label>可查询数据表（留空=不限制）</Label>
+              <Label>{t('k_7d3eff8c89')}</Label>
               <MultiSelect
                 options={tableOptions}
                 selected={selectedTables}
@@ -469,7 +469,7 @@ export default function IntegrationApps() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave}>{editingApp ? '保存' : '创建'}</Button>
+            <Button onClick={handleSave}>{editingApp ? t('k_fadf24dbc5') : t('k_fcbd093292')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -483,7 +483,7 @@ export default function IntegrationApps() {
           <div className="space-y-4 py-4">
             <div className="p-4 bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-lg">
               <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2">
-                ⚠️ 请立即保存此API Key，关闭后将无法再次查看。
+                {t('k_6ccb591fa3')}
               </p>
               <div className="flex items-center gap-2">
                 <code className="flex-1 p-2 bg-background rounded text-sm break-all">{newKey}</code>
@@ -507,7 +507,7 @@ export default function IntegrationApps() {
           </div>
           <DialogFooter>
             <Button onClick={() => { setKeyModalOpen(false); copyToClipboard(newKey); }}>
-              复制并关闭
+              {t('k_c4519cdc3e')}
             </Button>
           </DialogFooter>
         </DialogContent>

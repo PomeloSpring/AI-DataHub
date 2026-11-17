@@ -16,6 +16,8 @@ import { contentApi, contentError, VERSIONING_HINTS, VERSIONING_LABELS,
   type GateItem, type RevisionItem } from '@/api/content';
 import ArticleFiles from './ArticleFiles';
 import { ErrorBanner, GateList, NoticeBanner, useTaxonomy } from './shared';
+import { t as tr } from '@/i18n/runtime';
+import { useTranslation } from 'react-i18next';
 
 const NONE = '__none__';
 
@@ -65,6 +67,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
   onOpenChange: (v: boolean) => void;
   onSaved: (article: ContentArticle, note: string) => void;
 }) {
+  const { t } = useTranslation('ui');
   const { categories, tags: vocab } = useTaxonomy();
   const [form, setForm] = useState<DraftForm>(EMPTY);
   const [version, setVersion] = useState<number | undefined>(undefined);
@@ -148,8 +151,8 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
     setError(''); setNotice(''); setHard([]); setWarns([]);
     try {
       const saved = (editing && article
-        ? await contentApi.update(article.slug, buildPayload(submit ? '提交审核前的最后一次保存' : '编辑草稿'))
-        : await contentApi.create(buildPayload('新建草稿'))
+        ? await contentApi.update(article.slug, buildPayload(submit ? tr('k_a204e09c04') : tr('k_e53cd8aa36')))
+        : await contentApi.create(buildPayload(tr('k_b127f2bb81')))
       ).data;
       setArticle(saved);
       setVersion(saved.version);
@@ -160,11 +163,11 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
       } else {
         const next = (saved.kind === 'file' && !(saved.files?.length))
           // 门禁会因 file_missing 硬阻断提交，先把下一步说清，不让用户去撞 422
-          ? ' 下一步：在下方附件区上传文件（附件形态没文件时不能提交审核）。'
+          ? t('k_6e3e4c9138')
           : '';
-        setNotice((editing ? '草稿已保存。线上版本没有被改动。' : '草稿已创建。保存草稿不会影响门户。') + next);
+        setNotice((editing ? t('k_ccb0e902cb') : t('k_b02bdd0ffb')) + next);
       }
-      onSaved(saved, submit ? '已提交审核' : '已保存草稿');
+      onSaved(saved, submit ? t('k_792e1c4f3f') : t('k_391772f9ca'));
       return true;
     } catch (err) {
       // 409 是并发信号：ErrorBanner 的「重试」就是重新加载当前稿，不做静默重试覆盖
@@ -182,11 +185,11 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{editing ? '编辑内容' : '新建内容'}</DialogTitle>
+          <DialogTitle>{editing ? t('k_0f2061105e') : t('k_f048c7b9dc')}</DialogTitle>
           <DialogDescription>
             {article?.is_live
-              ? '这篇已在线上。此处的改动只生成新的草稿版本，需要重新审核并发布才会替换线上正文。'
-              : '保存为草稿，不会出现在门户里；提交审核并通过后才能发布。'}
+              ? t('k_3f0ef7e451')
+              : t('k_2cc5b850f8')}
           </DialogDescription>
         </DialogHeader>
 
@@ -198,45 +201,44 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="ce-title">{"标题"}</Label>
-              <Input id="ce-title" value={form.title} onChange={e => patch({ title: e.target.value })} placeholder={"会同时作为门户卡片与详情页的标题"} />
+              <Label htmlFor="ce-title">{t('k_748d7dc7e3')}</Label>
+              <Input id="ce-title" value={form.title} onChange={e => patch({ title: e.target.value })} placeholder={t('k_2709e72d88')} />
             </div>
 
             <div className="space-y-1.5">
-              <Label>{"栏目"}</Label>
+              <Label>{t('k_a1e7989cc1')}</Label>
               <Select value={form.category} onValueChange={v => patch({ category: v })}>
-                <SelectTrigger aria-label={"选择栏目"}><SelectValue placeholder={"选择栏目"} /></SelectTrigger>
+                <SelectTrigger aria-label={t('k_1c5c02cd20')}><SelectValue placeholder={t('k_1c5c02cd20')} /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NONE}>{"请选择…"}</SelectItem>
+                  <SelectItem value={NONE}>{t('k_fc728855a6')}</SelectItem>
                   {categories.map(c => (
                     <SelectItem key={c.key} value={c.key}>{c.icon ? `${c.icon} ` : ''}{c.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">{"栏目清单来自「栏目与标签」页，这里不硬编码。"}</p>
+              <p className="text-[11px] text-muted-foreground">{t('k_358f2c0a47')}</p>
             </div>
 
             <div className="space-y-1.5">
-              <Label>{"内容形态"}</Label>
+              <Label>{t('k_81686ac9e4')}</Label>
               <Select value={form.kind} onValueChange={v => patch({ kind: v as DraftForm['kind'] })}>
-                <SelectTrigger aria-label={"选择内容形态"}><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label={t('k_ae09774fa9')}><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="markdown">{"站内正文"}</SelectItem>
-                  <SelectItem value="html">{"HTML 版式（时间轴/卡片这类富排版）"}</SelectItem>
-                  <SelectItem value="link">{"外链（原文在外部站点）"}</SelectItem>
-                  <SelectItem value="file">{"附件（Word / PPT / Excel / PDF / HTML）"}</SelectItem>
+                  <SelectItem value="markdown">{t('k_7d99f875bc')}</SelectItem>
+                  <SelectItem value="html">{t('k_e8daa96df9')}</SelectItem>
+                  <SelectItem value="link">{t('k_41e16d8b16')}</SelectItem>
+                  <SelectItem value="file">{t('k_b36b591ff8')}</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                附件只给下载、不做站内预览。「提交到内容管理审核」入口在
-                「工作空间 → 报告中心」的报告卡片上（复制正文成站内版式，不搬报表快照）。
+                {t('k_2b2462de63')}
               </p>
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>{"版本策略（历史期次给不给读者看）"}</Label>
+              <Label>{t('k_351393143b')}</Label>
               <Select value={form.versioning} onValueChange={v => patch({ versioning: v as DraftForm['versioning'] })}>
-                <SelectTrigger id="ce-versioning" aria-label={"选择版本策略"}><SelectValue /></SelectTrigger>
+                <SelectTrigger id="ce-versioning" aria-label={t('k_7e0c30c4fd')}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {(Object.keys(VERSIONING_LABELS) as ArticleVersioning[]).map(v => (
                     <SelectItem key={v} value={v}>{VERSIONING_LABELS[v]}</SelectItem>
@@ -244,51 +246,47 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                {VERSIONING_HINTS[form.versioning]}。
-                {/* 开关只收读者展示面：这句话必说，否则有人会以为勾上「只保留最新」就删了旧内容 */}
-                选「只保留最新版本」不删任何数据：已发布期次、审核流水与「切换展示版本」都还在，
-                改回「保留历史期次」即恢复可见。
-              </p>
+                {t('k_020b743533', { p0: VERSIONING_HINTS[form.versioning] })}</p>
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="ce-summary">{"摘要"}</Label>
-              <Textarea id="ce-summary" rows={2} value={form.summary} onChange={e => patch({ summary: e.target.value })} placeholder={"一两句说清这篇讲什么，卡片上只显示这段"} />
+              <Label htmlFor="ce-summary">{t('k_46d4c1b4e4')}</Label>
+              <Textarea id="ce-summary" rows={2} value={form.summary} onChange={e => patch({ summary: e.target.value })} placeholder={t('k_32321190a9')} />
             </div>
 
             {form.kind === 'link' && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label htmlFor="ce-link">{"原文地址"}</Label>
+                  <Label htmlFor="ce-link">{t('k_47c5285137')}</Label>
                   <Input id="ce-link" value={form.link_url} onChange={e => patch({ link_url: e.target.value })} placeholder="https://…" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="ce-link-label">{"按钮文案"}</Label>
-                  <Input id="ce-link-label" value={form.link_label} onChange={e => patch({ link_label: e.target.value })} placeholder={"如「前往厂商发布页」"} />
+                  <Label htmlFor="ce-link-label">{t('k_ead8c81324')}</Label>
+                  <Input id="ce-link-label" value={form.link_label} onChange={e => patch({ link_label: e.target.value })} placeholder={t('k_59fd26db56')} />
                 </div>
               </div>
             )}
 
             {form.kind !== 'link' && (
               <div className="space-y-1.5">
-                <Label htmlFor="ce-body">{form.kind === 'file' ? '导读正文（选填，Markdown）'
-                  : form.kind === 'html' ? '正文（HTML）' : '正文（Markdown）'}</Label>
+                <Label htmlFor="ce-body">{form.kind === 'file' ? t('k_55ae896b4c')
+                  : form.kind === 'html' ? t('k_dda10acf10') : t('k_4310f19b35')}</Label>
                 <Textarea
                   id="ce-body"
                   rows={16}
                   value={form.body}
                   onChange={e => patch({ body: e.target.value })}
                   placeholder={form.kind === 'html'
-                    ? '<section style="display:grid;gap:12px">…</section>\n\n只保留排版标签与 style/class/href；颜色请用 hsl(var(--primary)) 这类主题变量，别写死色值。'
-                    : '# 小标题\n\n正文支持 Markdown。数值请写清来源，不要留【待填】。'}
+                    ? t('k_3002ea78e6')
+                    : t('k_9a2f22d39f')}
                   className="font-mono text-xs leading-6"
                 />
                 <p className="text-[11px] text-muted-foreground">
                   {form.kind === 'html'
                     // 渲染侧白名单与入库门禁同源（HtmlArticle.tsx / content_service.HTML_UNSAFE_RE）：
                     // 写进去就存不下，比上线后渲染缺块好得多
-                    ? 'HTML 正文里的 script/iframe/style 块、事件属性（onclick 等）与 javascript: 链接会被提交门禁硬拦；版式请写在元素 style 属性里。'
-                    : '带「【待填」的占位、数据源/主机/连接串等内部标识会被提交门禁硬阻断。'}
+                    ? t('k_bc3df418ac')
+                    : t('k_dc3eeeca84')}
                 </p>
               </div>
             )}
@@ -306,9 +304,9 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <Label>{"标签（从受控词表选择，不支持自由输入）"}</Label>
+              <Label>{t('k_97decbb7f1')}</Label>
               <div className="flex flex-wrap gap-1.5">
-                {vocab.length === 0 && <p className="text-xs text-muted-foreground">{"词表还是空的，请先去「栏目与标签」建标签。"}</p>}
+                {vocab.length === 0 && <p className="text-xs text-muted-foreground">{t('k_fea2444d2e')}</p>}
                 {vocab.map(t => (
                   <button
                     key={t.tag}
@@ -322,7 +320,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                       ${!t.is_active ? 'line-through opacity-60' : ''}`}
                   >
                     {t.tag}
-                    {!t.is_active && <span className="ml-1 text-[10px] text-muted-foreground">{"已停用"}</span>}
+                    {!t.is_active && <span className="ml-1 text-[10px] text-muted-foreground">{tr('k_6c7dcbb73a')}</span>}
                   </button>
                 ))}
               </div>
@@ -330,28 +328,28 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
 
             <div className="space-y-2 sm:col-span-2">
               <div className="flex items-center justify-between">
-                <Label>{"引用出处"}</Label>
+                <Label>{t('k_b2fc15da9e')}</Label>
                 <Button size="sm" variant="outline" onClick={() => patch({ refs: [...form.refs, { title: '', url: '' }] })}>
-                  <Plus className="mr-1 h-3.5 w-3.5" />加一条
+                  <Plus className="mr-1 h-3.5 w-3.5" />{t('k_8e61c42134')}
                 </Button>
               </div>
               {form.refs.length === 0 && (
                 <p className="text-xs text-muted-foreground">
-                  正文引用外部文献/标准时必填。全部数字都是自己公司产出的可以留空（提交时会以软提醒形式让审核人确认）。
+                  {t('k_eabaa04acc')}
                 </p>
               )}
               <div className="space-y-2">
                 {form.refs.map((r, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <Input
-                      className="flex-1" value={r.title} placeholder={"文献/标准名称"}
+                      className="flex-1" value={r.title} placeholder={t('k_d561736bc5')}
                       onChange={e => patch({ refs: form.refs.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })}
                     />
                     <Input
-                      className="flex-[2]" value={r.url} placeholder="https:// 开头的可核对链接"
+                      className="flex-[2]" value={r.url} placeholder={t('k_fe19889fe1')}
                       onChange={e => patch({ refs: form.refs.map((x, j) => j === i ? { ...x, url: e.target.value } : x) })}
                     />
-                    <Button size="sm" variant="ghost" aria-label={`删除第 ${i + 1} 条出处`} className="text-destructive"
+                    <Button size="sm" variant="ghost" aria-label={t('k_8220fe8194', { p0: i + 1 })} className="text-destructive"
                       onClick={() => patch({ refs: form.refs.filter((_, j) => j !== i) })}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -362,13 +360,13 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
 
             <div className="grid gap-3 sm:grid-cols-3">
               <label className="flex items-center gap-2 text-sm">
-                <Switch checked={form.pinned} onCheckedChange={v => patch({ pinned: v })} />置顶
+                <Switch checked={form.pinned} onCheckedChange={v => patch({ pinned: v })} />{t('k_7bcf18641f')}
               </label>
               <label className="flex items-center gap-2 text-sm">
-                <Switch checked={form.featured} onCheckedChange={v => patch({ featured: v })} />首页推荐
+                <Switch checked={form.featured} onCheckedChange={v => patch({ featured: v })} />{t('k_7646dfe865')}
               </label>
               <div className="space-y-1.5">
-                <Label htmlFor="ce-review">{"建议复核日"}</Label>
+                <Label htmlFor="ce-review">{t('k_f532aef260')}</Label>
                 <Input id="ce-review" type="date" value={form.review_by} onChange={e => patch({ review_by: e.target.value })} />
               </div>
             </div>
@@ -380,7 +378,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                   try { setRevisions((await contentApi.revisions(slug!)).data.items); }
                   catch (err) { setError(contentError(err)); }
                 }}>
-                  <History className="mr-1.5 h-3.5 w-3.5" />{revisions ? '收起版本清单' : '查看版本清单'}
+                  <History className="mr-1.5 h-3.5 w-3.5" />{revisions ? t('k_ee28ab34b2') : t('k_4f70435274')}
                 </Button>
                 {revisions && (() => {
                   // 期次与改稿痕迹分区：混列会让人以为“存一次盘读者就能看一次”
@@ -389,14 +387,14 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                   const row = (r: RevisionItem, releasedRow: boolean) => (
                     <li key={r.id} className="flex items-center gap-2">
                       <span className="w-32 shrink-0 text-muted-foreground">{r.created_at.slice(0, 16).replace('T', ' ')}</span>
-                      <span className="flex-1 truncate">{r.change_note || '（无说明）'}</span>
+                      <span className="flex-1 truncate">{r.change_note || t('k_69d2bebd58')}</span>
                       <span className="text-muted-foreground">{r.created_by}</span>
                       {releasedRow && (
                         <span className="rounded bg-sky-500/15 px-1.5 text-sky-600">
-                          第 {r.release} 期{r.release_label ? `·${r.release_label}` : ''}
+                          {t('k_ba93f835f8', { p0: r.release, p1: r.release_label ? `·${r.release_label}` : '' })}
                         </span>
                       )}
-                      {r.is_live && <span className="rounded bg-emerald-500/15 px-1.5 text-emerald-600">{"线上"}</span>}
+                      {r.is_live && <span className="rounded bg-emerald-500/15 px-1.5 text-emerald-600">{t('k_c3544ecb1d')}</span>}
                     </li>
                   );
                   return (
@@ -404,22 +402,19 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                       {!!released.length && (
                         <div>
                           <p className="text-[11px] font-medium text-muted-foreground">
-                            已发布期次（共 {released.length} 期）
-                          </p>
+                            {t('k_134e008e7b', { p0: released.length })}</p>
                           <ul className="mt-1 space-y-1 text-xs">{released.map(r => row(r, true))}</ul>
                         </div>
                       )}
                       {!!drafts.length && (
                         <div>
-                          <p className="text-[11px] font-medium text-muted-foreground">{"编辑历史（未发布的改稿痕迹）"}</p>
+                          <p className="text-[11px] font-medium text-muted-foreground">{t('k_5983471911')}</p>
                           <ul className="mt-1 space-y-1 text-xs">{drafts.map(r => row(r, false))}</ul>
                         </div>
                       )}
                       <p className="text-[11px] text-muted-foreground">
-                        要把门户展示的那一期切回已发布过的某一期，用列表行上的「切换展示版本」
-                        （需发布权限，并逐条填写原因）；未发布过的版本切不了。
-                        {article?.versioning === 'latest_only'
-                          && ' 当前策略为「只保留最新版本」：下面这些期次在编排面能看到，读者只能看到线上那一期。'}
+                        {t('k_1d10cc5c7a', { p0: article?.versioning === 'latest_only'
+                          && t('k_8c98e98261') })}
                       </p>
                     </div>
                   );
@@ -430,12 +425,12 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
         </div>
 
         <DialogFooter className="gap-2 sm:space-x-0">
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>{"取消"}</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>{t('k_4d0b4688c7')}</Button>
           <Button variant="outline" onClick={() => save(false)} disabled={saving || loading}>
-            <Save className="mr-1.5 h-4 w-4" />{saving ? '保存中' : '保存草稿'}
+            <Save className="mr-1.5 h-4 w-4" />{saving ? t('k_7cbf2d09a3') : t('k_4d7ea6dfa6')}
           </Button>
           <Button onClick={() => save(true)} disabled={saving || loading}>
-            <Send className="mr-1.5 h-4 w-4" />保存并提交审核
+            <Send className="mr-1.5 h-4 w-4" />{t('k_6fa72dae95')}
           </Button>
         </DialogFooter>
       </DialogContent>

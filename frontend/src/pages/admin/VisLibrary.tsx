@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { fetchVisComponentPage, VIS_CATEGORIES, isVisUsable, type VisComponent } from '@/api/visLibrary';
-import { themeOfPackCode } from '@/components/ThemeMenuItems';
+import { themeOfPackCode, themeLabel } from '@/components/ThemeMenuItems';
 import Preview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { CHART_TYPES, CHART_TYPE_CATEGORIES } from '@/components/DashboardChart';
 import { sanitizePack } from '@/lib/dashboardDesign';
@@ -25,12 +25,13 @@ import 'leaflet/dist/leaflet.css';
 import client from '@/api/client';
 import { useAuthStore } from '@/stores/authStore';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const ICONS: Record<string, LucideIcon> = { theme_pack: Layers, chart_style: BarChart3, widget_style: TextCursorInput, screen_background: Image, kpi_card: Gauge,
   layout_template: Grid3x3, decoration_frame: Frame, color_theme: Palette, report_template: FileText, map_tile: Map, motion_preset: Activity };
 const CATEGORIES = VIS_CATEGORIES.map(c => ({ ...c, icon: ICONS[c.id] }));
 // 分类切换条选项（含「全部」，无图标）
-const CATEGORY_TABS: Array<{ id: string; label: string; icon?: LucideIcon }> = [{ id: 'all', label: '全部' }, ...CATEGORIES];
+const CATEGORY_TABS: Array<{ id: string; label: string; icon?: LucideIcon }> = [{ id: 'all', label: tr('k_778fc8f994') }, ...CATEGORIES];
 // 适用类型显示业务名：typeLabelsOf 与预览组件同源（ui-resource-display.md）
 // 预览框统一几何：每张卡片的预览区等高，长短不一就是列表页“乱”的直接原因
 const PREVIEW_SLOT = 'flex h-24 shrink-0 items-center justify-center overflow-hidden border-b bg-muted/20 p-2';
@@ -82,7 +83,7 @@ export default function VisLibrary() {
       setRows(res.items);
     }).catch(() => {
       if (!alive) return;
-      setRows([]); setTotal(0); setError('字模库加载失败，请重试');
+      setRows([]); setTotal(0); setError(t('k_77cca9aebe'));
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [page, pageSize, catFilter, debouncedQ, reloadKey]);
@@ -135,7 +136,7 @@ export default function VisLibrary() {
 
   const save = async () => {
     let sc: any;
-    try { sc = JSON.parse(styleConfig || '{}'); } catch { toast.error('样式配置不是合法 JSON'); return; }
+    try { sc = JSON.parse(styleConfig || '{}'); } catch { toast.error(t('k_ff5cd6b89b')); return; }
     // 报告模板: content/format 存入 style_config
     if (category === 'report_template') {
       sc = { content: reportContent, format: reportFormat };
@@ -147,7 +148,7 @@ export default function VisLibrary() {
     // 动效预设：写入口就拒非法值。存进去却不生效（渲染面只能按默认呈现）是字模库的老毛病
     if (category === 'motion_preset') {
       const errors = validateMotion(sc);
-      if (errors.length) { toast.error(`动效配置不能保存：${errors.join('；')}`); return; }
+      if (errors.length) { toast.error(t('k_660cb0c792', { p0: errors.join('；') })); return; }
     }
     setSaving(true);
     try {
@@ -157,10 +158,10 @@ export default function VisLibrary() {
       };
       if (edit) await client.put(`/vis-library/components/${edit.id}`, payload);
       else await client.post('/vis-library/components', payload);
-      toast.success(edit ? '字模已更新' : '字模已保存');
+      toast.success(edit ? t('k_5e1bb6e4bd') : t('k_fa9b62a11f'));
       setFormOpen(false); load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally { setSaving(false); }
   };
 
@@ -171,20 +172,20 @@ export default function VisLibrary() {
       await client.post(`/vis-library/components/${c.id}/enabled`, { enabled });
       const theme = c.category === 'theme_pack' ? themeOfPackCode(c.code) : undefined;
       toast.success(enabled
-        ? `字模「${c.name}」已启用`
-        : theme ? `已禁用「${c.name}」：系统主题「${theme.label}」同时不可选` : `字模「${c.name}」已禁用`);
+        ? t('k_a9367f7079', { p0: c.name })
+        : theme ? t('k_8bd83771d4', { p0: c.name, p1: themeLabel(theme.id) }) : t('k_437144b1f5', { p0: c.name }));
       setDisableTarget(null); load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '状态更新失败');
+      toast.error(e?.response?.data?.detail || t('k_bdf3369bc6'));
     }
   };
 
   const remove = async (c: VisComponent) => {
     try {
       await client.delete(`/vis-library/components/${c.id}`);
-      toast.success('字模已下架'); setDeleteTarget(null); load();
+      toast.success(t('k_b71e95b4b1')); setDeleteTarget(null); load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '删除失败');
+      toast.error(e?.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -221,9 +222,9 @@ export default function VisLibrary() {
         <div className="min-w-0">
           <div className="mb-2 text-xs tracking-[0.2em] text-muted-foreground">DATAFOUNDRY / VISUAL LIBRARY</div>
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <LayoutTemplate className="h-6 w-6 text-primary" />UI 字模库
+            <LayoutTemplate className="h-6 w-6 text-primary" />{t('k_8b38306417')}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">大屏可复用的“活字”：主题包 / 图表样式 / 控件样式 / 背景 / KPI 卡 / 布局 / 装饰 / 配色 / 地图瓦片 / 动效预设。系统内置仅管理员可改，自定义可回存沉淀。禁用=停用但保留（不可被选用），下架=软删除（历史看板靠快照兜底）。</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t('k_a6b8490fc1')}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={load}><RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />{t("k_38108eaa1d")}</Button>
@@ -247,7 +248,7 @@ export default function VisLibrary() {
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input aria-label={t("k_fb674c7eec")} placeholder={t("k_f2b812540e")} className="h-9 pl-9 text-sm" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <span className="ml-auto text-xs text-muted-foreground">{total} 个字模</span>
+        <span className="ml-auto text-xs text-muted-foreground">{t('k_a39767aaf0', { p0: total })}</span>
       </div>
 
       {error && <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">{error}<Button size="sm" variant="outline" onClick={load}>{t("k_e2d53a6d3a")}</Button></div>}
@@ -264,9 +265,9 @@ export default function VisLibrary() {
                   <h2 className="flex items-center gap-1.5 truncate font-semibold" title={c.name}>
                     {c.name}{!!c.is_builtin && <Lock className="h-3 w-3 shrink-0 text-muted-foreground" />}
                   </h2>
-                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{c.description || '暂无说明'}</p>
+                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{c.description || t('k_67a2199109')}</p>
                 </div>
-                <Badge variant={c.source === 'system' ? 'default' : 'secondary'} className="shrink-0">{c.source === 'system' ? '内置' : '自定义'}</Badge>
+                <Badge variant={c.source === 'system' ? 'default' : 'secondary'} className="shrink-0">{c.source === 'system' ? t('k_09ceea7644') : t('k_c493338e8c')}</Badge>
               </div>
               <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                 {/* 适用类型显示业务名；code 是内部标识，只作次要信息供排查 */}
@@ -280,16 +281,16 @@ export default function VisLibrary() {
               {c.category === 'theme_pack' && <Button variant="outline" size="sm" onClick={() => setViewPack(c)}>{t("k_88ed0bc1d9")}</Button>}
               {c.category === 'map_tile' && <Button variant="outline" size="sm" onClick={() => setPreviewTile(c)}>{t("k_37857853b0")}</Button>}
               <Button variant="outline" size="sm" disabled={!canEdit(c)} onClick={() => openEdit(c)}>
-                <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? '编辑' : '只读'}
+                <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(c) ? t('k_a7f814c0a4') : t('k_85541bd9f7')}
               </Button>
               <Button variant="ghost" size="sm" disabled={!canEdit(c)}
-                aria-label={`${disabled ? '启用' : '禁用'}字模 ${c.name}`}
-                title={disabled ? '启用后重新可被选用' : '停用但保留：不可被选用，可再启用'}
+                aria-label={tr('k_ad7917a50a', { p0: disabled ? tr('k_d4e9ca3dd4') : tr('k_be70be5a2e'), p1: c.name })}
+                title={disabled ? t('k_2008553ba9') : t('k_95935ba2a9')}
                 onClick={() => (disabled ? void toggleEnabled(c, true) : setDisableTarget(c))}
                 className={disabled ? 'text-amber-600 dark:text-amber-400' : ''}>
                 {disabled ? <Power className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
               </Button>
-              <Button variant="ghost" size="sm" disabled={!canEdit(c)} aria-label={`下架字模 ${c.name}`} onClick={() => setDeleteTarget(c)} className="ml-auto text-destructive">
+              <Button variant="ghost" size="sm" disabled={!canEdit(c)} aria-label={t('k_4aea2438f6', { p0: c.name })} onClick={() => setDeleteTarget(c)} className="ml-auto text-destructive">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
@@ -298,7 +299,7 @@ export default function VisLibrary() {
         })}
         {rows.length === 0 && !loading && !error && (
           <div className="col-span-full rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">
-            {debouncedQ ? `没有匹配「${debouncedQ}」的字模` : '该分类暂无字模，可点右上「新建字模」沉淀一套'}
+            {debouncedQ ? t('k_1ef7570f7a', { p0: debouncedQ }) : t('k_c82d38d0b7')}
           </div>
         )}
       </div>
@@ -316,7 +317,7 @@ export default function VisLibrary() {
 
       <Dialog open={!!viewPack} onOpenChange={() => setViewPack(null)}>
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{viewPack?.name} · 整套 UI 字模</DialogTitle><DialogDescription>{t("k_34837876fd")}</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>{t('k_6cf2eeeb3a', { p0: viewPack?.name })}</DialogTitle><DialogDescription>{t("k_34837876fd")}</DialogDescription></DialogHeader>
           <div className="space-y-5 rounded-lg p-4" style={{ backgroundColor: packStyle.background?.backgroundColor, backgroundImage: packStyle.background?.backgroundImage, backgroundSize: packStyle.background?.backgroundSize }}>
             {CHART_TYPE_CATEGORIES.map(group => <section key={group.key}>
               <h3 className="mb-2 text-sm font-medium" style={{ color: packStyle.mode === 'dark' ? '#e2e8f0' : '#334155' }}>{group.label}</h3>
@@ -336,14 +337,14 @@ export default function VisLibrary() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-[560px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{edit ? '编辑字模' : '新建字模'}</DialogTitle>
-            <DialogDescription>样式配置以 JSON 描述,前端按类别解释(背景/卡片/图表样式/控件样式/配色/布局/装饰/动效)。动效预设可用上方旋钮，两段入口写同一份数据。</DialogDescription>
+            <DialogTitle>{edit ? t('k_bdd1e77e4b') : t('k_c57a15a10f')}</DialogTitle>
+            <DialogDescription>{t('k_8e4d8ca6a9')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>{t("k_1be7ae4fc2")}</Label>
-                <Input value={name} onChange={e => setName(e.target.value)} placeholder="如:霓虹渐变柱" />
+                <Input value={name} onChange={e => setName(e.target.value)} placeholder={t('k_f419fc03b6')} />
               </div>
               <div className="space-y-1.5">
                 <Label>{t("k_ed9f6d4d8e")}</Label>
@@ -365,7 +366,7 @@ export default function VisLibrary() {
               return (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <Label>{category === 'widget_style' ? '适用控件类型（可多选）' : '适用图表类型（可多选）'}</Label>
+                    <Label>{category === 'widget_style' ? t('k_4630aeb4ca') : t('k_35036a7e3f')}</Label>
                     {!!chartTypes.length && <Button variant="link" size="sm" className="h-auto p-0 text-[11px]" onClick={() => setChartTypes([])}>{t("k_78326d137d")}</Button>}
                   </div>
                   <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border bg-muted/10 p-2">
@@ -379,16 +380,16 @@ export default function VisLibrary() {
                     })}
                   </div>
                   {/* 悬空类型必须显式暴露：以前 seed 写了不存在的 widget_input，字模永远挂不上也没人知道 */}
-                  {!!unknown.length && <p className="text-[11px] text-destructive">已存类型「{unknown.join(' / ')}」不是系统里的图表/控件类型，挂着也不会被任何组件命中，请改选或清空。</p>}
+                  {!!unknown.length && <p className="text-[11px] text-destructive">{t('k_abea713fbd', { p0: unknown.join(' / ') })}</p>}
                   <p className="text-[11px] text-muted-foreground">{category === 'widget_style'
-                    ? '控件样式写 style_config.widgetStyle 段（backgroundColor / textColor / borderColor / borderRadius / padding / fontSize / height / gap / labelWidth）。'
-                    : '不选任何类型 = 通用字模（适用该类全部组件）。'}</p>
+                    ? t('k_7f59edc154')
+                    : t('k_fe3e8f2edc')}</p>
                 </div>
               );
             })()}
             {category === 'motion_preset' && <MotionPresetEditor value={styleConfig} onChange={setStyleConfig} />}
             <div className="space-y-1.5">
-              <Label>样式配置 (JSON)</Label>
+              <Label>{t('k_b24e9592f6')}</Label>
               <Textarea value={styleConfig} onChange={e => setStyleConfig(e.target.value)} rows={8} className="font-mono text-xs" />
             </div>
             {category === 'report_template' && (
@@ -407,11 +408,10 @@ export default function VisLibrary() {
               <div className="space-y-1.5">
                 <Label>{t("k_38077d0626")}</Label>
                 <Textarea value={reportContent} onChange={e => setReportContent(e.target.value)} rows={10}
-                  placeholder="章节标题与 ```chart 图表块（写完可到「模板中心 → 报告模板」从正文抽版式）" className="font-mono text-xs" />
+                  placeholder={t('k_31caadc021')} className="font-mono text-xs" />
                 {/* 说实话：生成侧读的是版式契约（headings + charts），不是这段正文里的 Jinja2 变量 */}
                 <p className="text-[11px] text-muted-foreground">
-                  报告模板的版式与主题在「系统配置 → 模板中心」维护（任务表单、报告「套用模板」共用那一份）；
-                  这里改正文不会改生成结构，旧 Jinja2 正文只作为抽版式的素材。
+                  {t('k_2849ab502a')}
                 </p>
               </div>
             )}
@@ -421,10 +421,10 @@ export default function VisLibrary() {
                 <Select value={mapTileProvider} onValueChange={setMapTileProvider}>
                   <SelectTrigger><SelectValue placeholder={t("k_bd3e70d80e")} /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="openstreetmap">OpenStreetMap (免费)</SelectItem>
-                    <SelectItem value="amap">高德地图 (需 API Key)</SelectItem>
-                    <SelectItem value="tianditu">天地图 (需 API Key)</SelectItem>
-                    <SelectItem value="carto">CartoDB (免费)</SelectItem>
+                    <SelectItem value="openstreetmap">{t('k_4e2b517f99')}</SelectItem>
+                    <SelectItem value="amap">{t('k_ee7f68fcf9')}</SelectItem>
+                    <SelectItem value="tianditu">{t('k_51441b06d6')}</SelectItem>
+                    <SelectItem value="carto">{t('k_d043a06546')}</SelectItem>
                     <SelectItem value="custom">{t("k_c493338e8c")}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -435,7 +435,7 @@ export default function VisLibrary() {
                 <Label>{t("k_dcdf30e368")}</Label>
                 <Input value={mapTileUrl} onChange={e => setMapTileUrl(e.target.value)}
                   placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                <p className="text-[11px] text-muted-foreground">支持 {'{z}/{x}/{y}'} 占位符，部分服务需要 API Key。</p>
+                <p className="text-[11px] text-muted-foreground">{t('k_c60ff100fd', { p0: '{z}/{x}/{y}' })}</p>
               </div>
             )}
             {category === 'map_tile' && mapTileProvider !== 'openstreetmap' && mapTileProvider !== 'carto' && (
@@ -448,7 +448,7 @@ export default function VisLibrary() {
             {category === 'map_tile' && (
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={mapTileDefault} onChange={e => setMapTileDefault(e.target.checked)} />
-                设为默认瓦片（Chat 地图卡片自动选用；多个默认时取清单首个）
+                {t('k_ab8cb5adcc')}
               </label>
             )}
             <div className="space-y-1.5">
@@ -458,13 +458,13 @@ export default function VisLibrary() {
             {isAdmin && (
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={asBuiltin} onChange={e => setAsBuiltin(e.target.checked)} />
-                标记为系统内置(仅管理员可声明)
+                {t('k_e067e82f42')}
               </label>
             )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={save} disabled={saving || !name}>{saving ? '保存中...' : '保存'}</Button>
+            <Button onClick={save} disabled={saving || !name}>{saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -474,12 +474,10 @@ export default function VisLibrary() {
         <DialogContent>
           <DialogHeader><DialogTitle>{t("k_4e000dadbd")}</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">
-            禁用后「{disableTarget?.name}」<span className="font-medium text-foreground">{t("k_c516466398")}</span>：
-            大屏/看板编辑器的字模面板、报表主题与 AS-BOT 清单都不再给出它；条目仍保留在库里，随时可再启用。
-            {disableTarget?.category === 'theme_pack' && themeOfPackCode(disableTarget.code)
-              ? `同时，「${themeOfPackCode(disableTarget.code)!.label}」将从系统主题菜单里移除（不再是灰掉的选项），正在使用该主题的人会被切到可用主题并收到提示。`
+            {tr('k_a557f99360')}{disableTarget?.name}」<span className="font-medium text-foreground">{t("k_c516466398")}</span>{tr('k_d6385e444c')}{' '}{disableTarget?.category === 'theme_pack' && themeOfPackCode(disableTarget.code)
+              ? t('k_54c490715c', { p0: themeLabel(themeOfPackCode(disableTarget.code)!.id) })
               : ''}
-            已引用它的历史看板/报表按不可用处理（回退挂载时快照）。
+            {t('k_2a07d87475')}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDisableTarget(null)}>{t("k_4d0b4688c7")}</Button>
@@ -491,8 +489,8 @@ export default function VisLibrary() {
       {/* 删除确认 */}
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>下架字模?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">将「{deleteTarget?.name}」下架(软删除),已引用它的大屏仍保留创建时快照。只是临时停用的话请选「禁用」（卡片上的停用按钮），下架后清单里不再给出、只能靠快照兜底。</p>
+          <DialogHeader><DialogTitle>{t('k_327748062c')}</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">{t('k_0e6cc14e1a', { p0: deleteTarget?.name })}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={() => deleteTarget && remove(deleteTarget)}>{t("k_a2698bcf9e")}</Button>
@@ -511,7 +509,7 @@ export default function VisLibrary() {
             const sc2 = previewTile.style_config as any;
             const tileUrl = sc2?.tileUrl || '';
             const provider = sc2?.provider || 'custom';
-            const providerNames: Record<string, string> = { openstreetmap: 'OSM', amap: '高德', tianditu: '天地图', carto: 'CartoDB', custom: '自定义' };
+            const providerNames: Record<string, string> = { openstreetmap: 'OSM', amap: tr('k_9cc1b3fbd4'), tianditu: tr('k_83f357de73'), carto: 'CartoDB', custom: tr('k_c493338e8c') };
             return (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm">

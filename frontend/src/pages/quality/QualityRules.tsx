@@ -33,6 +33,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface QualityRule {
   id: number;
@@ -58,35 +59,35 @@ interface Datasource {
 }
 
 const RULE_TYPE_OPTIONS = [
-  { value: 'not_null', label: '非空检查' },
-  { value: 'unique', label: '唯一性检查' },
-  { value: 'range', label: '范围检查' },
-  { value: 'format', label: '格式检查' },
-  { value: 'referential', label: '引用完整性' },
-  { value: 'custom_sql', label: '自定义 SQL' },
-  { value: 'freshness', label: '数据新鲜度' },
-  { value: 'row_count', label: '行数检查' },
-  { value: 'distribution', label: '分布检查' },
+  { value: 'not_null', label: tr('k_985648ecf5') },
+  { value: 'unique', label: tr('k_9fc917b05d') },
+  { value: 'range', label: tr('k_b8688ed844') },
+  { value: 'format', label: tr('k_5e396f0d67') },
+  { value: 'referential', label: tr('k_1d45d02cf8') },
+  { value: 'custom_sql', label: tr('k_790605a4d0') },
+  { value: 'freshness', label: tr('k_b4b6b65d23') },
+  { value: 'row_count', label: tr('k_c4f0759ddc') },
+  { value: 'distribution', label: tr('k_2eeb22529e') },
 ];
 
 const SEVERITY_OPTIONS = [
-  { value: 'critical', label: '严重' },
-  { value: 'high', label: '高' },
-  { value: 'medium', label: '中' },
-  { value: 'low', label: '低' },
+  { value: 'critical', label: tr('k_e2e27a8725') },
+  { value: 'high', label: tr('k_b096b3f5ac') },
+  { value: 'medium', label: tr('k_0869071c92') },
+  { value: 'low', label: tr('k_b9ee259b7f') },
 ];
 
 const SEVERITY_MAP: Record<string, { label: string; color: string }> = {
-  critical: { label: '严重', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  high: { label: '高', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
-  medium: { label: '中', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  low: { label: '低', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  critical: { label: tr('k_e2e27a8725'), color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  high: { label: tr('k_b096b3f5ac'), color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+  medium: { label: tr('k_0869071c92'), color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  low: { label: tr('k_b9ee259b7f'), color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
 };
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
-  passed: { label: '通过', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  error: { label: '错误', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+  passed: { label: tr('k_dcc4233255'), color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  failed: { label: tr('k_3e3c8068bb'), color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  error: { label: tr('k_b859c7be75'), color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
 };
 
 const RULE_TYPE_MAP: Record<string, string> = Object.fromEntries(
@@ -132,7 +133,7 @@ export default function QualityRules() {
       const { data } = await qualityApi.getRules(0);
       setRules(data || []);
     } catch {
-      toast.error('加载质量规则失败');
+      toast.error(tr('k_7336648b3b'));
     } finally {
       setLoading(false);
     }
@@ -175,22 +176,22 @@ export default function QualityRules() {
 
   const validateForm = (): boolean => {
     if (!form.name.trim()) {
-      toast.error('请输入规则名称');
+      toast.error(tr('k_40f3f17dd2'));
       return false;
     }
     if (!form.target_datasource_id) {
-      toast.error('请选择目标数据源');
+      toast.error(tr('k_8d27b02807'));
       return false;
     }
     if (!form.target_table.trim()) {
-      toast.error('请输入目标表名');
+      toast.error(tr('k_a2553cd446'));
       return false;
     }
     try {
       JSON.parse(form.rule_config);
       setConfigError('');
     } catch {
-      setConfigError('JSON 格式不正确');
+      setConfigError(tr('k_751d240687'));
       return false;
     }
     return true;
@@ -209,16 +210,16 @@ export default function QualityRules() {
       };
       if (editRule) {
         await qualityApi.updateRule(editRule.id, payload);
-        toast.success('规则更新成功');
+        toast.success(tr('k_bd6d2f2950'));
       } else {
         await qualityApi.createRule(payload);
-        toast.success('规则创建成功');
+        toast.success(tr('k_cad17cc043'));
       }
       setFormOpen(false);
       resetForm();
       loadRules();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -227,19 +228,19 @@ export default function QualityRules() {
   const handleToggle = async (rule: QualityRule) => {
     try {
       await qualityApi.updateRule(rule.id, { is_active: !rule.is_active });
-      toast.success(rule.is_active ? '已禁用' : '已启用');
+      toast.success(rule.is_active ? tr('k_0fe5a98e9f') : tr('k_53ace4305f'));
       loadRules();
     } catch {
-      toast.error('操作失败');
+      toast.error(tr('k_5fa802bef5'));
     }
   };
 
   const handleExecute = async (rule: QualityRule) => {
     try {
       await qualityApi.executeRule(rule.id);
-      toast.success(`规则「${rule.name}」已触发执行`);
+      toast.success(tr('k_be145092f0', { p0: rule.name }));
     } catch {
-      toast.error('执行失败');
+      toast.error(tr('k_1c83d79715'));
     }
   };
 
@@ -247,11 +248,11 @@ export default function QualityRules() {
     if (!deleteTarget) return;
     try {
       await qualityApi.deleteRule(deleteTarget.id);
-      toast.success('规则已删除');
+      toast.success(tr('k_8b2798c44a'));
       setDeleteTarget(null);
       loadRules();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
@@ -271,18 +272,15 @@ export default function QualityRules() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_e974beee2d")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            管理数据质量检查规则，配置检查项和严重等级
-          </p>
+            {tr('k_36b040e8d8')}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadRules} disabled={loading}>
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
-            刷新
-          </Button>
+            {tr('k_38108eaa1d')}</Button>
           <Button size="sm" onClick={openCreate}>
             <Plus className="w-4 h-4 mr-1" />
-            新建规则
-          </Button>
+            {tr('k_f10ed4681f')}</Button>
         </div>
       </div>
 
@@ -290,12 +288,11 @@ export default function QualityRules() {
       <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Filter className="w-4 h-4" />
-          筛选
-        </div>
+          {tr('k_dcce9a144a')}</div>
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
-            placeholder="搜索规则名称..."
+            placeholder={tr('k_ac88e4333c')}
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
             className="pl-8 h-8 w-48"
@@ -324,7 +321,7 @@ export default function QualityRules() {
           </SelectContent>
         </Select>
         <Input
-          placeholder="目标表名..."
+          placeholder={tr('k_8f02de6d18')}
           value={filterTable}
           onChange={e => setFilterTable(e.target.value)}
           className="h-8 w-48"
@@ -336,8 +333,7 @@ export default function QualityRules() {
             className="h-8 text-xs"
             onClick={() => { setFilterType('all'); setFilterSeverity('all'); setFilterTable(''); setSearchText(''); }}
           >
-            清除筛选
-          </Button>
+            {tr('k_4bbc4e5fd9')}</Button>
         )}
       </div>
 
@@ -360,13 +356,12 @@ export default function QualityRules() {
             {loading ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  加载中...
-                </td>
+                  {tr('k_26b5bd4947')}</td>
               </tr>
             ) : filteredRules.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  {rules.length === 0 ? '暂无质量规则，点击"新建规则"创建' : '没有匹配的规则'}
+                  {rules.length === 0 ? tr('k_b196dec69b') : tr('k_291b638eff')}
                 </td>
               </tr>
             ) : (
@@ -456,8 +451,7 @@ export default function QualityRules() {
       {/* Summary */}
       {rules.length > 0 && (
         <div className="text-xs text-muted-foreground text-right">
-          共 {rules.length} 条规则
-          {filteredRules.length !== rules.length && `，筛选显示 ${filteredRules.length} 条`}
+          {tr('k_fbd2b1fb73')}{' '}{rules.length} {tr('k_6c2cfbf915')}{filteredRules.length !== rules.length && tr('k_720f167c58', { p0: filteredRules.length })}
         </div>
       )}
 
@@ -469,10 +463,9 @@ export default function QualityRules() {
           onInteractOutside={(e) => e.preventDefault()}
         >
           <DialogHeader>
-            <DialogTitle>{editRule ? '编辑规则' : '新建质量规则'}</DialogTitle>
+            <DialogTitle>{editRule ? tr('k_a1d940b0dc') : tr('k_ddf70b7f58')}</DialogTitle>
             <DialogDescription>
-              配置数据质量检查规则的参数和检查条件
-            </DialogDescription>
+              {tr('k_7fe7c5711e')}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
@@ -560,7 +553,7 @@ export default function QualityRules() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>规则配置 (JSON)</Label>
+              <Label>{tr('k_f9ae4186e1')}</Label>
               <Textarea
                 value={form.rule_config}
                 onChange={e => {
@@ -574,17 +567,15 @@ export default function QualityRules() {
                 <p className="text-xs text-destructive">{configError}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                根据规则类型填写对应的配置参数，JSON 格式
-              </p>
+                {tr('k_c374a9191d')}</p>
             </div>
           </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => { setFormOpen(false); resetForm(); }}>
-              取消
-            </Button>
+              {tr('k_4d0b4688c7')}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? '保存中...' : editRule ? '更新' : '创建'}
+              {saving ? tr('k_2a33020e5b') : editRule ? tr('k_d9db02d07a') : tr('k_fcbd093292')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -596,8 +587,7 @@ export default function QualityRules() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除质量规则「{deleteTarget?.name}」吗？相关检查结果也将被清除。
-            </DialogDescription>
+              {tr('k_72457211d9')}{deleteTarget?.name}{tr('k_3a24537090')}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

@@ -46,32 +46,30 @@ export default function KnowledgeDocs() {
         <div className="space-y-1">
           <h1 className="text-xl font-semibold">{t("k_e08c3272fc")}</h1>
           <p className="text-sm text-muted-foreground">
-            选择一个知识库进入，按目录树查看与编辑其中的文档（AS-BOT 检索的语料）。
-            这里改的是 AI 的知识来源，不是门户发布内容 —— 因此不走内容审核流，但每次写入都会落审计。
+            {t('k_a09e344ca8')}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新清单
+          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />{t('k_c66582228a')}
         </Button>
       </header>
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/30 p-3 text-xs leading-5">
         <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-muted-foreground">
-          保存只提交<b>{t("k_64b9128928")}</b>，其余文档不动；云端没有"原地更新"接口，所以保存后该文档的标识会更换
-          （云端需重新解析才能被检索命中）。<b>{t("k_2fd2a9fdba")}</b>本批未开放（云端无回收站），请到 Qoder 端维护；
-          本体建模自动上云的文档是派生物，只读。建库与绑定 AS-BOT 在「系统配置 → 知识库」。
+          {t('k_38380b282c')}<b>{t("k_64b9128928")}</b>{t('k_6219da4630')}
+          <b>{t("k_2fd2a9fdba")}</b>{t('k_325a5c10d5')}
         </span>
       </div>
 
       <ErrorBanner message={error} onRetry={load} />
 
-      {loading && <LoadingRow text="正在加载知识库清单" />}
+      {loading && <LoadingRow text={t('k_270ff6c527')} />}
 
       {!loading && !error && bases.length === 0 && (
         <EmptyState
           title={t("k_a9bde6fc17")}
-          hint="先到「系统配置 → 知识库」从 Qoder 导入或新建一个知识库，这里才会列出它。"
+          hint={t('k_375f5e9820')}
         />
       )}
 
@@ -85,7 +83,7 @@ export default function KnowledgeDocs() {
                 to={openable ? `/content/kb-docs/${encodeURIComponent(b.name)}` : '#'}
                 aria-disabled={!openable}
                 tabIndex={openable ? 0 : -1}
-                aria-label={`进入知识库 ${b.name}`}
+                aria-label={t('k_01cd3d775b', { p0: b.name })}
                 className={`flex flex-col gap-2 rounded-xl border bg-card p-4 text-left transition-colors
                   ${openable ? 'hover:border-primary/60 hover:shadow-sm' : 'cursor-not-allowed opacity-70'}`}
               >
@@ -99,12 +97,12 @@ export default function KnowledgeDocs() {
                     ${b.status === 'active'
                       ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
                       : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'}`}>
-                    {b.status === 'active' ? '已启用' : `未启用（${b.status || '未知'}）`}
+                    {b.status === 'active' ? t('k_53ace4305f') : t('k_a376b96a3b', { p0: b.status || t('k_1622dc9b6b') })}
                   </span>
                 </div>
 
                 <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-                  {b.description || '（这个库还没有描述）'}
+                  {b.description || t('k_b975c07c15')}
                 </p>
 
                 <div className="mt-auto flex items-center justify-between gap-2 pt-1 text-[11px]">
@@ -113,7 +111,7 @@ export default function KnowledgeDocs() {
                   ) : (
                     <span className="text-muted-foreground">
                       {/* 能不能改由权限码裁决；只有读权时如实说明，不给假的可编辑暗示 */}
-                      {canWrite ? '可查看与编辑语料' : '只有查看权（kbdoc:read）'}
+                      {canWrite ? t('k_6a61731a7a') : t('k_0100e107ac')}
                     </span>
                   )}
                   {openable && <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}

@@ -51,7 +51,7 @@ export default function IntegrationLogs() {
       setLogs(data.items || []);
       setTotal(data.total || 0);
     } catch {
-      toast.error('加载日志失败');
+      toast.error(t('k_077994c017'));
     } finally {
       setLoading(false);
     }
@@ -60,9 +60,9 @@ export default function IntegrationLogs() {
   useEffect(() => { load(); }, []);
 
   const actionLabels: Record<string, string> = {
-    verify: '认证',
-    chat_send: '发送消息',
-    dashboard_view: '查看仪表盘',
+    verify: t('k_b7158a42ca'),
+    chat_send: t('k_b5f15917b3'),
+    dashboard_view: t('k_895f1917c7'),
   };
 
   return (
@@ -92,7 +92,7 @@ export default function IntegrationLogs() {
           <option value="error">{t("k_3e3c8068bb")}</option>
         </select>
         <Button variant="outline" size="sm" onClick={() => { setPage(1); load(1); }}>
-          <Search className="h-4 w-4 mr-1" />筛选
+          <Search className="h-4 w-4 mr-1" />{t('k_dcce9a144a')}
         </Button>
         <Button variant="outline" size="sm" onClick={() => load()}>
           <RefreshCw className="h-4 w-4" />
@@ -130,7 +130,7 @@ export default function IntegrationLogs() {
                   <td className="p-3 text-xs text-muted-foreground">{log.ip_address}</td>
                   <td className="p-3">
                     <Badge variant={log.status === 'success' ? 'default' : 'destructive'}>
-                      {log.status === 'success' ? '成功' : '失败'}
+                      {log.status === 'success' ? t('k_51991a5d11') : t('k_3e3c8068bb')}
                     </Badge>
                     {log.error_message && (
                       <div className="text-xs text-red-500 mt-1">{log.error_message}</div>

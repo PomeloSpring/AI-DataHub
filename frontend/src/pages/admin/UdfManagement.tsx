@@ -38,7 +38,7 @@ export default function UdfManagement() {
       const { data } = await udfApi.list();
       setUdfs(data.items || []);
     } catch {
-      toast.error('UDF 列表加载失败');
+      toast.error(t('k_03d6553fb8'));
     } finally {
       setLoading(false);
     }
@@ -56,7 +56,7 @@ export default function UdfManagement() {
   }, [udfs, keyword]);
 
   const copy = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => toast.success('已复制'));
+    navigator.clipboard.writeText(text).then(() => toast.success(t('k_52e6abbe5c')));
   };
 
   return (
@@ -64,11 +64,10 @@ export default function UdfManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <FunctionSquare className="w-6 h-6 text-primary" />UDF 管理
+            <FunctionSquare className="w-6 h-6 text-primary" />{t('k_d98c658135')}
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            数据同步 / SQL 任务可引用的可用函数目录（SQL 表达式函数）。在任务的转换 SQL 中直接调用，
-            并在 udf_refs 中声明引用；上传与编辑暂不开放，由平台侧预置注册。
+            {t('k_32da88e581')}
           </p>
         </div>
         <div className="flex gap-2">
@@ -78,7 +77,7 @@ export default function UdfManagement() {
               value={keyword} onChange={e => setKeyword(e.target.value)} />
           </div>
           <Button variant="outline" size="sm" onClick={load}>
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{t('k_38108eaa1d')}
           </Button>
         </div>
       </div>
@@ -99,10 +98,10 @@ export default function UdfManagement() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={8} className="text-center p-8 text-muted-foreground">加载中...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={8} className="text-center p-8 text-muted-foreground">{t('k_26b5bd4947')}</TableCell></TableRow>
             ) : filtered.length === 0 ? (
               <TableRow><TableCell colSpan={8} className="text-center p-8 text-muted-foreground">
-                {keyword ? '没有匹配的 UDF' : '暂无可用 UDF'}
+                {keyword ? t('k_22d315aac4') : t('k_1524f8f191')}
               </TableCell></TableRow>
             ) : filtered.map(udf => (
               <TableRow key={`${udf.name}-${udf.version}`}>
@@ -151,7 +150,7 @@ export default function UdfManagement() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        在「同步任务」的转换 SQL 或 DAG「SQL 任务」节点中调用 UDF 后，需在任务配置的 udf_refs 中声明引用（声明式引用，血缘可追溯）。
+        {t('k_db40dab827')}
       </p>
 
       {/* 用法详情 */}
@@ -187,7 +186,7 @@ export default function UdfManagement() {
                     <Badge key={p.name} variant="secondary" className="text-xs">{p.name}:{p.type || 'any'}</Badge>
                   ))}
                   {(detail.params || []).length === 0 && <span className="text-xs text-muted-foreground">{t("k_2f1ce71d41")}</span>}
-                  <Badge variant="outline" className="text-xs">返回 {detail.return_type || 'auto'}</Badge>
+                  <Badge variant="outline" className="text-xs">{t('k_7ba789bded', { p0: detail.return_type || 'auto' })}</Badge>
                 </div>
               </div>
 
@@ -204,7 +203,7 @@ export default function UdfManagement() {
               </div>
 
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">udf_refs 声明（任务配置）</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">{t('k_b5fe8c633c')}</p>
                 <div className="flex items-start gap-2">
                   <code className="flex-1 bg-muted px-3 py-2 rounded text-xs">{refExample(detail)}</code>
                   <Button variant="outline" size="sm" onClick={() => copy(refExample(detail))}>
@@ -213,7 +212,7 @@ export default function UdfManagement() {
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
                   <Link2 className="w-3 h-3 inline mr-1" />
-                  引用后自动累计调用次数；未在 udf_refs 声明的调用会被拒绝执行（显式报错，不静默跳过）。
+                  {t('k_f2eae7b145')}
                 </p>
               </div>
             </div>

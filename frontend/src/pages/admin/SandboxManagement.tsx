@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr , t as tr } from '@/i18n/runtime';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -87,11 +88,11 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  ready: '就绪',
-  busy: '忙碌',
-  offline: '离线',
-  error: '异常',
-  unknown: '未知',
+  ready: i18nTr('k_c0d2181d57'),
+  busy: i18nTr('k_0f187d38e5'),
+  offline: i18nTr('k_50d4a8502e'),
+  error: i18nTr('k_c195df6308'),
+  unknown: i18nTr('k_1622dc9b6b'),
 };
 
 // ── Dynamic Config Form ────────────────────────────────────────────
@@ -107,6 +108,7 @@ function ConfigForm({
   values: Record<string, any>;
   onChange: (values: Record<string, any>) => void;
 }) {
+  const { t } = useTranslation('ui');
   const handleChange = (key: string, value: any) => {
     onChange({ ...values, [key]: value });
   };
@@ -135,7 +137,7 @@ function ConfigForm({
                   checked={!!value}
                   onCheckedChange={(checked) => handleChange(key, checked)}
                 />
-                <span className="text-sm text-muted-foreground">{value ? '是' : '否'}</span>
+                <span className="text-sm text-muted-foreground">{value ? t('k_30160a21b9') : t('k_8bf5c10ad9')}</span>
               </div>
             ) : field.type === 'select' ? (
               <Select value={String(value)} onValueChange={(v) => handleChange(key, v)}>
@@ -229,7 +231,7 @@ export default function SandboxManagement() {
       setSandboxes(data.items || []);
       setTotal(data.total || 0);
     } catch {
-      toast.error('加载沙箱列表失败');
+      toast.error(t('k_019528df36'));
     } finally {
       setLoading(false);
     }
@@ -285,7 +287,7 @@ export default function SandboxManagement() {
   // Save sandbox
   const handleSave = async () => {
     if (!form.name?.trim()) {
-      toast.error('请输入沙箱名称');
+      toast.error(t('k_74c5fd2fc6'));
       return;
     }
     setSaving(true);
@@ -298,7 +300,7 @@ export default function SandboxManagement() {
           is_active: form.is_active,
           is_default: form.is_default,
         });
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await client.post('/sandbox/', {
           name: form.name,
@@ -309,13 +311,13 @@ export default function SandboxManagement() {
           is_active: form.is_active,
           is_default: form.is_default,
         });
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       setEditing(null);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -325,11 +327,11 @@ export default function SandboxManagement() {
   const handleDelete = async (sb: SandboxEnvironment) => {
     try {
       await client.delete(`/sandbox/${sb.id}`);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       setDeleteConfirm(null);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -345,7 +347,7 @@ export default function SandboxManagement() {
       }
       load();
     } catch {
-      toast.error('测试失败');
+      toast.error(t('k_9710d9b9f1'));
     } finally {
       setTesting(null);
     }
@@ -355,10 +357,10 @@ export default function SandboxManagement() {
   const handleSetDefault = async (id: number) => {
     try {
       await client.put(`/sandbox/${id}/default`);
-      toast.success('已设为默认');
+      toast.success(t('k_fc66a28fb7'));
       load();
     } catch {
-      toast.error('设置失败');
+      toast.error(t('k_9f96034c4d'));
     }
   };
 
@@ -382,7 +384,7 @@ export default function SandboxManagement() {
       setLogs(data.items || []);
       setLogsTotal(data.total || 0);
     } catch {
-      toast.error('加载执行日志失败');
+      toast.error(t('k_113d2f1bf4'));
     } finally {
       setLogsLoading(false);
     }
@@ -395,10 +397,10 @@ export default function SandboxManagement() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
           <TabsTrigger value="sandboxes">
-            <Server className="h-4 w-4 mr-1" /> 沙箱管理
+            <Server className="h-4 w-4 mr-1" /> {t('k_3bcf0728c1')}
           </TabsTrigger>
           <TabsTrigger value="logs" onClick={() => loadLogs()}>
-            <Terminal className="h-4 w-4 mr-1" /> 执行日志
+            <Terminal className="h-4 w-4 mr-1" /> {t('k_5518c28749')}
           </TabsTrigger>
         </TabsList>
 
@@ -409,7 +411,7 @@ export default function SandboxManagement() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="搜索名称..."
+              placeholder={t('k_684b8b153b')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && load(1)}
@@ -430,7 +432,7 @@ export default function SandboxManagement() {
           <Button variant="outline" onClick={() => load(1)}>{t("k_dcce9a144a")}</Button>
         </div>
         <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1" /> 添加沙箱
+          <Plus className="h-4 w-4 mr-1" /> {t('k_deb791008d')}
         </Button>
       </div>
 
@@ -438,7 +440,7 @@ export default function SandboxManagement() {
       <div className="rounded-lg border bg-card">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载中...
+            <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('k_26b5bd4947')}
           </div>
         ) : sandboxes.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
@@ -502,7 +504,7 @@ export default function SandboxManagement() {
                       </td>
                       <td className="px-4 py-3">
                         <Badge variant={sb.is_active ? 'default' : 'secondary'} className="text-xs">
-                          {sb.is_active ? '启用' : '禁用'}
+                          {sb.is_active ? t('k_d4e9ca3dd4') : t('k_be70be5a2e')}
                         </Badge>
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">
@@ -589,7 +591,7 @@ export default function SandboxManagement() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-[600px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑沙箱' : '添加沙箱'}</DialogTitle>
+            <DialogTitle>{editing ? t('k_d5deacf6b4') : t('k_deb791008d')}</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
@@ -597,12 +599,12 @@ export default function SandboxManagement() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>
-                  名称 <span className="text-red-500">*</span>
+                  {tr('k_1be7ae4fc2')}{' '}<span className="text-red-500">*</span>
                 </Label>
                 <Input
                   value={form.name || ''}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="如 gpu-server, local-docker"
+                  placeholder={t('k_e6d8824d18')}
                   disabled={!!editing}
                 />
                 <p className="text-xs text-muted-foreground">{t("k_e6c3be3d8f")}</p>
@@ -673,8 +675,7 @@ export default function SandboxManagement() {
                 onClick={() => setConfigExpanded(!configExpanded)}
               >
                 <span>
-                  连接配置
-                  <span className="text-muted-foreground font-normal ml-2">
+                  {tr('k_61f8a0119e')}{' '}<span className="text-muted-foreground font-normal ml-2">
                     ({sandboxTypes.find((t) => t.key === form.sandbox_type)?.label || form.sandbox_type})
                   </span>
                 </span>
@@ -699,7 +700,7 @@ export default function SandboxManagement() {
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-              {editing ? '保存' : '创建'}
+              {editing ? t('k_fadf24dbc5') : t('k_fcbd093292')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -712,12 +713,12 @@ export default function SandboxManagement() {
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除沙箱 <strong>{deleteConfirm?.display_name || deleteConfirm?.name}</strong> 吗？此操作不可撤销。
+            {tr('k_e23c431307')}{' '}<strong>{deleteConfirm?.display_name || deleteConfirm?.name}</strong> {t('k_94001c097e')}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteConfirm(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={() => deleteConfirm && handleDelete(deleteConfirm)}>
-              删除
+              {t('k_3755f56f2f')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -733,14 +734,14 @@ export default function SandboxManagement() {
               {logSandboxFilter ? (
                 <div className="flex items-center gap-2">
                   <Badge variant="secondary">
-                    沙箱: {logSandboxName}
+                    {t('k_7039a6abb4', { p0: logSandboxName })}
                   </Badge>
                   <Button variant="ghost" size="sm" onClick={() => {
                     setLogSandboxFilter(0);
                     setLogSandboxName('');
                     loadLogs(1, 0);
                   }}>
-                    清除筛选
+                    {t('k_4bbc4e5fd9')}
                   </Button>
                 </div>
               ) : (
@@ -748,13 +749,13 @@ export default function SandboxManagement() {
               )}
             </div>
             <Button variant="outline" size="sm" onClick={() => loadLogs()}>
-              刷新
+              {t('k_38108eaa1d')}
             </Button>
           </div>
           <div className="rounded-lg border bg-card">
             {logsLoading ? (
               <div className="flex items-center justify-center py-16 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin mr-2" /> 加载中...
+                <Loader2 className="h-5 w-5 animate-spin mr-2" /> {t('k_26b5bd4947')}
               </div>
             ) : logs.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
@@ -784,11 +785,11 @@ export default function SandboxManagement() {
                         <td className="px-4 py-3">
                           {log.success ? (
                             <Badge variant="default" className="text-xs bg-green-500 hover:bg-green-600">
-                              <CheckCircle className="h-3 w-3 mr-1" /> 成功
+                              <CheckCircle className="h-3 w-3 mr-1" /> {t('k_51991a5d11')}
                             </Badge>
                           ) : (
                             <Badge variant="destructive" className="text-xs">
-                              <XCircle className="h-3 w-3 mr-1" /> 失败
+                              <XCircle className="h-3 w-3 mr-1" /> {t('k_3e3c8068bb')}
                             </Badge>
                           )}
                         </td>
@@ -806,7 +807,7 @@ export default function SandboxManagement() {
                         </td>
                         <td className="px-4 py-3 text-right">
                           <Button variant="ghost" size="sm" onClick={() => setLogDetail(log)}>
-                            详情
+                            {t('k_4f55ee1e68')}
                           </Button>
                         </td>
                       </tr>
@@ -836,15 +837,15 @@ export default function SandboxManagement() {
                 <div className="space-y-4">
                   <div className="grid grid-cols-3 gap-4 text-sm">
                     <div>
-                      <span className="text-muted-foreground">沙箱:</span>
+                      <span className="text-muted-foreground">{t('k_8505b20d80')}</span>
                       <span className="ml-2 font-medium">{logDetail.sandbox_name}</span>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">类型:</span>
+                      <span className="text-muted-foreground">{t('k_43635833c0')}</span>
                       <span className="ml-2">{logDetail.sandbox_type}</span>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">耗时:</span>
+                      <span className="text-muted-foreground">{t('k_3c724b5758')}</span>
                       <span className="ml-2">{logDetail.elapsed_ms}ms</span>
                     </div>
                   </div>
@@ -908,31 +909,31 @@ export default function SandboxManagement() {
                     <Button variant="outline" onClick={() => {
                       // Copy code to clipboard
                       navigator.clipboard.writeText(logDetail.code);
-                      toast.success('代码已复制');
+                      toast.success(t('k_2c408a67a2'));
                     }}>
-                      复制代码
+                      {t('k_224996c08c')}
                     </Button>
                     <Button onClick={async () => {
                       // Re-execute the code
                       try {
-                        toast.info('正在重新执行...');
+                        toast.info(t('k_a99fd162a7'));
                         const { data } = await client.post(`/sandbox/${logDetail.sandbox_id}/execute`, {
                           code: logDetail.code,
                           requirements: logDetail.requirements,
                         });
                         if (data.success) {
-                          toast.success(`执行成功 (${data.elapsed_ms}ms)`);
+                          toast.success(t('k_3383314f93', { p0: data.elapsed_ms }));
                         } else {
-                          toast.error(`执行失败: ${data.error || '未知错误'}`);
+                          toast.error(tr('k_2777881bd1', { p0: data.error || tr('k_974e748456') }));
                         }
                         // Refresh logs
                         loadLogs();
                         setLogDetail(null);
                       } catch (e: any) {
-                        toast.error(e.response?.data?.detail || '执行失败');
+                        toast.error(e.response?.data?.detail || t('k_1c83d79715'));
                       }
                     }}>
-                      重新执行
+                      {t('k_320e803a31')}
                     </Button>
                   </div>
                 </div>

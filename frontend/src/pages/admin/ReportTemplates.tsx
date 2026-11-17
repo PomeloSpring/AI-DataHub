@@ -27,8 +27,7 @@ export default function TemplateCenter() {
       <div>
         <h1 className="text-xl font-bold flex items-center gap-2"><Layers className="h-5 w-5" /> {t("k_42bae137bf")}</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          报告模板管版式（章节 + 图表规格 + 主题），消息模板管通知文案（按变量展开）。
-          模板只存结构与文案，不存数据；任务与渠道选的都只是引用，改一处即生效。
+          {t('k_1d85f69f49')}
         </p>
       </div>
 

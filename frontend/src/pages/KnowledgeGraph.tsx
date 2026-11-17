@@ -17,6 +17,7 @@ import { useGraphStore } from '@/stores/graphStore';
 import axios from 'axios';
 import { toast } from '@/lib/toast';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -46,8 +47,7 @@ function AsBotGraphPage() {
           <h1 className="text-xl font-semibold">{t("k_711c9de0db")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          仅展示系统助手依赖的本体模型结构（对象为点、Link 为名边）；业务本体图谱请前往「数据平台 → 本体工作区 → 图谱」。
-        </p>
+          {tr('k_38dc96912b')}</p>
       </div>
       <div className="flex-1 p-4 min-h-0">
         {/* 系统助手总览必须走系统图 ds:-1(kind=system), 否则 datasource_id=0 命中聚合图串入业务本体 */}
@@ -104,7 +104,7 @@ function KnowledgeGraphFull() {
     try {
       await fetchGraphData({ graphType, limit: 200 });
     } catch (error) {
-      toast.error('加载图谱数据失败');
+      toast.error(tr('k_147f97a3f5'));
     } finally {
       setIsLoading(false);
     }
@@ -119,7 +119,7 @@ function KnowledgeGraphFull() {
     try {
       await searchNodes(searchQuery);
     } catch (error) {
-      toast.error('搜索失败');
+      toast.error(tr('k_ec6049efef'));
     } finally {
       setIsLoading(false);
     }
@@ -135,9 +135,9 @@ function KnowledgeGraphFull() {
     try {
       const response = await axios.post(`${API_BASE}/query`, { query: sparqlQuery }, { headers: getAuthHeader() });
       setSparqlResult(response.data);
-      toast.success('查询执行成功');
+      toast.success(tr('k_5e05f4dc40'));
     } catch (error) {
-      toast.error('SPARQL查询失败');
+      toast.error(tr('k_4c5f2396ab'));
     } finally {
       setIsLoading(false);
     }
@@ -146,10 +146,10 @@ function KnowledgeGraphFull() {
   // ── Config ─────────────────────────────────────────────────────────
 
   const graphTypeConfig = {
-    'ontology-overview': { icon: Network, label: '本体总览', description: '业务对象为点、Link 为带名字的边；列/表/数据源不在此层' },
-    'table-relation': { icon: Database, label: '表关系图', description: '展示数据库表之间的关联关系' },
-    'business-knowledge': { icon: Network, label: '业务知识图', description: '展示业务术语、指标、维度的定义关系' },
-    'data-lineage': { icon: GitBranch, label: '数据血缘图', description: '展示数据从源头到应用的流转路径' }
+    'ontology-overview': { icon: Network, label: tr('k_038f52b5c3'), description: tr('k_69e71b0171') },
+    'table-relation': { icon: Database, label: tr('k_7b72f01f08'), description: tr('k_f38f233797') },
+    'business-knowledge': { icon: Network, label: tr('k_dc9b53849b'), description: tr('k_0f431a4492') },
+    'data-lineage': { icon: GitBranch, label: tr('k_2b13801194'), description: tr('k_f176ffc46b') }
   };
 
   // ── Render ─────────────────────────────────────────────────────────
@@ -176,12 +176,10 @@ function KnowledgeGraphFull() {
             <TabsList>
               <TabsTrigger value="graph" className="flex items-center gap-2">
                 <Network className="h-4 w-4" />
-                图谱可视化
-              </TabsTrigger>
+                {tr('k_b1404f0154')}</TabsTrigger>
               <TabsTrigger value="sparql" className="flex items-center gap-2">
                 <Terminal className="h-4 w-4" />
-                SPARQL查询
-              </TabsTrigger>
+                {tr('k_dfced75501')}</TabsTrigger>
             </TabsList>
           </div>
 
@@ -214,7 +212,7 @@ function KnowledgeGraphFull() {
                   <Label className="text-xs font-medium mb-2 block">{t("k_f04090805c")}</Label>
                   <div className="flex gap-2">
                     <Input
-                      placeholder="搜索节点..."
+                      placeholder={tr('k_28b5afbce5')}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -258,28 +256,25 @@ function KnowledgeGraphFull() {
                         <div className="grid grid-cols-2 gap-2">
                           <Button variant="outline" size="sm" className="text-xs" onClick={async () => {
                             const data = await getUpstream(selectedNode.id);
-                            toast.info(`找到 ${data.nodes.length} 个上游节点`);
+                            toast.info(tr('k_e99a4b6f7b', { p0: data.nodes.length }));
                           }}>
                             <GitBranch className="h-3 w-3 mr-1 rotate-180" />
-                            上游追溯
-                          </Button>
+                            {tr('k_285e6cd4e2')}</Button>
                           <Button variant="outline" size="sm" className="text-xs" onClick={async () => {
                             const data = await getDownstream(selectedNode.id);
-                            toast.info(`找到 ${data.nodes.length} 个下游节点`);
+                            toast.info(tr('k_7aafb530dc', { p0: data.nodes.length }));
                           }}>
                             <GitBranch className="h-3 w-3 mr-1" />
-                            下游追踪
-                          </Button>
+                            {tr('k_3998913c08')}</Button>
                         </div>
                         <Button variant="outline" size="sm" className="w-full text-xs" onClick={async () => {
                           const result = await getImpactAnalysis(selectedNode.id);
                           if (result) {
-                            toast.info(`影响分析: ${result.impact_summary.total_affected} 个节点受影响`);
+                            toast.info(tr('k_030c299528', { p0: result.impact_summary.total_affected }));
                           }
                         }}>
                           <Network className="h-3 w-3 mr-1" />
-                          影响分析
-                        </Button>
+                          {tr('k_e8540d99eb')}</Button>
                       </div>
                     )}
                   </div>
@@ -292,7 +287,7 @@ function KnowledgeGraphFull() {
                     {graphType === 'ontology-overview' && (
                       <>
                         <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-indigo-500" /><span>{t("k_66695434da")}</span></div>
-                        <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-indigo-400" /><span>Link(名字·基数)</span></div>
+                        <div className="flex items-center gap-2"><div className="w-4 h-0.5 bg-indigo-400" /><span>{tr('k_f072051fec')}</span></div>
                         <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500" /><span>{t("k_b3addb5e3f")}</span><div className="w-2 h-2 rounded-full bg-amber-500" /><span>{t("k_d8edae8ecd")}</span></div>
                       </>
                     )}
@@ -330,8 +325,7 @@ function KnowledgeGraphFull() {
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Terminal className="h-5 w-5" />
-                  SPARQL 查询控制台
-                </CardTitle>
+                  {tr('k_a4b6401dac')}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
@@ -339,14 +333,13 @@ function KnowledgeGraphFull() {
                   <Textarea
                     value={sparqlQuery}
                     onChange={(e) => setSparqlQuery(e.target.value)}
-                    placeholder="输入SPARQL查询语句..."
+                    placeholder={tr('k_5b833f3d46')}
                     className="font-mono text-sm h-32"
                   />
                 </div>
                 <Button onClick={handleExecuteSparql} disabled={isLoading}>
                   <Terminal className="h-4 w-4 mr-2" />
-                  执行查询
-                </Button>
+                  {tr('k_4fb36a6129')}</Button>
                 {sparqlResult && (
                   <div className="space-y-2">
                     <Label>{t("k_afeb896ef0")}</Label>
@@ -356,9 +349,8 @@ function KnowledgeGraphFull() {
                   </div>
                 )}
                 <div className="text-xs text-muted-foreground">
-                  💡 常用查询示例：
-                  <ul className="mt-1 space-y-1 list-disc list-inside">
-                    <li><code className="px-1 bg-muted rounded">SELECT ?s ?p ?o WHERE {'{'} GRAPH ?g {'{'} ?s ?p ?o {'}'} {'}'} LIMIT 25</code> - 查看所有三元组(需遍历命名图 GRAPH)</li>
+                  {tr('k_3554c6e6e7')}<ul className="mt-1 space-y-1 list-disc list-inside">
+                    <li><code className="px-1 bg-muted rounded">SELECT ?s ?p ?o WHERE {'{'} GRAPH ?g {'{'} ?s ?p ?o {'}'} {'}'} LIMIT 25</code> {tr('k_0a24ce15c1')}</li>
                     <li><code className="px-1 bg-muted rounded">SELECT ?t ?label WHERE {'{'} GRAPH ?g {'{'} ?t a adh:Table ; rdfs:label ?label {'}'} {'}'}</code> {t("k_5f444e8d9a")}</li>
                     <li><code className="px-1 bg-muted rounded">SELECT ?m ?label WHERE {'{'} GRAPH ?g {'{'} ?m a adh:Metric ; rdfs:label ?label {'}'} {'}'}</code> {t("k_bbaeb3bfd8")}</li>
                   </ul>

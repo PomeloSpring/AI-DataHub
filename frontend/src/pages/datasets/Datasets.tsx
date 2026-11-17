@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Plus, Layers, Code2, Trash2, Eye, Loader2, Check,
   RefreshCw, BarChart3, Square, CheckSquare, Database, AlertTriangle,
@@ -51,8 +51,8 @@ interface Dataset {
 // ES 身份由服务端的 `is_es` 下发（判据与取数分派同源），不靠枚举名反推。
 const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
-  semantic: '语义对象',
-  both: '语义 + SQL',
+  semantic: tr('k_668cea6a49'),
+  both: tr('k_764b4b7d97'),
 };
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   CHART_TYPES.map(t => [t.value, t.label]),
@@ -105,7 +105,7 @@ export default function Datasets() {
     } catch (e: any) {
       // 清单拉失败不得静默渲成「暂无数据集」（会被误读为数据丢了），显式提醒
       setItems([]);
-      toast.error(e?.response?.data?.detail || '数据集清单加载失败');
+      toast.error(e?.response?.data?.detail || tr('k_65aaefc869'));
     } finally {
       setLoading(false);
     }
@@ -124,13 +124,13 @@ export default function Datasets() {
   }, []);
 
   const handleDelete = async (ds: Dataset) => {
-    if (!confirm(`确定删除数据集 "${ds.name}"？`)) return;
+    if (!confirm(tr('k_b60c1886cc', { p0: ds.name }))) return;
     try {
       await client.delete(`/datasets/${ds.id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || tr('k_acf0664a54'));
     }
   };
 
@@ -157,7 +157,7 @@ export default function Datasets() {
 
   const handleBatchDelete = async () => {
     if (!selected.length) return;
-    if (!confirm(`确定删除选中的 ${selected.length} 个数据集？被看板引用的会逐条跳过并列出原因。`)) return;
+    if (!confirm(tr('k_3e3a4989e3', { p0: selected.length }))) return;
     setBatchBusy(true);
     try {
       const { data } = await client.post('/datasets/batch-delete', { ids: selected });
@@ -165,7 +165,7 @@ export default function Datasets() {
       setSelected((data.failed || []).map((f: any) => f.id));  // 失败项保持勾选
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '批量删除失败');
+      toast.error(e.response?.data?.detail || tr('k_1bac376d51'));
     } finally {
       setBatchBusy(false);
     }
@@ -181,7 +181,7 @@ export default function Datasets() {
       setBatchSourceOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '批量修改失败');
+      toast.error(e.response?.data?.detail || tr('k_24182b2345'));
     } finally {
       setBatchBusy(false);
     }
@@ -194,9 +194,9 @@ export default function Datasets() {
       const { data } = await client.post('/catalog/ontology/generate-business-assets');
       setSyncResult(data);
       (data.notes || []).forEach((n: string) => toast.warning(n)); // 告警显式暴露, 不静默
-      toast.success(`业务本体已同步：${data.object_count ?? 0} 个对象`);
+      toast.success(tr('k_8ec9e239aa', { p0: data.object_count ?? 0 }));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '同步业务本体失败');
+      toast.error(e.response?.data?.detail || tr('k_6e55927480'));
     } finally {
       setSyncing(false);
     }
@@ -207,17 +207,15 @@ export default function Datasets() {
       <div className="flex items-center justify-between mb-4 shrink-0">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Layers className="h-6 w-6" /> 数据集
-          </h1>
+            <Layers className="h-6 w-6" /> {tr('k_fc2b4735c3')}</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            BI 治理建模层：执行 SQL 取数，看板、报告与 Chat 共用同一口径
-          </p>
+            {tr('k_5f4b0a1d5b')}</p>
         </div>
         <div className="flex items-center gap-2">
           {canManage && (
             <Button size="sm" variant={batchMode ? 'secondary' : 'outline'}
               aria-pressed={batchMode} onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}>
-              <CheckSquare className="h-4 w-4 mr-1" /> {batchMode ? '退出批量' : '批量操作'}
+              <CheckSquare className="h-4 w-4 mr-1" /> {batchMode ? tr('k_07c2859e08') : tr('k_7f7c624a84')}
             </Button>
           )}
           {canManage && (
@@ -225,13 +223,11 @@ export default function Datasets() {
               {syncing
                 ? <Loader2 className="h-4 w-4 mr-1 animate-spin" />
                 : <RefreshCw className="h-4 w-4 mr-1" />}
-              同步到业务本体
-            </Button>
+              {tr('k_7d8d985efc')}</Button>
           )}
           {canManage && (
             <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="h-4 w-4 mr-1" /> 新建数据集
-            </Button>
+              <Plus className="h-4 w-4 mr-1" /> {tr('k_e78bd5fabb')}</Button>
           )}
         </div>
       </div>
@@ -266,20 +262,17 @@ export default function Datasets() {
         <div className="flex items-center gap-2 mb-4 shrink-0 rounded-md border bg-muted/30 px-3 py-2 flex-wrap">
           <Button size="sm" variant="outline" className="h-8 text-xs" onClick={toggleSelectPage}>
             {allPageSelected ? <CheckSquare className="h-4 w-4 mr-1" /> : <Square className="h-4 w-4 mr-1" />}
-            本页全选
-          </Button>
+            {tr('k_c8121d9d63')}</Button>
           {selected.length > 0 && (
             <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={clearSelection}>{t("k_a6d3de0e86")}</Button>
           )}
           <span className="text-sm text-muted-foreground">{t("k_f24ddc2bef")} <b className="text-foreground">{selected.length}</b> {t("k_f7b2a6ee68")}</span>
           <div className="flex-1" />
           <Button size="sm" variant="outline" onClick={() => setBatchSourceOpen(true)} disabled={batchBusy || selected.length === 0}>
-            <Database className="h-4 w-4 mr-1" /> 批量改数据源
-          </Button>
+            <Database className="h-4 w-4 mr-1" /> {tr('k_0b9837b627')}</Button>
           <Button size="sm" variant="destructive" onClick={handleBatchDelete} disabled={batchBusy || selected.length === 0}>
             {batchBusy ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1" />}
-            批量删除
-          </Button>
+            {tr('k_7fb62b3011')}</Button>
         </div>
       )}
 
@@ -291,7 +284,7 @@ export default function Datasets() {
         </div>
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground border rounded-lg">
-          暂无数据集{canManage ? '，点击右上角新建' : ''}
+          {tr('k_c46e035dbe')}{canManage ? tr('k_1e2ac39e19') : ''}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -300,7 +293,7 @@ export default function Datasets() {
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-2 min-w-0 flex-1">
                   {canManage && batchMode && (
-                    <button type="button" aria-label={`选择 ${ds.name}`} onClick={() => toggleSelect(ds.id)}
+                    <button type="button" aria-label={tr('k_f7c57733fd', { p0: ds.name })} onClick={() => toggleSelect(ds.id)}
                       className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground">
                       {selected.includes(ds.id)
                         ? <CheckSquare className="h-4 w-4 text-primary" />
@@ -320,25 +313,23 @@ export default function Datasets() {
                 </Badge>
               </div>
               <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground flex-wrap">
-                <span>{ds.field_count} 字段</span>
-                <span>被 {ds.references} 图表引用</span>
+                <span>{ds.field_count} {tr('k_77a49f2c38')}</span>
+                <span>{tr('k_22ae803c52')}{' '}{ds.references} {tr('k_26a842c9d3')}</span>
                 {/* 数据源显示业务名（后端返回，不靠前端拼 ID 兜底）；多源时标注可用范围 */}
                 <Badge variant="outline" className="text-[10px]"
-                  title={`执行数据源: ${ds.datasource_name || '数据源'}`}>
-                  {ds.datasource_name || '数据源'}
+                  title={tr('k_8b470f2735', { p0: ds.datasource_name || tr('k_a3ccf702c5') })}>
+                  {ds.datasource_name || tr('k_a3ccf702c5')}
                 </Badge>
                 {/* 执行通道位只从服务端 `is_es` 读：这一位与其他源同一个治理口（列级/行级策略已编译进 SQL） */}
                 {ds.is_es && (
                   <Badge variant="secondary" className="text-[10px]"
                     title={t("k_e7f2685f92")}>
-                    ES 通道
-                  </Badge>
+                    {tr('k_645f449115')}</Badge>
                 )}
                 {(ds.available_source_names || []).length > 1 && (
                   <Badge variant="secondary" className="text-[10px]"
-                    title={`可用数据源: ${(ds.available_source_names || []).join('、')}`}>
-                    可用 {(ds.usable_now || []).length}/{(ds.available_source_names || []).length} 源
-                  </Badge>
+                    title={tr('k_950ed5943e', { p0: (ds.available_source_names || []).join('、') })}>
+                    {tr('k_e91365cf9e')}{' '}{(ds.usable_now || []).length}/{(ds.available_source_names || []).length} {tr('k_66f5e225b7')}</Badge>
                 )}
                 {ds.chart_type && (
                   <Badge variant="secondary" className="text-[10px] flex items-center gap-1">
@@ -393,13 +384,13 @@ export default function Datasets() {
       <Dialog open={!!batchResult} onOpenChange={() => setBatchResult(null)}>
         <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>批量{batchResult?.kind === 'delete' ? '删除' : '修改数据源'}结果</DialogTitle>
+            <DialogTitle>{batchResult?.kind === 'delete' ? t('k_a72199c91f') : t('k_b7981d9704')}</DialogTitle>
             <DialogDescription>{batchResult?.message}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             {(batchResult?.succeeded || []).length > 0 && (
               <div className="space-y-1">
-                <div className="text-xs font-medium text-green-700 dark:text-green-400">成功 {batchResult.succeeded_count} 个</div>
+                <div className="text-xs font-medium text-green-700 dark:text-green-400">{tr('k_51991a5d11')}{' '}{batchResult.succeeded_count} {tr('k_f7b2a6ee68')}</div>
                 {(batchResult.succeeded || []).filter((s: any) => s.warnings?.length).map((s: any) => (
                   <div key={s.id} role="alert" className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
                     <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
@@ -410,7 +401,7 @@ export default function Datasets() {
             )}
             {(batchResult?.failed || []).length > 0 && (
               <div className="space-y-1">
-                <div className="text-xs font-medium text-destructive">失败/本次不处理 {batchResult.failed_count} 个（已保留勾选，可修正后重试）</div>
+                <div className="text-xs font-medium text-destructive">{tr('k_21212666d5')}{' '}{batchResult.failed_count} {tr('k_7d19caa31b')}</div>
                 {(batchResult.failed || []).map((f: any) => (
                   <div key={f.id} className="text-[11px] text-muted-foreground">
                     · <b className="text-foreground">{f.name || `#${f.id}`}</b>：{f.reason}
@@ -431,8 +422,7 @@ export default function Datasets() {
           <DialogHeader>
             <DialogTitle>{t("k_890dc420e5")}</DialogTitle>
             <DialogDescription>
-              数据集已作为业务本体路由节点一并生成（save_draft/activate 级联）
-            </DialogDescription>
+              {tr('k_8e527be941')}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2 text-sm">
             <div>{t("k_fc9650fcc3")}<b>{syncResult?.object_count ?? 0}</b></div>
@@ -485,29 +475,29 @@ function CreateDatasetDialog({
     : [];
 
   const validateSql = async () => {
-    if (!form.sql_query.trim()) { toast.error('请先输入 SQL'); return; }
+    if (!form.sql_query.trim()) { toast.error(tr('k_722cfefb5e')); return; }
     setValidating(true);
     try {
       const { data } = await client.post('/datasets/validate-sql', {
         sql: form.sql_query, datasource_id: Number(form.datasource_id) || 0,
       });
       setInferredFields(data.fields || []);
-      toast.success(`校验通过，推断 ${data.fields?.length || 0} 个字段`);
+      toast.success(tr('k_335923e9dc', { p0: data.fields?.length || 0 }));
     } catch (e: any) {
       setInferredFields([]);
-      toast.error(e.response?.data?.detail || 'SQL 校验失败');
+      toast.error(e.response?.data?.detail || tr('k_ff77a1eb5f'));
     } finally {
       setValidating(false);
     }
   };
 
   const handleSave = async () => {
-    if (!form.name.trim()) { toast.error('名称必填'); return; }
+    if (!form.name.trim()) { toast.error(tr('k_88cfbe5b6b')); return; }
     if (!form.sql_query.trim()) {
-      toast.error('请输入执行 SQL'); return;
+      toast.error(tr('k_c13269d0c6')); return;
     }
     if (form.sql_query.trim() && inferredFields.length === 0) {
-      toast.error('请先「校验并推断字段」'); return;
+      toast.error(tr('k_731cba14d1')); return;
     }
     setSaving(true);
     try {
@@ -526,10 +516,10 @@ function CreateDatasetDialog({
         chart_preset: chartPreset,
         field_config: inferredFields,
       });
-      toast.success('数据集已创建');
+      toast.success(tr('k_2215b20d59'));
       onCreated(data.id);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '创建失败');
+      toast.error(e.response?.data?.detail || tr('k_a889286a51'));
     } finally {
       setSaving(false);
     }
@@ -541,13 +531,12 @@ function CreateDatasetDialog({
         <DialogHeader>
           <DialogTitle>{t("k_e78bd5fabb")}</DialogTitle>
           <DialogDescription>
-            执行 SQL 负责取数，经统一治理入口；看板、报告与 Chat 共用同一口径
-          </DialogDescription>
+            {tr('k_7326cc98b3')}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>名称 *</Label>
+              <Label>{tr('k_456f3ac6b4')}</Label>
               <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder={t("k_ab0883f179")} />
             </div>
             <div className="space-y-1.5">
@@ -573,15 +562,12 @@ function CreateDatasetDialog({
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-sm font-medium">
-                <Code2 className="h-4 w-4" /> 执行 SQL
-                <Badge variant="outline" className="text-[10px]">
-                  仅 SELECT/WITH
-                </Badge>
+                <Code2 className="h-4 w-4" /> {tr('k_a8c191126e')}<Badge variant="outline" className="text-[10px]">
+                  {tr('k_96b5deb12f')}</Badge>
               </div>
               <Button size="sm" variant="outline" onClick={validateSql} disabled={validating}>
                 {validating ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Check className="h-3.5 w-3.5 mr-1" />}
-                校验并推断字段
-              </Button>
+                {tr('k_042ac83126')}</Button>
             </div>
             <Textarea
               rows={6} className="font-mono text-xs"
@@ -595,7 +581,7 @@ function CreateDatasetDialog({
                 <div className="flex flex-wrap gap-1.5">
                   {inferredFields.map((f: any) => (
                     <Badge key={f.field} variant="outline" className="text-[10px]">
-                      {f.field} · {f.role === 'measure' ? '度量' : '维度'}
+                      {f.field} · {f.role === 'measure' ? tr('k_a285e2aa8c') : tr('k_72fa9ecdc4')}
                     </Badge>
                   ))}
                 </div>
@@ -606,8 +592,7 @@ function CreateDatasetDialog({
           {/* ── 图表预设(可选) ── */}
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center gap-1.5 text-sm font-medium">
-              <BarChart3 className="h-4 w-4" /> 图表预设
-              <Badge variant="outline" className="text-[10px]">{t("k_c026ada3ad")}</Badge>
+              <BarChart3 className="h-4 w-4" /> {tr('k_099c0176b1')}<Badge variant="outline" className="text-[10px]">{t("k_c026ada3ad")}</Badge>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -650,13 +635,12 @@ function CreateDatasetDialog({
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              预设列引用查询结果列名；看板编辑器「从数据集引入」时直接搬入图表配置
-            </p>
+              {tr('k_272c3db340')}</p>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? '创建中…' : '创建'}</Button>
+          <Button onClick={handleSave} disabled={saving}>{saving ? tr('k_d156b373ad') : tr('k_fcbd093292')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

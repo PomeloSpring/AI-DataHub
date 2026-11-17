@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { RefreshCw, X, FileSearch } from 'lucide-react';
 import { dagApi, type DagGraph, type DataflowGraph, type DataflowNode } from '@/api/dag';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // ── 数据流视图：源表 → 转换 → 目标表（定义期静态解析 + 实际血缘验证） ──
 // 画风遵循 graph-visualization.md：BaseEdge + 柔和贝塞尔 + fill:none、
@@ -36,10 +37,10 @@ function DataflowNodeCard({ data, selected }: NodeProps) {
       </div>
       <div className={`px-3 py-1.5 text-[10px] text-muted-foreground ${st.sub}`}>
         {kind === 'table'
-          ? ((data as any).roles || []).join(' / ') || '表'
+          ? ((data as any).roles || []).join(' / ') || tr('k_6a954390e3')
           : (data as any).udfs?.length
             ? `UDF: ${(data as any).udfs.join(', ')}`
-            : 'SQL 转换'}
+            : tr('k_8a45acb298')}
       </div>
       <Handle type="source" position={Position.Right} className="!w-2 !h-2" />
     </div>
@@ -158,7 +159,7 @@ export default function DagDataflowView({
         : await dagApi.workflowDataflow(workflowId!, true);
       setFlow(data as DataflowGraph);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || '数据流解析失败');
+      setError(e?.response?.data?.detail || tr('k_06579e21a5'));
     } finally {
       setLoading(false);
     }
@@ -180,7 +181,7 @@ export default function DagDataflowView({
       const { data } = await dagApi.explain(node.sql_digest || '', node.datasource || '');
       setPlan(data.plan || []);
     } catch (e: any) {
-      setPlan([`执行计划获取失败：${e?.response?.data?.detail || e?.message || '未知错误'}`]);
+      setPlan([tr('k_f364f7bc0e', { p0: e?.response?.data?.detail || e?.message || tr('k_974e748456') })]);
     } finally {
       setPlanLoading(false);
     }
@@ -208,22 +209,20 @@ export default function DagDataflowView({
       <div className="absolute top-2 right-2 flex items-center gap-2">
         {hasVerified && (
           <span className="text-[10px] text-green-600 bg-card/90 border rounded-md px-2 py-1">
-            ✓ 绿线 = 实际血缘已验证
-          </span>
+            {tr('k_9b96e8058e')}</span>
         )}
         <button
           className="text-xs text-muted-foreground flex items-center gap-1 bg-card/90 border rounded-md px-2 py-1"
           onClick={load}
         >
-          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />刷新
-        </button>
+          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />{tr('k_38108eaa1d')}</button>
       </div>
 
       {/* 节点详情（转换节点可看执行计划） */}
       {selected && (
         <div className="absolute top-2 left-2 w-[320px] bg-card border rounded-lg shadow-md p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-[9px]">{selected.kind === 'transform' ? '转换' : '表'}</Badge>
+            <Badge variant="outline" className="text-[9px]">{selected.kind === 'transform' ? tr('k_8b7977d94b') : tr('k_6a954390e3')}</Badge>
             <span className="font-medium text-xs truncate">{selected.label}</span>
             <button className="ml-auto" onClick={() => setSelected(null)}><X className="w-3.5 h-3.5" /></button>
           </div>
@@ -242,7 +241,7 @@ export default function DagDataflowView({
               <Button size="sm" variant="outline" className="w-full text-xs h-7"
                 onClick={() => runExplain(selected)} disabled={planLoading}>
                 <FileSearch className="w-3 h-3 mr-1" />
-                {planLoading ? '获取中...' : '查看执行计划'}
+                {planLoading ? tr('k_4a8d5ce95f') : tr('k_dbd477c6f2')}
               </Button>
               {plan && (
                 <pre className="text-[10px] text-muted-foreground bg-muted rounded p-2 whitespace-pre-wrap max-h-[180px] overflow-y-auto">
@@ -252,7 +251,7 @@ export default function DagDataflowView({
             </div>
           ) : (
             <div className="text-xs text-muted-foreground">
-              角色：{(selected.roles || []).join(' / ') || '表'}
+              {tr('k_20f32e1979')}{(selected.roles || []).join(' / ') || tr('k_6a954390e3')}
             </div>
           )}
         </div>

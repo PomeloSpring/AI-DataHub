@@ -20,18 +20,19 @@ import { dagApi, type DagWorkflow, type DagRun, type DagGraph } from '@/api/dag'
 import { udfApi, type Udf } from '@/api/udf';
 import { DatasourceSelect } from './DatasourceSelect';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // ── 任务中心：简单同步（单节点 DAG）与 DAG 编排统一列表 ──
 // 模型统一：简单同步保存为 kind='simple' 的单节点 DAG，执行/调度/血缘/质量同构。
 
 const STATUS_MAP: Record<string, { label: string; className: string }> = {
-  queued: { label: '排队中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  running: { label: '运行中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  success: { label: '成功', className: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  partial: { label: '部分成功', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  failed: { label: '失败', className: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  timeout: { label: '超时', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  cancelled: { label: '已取消', className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+  queued: { label: tr('k_e5ac1d2029'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  running: { label: tr('k_5942497005'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  success: { label: tr('k_51991a5d11'), className: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { label: tr('k_2f2b7e05e3'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  failed: { label: tr('k_3e3c8068bb'), className: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  timeout: { label: tr('k_ff06c243d7'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  cancelled: { label: tr('k_a5ffdc95ee'), className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
 };
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -105,7 +106,7 @@ export default function SyncTasks() {
       const { data } = await dagApi.listWorkflows({ page: 1, size: 100 });
       setTasks(data.items || []);
     } catch {
-      toast.error('任务列表加载失败');
+      toast.error(tr('k_73bfa50d68'));
     } finally {
       setLoading(false);
     }
@@ -146,7 +147,7 @@ export default function SyncTasks() {
   const handleSave = async () => {
     if (!form.name.trim() || !form.source_datasource || !form.source_table
         || !form.target_datasource || !form.target_table) {
-      toast.error('请完整填写名称、源/目标数据源与表');
+      toast.error(tr('k_d30a0de29d'));
       return;
     }
     try {
@@ -156,28 +157,28 @@ export default function SyncTasks() {
           graph_json: formToGraph(form),
           cron_expression: form.schedule_cron || null,
         });
-        toast.success('已更新');
+        toast.success(tr('k_1b92092d63'));
       } else {
         await dagApi.createWorkflow({
           name: form.name, description: form.description, kind: 'simple',
           graph_json: formToGraph(form),
           cron_expression: form.schedule_cron || null,
         });
-        toast.success('已创建');
+        toast.success(tr('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || tr('k_6de920b4e4'));
     }
   };
 
   const handleRun = async (task: DagWorkflow) => {
     try {
       await dagApi.runWorkflow(task.id);
-      toast.success('已进入执行队列');
+      toast.success(tr('k_e2917cf924'));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '触发失败');
+      toast.error(e?.response?.data?.detail || tr('k_02b526816d'));
     }
   };
 
@@ -197,16 +198,13 @@ export default function SyncTasks() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_a1ff6cf80c")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            离线数据同步与转换任务中心：简单同步与 DAG 编排统一管理，支持 cron 调度、数据流查看与运行监控
-          </p>
+            {tr('k_75523bc5ce')}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={load}>
-            <RefreshCw className="w-4 h-4 mr-1" />刷新
-          </Button>
+            <RefreshCw className="w-4 h-4 mr-1" />{tr('k_38108eaa1d')}</Button>
           <Button size="sm" onClick={() => setWizardOpen(true)}>
-            <Plus className="w-4 h-4 mr-1" />新建任务
-          </Button>
+            <Plus className="w-4 h-4 mr-1" />{tr('k_b255a277b3')}</Button>
         </div>
       </div>
 
@@ -225,7 +223,7 @@ export default function SyncTasks() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{tr('k_26b5bd4947')}</td></tr>
             ) : tasks.length === 0 ? (
               <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_0e7aa874aa")}</td></tr>
             ) : tasks.map(task => (
@@ -246,7 +244,7 @@ export default function SyncTasks() {
                   </span>
                 </td>
                 <td className="p-3">
-                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{task.cron_expression || '手动'}</code>
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{task.cron_expression || tr('k_2a3e7f5c38')}</code>
                 </td>
                 <td className="p-3">
                   <div className="flex items-center gap-2">
@@ -258,10 +256,10 @@ export default function SyncTasks() {
                   <Switch checked={!!task.is_active} onCheckedChange={async v => {
                     try {
                       await dagApi.updateWorkflow(task.id, { is_active: v });
-                      toast.success(v ? '已启用调度' : '已停用调度');
+                      toast.success(v ? tr('k_dd92bb3294') : tr('k_5502616887'));
                       load();
                     } catch (e: any) {
-                      toast.error(e?.response?.data?.detail || '操作失败');
+                      toast.error(e?.response?.data?.detail || tr('k_5fa802bef5'));
                     }
                   }} />
                 </td>
@@ -274,10 +272,10 @@ export default function SyncTasks() {
                       onClick={async () => {
                         try {
                           await dagApi.deleteWorkflow(task.id);
-                          toast.success('已删除');
+                          toast.success(tr('k_5cc232620c'));
                           load();
                         } catch (e: any) {
-                          toast.error(e?.response?.data?.detail || '删除失败');
+                          toast.error(e?.response?.data?.detail || tr('k_acf0664a54'));
                         }
                       }}>
                       <Trash2 className="w-4 h-4 text-red-500" />
@@ -300,16 +298,14 @@ export default function SyncTasks() {
               <Zap className="w-6 h-6 text-amber-500 mb-2" />
               <div className="font-medium">{t("k_cb247d8135")}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                表单配置：源表 → 转换（可选 UDF）→ 目标表；内部为单节点 DAG，执行/血缘/质量同构
-              </div>
+                {tr('k_19f108c00c')}</div>
             </button>
             <button className="border rounded-lg p-4 text-left hover:border-primary transition-colors"
               onClick={() => { setWizardOpen(false); navigate('/data/sync/dag/new'); }}>
               <Workflow className="w-6 h-6 text-blue-500 mb-2" />
               <div className="font-medium">{t("k_cb8daea8b9")}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                画布编排多节点（同步 / SQL 任务 / 控制），支持依赖、并行与数据流视图
-              </div>
+                {tr('k_9f217071e4')}</div>
             </button>
           </div>
         </DialogContent>
@@ -319,12 +315,12 @@ export default function SyncTasks() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editTask ? '编辑简单同步任务' : '新建简单同步任务'}</DialogTitle>
+            <DialogTitle>{editTask ? tr('k_06e98f23b9') : tr('k_26eb3e90df')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">任务名称 *</label>
+                <label className="text-sm font-medium">{tr('k_670e563ffb')}</label>
                 <Input className="mt-1" value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
               </div>
@@ -332,7 +328,7 @@ export default function SyncTasks() {
                 <label className="text-sm font-medium">{t("k_0ffff13ec8")}</label>
                 <Input className="mt-1" value={form.schedule_cron}
                   onChange={e => setForm(f => ({ ...f, schedule_cron: e.target.value }))}
-                  placeholder="如 0 2 * * *（留空仅手动）" />
+                  placeholder={tr('k_e9846670f8')} />
               </div>
             </div>
             <div>
@@ -342,26 +338,26 @@ export default function SyncTasks() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">源数据源 *</label>
+                <label className="text-sm font-medium">{tr('k_6abfc28824')}</label>
                 <div className="mt-1">
                   <DatasourceSelect value={form.source_datasource}
                     onChange={v => setForm(f => ({ ...f, source_datasource: v }))} />
                 </div>
               </div>
               <div>
-                <label className="text-sm font-medium">源表 *</label>
+                <label className="text-sm font-medium">{tr('k_9bd9553623')}</label>
                 <Input className="mt-1" value={form.source_table}
                   onChange={e => setForm(f => ({ ...f, source_table: e.target.value }))} />
               </div>
               <div>
-                <label className="text-sm font-medium">目标数据源 *</label>
+                <label className="text-sm font-medium">{tr('k_ca1e476393')}</label>
                 <div className="mt-1">
                   <DatasourceSelect value={form.target_datasource}
                     onChange={v => setForm(f => ({ ...f, target_datasource: v }))} />
                 </div>
               </div>
               <div>
-                <label className="text-sm font-medium">目标表 *</label>
+                <label className="text-sm font-medium">{tr('k_c7c8c8f4b0')}</label>
                 <Input className="mt-1" value={form.target_table}
                   onChange={e => setForm(f => ({ ...f, target_table: e.target.value }))} />
               </div>
@@ -389,7 +385,7 @@ export default function SyncTasks() {
               </div>
               {form.sync_mode === 'incremental' && (
                 <div>
-                  <label className="text-sm font-medium">增量列 *</label>
+                  <label className="text-sm font-medium">{tr('k_9c885540a5')}</label>
                   <Input className="mt-1" value={form.incremental_column}
                     onChange={e => setForm(f => ({ ...f, incremental_column: e.target.value }))} />
                 </div>
@@ -401,7 +397,7 @@ export default function SyncTasks() {
                 onChange={e => setForm(f => ({ ...f, transform_sql: e.target.value }))}
                 placeholder={'SELECT id, name_mask(name) AS name, ip2geo(ip_addr) AS region FROM {{source}}'} />
               <p className="text-xs text-muted-foreground mt-1">
-                {'留空 = 整表同步；填写后按此 SELECT 取数（引用源表或 {{source}} 占位）'}
+                {tr('k_a24f1735c0')}
               </p>
             </div>
             <div>
@@ -436,7 +432,7 @@ export default function SyncTasks() {
       {/* 运行历史 */}
       <Dialog open={!!historyTask} onOpenChange={o => { if (!o) setHistoryTask(null); }}>
         <DialogContent className="max-w-3xl">
-          <DialogHeader><DialogTitle>运行历史 — {historyTask?.name}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{tr('k_3cfa588355')}{' '}{historyTask?.name}</DialogTitle></DialogHeader>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -459,7 +455,7 @@ export default function SyncTasks() {
                   <td className="p-2 text-right">
                     <Button variant="ghost" size="sm"
                       onClick={() => navigate(`/data/sync/dag-runs/${run.id}`)}>
-                      详情 <ArrowRight className="w-3 h-3 ml-1" />
+                      {tr('k_4f55ee1e68')}{' '}<ArrowRight className="w-3 h-3 ml-1" />
                     </Button>
                   </td>
                 </tr>

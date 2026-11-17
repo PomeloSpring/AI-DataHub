@@ -51,20 +51,24 @@ class ScheduledTaskService:
 
     # ── Scheduled Tasks CRUD ────────────────────────────────────────
 
-    def list_tasks(self, workspace_id: int = 0, page: int = 1, size: int = 20, owner_id: int = None) -> dict:
-        """List scheduled tasks with pagination, scoped by workspace."""
+    def list_tasks(self, owner_id: int, workspace_id: int = 0, page: int = 1, size: int = 20) -> dict:
+        """List scheduled tasks with pagination, scoped by creator (never by role).
+
+        owner_id 必填且 fail-closed：定时任务跟随创建者（用户），不再提供「不过滤属主」的
+        全量读口（历史缺陷：admin 旁路让同一角色的多人共享任务清单）。
+        """
+        uid = int(owner_id or 0)
+        if uid <= 0:
+            raise PermissionError("任务清单缺少可信身份")
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                conditions = []
-                params = []
+                conditions = ["owner_id = %s"]
+                params = [uid]
                 if workspace_id:
                     conditions.append("workspace_id = %s")
                     params.append(workspace_id)
-                if owner_id is not None:
-                    conditions.append("owner_id = %s")
-                    params.append(owner_id)
-                where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                where = f"WHERE {' AND '.join(conditions)}"
 
                 cur.execute(f"SELECT COUNT(*) AS total FROM adh_scheduled_tasks {where}", params)
                 total = cur.fetchone()["total"]

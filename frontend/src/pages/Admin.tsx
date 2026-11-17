@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   RefreshCw, Search, Plus, Edit, Trash2, Database, Users, UserPlus,
   Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, Link, AlertTriangle, Plug,
@@ -75,19 +75,19 @@ function usePagedData(apiBase: string) {
 // ── Keywords Help Popover ──────────────────────────────────────────────
 
 const TABLE_KEYWORDS_HELP = [
-  { title: '用途', desc: '用于向量检索匹配，影响 AI 能否快速找到这张表' },
-  { title: '填写原则', desc: '写用户可能会问的原话，而不是对表内容的描述' },
-  { title: '分隔方式', desc: '多个关键词用中文顿号 、 分隔' },
-  { title: '推荐示例', desc: '有多少用户、用户总数、用户数量统计' },
-  { title: '避免', desc: '❌ 用户信息、用户管理（太泛化，无法区分表）' },
+  { title: tr('k_9c5d49bda7'), desc: tr('k_e203aa47a3') },
+  { title: tr('k_5cabc86a8f'), desc: tr('k_d19b653259') },
+  { title: tr('k_491a83a73e'), desc: tr('k_d5d4abacb2') },
+  { title: tr('k_728d9f6e6d'), desc: tr('k_8c80673c89') },
+  { title: tr('k_83f4e917fb'), desc: tr('k_bcf9d9fb94') },
 ];
 
 const COL_KEYWORDS_HELP = [
-  { title: '用途', desc: '用于向量检索匹配，影响 AI 能否找到正确的字段' },
-  { title: '填写原则', desc: '写该字段在查询中的常见表达方式' },
-  { title: '分隔方式', desc: '多个关键词用中文顿号 、 分隔' },
-  { title: '推荐示例', desc: '用户数量、注册时间、账号状态' },
-  { title: '避免', desc: '❌ id、name（太简短，语义不明确）' },
+  { title: tr('k_9c5d49bda7'), desc: tr('k_1855ed4df8') },
+  { title: tr('k_5cabc86a8f'), desc: tr('k_e1247520b9') },
+  { title: tr('k_491a83a73e'), desc: tr('k_d5d4abacb2') },
+  { title: tr('k_728d9f6e6d'), desc: tr('k_9c4b980983') },
+  { title: tr('k_83f4e917fb'), desc: tr('k_2f62c5742a') },
 ];
 
 function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
@@ -145,20 +145,20 @@ function TableInfoTab() {
 
   const handleSync = async () => {
     if (!syncDsId) {
-      toast.error('请先选择要同步的数据源');
+      toast.error(tr('k_3640d794fd'));
       return;
     }
     setSyncing(true);
     try {
       const { data: res } = await client.post('/admin/sync/metadata', { datasource_id: syncDsId });
       if (res.success === false) {
-        toast.error(res.message || '同步失败');
+        toast.error(res.message || tr('k_d61036e7f5'));
       } else {
         toast.success(res.message);
         load();
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.response?.data?.message || '同步失败');
+      toast.error(e.response?.data?.detail || e.response?.data?.message || tr('k_d61036e7f5'));
     } finally {
       setSyncing(false);
     }
@@ -166,7 +166,7 @@ function TableInfoTab() {
 
   const handleClearDs = async () => {
     if (!syncDsId) {
-      toast.error('请先选择要清理的数据源');
+      toast.error(tr('k_12b6ae18b9'));
       return;
     }
     setClearing(true);
@@ -179,7 +179,7 @@ function TableInfoTab() {
         toast.error(res.message);
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.message || '清理失败');
+      toast.error(e.response?.data?.message || tr('k_c0dfb37b8c'));
     } finally {
       setClearing(false);
       setClearDsOpen(false);
@@ -193,26 +193,26 @@ function TableInfoTab() {
 
   const handleCreate = async () => {
     if (!formValues.table_name?.trim()) {
-      toast.error('请输入表名');
+      toast.error(tr('k_72c80fafab'));
       return;
     }
     try {
       await client.post('/admin/table-info', formValues);
-      toast.success('已添加');
+      toast.success(tr('k_b189550a0d'));
       setModalOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '添加失败');
+      toast.error(e.response?.data?.detail || tr('k_6452a05591'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/admin/table-info/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || tr('k_acf0664a54'));
     }
   };
 
@@ -230,21 +230,21 @@ function TableInfoTab() {
   const saveEdit = async () => {
     try {
       await client.put(`/admin/table-info/${editingId}`, editValues);
-      toast.success('已保存');
+      toast.success(tr('k_f8dfedcd8a'));
       setEditingId(null);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     }
   };
 
   const toggleActive = async (record: any) => {
     try {
       await client.put(`/admin/table-info/${record.id}`, { is_active: !record.is_active });
-      toast.success(record.is_active ? '已禁用' : '已启用');
+      toast.success(record.is_active ? tr('k_0fe5a98e9f') : tr('k_53ace4305f'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || tr('k_5fa802bef5'));
     }
   };
 
@@ -272,14 +272,12 @@ function TableInfoTab() {
           />
           <Button onClick={doSearch}>
             <Search className="h-4 w-4 mr-2" />
-            搜索
-          </Button>
+            {tr('k_f04090805c')}</Button>
         </div>
         <div className="flex items-center gap-2">
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4 mr-2" />
-            手动添加
-          </Button>
+            {tr('k_63edd678c0')}</Button>
           <Select value={String(syncDsId)} onValueChange={(v) => setSyncDsId(Number(v))}>
             <SelectTrigger className="w-[180px] h-9">
               <SelectValue placeholder={t("k_422b9e314a")} />
@@ -294,12 +292,10 @@ function TableInfoTab() {
           </Select>
           <Button variant="outline" onClick={handleSync} disabled={syncing || !syncDsId}>
             <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-            同步元数据
-          </Button>
+            {tr('k_9d6343628f')}</Button>
           <Button variant="destructive" onClick={() => setClearDsOpen(true)} disabled={!syncDsId}>
             <Trash2 className="h-4 w-4 mr-2" />
-            清理数据源
-          </Button>
+            {tr('k_6ec5441655')}</Button>
         </div>
       </div>
 
@@ -309,20 +305,16 @@ function TableInfoTab() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-destructive" />
-              确认清理
-            </DialogTitle>
+              {tr('k_f0da7da6d2')}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要清理数据源 <strong>{datasources.find(ds => ds.id === syncDsId)?.name}</strong> 的所有元数据吗？
-            <br /><br />
-            此操作将删除该数据源下的<strong>{t("k_2c314c996a")}</strong>，且不可撤销。
-          </p>
+            {tr('k_409915f289')}{' '}<strong>{datasources.find(ds => ds.id === syncDsId)?.name}</strong> {tr('k_ed41ae5153')}<br /><br />
+            {tr('k_17e568a4b6')}<strong>{t("k_2c314c996a")}</strong>{tr('k_843431f786')}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setClearDsOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleClearDs} disabled={clearing}>
               {clearing && <Spinner className="h-4 w-4 mr-2" />}
-              确认清理
-            </Button>
+              {tr('k_f0da7da6d2')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -465,9 +457,9 @@ function TableInfoTab() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>表名 *</Label>
+              <Label>{tr('k_58ea9451cc')}</Label>
               <Input
-                placeholder="如: dim_case"
+                placeholder={tr('k_5376bee220')}
                 value={formValues.table_name || ''}
                 onChange={(e) => setFormValues({ ...formValues, table_name: e.target.value })}
               />
@@ -512,7 +504,7 @@ function TableInfoTab() {
                 <KeywordsHelp items={TABLE_KEYWORDS_HELP} />
               </div>
               <Input
-                placeholder="精简关键词，用于向量检索匹配，如: 有多少用户、用户总数"
+                placeholder={tr('k_62466c052f')}
                 value={formValues.keywords || ''}
                 onChange={(e) => setFormValues({ ...formValues, keywords: e.target.value })}
               />
@@ -522,7 +514,7 @@ function TableInfoTab() {
               <div className="space-y-2">
                 <Label>{t("k_49aa0a7282")}</Label>
                 <Input
-                  placeholder="如: 医疗"
+                  placeholder={tr('k_b0d901d937')}
                   value={formValues.domain_tag || ''}
                   onChange={(e) => setFormValues({ ...formValues, domain_tag: e.target.value })}
                 />
@@ -530,7 +522,7 @@ function TableInfoTab() {
               <div className="space-y-2">
                 <Label>{t("k_c286d8e149")}</Label>
                 <Input
-                  placeholder="如: 华东"
+                  placeholder={tr('k_30b7066643')}
                   value={formValues.region_tag || ''}
                   onChange={(e) => setFormValues({ ...formValues, region_tag: e.target.value })}
                 />
@@ -589,11 +581,11 @@ function ColumnMetadataTab() {
 
   const handleSync = async () => {
     if (!syncDsId) {
-      toast.error('请先选择数据源');
+      toast.error(tr('k_192dc9f17f'));
       return;
     }
     if (!syncTableName.trim()) {
-      toast.error('请输入要同步的表名');
+      toast.error(tr('k_27617e0cd3'));
       return;
     }
     setSyncing(true);
@@ -609,7 +601,7 @@ function ColumnMetadataTab() {
         toast.error(res.message);
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.message || '同步失败');
+      toast.error(e.response?.data?.message || tr('k_d61036e7f5'));
     } finally {
       setSyncing(false);
     }
@@ -617,11 +609,11 @@ function ColumnMetadataTab() {
 
   const handleClearTable = async () => {
     if (!syncDsId) {
-      toast.error('请先选择数据源');
+      toast.error(tr('k_192dc9f17f'));
       return;
     }
     if (!syncTableName.trim()) {
-      toast.error('请输入要清理的表名');
+      toast.error(tr('k_3a600b5b64'));
       return;
     }
     setClearing(true);
@@ -637,7 +629,7 @@ function ColumnMetadataTab() {
         toast.error(res.message);
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.message || '清理失败');
+      toast.error(e.response?.data?.message || tr('k_c0dfb37b8c'));
     } finally {
       setClearing(false);
       setClearTableOpen(false);
@@ -651,30 +643,30 @@ function ColumnMetadataTab() {
 
   const handleCreate = async () => {
     if (!formValues.table_name?.trim()) {
-      toast.error('请输入表名');
+      toast.error(tr('k_72c80fafab'));
       return;
     }
     if (!formValues.column_name?.trim()) {
-      toast.error('请输入字段名');
+      toast.error(tr('k_5755fa7071'));
       return;
     }
     try {
       await client.post('/admin/metadata', formValues);
-      toast.success('已添加');
+      toast.success(tr('k_b189550a0d'));
       setModalOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '添加失败');
+      toast.error(e.response?.data?.detail || tr('k_6452a05591'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/admin/metadata/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || tr('k_acf0664a54'));
     }
   };
 
@@ -690,21 +682,21 @@ function ColumnMetadataTab() {
   const saveEdit = async () => {
     try {
       await client.put(`/admin/metadata/${editingId}`, editValues);
-      toast.success('已保存');
+      toast.success(tr('k_f8dfedcd8a'));
       setEditingId(null);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     }
   };
 
   const toggleActive = async (record: any) => {
     try {
       await client.put(`/admin/metadata/${record.id}`, { is_active: !record.is_active });
-      toast.success(record.is_active ? '已禁用' : '已启用');
+      toast.success(record.is_active ? tr('k_0fe5a98e9f') : tr('k_53ace4305f'));
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || tr('k_5fa802bef5'));
     }
   };
 
@@ -733,12 +725,10 @@ function ColumnMetadataTab() {
         />
         <Button size="sm" onClick={handleSync} disabled={syncDisabled}>
           <RefreshCw className={`h-3 w-3 mr-1 ${syncing ? 'animate-spin' : ''}`} />
-          同步字段
-        </Button>
+          {tr('k_7fc8dab206')}</Button>
         <Button size="sm" variant="destructive" onClick={() => setClearTableOpen(true)} disabled={!syncDsId || !syncTableName.trim()}>
           <Trash2 className="h-3 w-3 mr-1" />
-          清理单表
-        </Button>
+          {tr('k_9e1dea9428')}</Button>
       </div>
 
       {/* Clear Table Confirmation Dialog */}
@@ -747,20 +737,16 @@ function ColumnMetadataTab() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-destructive" />
-              确认清理
-            </DialogTitle>
+              {tr('k_f0da7da6d2')}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要清理表 <strong>{syncTableName}</strong> 的所有元数据吗？
-            <br /><br />
-            此操作将删除该表的<strong>{t("k_b874fc9ed3")}</strong>，且不可撤销。
-          </p>
+            {tr('k_f4204c77bf')}{' '}<strong>{syncTableName}</strong> {tr('k_ed41ae5153')}<br /><br />
+            {tr('k_b28cb66f3f')}<strong>{t("k_b874fc9ed3")}</strong>{tr('k_843431f786')}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setClearTableOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleClearTable} disabled={clearing}>
               {clearing && <Spinner className="h-4 w-4 mr-2" />}
-              确认清理
-            </Button>
+              {tr('k_f0da7da6d2')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -795,13 +781,11 @@ function ColumnMetadataTab() {
           />
           <Button onClick={doSearch}>
             <Search className="h-4 w-4 mr-2" />
-            搜索
-          </Button>
+            {tr('k_f04090805c')}</Button>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
-          手动添加
-        </Button>
+          {tr('k_63edd678c0')}</Button>
       </div>
 
       <div className="rounded-lg border bg-card overflow-hidden">
@@ -925,17 +909,17 @@ function ColumnMetadataTab() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>表名 *</Label>
+                <Label>{tr('k_58ea9451cc')}</Label>
                 <Input
-                  placeholder="如: dim_case"
+                  placeholder={tr('k_5376bee220')}
                   value={formValues.table_name || ''}
                   onChange={(e) => setFormValues({ ...formValues, table_name: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <Label>字段名 *</Label>
+                <Label>{tr('k_970457073d')}</Label>
                 <Input
-                  placeholder="如: case_code"
+                  placeholder={tr('k_204eaedffd')}
                   value={formValues.column_name || ''}
                   onChange={(e) => setFormValues({ ...formValues, column_name: e.target.value })}
                 />
@@ -945,7 +929,7 @@ function ColumnMetadataTab() {
               <div className="space-y-2">
                 <Label>{t("k_b031dc9a85")}</Label>
                 <Input
-                  placeholder="如: VARCHAR(255)"
+                  placeholder={tr('k_e0563099cd')}
                   value={formValues.data_type || ''}
                   onChange={(e) => setFormValues({ ...formValues, data_type: e.target.value })}
                 />
@@ -1091,10 +1075,10 @@ function TermsTab() {
     try {
       if (editing) {
         await client.put(`/admin/terms/${editing.id}`, formValues);
-        toast.success('已更新');
+        toast.success(tr('k_1b92092d63'));
       } else {
         await client.post('/admin/terms', formValues);
-        toast.success('已创建');
+        toast.success(tr('k_2d4c5dcc74'));
       }
       setModalOpen(false);
       load();
@@ -1106,20 +1090,20 @@ function TermsTab() {
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/admin/terms/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       load();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
   const handleToggle = async (id: number) => {
     try {
       const { data } = await client.put(`/admin/terms/${id}/toggle`);
-      toast.success(data.is_active ? '已启用' : '已禁用');
+      toast.success(data.is_active ? tr('k_53ace4305f') : tr('k_0fe5a98e9f'));
       load();
     } catch {
-      toast.error('切换状态失败');
+      toast.error(tr('k_c2312c491e'));
     }
   };
 
@@ -1139,8 +1123,7 @@ function TermsTab() {
         />
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
-          新建术语
-        </Button>
+          {tr('k_78f6fd78ce')}</Button>
       </div>
 
       <div className="rounded-lg border bg-card overflow-hidden">
@@ -1174,7 +1157,7 @@ function TermsTab() {
                     <td className="p-4 align-middle text-sm max-w-[160px] truncate">{row.term_aliases}</td>
                     <td className="p-4 align-middle">
                       <Badge variant={row.term_type === 'metric' ? 'default' : 'secondary'}>
-                        {row.term_type === 'metric' ? '指标' : '维度'}
+                        {row.term_type === 'metric' ? tr('k_1dfc810a7b') : tr('k_72fa9ecdc4')}
                       </Badge>
                     </td>
                     <td className="p-4 align-middle text-sm max-w-[120px] truncate">{row.target_table}</td>
@@ -1219,14 +1202,14 @@ function TermsTab() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[600px]">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑术语' : '新建术语'}</DialogTitle>
+            <DialogTitle>{editing ? tr('k_42c15579f1') : tr('k_78f6fd78ce')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>中文名 *</Label>
+                <Label>{tr('k_f04d472993')}</Label>
                 <Input
-                  placeholder="如: 病例"
+                  placeholder={tr('k_29df8ec1ec')}
                   value={formValues.term_cn || ''}
                   onChange={(e) => setFormValues({ ...formValues, term_cn: e.target.value })}
                 />
@@ -1234,7 +1217,7 @@ function TermsTab() {
               <div className="space-y-2">
                 <Label>{t("k_decc83f773")}</Label>
                 <Input
-                  placeholder="如: case"
+                  placeholder={tr('k_f50ebd3895')}
                   value={formValues.term_en || ''}
                   onChange={(e) => setFormValues({ ...formValues, term_en: e.target.value })}
                 />
@@ -1243,13 +1226,13 @@ function TermsTab() {
             <div className="space-y-2">
               <Label>{t("k_5816a023d3")}</Label>
               <Input
-                placeholder="如: case_code,诊断,检查"
+                placeholder={tr('k_f40aa2c1d7')}
                 value={formValues.term_aliases || ''}
                 onChange={(e) => setFormValues({ ...formValues, term_aliases: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <Label>类型 *</Label>
+              <Label>{tr('k_f95aa5bf82')}</Label>
               <Select value={formValues.term_type || 'dimension'} onValueChange={(v) => setFormValues({ ...formValues, term_type: v })}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1264,7 +1247,7 @@ function TermsTab() {
               <div className="space-y-2">
                 <Label>{t("k_442be9c497")}</Label>
                 <Input
-                  placeholder="如: dim_case"
+                  placeholder={tr('k_5376bee220')}
                   value={formValues.target_table || ''}
                   onChange={(e) => setFormValues({ ...formValues, target_table: e.target.value })}
                 />
@@ -1272,7 +1255,7 @@ function TermsTab() {
               <div className="space-y-2">
                 <Label>{t("k_167c3f094d")}</Label>
                 <Input
-                  placeholder="如: case_code"
+                  placeholder={tr('k_204eaedffd')}
                   value={formValues.target_column || ''}
                   onChange={(e) => setFormValues({ ...formValues, target_column: e.target.value })}
                 />
@@ -1281,7 +1264,7 @@ function TermsTab() {
             <div className="space-y-2">
               <Label>{t("k_b434ec47f3")}</Label>
               <Input
-                placeholder="如: COUNT(*)"
+                placeholder={tr('k_c150e09e5d')}
                 className="font-mono"
                 value={formValues.calculation || ''}
                 onChange={(e) => setFormValues({ ...formValues, calculation: e.target.value })}
@@ -1311,9 +1294,9 @@ function TermsTab() {
 
 // 数据库类别分区（关系型 / 数仓 / 其他）：列表分区展示与类型选择分组共用
 const DB_CATEGORIES: Record<string, { label: string; icon: any; desc: string }> = {
-  relational: { label: '关系型数据库', icon: Database, desc: '事务型业务库（OLTP）：MySQL、PostgreSQL' },
-  warehouse: { label: '数据仓库', icon: Cylinder, desc: '分析型数仓（OLAP）：Apache Doris' },
-  other: { label: '其他数据服务', icon: Server, desc: '日志/检索等外部服务接入' },
+  relational: { label: tr('k_60169fae6a'), icon: Database, desc: tr('k_b90113a955') },
+  warehouse: { label: tr('k_f86bf0bae3'), icon: Cylinder, desc: tr('k_42b55a6539') },
+  other: { label: tr('k_547141f11f'), icon: Server, desc: tr('k_b8e9b93d42') },
 };
 const DB_CATEGORY_ORDER = ['relational', 'warehouse', 'other'];
 
@@ -1321,7 +1304,7 @@ const DB_TYPES = [
   { value: 'mysql', label: 'MySQL', icon: Database, color: 'text-blue-400', defaultPort: 3306, category: 'relational' },
   { value: 'postgresql', label: 'PostgreSQL', icon: Database, color: 'text-indigo-400', defaultPort: 5432, category: 'relational' },
   { value: 'doris', label: 'Apache Doris', icon: Cylinder, color: 'text-cyan-400', defaultPort: 9030, category: 'warehouse' },
-  { value: 'sls', label: 'SLS (PG协议接入)', icon: Server, color: 'text-teal-400', defaultPort: 5432, category: 'other' },
+  { value: 'sls', label: tr('k_b02fff5bfc'), icon: Server, color: 'text-teal-400', defaultPort: 5432, category: 'other' },
   // ES 没有 DB-API 连接（走 REST /_sql），“库”这一层由索引别名承担，因此没有数据库名字段
   { value: 'es', label: 'Elasticsearch', icon: Server, color: 'text-rose-400', defaultPort: 9200, category: 'other' },
 ];
@@ -1389,7 +1372,7 @@ function EsTagField({ label, placeholder, values, hint, onChange }: {
               {v}
               <button
                 type="button"
-                aria-label={`移除 ${v}`}
+                aria-label={tr('k_9cb6e8d291', { p0: v })}
                 onClick={() => onChange(values.filter((x) => x !== v))}
               >
                 <XIcon className="h-3 w-3" />
@@ -1438,14 +1421,12 @@ function QueryGateFields({ values, onPatch }: { values: any; onPatch: (patch: Re
             type="number" min={0} max={120}
             value={values.gate_queue_wait_sec}
             onChange={(e) => onPatch({ gate_queue_wait_sec: e.target.value })}
-            placeholder="默认 10 秒；填 0 = 不排队直接拒"
+            placeholder={tr('k_59aa469e1e')}
           />
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        保护源侧资源：同时打到本源的查询数不超过上限，超出先排队，排不到则提示“稍后重试”。
-        留空 = 用平台默认（8 并发 / 排队 10 秒）；保存后即时生效，不重启也不打断在跑的查询。
-      </p>
+        {tr('k_654fbc92d5')}</p>
     </div>
   );
 }
@@ -1604,32 +1585,32 @@ export function DatasourceTab() {
     if (isEsDbType(formValues.db_type)
         && !(formValues.es_aliases || []).length && !(formValues.es_patterns || []).length) {
       // 与后端同一口径（开放范围为空即拒建源）：前端先拦一道，不让管理员存一个永远跑不通的源
-      toast.error('请至少登记一个可查索引别名（开放范围为空 = 不开放任何索引）');
+      toast.error(tr('k_bb41cd8874'));
       return;
     }
     try {
       const payload = buildPayload();
       if (editing) {
         await client.put(`/datasources/${editing.id}`, payload);
-        toast.success('已更新');
+        toast.success(tr('k_1b92092d63'));
       } else {
         await client.post('/datasources', payload);
-        toast.success('已创建');
+        toast.success(tr('k_2d4c5dcc74'));
       }
       setModalOpen(false);
       loadDatasources();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || tr('k_5fa802bef5'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/datasources/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       loadDatasources();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
@@ -1640,13 +1621,13 @@ export function DatasourceTab() {
       const { data } = await client.post(`/datasources/${id}/test`);
       setTestResult({ id, success: data.success, message: data.message });
       if (data.success) {
-        toast.success('连接成功');
+        toast.success(tr('k_b33199d32d'));
       } else {
-        toast.error(data.message || '连接失败');
+        toast.error(data.message || tr('k_0745fc09bb'));
       }
     } catch (e: any) {
-      setTestResult({ id, success: false, message: e.response?.data?.detail || '测试失败' });
-      toast.error('连接测试失败');
+      setTestResult({ id, success: false, message: e.response?.data?.detail || tr('k_9710d9b9f1') });
+      toast.error(tr('k_f91780a3f7'));
     } finally {
       setTesting(null);
     }
@@ -1672,12 +1653,11 @@ export function DatasourceTab() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold">{t("k_2bb6501b4f")}</h3>
-          <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)、Elasticsearch</p>
+          <p className="text-sm text-muted-foreground">{tr('k_c61dbda058')}</p>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-2" />
-          添加数据源
-        </Button>
+          {tr('k_369c67721a')}</Button>
       </div>
 
       {loading ? (
@@ -1691,8 +1671,7 @@ export function DatasourceTab() {
           <p className="text-sm mb-6">{t("k_6d26d3e88e")}</p>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4 mr-2" />
-            添加第一个数据源
-          </Button>
+            {tr('k_883fb75455')}</Button>
         </div>
       ) : (
         <div className="space-y-8">
@@ -1751,13 +1730,13 @@ export function DatasourceTab() {
                       <Database className="h-3 w-3" />
                       {/* ES 没有库名：这一行说开放索引别名（数量 + 首个名字），不拿「-」充数 */}
                       <span>{isEsDbType(ds.db_type)
-                        ? `${esExtraOf(ds).aliases.length} 个索引别名（如 ${esExtraOf(ds).aliases[0] || '未登记'}）`
+                        ? tr('k_492639832e', { p0: esExtraOf(ds).aliases.length, p1: esExtraOf(ds).aliases[0] || tr('k_3c69de319c') })
                         : (ds.database_name || '-')}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Globe className="h-3 w-3" />
                       {/* 显示站点业务名（不显示裸 code）；未站点化显式标注 */}
-                      <span>{siteNameOf(sites, ds.site_code) || '未站点化'}</span>
+                      <span>{siteNameOf(sites, ds.site_code) || tr('k_71c299c974')}</span>
                     </div>
                   </div>
 
@@ -1784,12 +1763,11 @@ export function DatasourceTab() {
                       ) : (
                         <Wifi className="h-3 w-3 mr-1" />
                       )}
-                      测试连接
-                    </Button>
+                      {tr('k_10b7d8eccc')}</Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      aria-label={`编辑数据源 ${ds.name}`}
+                      aria-label={tr('k_8ca6b44902', { p0: ds.name })}
                       onClick={() => openEdit(ds)}
                     >
                       <Edit className="h-3 w-3" />
@@ -1797,7 +1775,7 @@ export function DatasourceTab() {
                     <Button
                       size="sm"
                       variant="outline"
-                      aria-label={`删除数据源 ${ds.name}`}
+                      aria-label={tr('k_22ec92889a', { p0: ds.name })}
                       onClick={() => handleDelete(ds.id)}
                     >
                       <Trash2 className="h-3 w-3 text-destructive" />
@@ -1818,11 +1796,11 @@ export function DatasourceTab() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑数据源' : '添加数据源'}</DialogTitle>
+            <DialogTitle>{editing ? tr('k_d1090e03b6') : tr('k_369c67721a')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>数据源名称 *</Label>
+              <Label>{tr('k_8ad79dd23b')}</Label>
               <Input
                 value={formValues.name}
                 onChange={(e) => setFormValues({ ...formValues, name: e.target.value })}
@@ -1831,7 +1809,7 @@ export function DatasourceTab() {
             </div>
 
             <div className="space-y-2">
-              <Label>数据库类型 *</Label>
+              <Label>{tr('k_7f7c1b9302')}</Label>
               <Select
                 value={formValues.db_type}
                 onValueChange={handleDbTypeChange}
@@ -1867,7 +1845,7 @@ export function DatasourceTab() {
 
             <div className="grid grid-cols-3 gap-4">
               <div className="col-span-2 space-y-2">
-                <Label>主机地址 *</Label>
+                <Label>{tr('k_92de2deaef')}</Label>
                 <Input
                   value={formValues.host}
                   onChange={(e) => setFormValues({ ...formValues, host: e.target.value })}
@@ -1875,7 +1853,7 @@ export function DatasourceTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>端口 *</Label>
+                <Label>{tr('k_bc8f74f872')}</Label>
                 <Input
                   type="number"
                   value={formValues.port}
@@ -1886,7 +1864,7 @@ export function DatasourceTab() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>用户名 *</Label>
+                <Label>{tr('k_04c3dd6f32')}</Label>
                 <Input
                   value={formValues.username}
                   onChange={(e) => setFormValues({ ...formValues, username: e.target.value })}
@@ -1894,7 +1872,7 @@ export function DatasourceTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>密码 {editing ? '(留空不修改)' : '*'}</Label>
+                <Label>{tr('k_c839a8ff17')}{' '}{editing ? tr('k_7289ea78d4') : '*'}</Label>
                 <Input
                   type="password"
                   value={formValues.password}
@@ -1908,18 +1886,18 @@ export function DatasourceTab() {
             {isEsDbType(formValues.db_type) ? (
               <>
                 <EsTagField
-                  label="可查索引别名 *"
-                  placeholder="如：t_software_app_operation_log"
+                  label={tr('k_81b89a3a9c')}
+                  placeholder={tr('k_75e5f4d758')}
                   values={formValues.es_aliases || []}
                   onChange={(v) => setFormValues({ ...formValues, es_aliases: v })}
-                  hint="别名是集群侧的索引集合名，与策略/敏感登记用的表名同一套名字；不向集群展开具体索引。"
+                  hint={tr('k_66d88b2fad')}
                 />
                 <EsTagField
                   label={t("k_1312376ae7")}
-                  placeholder="如：t-t_equipment_warning_log*"
+                  placeholder={tr('k_4ee41b437c')}
                   values={formValues.es_patterns || []}
                   onChange={(v) => setFormValues({ ...formValues, es_patterns: v })}
-                  hint="与别名取并集：两种写法都能过白名单硬门（存量正文里仍有模式写法）；但去掉 t- 前缀的模式会多匹配另一族索引，按扩权拒。"
+                  hint={tr('k_2f0b311bfd')}
                 />
                 <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
@@ -1951,18 +1929,13 @@ export function DatasourceTab() {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  预算按源配（不同源体量与链路不同）：超时 1~300 秒、连接池 1~64。
-                  连接池 = 对本集群复用的 HTTP 连接数，看板一次刷新多张图不再各自重做 TLS 握手；
-                  池只管复用不管限流（池满时仍会新建连接），“同时最多多少条查询”由下面的并发上限控。
-                </p>
+                  {tr('k_fd3c91e2ab')}</p>
                 <QueryGateFields
                   values={formValues}
                   onPatch={(patch) => setFormValues({ ...formValues, ...patch })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Elasticsearch 源支持行级/列级策略（行过滤以 AND 写进顶层 WHERE，列脱敏编译进 SQL）；
-                  hash 型脱敏本引擎没有对应函数，只能选 partial 或将数据物化到支持哈希的引擎。
-                </p>
+                  {tr('k_4444fc87db')}</p>
               </>
             ) : (
               <>
@@ -1996,9 +1969,7 @@ export function DatasourceTab() {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  跨境/高延迟源可适当拉高；两项都清空 = 回到默认（连接 10 秒 / 查询 30 秒）。
-                  查询超时在源侧强制执行（MySQL/Doris 走 socket read_timeout，PG/SLS 下发 statement_timeout）。
-                </p>
+                  {tr('k_01566d9df4')}</p>
                 {/* 超时只管“单条查询多久”，不管“同时多少条”：后者才是源侧连接数/配额被打爆的原因 */}
                 <QueryGateFields
                   values={formValues}
@@ -2040,7 +2011,7 @@ export function DatasourceTab() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>
-              {editing ? '更新' : '创建'}
+              {editing ? tr('k_d9db02d07a') : tr('k_fcbd093292')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2058,15 +2029,15 @@ export function DatasourceTab() {
 // ── Users Tab ──────────────────────────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
-  analyst: '分析师',
-  viewer: '查看者',
+  admin: tr('k_b1dae9bc5c'),
+  analyst: tr('k_eff39d6862'),
+  viewer: tr('k_590ddb4376'),
 };
 
 const STATUS_LABELS: Record<string, { label: string; variant: 'default' | 'destructive' | 'secondary' | 'outline' }> = {
-  active: { label: '正常', variant: 'default' },
-  disabled: { label: '已禁用', variant: 'destructive' },
-  locked: { label: '已锁定', variant: 'secondary' },
+  active: { label: tr('k_fd6e80f1e0'), variant: 'default' },
+  disabled: { label: tr('k_0fe5a98e9f'), variant: 'destructive' },
+  locked: { label: tr('k_e81c64501e'), variant: 'secondary' },
 };
 
 function UsersTab() {
@@ -2130,16 +2101,16 @@ function UsersTab() {
 
   // ── Create user ──
   const handleCreate = async () => {
-    if (!createForm.username?.trim()) { toast.error('请输入用户名'); return; }
-    if (!createForm.password) { toast.error('请输入密码'); return; }
+    if (!createForm.username?.trim()) { toast.error(tr('k_08b1fa1304')); return; }
+    if (!createForm.password) { toast.error(tr('k_713b738250')); return; }
     try {
       await client.post('/users/', createForm);
-      toast.success('用户创建成功');
+      toast.success(tr('k_a7499d82cb'));
       setCreateOpen(false);
       setCreateForm({ role: 'viewer' });
       loadUsers();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '创建失败');
+      toast.error(e.response?.data?.detail || tr('k_a889286a51'));
     }
   };
 
@@ -2159,11 +2130,11 @@ function UsersTab() {
   const handleEdit = async () => {
     try {
       await client.put(`/users/${selectedUser.id}`, editForm);
-      toast.success('用户信息已更新');
+      toast.success(tr('k_f98e6c3701'));
       setEditOpen(false);
       loadUsers();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '更新失败');
+      toast.error(e.response?.data?.detail || tr('k_930442e2f4'));
     }
   };
 
@@ -2175,13 +2146,13 @@ function UsersTab() {
   };
 
   const handleResetPwd = async () => {
-    if (!resetPwdForm.new_password) { toast.error('请输入新密码'); return; }
+    if (!resetPwdForm.new_password) { toast.error(tr('k_abdd7ea830')); return; }
     try {
       await client.put(`/users/${selectedUser.id}/password`, resetPwdForm);
-      toast.success('密码已重置');
+      toast.success(tr('k_2f1f1d2769'));
       setResetPwdOpen(false);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '重置失败');
+      toast.error(e.response?.data?.detail || tr('k_4d71382234'));
     }
   };
 
@@ -2190,10 +2161,10 @@ function UsersTab() {
     const newStatus = user.status === 'active' ? 'disabled' : 'active';
     try {
       await client.put(`/users/${user.id}/status`, { status: newStatus });
-      toast.success(newStatus === 'active' ? '已启用' : '已禁用');
+      toast.success(newStatus === 'active' ? tr('k_53ace4305f') : tr('k_0fe5a98e9f'));
       loadUsers();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || tr('k_5fa802bef5'));
     }
   };
 
@@ -2206,11 +2177,11 @@ function UsersTab() {
   const handleDelete = async () => {
     try {
       await client.delete(`/users/${selectedUser.id}`);
-      toast.success('用户已删除');
+      toast.success(tr('k_7f2b4b51c3'));
       setDeleteOpen(false);
       loadUsers();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || tr('k_acf0664a54'));
     }
   };
 
@@ -2239,13 +2210,11 @@ function UsersTab() {
           </Select>
           <Button onClick={doSearch}>
             <Search className="h-4 w-4 mr-2" />
-            搜索
-          </Button>
+            {tr('k_f04090805c')}</Button>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <UserPlus className="h-4 w-4 mr-2" />
-          添加用户
-        </Button>
+          {tr('k_4f965d4969')}</Button>
       </div>
 
       {/* Users table */}
@@ -2288,7 +2257,7 @@ function UsersTab() {
                       </Badge>
                     </td>
                     <td className="p-4 align-middle text-sm text-muted-foreground">
-                      {user.last_login ? new Date(user.last_login).toLocaleString('zh-CN') : '从未登录'}
+                      {user.last_login ? new Date(user.last_login).toLocaleString('zh-CN') : tr('k_21745c7630')}
                     </td>
                     <td className="p-4 align-middle text-sm text-muted-foreground">
                       {user.created_at ? new Date(user.created_at).toLocaleString('zh-CN') : ''}
@@ -2308,7 +2277,7 @@ function UsersTab() {
                           size="sm"
                           variant="ghost"
                           onClick={() => toggleStatus(user)}
-                          title={user.status === 'active' ? '禁用' : '启用'}
+                          title={user.status === 'active' ? tr('k_be70be5a2e') : tr('k_d4e9ca3dd4')}
                         >
                           {user.status === 'active' ? (
                             <svg className="h-4 w-4 text-destructive" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2332,8 +2301,7 @@ function UsersTab() {
                 {users.length === 0 && (
                   <tr>
                     <td colSpan={9} className="p-8 text-center text-muted-foreground">
-                      暂无用户数据
-                    </td>
+                      {tr('k_0138ae5c72')}</td>
                   </tr>
                 )}
               </tbody>
@@ -2361,7 +2329,7 @@ function UsersTab() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>用户名 *</Label>
+                <Label>{tr('k_04c3dd6f32')}</Label>
                 <Input
                   placeholder={t("k_57553a09bb")}
                   value={createForm.username || ''}
@@ -2378,7 +2346,7 @@ function UsersTab() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>密码 *</Label>
+              <Label>{tr('k_3140c0460f')}</Label>
               <Input
                 type="password"
                 placeholder={t("k_31273e6ecf")}
@@ -2496,10 +2464,9 @@ function UsersTab() {
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              为用户 <strong>{selectedUser?.username}</strong> 设置新密码
-            </p>
+              {tr('k_31f64c4c20')}{' '}<strong>{selectedUser?.username}</strong> {tr('k_9c04e9caa2')}</p>
             <div className="space-y-2">
-              <Label>新密码 *</Label>
+              <Label>{tr('k_511261d829')}</Label>
               <Input
                 type="password"
                 placeholder={t("k_31273e6ecf")}
@@ -2522,8 +2489,7 @@ function UsersTab() {
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除用户 <strong>{selectedUser?.username}</strong> 吗？此操作不可撤销。
-          </p>
+            {tr('k_c6fec6fff3')}{' '}<strong>{selectedUser?.username}</strong> {tr('k_94001c097e')}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete}>{t("k_3c06abe116")}</Button>
@@ -2559,9 +2525,9 @@ function BrandSettingsTab() {
       // updateBrand 内部已 PUT + 刷新全端品牌快照 + 写回标签标题与图标，本页不再重复实现
       const saved = await updateBrand(brand);
       setBrand(saved);
-      toast.success('品牌设置已保存');
+      toast.success(tr('k_07051b1553'));
     } catch {
-      toast.error('保存失败');
+      toast.error(tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -2572,7 +2538,7 @@ function BrandSettingsTab() {
     if (!file) return;
     // Max 512KB
     if (file.size > 512 * 1024) {
-      toast.error('图标文件不能超过 512KB');
+      toast.error(tr('k_a65dad7585'));
       return;
     }
     const reader = new FileReader();
@@ -2621,7 +2587,7 @@ function BrandSettingsTab() {
           onChange={(e) => setBrand({ ...brand, app_name: e.target.value })}
           placeholder="AI-DataHub"
         />
-        <p className="text-xs text-muted-foreground">显示在左上角、登录页与浏览器标签页标题（固定格式「{buildAppTitle(brand.app_name || DEFAULT_APP_NAME)}」），标签页图标上的字母也由此名称派生</p>
+        <p className="text-xs text-muted-foreground">{tr('k_fb22d22991')}{buildAppTitle(brand.app_name || DEFAULT_APP_NAME)}{tr('k_6fbc2173ab')}</p>
       </div>
 
       {/* Tagline */}
@@ -2653,13 +2619,11 @@ function BrandSettingsTab() {
             onClick={() => fileInputRef.current?.click()}
           >
             <Upload className="h-4 w-4 mr-2" />
-            上传图标
-          </Button>
+            {tr('k_d825ba2b8e')}</Button>
           {brand.logo_url && (
             <Button variant="ghost" size="sm" onClick={clearLogo}>
               <XIcon className="h-4 w-4 mr-1" />
-              清除
-            </Button>
+              {tr('k_4403fca0c0')}</Button>
           )}
         </div>
         {brand.logo_url && (
@@ -2668,7 +2632,7 @@ function BrandSettingsTab() {
             <span className="text-xs text-muted-foreground">{t("k_0b2b879cd7")}</span>
           </div>
         )}
-        <p className="text-xs text-muted-foreground">支持 PNG/SVG/JPG，建议 64×64 或 128×128，不超过 512KB</p>
+        <p className="text-xs text-muted-foreground">{tr('k_d191ef4681')}</p>
       </div>
 
       {/* Display options */}
@@ -2699,8 +2663,7 @@ function BrandSettingsTab() {
         disabled={saving || (!brand.show_icon && !brand.show_text)}
       >
         {saving ? <Spinner className="h-4 w-4 mr-2" /> : null}
-        保存设置
-      </Button>
+        {tr('k_4323be7239')}</Button>
 
     </div>
   );
@@ -2747,54 +2710,54 @@ function RelationsTab() {
   const handleERCreate = async (relation: any) => {
     const dsId = Number(filterDsId) || 0;
     if (!dsId) {
-      toast.error('请先选择数据源');
+      toast.error(tr('k_192dc9f17f'));
       return;
     }
     try {
       await client.post('/admin/relations', { ...relation, datasource_id: dsId });
-      toast.success('关联关系已创建');
+      toast.success(tr('k_095d79ac1a'));
       doSearch();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '创建失败');
+      toast.error(e.response?.data?.detail || tr('k_a889286a51'));
     }
   };
 
   const handleERUpdate = async (id: number, relation: any) => {
     try {
       await client.put(`/admin/relations/${id}`, relation);
-      toast.success('关联关系已更新');
+      toast.success(tr('k_3e62c8ea3e'));
       doSearch();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '更新失败');
+      toast.error(e.response?.data?.detail || tr('k_930442e2f4'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/admin/relations/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       doSearch();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
   const handleSync = async () => {
     if (!syncDsId) {
-      toast.error('请先选择要同步的数据源');
+      toast.error(tr('k_3640d794fd'));
       return;
     }
     setSyncing(true);
     try {
       const { data: res } = await client.post('/admin/sync/relations', { datasource_id: syncDsId });
       if (res.success === false) {
-        toast.error(res.message || '同步失败');
+        toast.error(res.message || tr('k_d61036e7f5'));
       } else {
         toast.success(res.message);
         doSearch();
       }
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || e.response?.data?.message || '同步失败');
+      toast.error(e.response?.data?.detail || e.response?.data?.message || tr('k_d61036e7f5'));
     } finally {
       setSyncing(false);
     }
@@ -2803,16 +2766,16 @@ function RelationsTab() {
   const toggleActive = async (record: any) => {
     try {
       await client.put(`/admin/relations/${record.id}`, { is_active: !record.is_active });
-      toast.success(record.is_active ? '已禁用' : '已启用');
+      toast.success(record.is_active ? tr('k_0fe5a98e9f') : tr('k_53ace4305f'));
       doSearch();
     } catch {
-      toast.error('操作失败');
+      toast.error(tr('k_5fa802bef5'));
     }
   };
 
   const getDsName = (dsId: number) => {
     const ds = datasources.find((d: any) => d.id === dsId);
-    return ds ? ds.name : (dsId ? `#${dsId}` : '全部');
+    return ds ? ds.name : (dsId ? `#${dsId}` : tr('k_778fc8f994'));
   };
 
   return (
@@ -2853,16 +2816,14 @@ function RelationsTab() {
           </Select>
           <Button variant="outline" onClick={handleSync} disabled={syncing}>
             {syncing ? <Spinner size={16} className="mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
-            同步外键
-          </Button>
+            {tr('k_e7f196c908')}</Button>
           <Button variant="outline" onClick={() => setErCollapsed(!erCollapsed)}>
             <Link className="h-4 w-4 mr-2" />
-            {erCollapsed ? '展开 ER 图' : '折叠 ER 图'}
+            {erCollapsed ? tr('k_878d1fe6ec') : tr('k_b211f709dd')}
           </Button>
           <Button variant="outline" onClick={() => setErFullscreen(true)}>
             <Maximize2 className="h-4 w-4 mr-2" />
-            全屏编辑
-          </Button>
+            {tr('k_ab7377ac8c')}</Button>
         </div>
       </div>
 
@@ -2889,8 +2850,7 @@ function RelationsTab() {
             </div>
             <Button variant="outline" size="sm" onClick={() => setErFullscreen(false)}>
               <Minimize2 className="h-4 w-4 mr-2" />
-              退出全屏
-            </Button>
+              {tr('k_49041f2450')}</Button>
           </div>
           <div className="flex-1 overflow-hidden">
             <ERDiagram
@@ -2959,8 +2919,7 @@ function RelationsTab() {
                 {data.length === 0 && (
                   <tr>
                     <td colSpan={11} className="p-8 text-center text-muted-foreground">
-                      暂无关联关系，请在上方 ER 图中通过连线创建
-                    </td>
+                      {tr('k_6bf49a0558')}</td>
                   </tr>
                 )}
               </tbody>
@@ -3020,16 +2979,13 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
         <TabsList>
           <TabsTrigger value="users">
             <Users className="h-4 w-4 mr-2" />
-            用户管理
-          </TabsTrigger>
+            {tr('k_7d94de1cdb')}</TabsTrigger>
           <TabsTrigger value="brand">
             <Palette className="h-4 w-4 mr-2" />
-            系统设置
-          </TabsTrigger>
+            {tr('k_e976eab5d8')}</TabsTrigger>
           <TabsTrigger value="integration">
             <Plug className="h-4 w-4 mr-2" />
-            集成管理
-          </TabsTrigger>
+            {tr('k_5e818c6d27')}</TabsTrigger>
         </TabsList>
         <TabsContent value="users">
           <UsersTab />
@@ -3118,35 +3074,35 @@ function ModelConfigTab() {
         const updateData: any = { ...form };
         if (!updateData.api_key) delete updateData.api_key; // Don't update if empty
         await client.put(`/model-config/llm/${editing.id}`, updateData);
-        toast.success('已更新');
+        toast.success(tr('k_1b92092d63'));
       } else {
         await client.post('/model-config/llm', form);
-        toast.success('已添加');
+        toast.success(tr('k_b189550a0d'));
       }
       setModalOpen(false);
       loadModels();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await client.delete(`/model-config/llm/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       loadModels();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
   const handleSetDefault = async (id: number) => {
     try {
       await client.put(`/model-config/llm/${id}/default`);
-      toast.success('已设为默认');
+      toast.success(tr('k_fc66a28fb7'));
       loadModels();
     } catch {
-      toast.error('设置失败');
+      toast.error(tr('k_9f96034c4d'));
     }
   };
 
@@ -3159,13 +3115,10 @@ function ModelConfigTab() {
             <h3 className="text-lg font-medium">{t("k_dc95e4a9f8")}</h3>
             {/* 排序口径写在使用现场：管理员不会猜“为什么旗舰在第七行”，也不会误以为顶行就是最强 */}
             <p className="mt-1 text-xs text-muted-foreground">
-              列表按「能力序」排序（1=最强，数字越大越弱越省）；99 为未定档，会沉到底部。
-              “默认”只是不指定模型时的选型，不代表能力最强。能力标签由已登记的列派生（能力序/多模态/思考/单价），不另存一份。
-            </p>
+              {tr('k_96e1f2aa4d')}</p>
           </div>
           <Button onClick={openCreate}>
-            <Plus className="h-4 w-4 mr-2" />添加模型
-          </Button>
+            <Plus className="h-4 w-4 mr-2" />{tr('k_64173a7688')}</Button>
         </div>
         <div className="overflow-auto">
           <table className="w-full">
@@ -3191,7 +3144,7 @@ function ModelConfigTab() {
                       // 不能渲成空白——空白会被读成“这个模型没能力档位”而不是“服务端没给我数据”。
                       const rank = m.capability_rank;
                       return typeof rank === 'number' && rank <= 90
-                        ? <span className="font-mono tabular-nums" title="1=最强，数字越大越弱/越省">{rank}</span>
+                        ? <span className="font-mono tabular-nums" title={tr('k_a030246781')}>{rank}</span>
                         : <Badge variant="outline" className="text-muted-foreground" title={t("k_87834c9795")}>{t("k_18f6424c02")}</Badge>;
                     })()}
                   </td>
@@ -3218,8 +3171,7 @@ function ModelConfigTab() {
                     <div className="flex items-center gap-1">
                       {!m.is_default && (
                         <Button size="sm" variant="ghost" className="text-xs" onClick={() => handleSetDefault(m.id)}>
-                          设为默认
-                        </Button>
+                          {tr('k_536a009a9b')}</Button>
                       )}
                       <Button size="sm" variant="ghost" onClick={() => openEdit(m)}>
                         <Edit className="h-3.5 w-3.5" />
@@ -3240,13 +3192,13 @@ function ModelConfigTab() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑模型' : '添加模型'}</DialogTitle>
+            <DialogTitle>{editing ? tr('k_c85b90ddde') : tr('k_64173a7688')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>{t("k_75ae6a8a7d")}</Label>
               <Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="如: GPT-4o 旗舰版" />
+                placeholder={tr('k_201ad8b27e')} />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -3273,7 +3225,7 @@ function ModelConfigTab() {
                 placeholder="https://api.openai.com/v1" />
             </div>
             <div className="space-y-2">
-              <Label>API Key {editing && <span className="text-muted-foreground">(留空则不更新)</span>}</Label>
+              <Label>API Key {editing && <span className="text-muted-foreground">{tr('k_e5c0be91b8')}</span>}</Label>
               <Input type="password" value={form.api_key || ''} onChange={(e) => setForm({ ...form, api_key: e.target.value })}
                 placeholder="sk-..." />
             </div>
@@ -3284,7 +3236,7 @@ function ModelConfigTab() {
                   onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} />
               </div>
               <div className="space-y-2">
-                <Label>{t("k_3cb4ed7d9f")} <span className="text-muted-foreground">(1=最强，99=未定档)</span></Label>
+                <Label>{t("k_3cb4ed7d9f")} <span className="text-muted-foreground">{tr('k_de2cf92a58')}</span></Label>
                 <Input type="number" value={form.capability_rank ?? 99}
                   onChange={(e) => setForm({ ...form, capability_rank: parseInt(e.target.value) || 99 })} />
               </div>
@@ -3320,8 +3272,7 @@ function ModelConfigTab() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              单价留空就是「未定价」：能力标签与成本页会如实写未定价，不会拿模型名猜一个价格给你。
-            </p>
+              {tr('k_788f68564a')}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>

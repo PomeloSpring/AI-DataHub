@@ -36,8 +36,12 @@ export const routeSeg = (routeKey: string) => routeKey.split('/').pop() || route
 export interface TourStep {
   /** 高亮目标锚点; 省略 = 居中说明卡(用于纯讲解步骤) */
   target?: string;
-  title: string;
-  body: string;
+  /**
+   * 标题/正文的语言包 key（onboarding 命名空间 `guide.<guide>.steps.<step>.{title|body}`）。
+   * 不在代码里存中文/英文字面量：切换语言要即时重渲染，字面量会停在建包时的语言。
+   */
+  titleKey: string;
+  bodyKey: string;
   /** 进入该步前先跳转的路由; ':wsId' 由引擎替换为当前工作空间 id */
   route?: string;
   /** 锚点是按条件渲染的（如单工作空间时收起的切换下拉）：找不到就静默跳过，不报“未找到入口” */
@@ -46,71 +50,96 @@ export interface TourStep {
 }
 
 export interface GuideDef {
-  /** 管理页下拉与弹窗标题用的业务名 */
-  label: string;
+  /** 业务名的语言包 key（管理页下拉与弹窗标题同源，渲染期解析） */
+  labelKey: string;
   /** 该引导所属模块(用于按菜单权限决定是否提供入口) */
   module?: 'home' | 'workspace' | 'data' | 'system';
   steps: TourStep[];
 }
 
+/** 步骤 key 构造器：title/body 成对落在 onboarding 命名空间 */
+const step = (
+  guideId: string,
+  stepKey: string,
+  rest: Omit<TourStep, 'titleKey' | 'bodyKey'> = {},
+): TourStep => ({
+  titleKey: `guide.${guideId}.steps.${stepKey}.title`,
+  bodyKey: `guide.${guideId}.steps.${stepKey}.body`,
+  ...rest,
+});
+
 export const GUIDES: Record<string, GuideDef> = {
   home: {
-    label: '首页总览',
+    labelKey: 'guide.home.label',
     module: 'home',
     steps: [
-      { target: TOUR.homeOverview, title: '直接提问', body: '想查什么在这里打一句，回车就带着问题进智能问数；右边是企业简介，点开能看到我们的业务方向与平台已接入的站点、数据源范围。' },
-      { target: TOUR.homeFeed, title: '最新资讯', body: '已发布的内容都在这里：按栏目或标签筛、搜索标题与摘要，点卡片进阅读页。这里只出现经过审核发布的内容，草稿不会露出来。' },
-      { target: TOUR.homeQuick, title: '模块入口', body: '按你的权限展示常用入口，点这里直达；看不到的条目代表当前角色无权限（顶栏「模块切换」是同一份口径）。' },
-      { target: TOUR.headerReleaseNotes, title: '版本更新公告', body: '右上角这里看每次版本的新增与优化，红点代表还有没读过的公告。' },
-      { target: TOUR.headerModuleSwitcher, title: '模块切换', body: '首页 / 工作空间 / 数据中台 / 系统配置在这里切换，不必回退页面找入口。' },
-      { target: TOUR.headerTheme, title: '主题风格', body: '配色和图表字模跟随主题，切换后全平台（问数、看板、大屏）一起变。' },
+      step('home', 'ask', { target: TOUR.homeOverview }),
+      step('home', 'feed', { target: TOUR.homeFeed }),
+      step('home', 'quick', { target: TOUR.homeQuick }),
+      step('home', 'releaseNotes', { target: TOUR.headerReleaseNotes }),
+      step('home', 'moduleSwitcher', { target: TOUR.headerModuleSwitcher }),
+      step('home', 'theme', { target: TOUR.headerTheme }),
     ],
   },
   workspace: {
-    label: '工作空间（日常用数）',
+    labelKey: 'guide.workspace.label',
     module: 'workspace',
     steps: [
       // optional：只有一个工作空间时侧栏不挂切换下拉（新建入口未开放，无项可切），
       //   这一步就静默跳过；有多空间时照旧高亮。
-      { target: TOUR.wsSelector, optional: true, title: '工作空间切换', body: '有多个工作空间时在这里切换（看板与会话按空间归集）；只有一个空间时这里不展示。对话产生的文件会随账号上云备份，不会因换节点而丢。' },
-      { target: navTour('ws', 'chat'), title: '智能问数', body: '用业务语言直接提问取数，不用写 SQL；口径以平台已建模的指标为准。' },
-      { target: navTour('ws', 'dashboards'), title: '数据看板', body: '日常消费入口：这里列出你有权查看的看板组合，点卡片下钻具体仪表盘。' },
-      { target: TOUR.chatInput, route: '/ws/:wsId/chat', title: '提问框', body: '在这里输入数据问题，可附文件；上方选择模型、Harness 与站点后再发送。' },
-      { target: navTour('ws', 'reports'), title: '报告中心', body: '会话与定时任务产出的报告按版本归集在这里，可继续编辑或分享。' },
+      step('workspace', 'selector', { target: TOUR.wsSelector, optional: true }),
+      step('workspace', 'chat', { target: navTour('ws', 'chat') }),
+      step('workspace', 'dashboards', { target: navTour('ws', 'dashboards') }),
+      step('workspace', 'input', { target: TOUR.chatInput, route: '/ws/:wsId/chat' }),
+      step('workspace', 'reports', { target: navTour('ws', 'reports') }),
     ],
   },
   data: {
-    label: '数据中台（建模与治理）',
+    labelKey: 'guide.data.label',
     module: 'data',
     steps: [
-      { target: navTour('dp', 'datasources'), title: '数据源', body: '接入的数据源与物理元数据在这里维护，是建模的前置条件。' },
-      { target: navTour('dp', 'ontology'), title: '本体建模', body: '业务对象、属性与关系在这里建模，是 ChatBI 的唯一权威语义层。' },
-      { target: navTour('dp', 'metrics'), title: '指标与维度', body: '指标口径与维度字典的权威清单，别名与枚举在这里统一维护。' },
-      { target: navTour('dp', 'datasets'), title: '数据集', body: '把已建模的对象整理成可复用的数据产品，供看板与报告引用。' },
-      { target: navTour('dp', 'sensitive'), title: '数据安全配置', body: '敏感字段基线与行级安全策略在这里配置，对所有人生效。' },
+      step('data', 'datasources', { target: navTour('dp', 'datasources') }),
+      step('data', 'ontology', { target: navTour('dp', 'ontology') }),
+      step('data', 'metrics', { target: navTour('dp', 'metrics') }),
+      step('data', 'datasets', { target: navTour('dp', 'datasets') }),
+      step('data', 'sensitive', { target: navTour('dp', 'sensitive') }),
     ],
   },
   system: {
-    label: '系统配置（管理员）',
+    labelKey: 'guide.system.label',
     module: 'system',
     steps: [
-      { target: navTour('sys', 'models'), title: '模型中心', body: '可用模型与 Harness 配置在这里，决定问数和 AS-BOT 用哪个模型跑。' },
-      { target: navTour('sys', 'roles'), title: '角色权限', body: '菜单与功能权限码、数据源授权都在这里配，页面入口随权限显隐。' },
-      { target: navTour('sys', 'release-notes'), title: '版本公告', body: '发新版本时在这里登记功能与更新项，勾“重大版本”会给全体用户重触发引导。' },
-      { target: navTour('sys', 'settings'), title: '系统设置', body: '应用名称与 Logo 等品牌信息在这里改，顶栏与登录页同步生效。' },
+      step('system', 'models', { target: navTour('sys', 'models') }),
+      step('system', 'roles', { target: navTour('sys', 'roles') }),
+      step('system', 'releaseNotes', { target: navTour('sys', 'release-notes') }),
+      step('system', 'settings', { target: navTour('sys', 'settings') }),
     ],
   },
 };
 
-/** 管理页「关联引导」选择框选项(业务名, 不手输 key) */
-export const GUIDE_OPTIONS: { id: string; label: string }[] = [
-  { id: 'welcome', label: '欢迎总览（首次登录/升级提示）' },
-  ...Object.entries(GUIDES).map(([id, g]) => ({ id, label: g.label })),
+/**
+ * 语言解析函数（`useTranslation('onboarding').t` / 模块级 runtime t 均可传入）。
+ *
+ * 签名放宽为“任意字符串 key + 可选插值参数”：引导步骤 key 由上面的 `step()` 数据驱动，
+ * 静态字面量类型只会逼调用方到处写断言（历史缺陷：改用 t(titleKey) 后 tsc 报 TFunction 不兼容）。
+ */
+export type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/** 把 react-i18next 的严格 TFunction 适配为 `Translate`（动态 key 场景统一走这里） */
+export const asTranslate = (t: unknown): Translate => t as Translate;
+
+/** 引导 id → 业务名 key（welcome 是弹窗自身，不是分步引导） */
+export const guideLabelKey = (id: string): string =>
+  id === 'welcome' ? 'welcome.guideOption' : (GUIDES[id]?.labelKey || 'tour.defaultLabel');
+
+/** 管理页「关联引导」选择框选项（业务名，渲染期解析；不手输 key） */
+export const guideOptions = (t: Translate): { id: string; label: string }[] => [
+  { id: 'welcome', label: t(guideLabelKey('welcome')) },
+  ...Object.keys(GUIDES).map(id => ({ id, label: t(guideLabelKey(id)) })),
 ];
 
-/** 引导 id → 业务名(公告面板显示用) */
-export const guideLabel = (id: string) =>
-  GUIDE_OPTIONS.find(o => o.id === id)?.label || '新手引导';
+/** 引导 id → 业务名（公告面板/占位显示用） */
+export const guideLabel = (id: string, t: Translate): string => t(guideLabelKey(id));
 
 /**
  * 路由 → 当前页面上**真实存在引导内容**的模块引导 id（'' = 本页没有引导）。

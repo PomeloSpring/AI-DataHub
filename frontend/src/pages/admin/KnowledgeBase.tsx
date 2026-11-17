@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Plus, Edit2, Trash2, Database, Cloud, Folder,
   RefreshCw, Sparkles, Plug,
@@ -56,30 +56,30 @@ interface QMindNotebook {
 const KB_TYPES = [
   {
     value: 'qmind',
-    label: 'QMind 知识检索',
+    label: t('k_fd31541d3d'),
     icon: Sparkles,
-    desc: '来自 Qoder QMind 笔记本，本地 qmind CLI 按需检索',
+    desc: t('k_5781a0f8c9'),
     color: 'bg-indigo-100 text-indigo-800',
   },
   {
     value: 'local',
-    label: '本地数据目录',
+    label: t('k_ca35b7aca0'),
     icon: Folder,
-    desc: '从服务器本地目录读取文档文件',
+    desc: t('k_857612f288'),
     color: 'bg-blue-100 text-blue-800',
   },
   {
     value: 'vector_db',
-    label: '向量数据库',
+    label: t('k_f9f851e574'),
     icon: Database,
-    desc: '连接 Doris、Milvus、Pinecone 等向量库',
+    desc: t('k_2062480063'),
     color: 'bg-green-100 text-green-800',
   },
   {
     value: 'cloud_rag',
-    label: '云厂商 RAG',
+    label: t('k_e2acf1a8aa'),
     icon: Cloud,
-    desc: '接入阿里云、腾讯云、百度云等 RAG 服务',
+    desc: t('k_2b676e592f'),
     color: 'bg-purple-100 text-purple-800',
   },
 ];
@@ -113,7 +113,7 @@ export default function KnowledgeBase() {
       setKnowledgeBases(data || []);
     } catch (error) {
       console.error('Failed to load knowledge bases:', error);
-      toast.error('加载知识库失败');
+      toast.error(t('k_92701373f4'));
     } finally {
       setLoading(false);
     }
@@ -123,11 +123,11 @@ export default function KnowledgeBase() {
     if (!showDeleteDialog) return;
     try {
       await client.delete(`/knowledge-bases/${showDeleteDialog.id}`);
-      toast.success(`已删除知识库 "${showDeleteDialog.name}"`);
+      toast.success(t('k_a59c4fef05', { p0: showDeleteDialog.name }));
       setShowDeleteDialog(null);
       loadKnowledgeBases();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '删除失败');
+      toast.error(error.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -138,10 +138,10 @@ export default function KnowledgeBase() {
     setProbingId(kb.id);
     try {
       const { data } = await client.post(`/knowledge-bases/${kb.id}/probe`);
-      if (data?.ok) toast.success(`「${kb.name}」连通正常`);
-      else toast.error(`「${kb.name}」连不通：${data?.reason || '未返回原因'}`);
+      if (data?.ok) toast.success(t('k_172557e8b8', { p0: kb.name }));
+      else toast.error(tr('k_8446a4e37d', { p0: kb.name, p1: data?.reason || tr('k_5adfee075a') }));
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '测试连接未完成');
+      toast.error(error.response?.data?.detail || t('k_f72128a3f6'));
     } finally {
       setProbingId(null);
     }
@@ -150,10 +150,10 @@ export default function KnowledgeBase() {
   const handleSync = async (kb: KnowledgeBase) => {
     try {
       await client.post(`/knowledge-bases/${kb.id}/sync`);
-      toast.success(`正在同步 "${kb.name}"`);
+      toast.success(t('k_871db6a31f', { p0: kb.name }));
       loadKnowledgeBases();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '同步失败');
+      toast.error(error.response?.data?.detail || t('k_d61036e7f5'));
     }
   };
 
@@ -174,7 +174,7 @@ export default function KnowledgeBase() {
         .filter((n: QMindNotebook) => !n.imported)
         .map((n: QMindNotebook) => n.notebook_id));
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '检索 Qoder 知识库失败');
+      toast.error(error.response?.data?.detail || t('k_4b07af4c09'));
       setQmindAvailable(false);
       setQmindNotebooks([]);
     } finally {
@@ -190,7 +190,7 @@ export default function KnowledgeBase() {
 
   const importQmind = async () => {
     if (qmindSelected.length === 0) {
-      toast.error('请至少选择一个知识库');
+      toast.error(t('k_442e45a4d9'));
       return;
     }
     setQmindImporting(true);
@@ -198,11 +198,11 @@ export default function KnowledgeBase() {
       const { data } = await client.post('/knowledge-bases/qmind/import', {
         notebook_ids: qmindSelected,
       });
-      toast.success(data?.message || '导入成功');
+      toast.success(data?.message || t('k_b6d16a8173'));
       setShowQmindDialog(false);
       loadKnowledgeBases();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '导入失败');
+      toast.error(error.response?.data?.detail || t('k_fddcd7c6e4'));
     } finally {
       setQmindImporting(false);
     }
@@ -214,17 +214,17 @@ export default function KnowledgeBase() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_053fc4ecbf")}</h1>
           <p className="text-muted-foreground mt-1">
-            管理多个知识库，支持从 Qoder QMind 检索导入，以及本地目录、向量数据库、云厂商 RAG 等数据源
+            {t('k_50f15db60d')}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={openQmindDialog}>
             <Sparkles className="h-4 w-4 mr-2" />
-            从 Qoder 检索知识库
+            {t('k_895970ee5d')}
           </Button>
           <Button onClick={() => setShowCreateDialog(true)}>
             <Plus className="h-4 w-4 mr-2" />
-            新建知识库
+            {t('k_f93ee39a94')}
           </Button>
         </div>
       </div>
@@ -239,11 +239,11 @@ export default function KnowledgeBase() {
           <Database className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
           <h3 className="text-lg font-medium mb-2">{t("k_1674dc8d7c")}</h3>
           <p className="text-muted-foreground mb-4">
-            创建知识库来管理您的业务知识，支持多种数据源类型
+            {t('k_001d6361e3')}
           </p>
           <Button onClick={() => setShowCreateDialog(true)}>
             <Plus className="h-4 w-4 mr-2" />
-            创建第一个知识库
+            {t('k_8b78e23d5e')}
           </Button>
         </div>
       ) : (
@@ -287,13 +287,13 @@ export default function KnowledgeBase() {
                         // 未接入检索通道的库照常列出并给出服务端原因原文：藏起来会被读成“库没了”，
                         // 只标灰不放原因又会被读成“能查”（no-silent-degradation）。
                         <div className="mt-1 text-xs text-destructive" title={kb.retrieval.reason || ''}>
-                          检索通道未接入
+                          {t('k_3a125a88b6')}
                         </div>
                       )}
                     </td>
                     <td className="p-3">
                       <Badge variant={kb.status === 'active' ? 'default' : kb.status === 'error' ? 'destructive' : 'secondary'}>
-                        {kb.status === 'active' ? '正常' : kb.status === 'error' ? '异常' : '停用'}
+                        {kb.status === 'active' ? t('k_fd6e80f1e0') : kb.status === 'error' ? t('k_c195df6308') : t('k_5c56a88945')}
                       </Badge>
                     </td>
                     <td className="p-3 text-muted-foreground">
@@ -302,7 +302,7 @@ export default function KnowledgeBase() {
                     <td className="p-3 text-muted-foreground text-sm">
                       {kb.last_sync_at
                         ? new Date(kb.last_sync_at).toLocaleString('zh-CN')
-                        : '从未同步'}
+                        : t('k_9109822ef6')}
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex justify-end gap-1">
@@ -312,8 +312,8 @@ export default function KnowledgeBase() {
                           onClick={() => handleProbe(kb)}
                           disabled={probingId === kb.id}
                           title={kb.retrieval && kb.retrieval.readable === false
-                            ? (kb.retrieval.reason || '该库的检索通道本批未接入')
-                            : '测试连接'}
+                            ? (kb.retrieval.reason || t('k_c48dda7ab6'))
+                            : t('k_10b7d8eccc')}
                         >
                           <Plug className={`h-4 w-4 ${probingId === kb.id ? 'animate-pulse' : ''}`} />
                         </Button>
@@ -379,16 +379,14 @@ export default function KnowledgeBase() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除知识库 "{showDeleteDialog?.name}" 吗？此操作不可撤销，
-              该知识库下的所有文档和向量索引都将被删除。
-            </DialogDescription>
+              {t('k_5a50570066', { p0: showDeleteDialog?.name })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDeleteDialog(null)}>
-              取消
+              {t('k_4d0b4688c7')}
             </Button>
             <Button variant="destructive" onClick={handleDelete}>
-              删除
+              {t('k_3755f56f2f')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -400,7 +398,7 @@ export default function KnowledgeBase() {
           <DialogHeader>
             <DialogTitle>{t("k_8024647e78")}</DialogTitle>
             <DialogDescription>
-              列出当前账号下的 Qoder QMind 笔记本(notebook)，勾选后导入为知识库，可在 AS-BOT 中绑定检索
+              {t('k_f2cc3a28b1')}
             </DialogDescription>
           </DialogHeader>
 
@@ -413,8 +411,7 @@ export default function KnowledgeBase() {
               <Sparkles className="h-10 w-10 mx-auto mb-3 text-muted-foreground" />
               <h3 className="text-base font-medium mb-1">{t("k_ee3dbb5ab0")}</h3>
               <p className="text-sm text-muted-foreground">
-                请确认服务器已安装并登录 <code>qmind</code> CLI（<code>qmind login</code>），稍后重试。
-              </p>
+                {tr('k_644d3b6064')}{' '}<code>qmind</code> CLI（<code>qmind login</code>{tr('k_8d520d2e88')}{' '}</p>
             </div>
           ) : qmindNotebooks.length === 0 ? (
             <div className="border rounded-lg p-8 text-center">
@@ -459,7 +456,7 @@ export default function KnowledgeBase() {
               onClick={importQmind}
               disabled={qmindLoading || !qmindAvailable || qmindSelected.length === 0 || qmindImporting}
             >
-              {qmindImporting ? '导入中...' : `导入所选 (${qmindSelected.length})`}
+              {qmindImporting ? t('k_763476f8dd') : t('k_ef0819b67f', { p0: qmindSelected.length })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -479,6 +476,7 @@ function CreateKnowledgeBaseDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const [step, setStep] = useState<'type' | 'config'>('type');
   const [form, setForm] = useState({
     name: '',
@@ -490,22 +488,22 @@ function CreateKnowledgeBaseDialog({
 
   const handleCreate = async () => {
     if (!form.name.trim()) {
-      toast.error('请输入知识库名称');
+      toast.error(t('k_76e4ff8ce9'));
       return;
     }
     if (!form.kb_type) {
-      toast.error('请选择知识库类型');
+      toast.error(t('k_b50b8a0661'));
       return;
     }
     setSaving(true);
     try {
       await client.post('/knowledge-bases', form);
-      toast.success('知识库创建成功');
+      toast.success(t('k_e3572dd027'));
       onCreated();
       setStep('type');
       setForm({ name: '', description: '', kb_type: '', source_config: {} });
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '创建失败');
+      toast.error(error.response?.data?.detail || t('k_a889286a51'));
     } finally {
       setSaving(false);
     }
@@ -517,7 +515,7 @@ function CreateKnowledgeBaseDialog({
         <DialogHeader>
           <DialogTitle>{t("k_f93ee39a94")}</DialogTitle>
           <DialogDescription>
-            选择知识库类型并配置数据源
+            {t('k_ee19908158')}
           </DialogDescription>
         </DialogHeader>
 
@@ -581,24 +579,24 @@ function CreateKnowledgeBaseDialog({
               onClose();
             }
           }}>
-            {step === 'config' ? '上一步' : '取消'}
+            {step === 'config' ? t('k_75ef1241c0') : t('k_4d0b4688c7')}
           </Button>
           {step === 'type' ? (
             <Button
               onClick={() => {
                 if (!form.kb_type) {
-                  toast.error('请选择知识库类型');
+                  toast.error(t('k_b50b8a0661'));
                   return;
                 }
                 setStep('config');
               }}
               disabled={!form.kb_type}
             >
-              下一步
+              {t('k_38ce27d846')}
             </Button>
           ) : (
             <Button onClick={handleCreate} disabled={saving}>
-              {saving ? '创建中...' : '创建'}
+              {saving ? t('k_b26107b6c5') : t('k_fcbd093292')}
             </Button>
           )}
         </DialogFooter>
@@ -618,13 +616,13 @@ function SourceConfigForm({
   config: Record<string, any>;
   onChange: (config: Record<string, any>) => void;
 }) {
+  const { t } = useTranslation('ui');
   if (kbType === 'qmind') {
     return (
       <div className="space-y-4">
         <div className="p-4 bg-indigo-50 rounded-lg">
           <p className="text-sm text-indigo-800">
-            对应一个 Qoder QMind 笔记本(notebook)，通过本地 <code>qmind</code> CLI 按需检索；
-            建议使用“从 Qoder 检索知识库”导入，而非手动新建。
+            {tr('k_fa857b2ea5')}{' '}<code>qmind</code> {t('k_80972f94c1')}
           </p>
         </div>
         <div className="space-y-2">
@@ -644,7 +642,7 @@ function SourceConfigForm({
           </div>
         )}
         <div className="space-y-2">
-          <Label>检索数量 (Top K)</Label>
+          <Label>{t('k_d909d150bf')}</Label>
           <Input
             type="number"
             value={config.top_k || '5'}
@@ -661,9 +659,7 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-blue-50 rounded-lg">
           <p className="text-sm text-blue-800">
-            <span className="font-medium">{t("k_43b839d78e")}</span>支持 .md/.txt/.pdf/.docx 等格式。
-            检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT
-            （绑定校验会直接拒绝并说明原因）。
+            <span className="font-medium">{t("k_43b839d78e")}</span>{t('k_9d9dd7f490')}
           </p>
         </div>
         <div className="space-y-2">
@@ -707,8 +703,7 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-green-50 rounded-lg">
           <p className="text-sm text-green-800">
-            <span className="font-medium">{t("k_6f66e3eb36")}</span>可登记 Doris、Milvus、Pinecone、Qdrant 等连接信息。
-            检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT。
+            <span className="font-medium">{t("k_6f66e3eb36")}</span>{t('k_674e1172a2')}
           </p>
         </div>
         <div className="space-y-2">
@@ -758,16 +753,16 @@ function SourceConfigForm({
             />
           </div>
           <div className="space-y-2">
-            <Label>凭据引用名（credential_ref）</Label>
+            <Label>{t('k_8b3b1dc4d2')}</Label>
             <Input
               value={config.credential_ref || ''}
               onChange={(e) => onChange({ ...config, credential_ref: e.target.value })}
-              placeholder="环境变量名，如 VECTOR_DB_KB_PASSWORD"
+              placeholder={t('k_1ff853833e')}
             />
             {/* 凭据纪律对所有类型一致：密钥不入库、不回显（服务端写入即拒）。
                 这里原来摆的是密码框 —— 用户填了只会收到 400，是“配了没用”的陷阱。 */}
             <p className="text-xs text-muted-foreground">
-              只填环境变量名；密码真值写 backend/.env，本页不保存也不回显密钥。
+              {t('k_8b565dd6e5')}
             </p>
           </div>
         </div>
@@ -801,8 +796,7 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-purple-50 rounded-lg">
           <p className="text-sm text-purple-800">
-            阿里云百炼（Model Studio）知识库：资料由企业在百炼侧维护，本平台只检索、不写入。
-            其他云厂商本批未接入检索通道，绑给 AS-BOT 会被直接拒绝（不会“配了没反应”）。
+            {t('k_51099a8074')}
           </p>
         </div>
         <div className="space-y-2">
@@ -825,20 +819,17 @@ function SourceConfigForm({
         </div>
         {!vendorSupported && (
           <div className="p-3 rounded-lg bg-destructive/10 text-xs text-destructive">
-            该厂商的检索通道本批未接入：保存后仍不能被 AS-BOT 检索使用。要么改选阿里云百炼，
-            要么先不要把它绑进 AS-BOT。
+            {t('k_fb2fd4be2f')}
           </div>
         )}
         {heldSecrets.length > 0 && (
           // 存量旧行可能仍有明文密钥（历史缺陷）：读取已被掩码，这里只告知“曾经存过”，不回显值。
           <div className="p-3 rounded-lg bg-destructive/10 text-xs text-destructive">
-            检测到历史配置里存有凭据字段（{heldSecrets.join('、')}）。平台不再保存也不回显密钥：
-            请把真值写入 backend/.env 的 DASHSCOPE_API_KEY，并清理该字段。
-          </div>
+            {t('k_9b654813b9', { p0: heldSecrets.join('、') })}</div>
         )}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label>知识库 ID（index_id）</Label>
+            <Label>{t('k_43dd0a88bc')}</Label>
             <Input
               value={config.index_id || ''}
               onChange={(e) => onChange({ ...config, index_id: e.target.value })}
@@ -847,11 +838,11 @@ function SourceConfigForm({
             {/* 外部系统标识：本系统没有可枚举的清单，按例外允许手输（原因必须写在这里，
                 否则用户不知道该填库名还是 ID）；接入 ListIndices 后升级为可搜索选择框。 */}
             <p className="text-xs text-muted-foreground">
-              百炼侧标识，本平台无法枚举候选，需从百炼控制台复制。
+              {t('k_7f0cb0a411')}
             </p>
           </div>
           <div className="space-y-2">
-            <Label>业务空间 ID（workspace_id）</Label>
+            <Label>{t('k_0c54981118')}</Label>
             <Input
               value={config.workspace_id || ''}
               onChange={(e) => onChange({ ...config, workspace_id: e.target.value })}
@@ -861,18 +852,18 @@ function SourceConfigForm({
           </div>
         </div>
         <div className="space-y-2">
-          <Label>凭据引用名（credential_ref）</Label>
+          <Label>{t('k_8b3b1dc4d2')}</Label>
           <Input
             value={config.credential_ref || ''}
             onChange={(e) => onChange({ ...config, credential_ref: e.target.value })}
-            placeholder="留空则使用 DASHSCOPE_API_KEY"
+            placeholder={t('k_d3c68fe32e')}
           />
           <p className="text-xs text-muted-foreground">
-            只填环境变量名（如 BAILIAN_KB_A_KEY），不要在这里填密钥；密钥只从 backend/.env 读取。
+            {t('k_e0907c6109')}
           </p>
         </div>
         <div className="space-y-2">
-          <Label>检索数量 (Top K)</Label>
+          <Label>{t('k_d909d150bf')}</Label>
           <Input
             type="number"
             value={config.top_k || '5'}
@@ -898,6 +889,7 @@ function EditKnowledgeBaseDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const [form, setForm] = useState({
     name: knowledgeBase.name,
     description: knowledgeBase.description || '',
@@ -909,10 +901,10 @@ function EditKnowledgeBaseDialog({
     setSaving(true);
     try {
       await client.put(`/knowledge-bases/${knowledgeBase.id}`, form);
-      toast.success('知识库更新成功');
+      toast.success(t('k_9cce0f69f2'));
       onSaved();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || '更新失败');
+      toast.error(error.response?.data?.detail || t('k_930442e2f4'));
     } finally {
       setSaving(false);
     }
@@ -924,8 +916,7 @@ function EditKnowledgeBaseDialog({
         <DialogHeader>
           <DialogTitle>{t("k_f8cf989d71")}</DialogTitle>
           <DialogDescription>
-            修改 "{knowledgeBase.name}" 的配置
-          </DialogDescription>
+            {t('k_e8c0d95c02', { p0: knowledgeBase.name })}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
@@ -952,10 +943,10 @@ function EditKnowledgeBaseDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            取消
+            {t('k_4d0b4688c7')}
           </Button>
           <Button onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
+            {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
           </Button>
         </DialogFooter>
       </DialogContent>

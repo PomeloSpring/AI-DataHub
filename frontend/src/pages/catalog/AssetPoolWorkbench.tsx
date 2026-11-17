@@ -19,7 +19,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client from '@/api/client';
 import { metricsApi, type DictObjectFacet } from '@/api/metrics';
-import type { FacetValue } from '@/lib/dictLabels';
+import { dimensionCategoryLabel, type FacetValue } from '@/lib/dictLabels';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +39,8 @@ import {
   AlertTriangle, BarChart3, Bot, BookOpen, CheckCircle2, ExternalLink, Inbox,
   Link2, Loader2, RefreshCw, Search, Sparkles, Trash2, Unlink, UserPlus,
 } from 'lucide-react';
+import { t as tr } from '@/i18n/runtime';
+import { useTranslation } from 'react-i18next';
 
 // ── 数据类型（服务端 /metrics/asset-pool 的返回形状）──────────────────
 interface DictRow {
@@ -107,14 +109,14 @@ interface Task {
 }
 
 const QUEUE_META: Record<QueueKey, { label: string; hint: string; icon: typeof Inbox }> = {
-  metric: { label: '指标缺归属', hint: '字典里有这行口径，但没指向任何本体对象', icon: BarChart3 },
-  dimension: { label: '维度缺归属', hint: '维度行未绑定对象，或指向的对象已失效', icon: BarChart3 },
-  term: { label: '术语未映射', hint: '纯业务黑话，还没映射到表/列或收编为别名', icon: BookOpen },
-  'c-alias': { label: '待收编别名', hint: '用户这么问没解析通，但字典/对象里其实有对应资产', icon: Bot },
-  'c-new_metric': { label: '待开发指标', hint: '反复被问到、语义层还没有这个指标', icon: Sparkles },
-  'c-new_dimension': { label: '待开发维度', hint: '反复被问到、还没有这个切分维度', icon: Sparkles },
-  'c-binding_gap': { label: '待核绑定', hint: '资产存在但对本对象不可达（补别名治不了，需核绑定）', icon: Link2 },
-  'c-term': { label: '术语候选', hint: '新发现的业务词，先收进术语缓冲区', icon: BookOpen },
+  metric: { label: tr('k_7c332454d8'), hint: tr('k_32b98bf398'), icon: BarChart3 },
+  dimension: { label: tr('k_0e6d51d643'), hint: tr('k_823aec3486'), icon: BarChart3 },
+  term: { label: tr('k_18edcc5215'), hint: tr('k_b49ac112fd'), icon: BookOpen },
+  'c-alias': { label: tr('k_48f08d7815'), hint: tr('k_9cbb6f5305'), icon: Bot },
+  'c-new_metric': { label: tr('k_70ecbecf9e'), hint: tr('k_2d71d05081'), icon: Sparkles },
+  'c-new_dimension': { label: tr('k_7386b3b37e'), hint: tr('k_fea4c6de49'), icon: Sparkles },
+  'c-binding_gap': { label: tr('k_ab33ea20aa'), hint: tr('k_9f57b74d88'), icon: Link2 },
+  'c-term': { label: tr('k_17ad7ca811'), hint: tr('k_c8fb9fafde'), icon: BookOpen },
 };
 
 const QUEUE_ORDER: QueueKey[] = [
@@ -148,13 +150,13 @@ function buildTasks(d: PoolData | null): Task[] {
   const dictTask = (row: DictRow, queue: QueueKey): Task => ({
     id: `${queue === 'metric' ? 'm' : 'd'}:${row.id}`,
     queue,
-    kindLabel: queue === 'metric' ? '指标' : '维度',
+    kindLabel: queue === 'metric' ? tr('k_1dfc810a7b') : tr('k_72fa9ecdc4'),
     title: row.name,
     sub: [row.name_en, row.agg_type, row.category, row.unit].filter(Boolean).join(' · '),
     reason: row.pool_reason === 'orphan'
-      ? { text: `指向的对象已失效（${row.bound_object_key || '-'}）`, tone: 'red' }
-      : { text: '未绑定本体对象', tone: 'amber' },
-    meta: row.description ? [{ label: '口径', value: row.description }] : [],
+      ? { text: tr('k_bf40dea281', { p0: row.bound_object_key || '-' }), tone: 'red' }
+      : { text: tr('k_ae7771ae22'), tone: 'amber' },
+    meta: row.description ? [{ label: tr('k_d297f53a58'), value: row.description }] : [],
     weight: 1,
     dict: row,
   });
@@ -163,11 +165,11 @@ function buildTasks(d: PoolData | null): Task[] {
   (d.terms || []).forEach((r) => out.push({
     id: `t:${r.id}`,
     queue: 'term',
-    kindLabel: '术语',
+    kindLabel: tr('k_f4f39962ca'),
     title: r.term_cn,
     sub: [r.term_en, r.term_type].filter(Boolean).join(' · '),
-    reason: { text: '未映射到表/列', tone: 'amber' },
-    meta: r.description ? [{ label: '释义', value: r.description }] : [],
+    reason: { text: tr('k_30a54c9193'), tone: 'amber' },
+    meta: r.description ? [{ label: tr('k_4de54f5278'), value: r.description }] : [],
     weight: 1,
     term: r,
   }));
@@ -180,12 +182,12 @@ function buildTasks(d: PoolData | null): Task[] {
       queue,
       kindLabel: QUEUE_META[queue].label,
       title: c.term,
-      sub: approx ? `近似目标 ${approx}` : c.object_hint || '',
-      reason: { text: c.classify_reason || (c.source === 'parse_fail' ? '解析失败回流' : '反馈发现'), tone: 'blue' },
+      sub: approx ? tr('k_3f8238ea24', { p0: approx }) : c.object_hint || '',
+      reason: { text: c.classify_reason || (c.source === 'parse_fail' ? tr('k_1ed09ddaab') : tr('k_5318867f8b')), tone: 'blue' },
       meta: [
-        c.datasource_name ? { label: '数据源', value: c.datasource_name } : null,
-        c.hit_count ? { label: '命中', value: `${c.hit_count} 次` } : null,
-        c.updated_at ? { label: '最近', value: String(c.updated_at).slice(0, 16).replace('T', ' ') } : null,
+        c.datasource_name ? { label: tr('k_a3ccf702c5'), value: c.datasource_name } : null,
+        c.hit_count ? { label: tr('k_7a130d7fde'), value: tr('k_10dc772fe0', { p0: c.hit_count }) } : null,
+        c.updated_at ? { label: tr('k_046c6233e0'), value: String(c.updated_at).slice(0, 16).replace('T', ' ') } : null,
       ].filter(Boolean) as { label: string; value: string }[],
       weight: Number(c.hit_count || 1),
       cand: c,
@@ -204,6 +206,7 @@ function OptionList({ options, value, onChange, placeholder, disabled }: {
   placeholder: string;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation('ui');
   const [kw, setKw] = useState('');
   const picked = options.find((o) => o.value === value);
   const list = useMemo(() => {
@@ -217,13 +220,13 @@ function OptionList({ options, value, onChange, placeholder, disabled }: {
       <div className="relative">
         <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <Input value={kw} onChange={(e) => setKw(e.target.value)}
-          placeholder={picked ? `已选「${picked.label}」，可继续搜索改选` : placeholder}
+          placeholder={picked ? t('k_b8d56be145', { p0: picked.label }) : placeholder}
           className="h-8 pl-7 text-xs" />
       </div>
       <div className="mt-1.5 max-h-44 overflow-y-auto rounded-md border divide-y">
         {list.length === 0 && (
           <div className="px-2.5 py-3 text-xs text-muted-foreground">
-            {options.length ? '没有匹配的选项' : '暂无可选项（清单未加载或该集合为空）'}
+            {options.length ? t('k_d838b822bc') : t('k_1deed0d770')}
           </div>
         )}
         {list.map((o) => (
@@ -238,7 +241,7 @@ function OptionList({ options, value, onChange, placeholder, disabled }: {
         ))}
       </div>
       {picked?.hint && (
-        <div className="mt-1 text-[11px] text-muted-foreground">当前：{picked.label}（{picked.hint}）</div>
+        <div className="mt-1 text-[11px] text-muted-foreground">{t('k_f3fae52990', { p0: picked.label, p1: picked.hint })}</div>
       )}
     </div>
   );
@@ -254,6 +257,7 @@ type DialogState =
   | null;
 
 export default function AssetPoolWorkbench() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const [pool, setPool] = useState<PoolData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -280,7 +284,7 @@ export default function AssetPoolWorkbench() {
     } catch (e: any) {
       // 失败即暴露：不把接口错误渲染成"待办已清空"
       setPool(null);
-      setLoadError(String(e?.response?.data?.detail || e?.message || '待办清单加载失败'));
+      setLoadError(String(e?.response?.data?.detail || e?.message || t('k_22d159f3b7')));
     } finally {
       setLoading(false);
     }
@@ -294,7 +298,7 @@ export default function AssetPoolWorkbench() {
       setCategories((data?.dimensions?.categories || []).map((f: FacetValue) => f.value));
       setLoadOptsError('');
     } catch (e: any) {
-      setLoadOptsError(String(e?.response?.data?.detail || e?.message || '对象/词表清单加载失败'));
+      setLoadOptsError(String(e?.response?.data?.detail || e?.message || t('k_a11afdff4c')));
     }
   }, []);
 
@@ -326,7 +330,7 @@ export default function AssetPoolWorkbench() {
   const objectOptions: Option[] = useMemo(() => objects.map((o) => ({
     value: o.key,
     label: o.display_name || o.key,
-    hint: `${(o.metric_count || 0) + (o.dimension_count || 0)} 项资产`,
+    hint: t('k_cb3994da81', { p0: (o.metric_count || 0) + (o.dimension_count || 0) }),
   })), [objects]);
 
   const { user } = useAuthStore();
@@ -342,8 +346,8 @@ export default function AssetPoolWorkbench() {
   const canCandidate = isAdmin && hasPerm('ontology:save');
   const canDraft = isAdmin && hasPerm('metrics:manage');
   const canAlias = canCandidate;
-  const whyCandidateBlocked = isAdmin ? '需要「保存本体」权限' : '该出口由服务端按管理员角色把关';
-  const whyDraftBlocked = isAdmin ? '需要「维护指标字典」权限' : '该出口由服务端按管理员角色把关';
+  const whyCandidateBlocked = isAdmin ? t('k_23627e700b') : t('k_b4c9333200');
+  const whyDraftBlocked = isAdmin ? t('k_bb317e469e') : t('k_b4c9333200');
   const modelBusy = useCallback(async (id: string, fn: () => Promise<unknown>, okMsg: string) => {
     setBusyId(id);
     try {
@@ -353,7 +357,7 @@ export default function AssetPoolWorkbench() {
       await load();          // 处理完必须自更新：历史缺陷是收编/驳回后列表不动
       return true;
     } catch (e: any) {
-      toast.error(String(e?.response?.data?.detail || e?.message || '操作失败'));
+      toast.error(String(e?.response?.data?.detail || e?.message || t('k_5fa802bef5')));
       return false;
     } finally {
       setBusyId('');
@@ -366,7 +370,7 @@ export default function AssetPoolWorkbench() {
     return modelBusy(task.id, async () => {
       if (task.queue === 'metric') await metricsApi.update(Number(task.dict!.id), { bound_object_key: objectKey });
       else await metricsApi.updateDimension(Number(task.dict!.id), { bound_object_key: objectKey });
-    }, `「${task.title}」已归属到对象「${objName}」`);
+    }, t('k_aca5c67a51', { p0: task.title, p1: objName }));
   };
 
   const doBatchAssign = async (list: Task[], objectKey: string) => {
@@ -379,14 +383,14 @@ export default function AssetPoolWorkbench() {
         else await metricsApi.updateDimension(Number(t.dict!.id), { bound_object_key: objectKey });
         ok += 1;
       } catch (e: any) {
-        failed.push(`${t.title}（${e?.response?.data?.detail || '失败'}）`);
+        failed.push(`${t.title}（${e?.response?.data?.detail || tr('k_3e3c8068bb')}）`);
       }
     }
     if (ok) {
       setHandled((n) => n + ok);
-      toast.success(`已批量归属 ${ok} 项到对象「${objName}」`);
+      toast.success(tr('k_9745b0093b', { p0: ok, p1: objName }));
     }
-    if (failed.length) toast.error(`${failed.length} 项未成功：${failed.slice(0, 2).join('；')}`);
+    if (failed.length) toast.error(tr('k_8e21c089ab', { p0: failed.length, p1: failed.slice(0, 2).join(tr('k_c4530db333')) }));
     await load();
     // 批量一律收口：失败项在刷新后的清单里原样保留、失败原因 toast 显式报出，
     // 弹窗里重试只会把已成功的行再写一遍（返回 false 让弹窗挂着反而挡住视图）
@@ -396,7 +400,7 @@ export default function AssetPoolWorkbench() {
   const doDelete = (task: Task) => modelBusy(task.id, async () => {
     if (task.queue === 'metric') await metricsApi.delete(Number(task.dict!.id));
     else await metricsApi.deleteDimension(Number(task.dict!.id));
-  }, `「${task.title}」字典行已删除`);
+  }, t('k_b873150c44', { p0: task.title }));
 
   const doAliasAdopt = async (task: Task, targetType: string, targetRef: string) => {
     setBusyId(task.id);
@@ -405,18 +409,20 @@ export default function AssetPoolWorkbench() {
         { target_type: targetType, target_ref: targetRef });
       if (data?.success) {
         setHandled((n) => n + 1);
-        toast.success(`「${task.title}」已收编为${targetType === 'object' ? '对象' : '字典行'}别名`);
+        toast.success(targetType === 'object'
+          ? tr('k_5a196cf82f', { p0: task.title })
+          : tr('k_0adf4773dc', { p0: task.title }));
         await load();
         return true;
       }
       // 目标缺行不是失败，是"该走另一个出口"：服务端回 next_action 指路
-      const nxt = data?.next_action === 'new_metric' ? '转指标草稿' : '转维度草稿';
-      toast.warning(data?.message || `目标不存在，请改用「${nxt}」出口`, {
-        description: '已保留在待办里，可直接改走另一个出口',
+      const nxt = data?.next_action === 'new_metric' ? tr('k_3a04effa1d') : tr('k_23df711ec9');
+      toast.warning(data?.message || t('k_038c08b840', { p0: nxt }), {
+        description: t('k_f75c3fecdf'),
       });
       return false;
     } catch (e: any) {
-      toast.error(String(e?.response?.data?.detail || e?.message || '收编失败'));
+      toast.error(String(e?.response?.data?.detail || e?.message || t('k_3a1d7e62b8')));
       return false;
     } finally {
       setBusyId('');
@@ -425,19 +431,19 @@ export default function AssetPoolWorkbench() {
 
   const doReject = (task: Task) => modelBusy(task.id,
     () => client.post(`/evolution/candidates/${task.cand!.id}/reject`),
-    `「${task.title}」已驳回（留痕，不删行）`);
+    t('k_c8c5cfc4f8', { p0: task.title }));
 
   const doToTerm = async (task: Task, description: string) => modelBusy(task.id,
     () => client.post(`/evolution/candidates/${task.cand!.id}/to-term`, { description }),
-    `「${task.title}」已转入业务术语缓冲区`);
+    t('k_f10fe4646f', { p0: task.title }));
 
   const doMetricDraft = async (task: Task, form: Record<string, string>) => modelBusy(task.id,
     () => client.post(`/evolution/candidates/${task.cand!.id}/metric-draft`, form),
-    `「${task.title}」已建为指标草稿（未启用，补完口径再启用）`);
+    t('k_8d3078711f', { p0: task.title }));
 
   const doDimDraft = async (task: Task, form: Record<string, string>) => modelBusy(task.id,
     () => client.post(`/evolution/candidates/${task.cand!.id}/dimension-draft`, form),
-    `「${task.title}」已建为维度草稿（未启用，补完口径再启用）`);
+    t('k_3ac8ff345b', { p0: task.title }));
 
   /** 打开候选所属数据源的对象清单（候选出口按源选对象，避免选到别站对象后写不进） */
   const [candObjects, setCandObjects] = useState<Record<string, Option[]>>({});
@@ -463,35 +469,34 @@ export default function AssetPoolWorkbench() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Inbox className="h-5 w-5 text-amber-500" />
-            <h1 className="text-lg font-semibold">{"建模待办"}</h1>
+            <h1 className="text-lg font-semibold">{t('k_ede7cf6189')}</h1>
             <Badge variant="outline"
               className={total ? 'border-amber-500/40 text-amber-600' : pool ? 'border-green-500/40 text-green-600' : 'border-border text-muted-foreground'}>
-              {total ? `${total} 项待处理` : pool ? '已清空' : '未加载'}
+              {total ? t('k_9706ceac00', { p0: total }) : pool ? t('k_3683077f3b') : t('k_467b3e0314')}
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            语义层的覆盖缺口清单：字典里没归属的指标/维度、没映射的术语、问数失败回流的用户说法。
-            逐项处理到清空，就是在给问数加数据护城河。
+            {t('k_e12220a877')}
           </p>
         </div>
         <div className="flex-1" />
         {handled > 0 && (
           <span className="text-xs text-green-600 inline-flex items-center gap-1">
-            <CheckCircle2 className="h-3.5 w-3.5" />本次已处理 {handled} 项
+            <CheckCircle2 className="h-3.5 w-3.5" />{t('k_654f54473f', { p0: handled })}
           </span>
         )}
         <Button variant="outline" size="sm" onClick={() => navigate('/system/evolution')}>
-          <Bot className="h-3.5 w-3.5 mr-1" />进化中心（全量候选/归纳大盘）
+          <Bot className="h-3.5 w-3.5 mr-1" />{t('k_d123009917')}
         </Button>
         <Button variant="outline" size="sm" onClick={() => { void load(); void loadOptions(); }} disabled={loading}>
-          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />{t('k_38108eaa1d')}
         </Button>
       </div>
 
       {loadError && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/5 px-3 py-2 text-sm text-red-600">
           <AlertTriangle className="h-4 w-4 mr-1 inline" />{loadError}
-          <Button size="sm" variant="ghost" className="ml-2 h-6 text-xs" onClick={() => void load()}>{"重试"}</Button>
+          <Button size="sm" variant="ghost" className="ml-2 h-6 text-xs" onClick={() => void load()}>{t('k_e2d53a6d3a')}</Button>
         </div>
       )}
 
@@ -500,8 +505,7 @@ export default function AssetPoolWorkbench() {
       {!isAdmin && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">
           <AlertTriangle className="h-3.5 w-3.5 mr-1 inline" />
-          当前角色为只读分诊：可以看清单与证据。候选出口（收编/驳回/转草稿/转术语）由服务端按管理员角色把关，
-          要落库请找管理员处理；字典行的「归属到对象」只看有没有「维护指标字典」权限。
+          {t('k_3c380f078e')}
         </div>
       )}
 
@@ -509,7 +513,7 @@ export default function AssetPoolWorkbench() {
         {/* 左栏：分诊队列 */}
         <Card className="xl:col-span-1 h-fit">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">{"分诊队列"}</CardTitle>
+            <CardTitle className="text-sm">{t('k_dd00b830ce')}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1">
             <button
@@ -517,7 +521,7 @@ export default function AssetPoolWorkbench() {
               className={`w-full text-left rounded-lg border px-3 py-2 text-sm flex items-center gap-2 transition-colors
                 ${queue === 'all' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}>
               <Inbox className="h-4 w-4 text-muted-foreground" />
-              全部待办
+              {t('k_04d85c53c7')}
               <Badge variant="outline" className="ml-auto">{total}</Badge>
             </button>
             {QUEUE_ORDER.map((q) => {
@@ -538,12 +542,12 @@ export default function AssetPoolWorkbench() {
             })}
             {loadOptsError && (
               <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-600">
-                对象/词表清单未加载（{loadOptsError}），归属选择框可能为空；
-                <button className="underline ml-1" onClick={() => void loadOptions()}>{"重试"}</button>
+                {t('k_d25afa7dbd', { p0: loadOptsError })}
+                <button className="underline ml-1" onClick={() => void loadOptions()}>{t('k_e2d53a6d3a')}</button>
               </div>
             )}
             <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
-              候选清单只列最近 100 条 pending；已处理/已驳回的历史与归纳作业在「进化中心」看。
+              {t('k_c7b1f885eb')}
             </div>
           </CardContent>
         </Card>
@@ -553,54 +557,53 @@ export default function AssetPoolWorkbench() {
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2 flex-wrap">
               <CardTitle className="text-sm">
-                {queue === 'all' ? '全部待办' : QUEUE_META[queue].label}
+                {queue === 'all' ? t('k_04d85c53c7') : QUEUE_META[queue].label}
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {queue === 'all' ? '按被问到的次数排序，越常命中的越该先处理' : QUEUE_META[queue].hint}
+                  {queue === 'all' ? t('k_fb4d3cf0fd') : QUEUE_META[queue].hint}
                 </span>
               </CardTitle>
               <div className="relative ml-auto w-52">
                 <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input value={kw} onChange={(e) => setKw(e.target.value)}
-                  placeholder={"搜索业务名 / 数据源"} className="h-8 pl-7 text-xs" />
+                  placeholder={t('k_1e98d79840')} className="h-8 pl-7 text-xs" />
               </div>
             </div>
             {pickedAssign.length > 0 && (
               <div className="mt-2 flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-2.5 py-1.5 text-xs">
                 <UserPlus className="h-3.5 w-3.5" />
-                已选 {pickedAssign.length} 项未归属资产
+                {t('k_c455076e11', { p0: pickedAssign.length })}
                 <Button size="sm" className="h-6 text-xs ml-auto"
                   onClick={() => setDialog({ kind: 'assign', tasks: pickedAssign })}>
-                  批量归属到对象
+                  {t('k_89151c3a7d')}
                 </Button>
                 <Button size="sm" variant="ghost" className="h-6 text-xs"
-                  onClick={() => setPickedIds(new Set())}>{"取消选择"}</Button>
+                  onClick={() => setPickedIds(new Set())}>{t('k_f02e943954')}</Button>
               </div>
             )}
           </CardHeader>
           <CardContent>
             {loading && !pool ? (
               <div className="py-10 text-center text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />加载待办清单…
+                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />{t('k_ee6faa79f4')}
               </div>
             ) : !pool ? (
               /* 接口失败时 total 也是 0，但绝不能渲染成绿色的「没有待办缺口」——
                  那是把失败掩藏成成功（no-silent-degradation），顶部红条之外这里再挡一次 */
               <div className="py-10 text-center text-sm text-muted-foreground">
                 <AlertTriangle className="h-4 w-4 mr-1 inline text-red-500" />
-                {loadError ? '待办清单未加载成功，请按上方提示重试' : '待办清单暂不可用'}
+                {loadError ? t('k_3b410835f6') : t('k_abb09e1f3c')}
               </div>
             ) : !total ? (
               <div className="py-12 text-center">
                 <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500 opacity-70" />
-                <div className="text-sm font-medium">{"语义层没有待办缺口"}</div>
+                <div className="text-sm font-medium">{t('k_d69335fa17')}</div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  字典行都已归属、术语都有映射、没有回流失败的用户说法。
+                  {t('k_7bdfc906f7')}
                 </div>
               </div>
             ) : visible.length === 0 ? (
               <div className="py-10 text-center text-sm text-muted-foreground">
-                当前队列没有匹配「{kw}」的待办
-              </div>
+                {t('k_c54e79f64e', { p0: kw })}</div>
             ) : (
               <ScrollArea className="h-[64vh] pr-2">
                 <div className="space-y-1.5">
@@ -632,7 +635,7 @@ export default function AssetPoolWorkbench() {
                               </Badge>
                             )}
                             {t.weight > 1 && (
-                              <span className="text-[11px] text-muted-foreground">命中 {t.weight} 次</span>
+                              <span className="text-[11px] text-muted-foreground">{tr('k_434db9d24e', { p0: t.weight })}</span>
                             )}
                             {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                           </div>
@@ -654,16 +657,16 @@ export default function AssetPoolWorkbench() {
                             <>
                               <Button size="sm" variant="outline" className="h-7 text-xs"
                                 disabled={!canAssign || busy}
-                                title={!canAssign ? '需要「维护指标字典」权限（后端按 metrics:manage 裁决）' : undefined}
+                                title={!canAssign ? tr('k_5806d13ef6') : undefined}
                                 onClick={() => setDialog({ kind: 'assign', tasks: [t] })}>
-                                <UserPlus className="h-3 w-3 mr-1" />归属到对象
+                                <UserPlus className="h-3 w-3 mr-1" />{tr('k_ae9956c8b3')}
                               </Button>
                               <Button size="sm" variant="ghost" className="h-7 text-xs"
                                 onClick={() => navigate(`/data/metrics?search=${encodeURIComponent(t.title)}`)}>
-                                <ExternalLink className="h-3 w-3 mr-1" />去指标中心
+                                <ExternalLink className="h-3 w-3 mr-1" />{tr('k_05b3227b46')}
                               </Button>
                               <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
-                                title={"删除字典行（不可恢复）"} disabled={busy} onClick={() => setDialog({ kind: 'delete', task: t })}>
+                                title={tr('k_f0ca2d215d')} disabled={busy} onClick={() => setDialog({ kind: 'delete', task: t })}>
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </>
@@ -671,7 +674,7 @@ export default function AssetPoolWorkbench() {
                           {t.queue === 'term' && (
                             <Button size="sm" variant="outline" className="h-7 text-xs"
                               onClick={() => navigate('/data/glossary')}>
-                              <ExternalLink className="h-3 w-3 mr-1" />去业务术语映射
+                              <ExternalLink className="h-3 w-3 mr-1" />{tr('k_8f2d2537d8')}
                             </Button>
                           )}
                           {(t.queue === 'c-new_metric' || t.queue === 'c-alias'
@@ -679,46 +682,46 @@ export default function AssetPoolWorkbench() {
                             || t.queue === 'c-new_dimension') && (
                             <Button size="sm" variant="outline" className="h-7 text-xs"
                               disabled={!canAlias || busy}
-                              title={!canAlias ? whyCandidateBlocked : '把该说法写进已存在资产的业务名别名词表'}
+                              title={!canAlias ? whyCandidateBlocked : tr('k_058e5a15c3')}
                               onClick={() => setDialog({ kind: 'alias', task: t })}>
-                              收编为别名
+                              {tr('k_7a7efc8444')}
                             </Button>
                           )}
                           {t.queue === 'c-new_metric' && (
                             <Button size="sm" className="h-7 text-xs" disabled={!canDraft || busy}
                               title={!canDraft ? whyDraftBlocked : undefined}
                               onClick={() => setDialog({ kind: 'metric-draft', task: t })}>
-                              转指标草稿
+                              {tr('k_3a04effa1d')}
                             </Button>
                           )}
                           {t.queue === 'c-new_dimension' && (
                             <Button size="sm" className="h-7 text-xs" disabled={!canDraft || busy}
                               title={!canDraft ? whyDraftBlocked : undefined}
                               onClick={() => setDialog({ kind: 'dim-draft', task: t })}>
-                              转维度草稿
+                              {tr('k_23df711ec9')}
                             </Button>
                           )}
                           {(t.queue === 'c-new_metric' || t.queue === 'c-new_dimension'
                             || t.queue === 'c-binding_gap') && (
                             <Button size="sm" variant="ghost" className="h-7 text-xs"
                               onClick={() => navigate('/data/ontology')}>
-                              <Unlink className="h-3 w-3 mr-1" />核绑定
+                              <Unlink className="h-3 w-3 mr-1" />{tr('k_e0730d5ac1')}
                             </Button>
                           )}
                           {t.queue === 'c-term' && (
                             <Button size="sm" variant="outline" className="h-7 text-xs"
                               disabled={!canAlias || busy}
                               onClick={() => setDialog({ kind: 'to-term', task: t })}>
-                              转术语缓冲区
+                              {tr('k_9abf0019e8')}
                             </Button>
                           )}
                           {t.cand && (
                             <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground hover:text-red-500"
                               disabled={!canCandidate || busy}
                               title={!canCandidate ? whyCandidateBlocked
-                                : '驳回：留痕不删行，便于看出这类信号被反复判为无效'}
+                                : tr('k_bc71c16ca9')}
                               onClick={() => void doReject(t)}>
-                              驳回
+                              {tr('k_32525478cd')}
                             </Button>
                           )}
                         </div>
@@ -765,6 +768,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
   onMetricDraft: (task: Task, form: Record<string, string>) => Promise<boolean>;
   onDimDraft: (task: Task, form: Record<string, string>) => Promise<boolean>;
 }) {
+  const { t } = useTranslation('ui');
   const [objKey, setObjKey] = useState('');
   const [targetType, setTargetType] = useState('dimension');
   const [targetRef, setTargetRef] = useState('');
@@ -793,7 +797,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
       setForm({ display_name: t.cand.term, agg_type: aggTypes[0] || 'COUNT', formula: '', unit: '', description: '' });
     }
     if (dialog.kind === 'dim-draft' && t?.cand) {
-      setForm({ display_name: t.cand.term, category: categories[0] || '属性', property_name: '', description: '' });
+      setForm({ display_name: t.cand.term, category: categories[0] || tr('k_24d67862f8'), property_name: '', description: '' });
     }
     if (dialog.kind === 'to-term') setDesc(t?.cand?.classify_reason || '');
   }, [dialog, aggTypes, categories]);
@@ -820,7 +824,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
             value: String(d.name || ''), label: String(d.name || ''), hint: d.category || '' })));
         }
       } catch (e: any) {
-        if (!cancelled) setHint(`目标清单加载失败：${e?.response?.data?.detail || e?.message || '未知错误'}`);
+        if (!cancelled) setHint(t('k_42a2f11712', { p0: e?.response?.data?.detail || e?.message || t('k_974e748456') }));
       } finally {
         if (!cancelled) setOptsLoading(false);
       }
@@ -842,10 +846,10 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
           value: String(p.property || ''), label: String(p.property || '') }));
         if (!cancelled) {
           setProps(items);
-          if (!items.length) setHint('该对象主表未同步到业务属性，请先到「表 & 字段」同步元数据，或改在指标中心手工建维度');
+          if (!items.length) setHint(t('k_c41d584c7b'));
         }
       } catch (e: any) {
-        if (!cancelled) setHint(`属性清单加载失败：${e?.response?.data?.detail || e?.message || '未知错误'}`);
+        if (!cancelled) setHint(t('k_81b767641f', { p0: e?.response?.data?.detail || e?.message || t('k_974e748456') }));
       } finally {
         if (!cancelled) setOptsLoading(false);
       }
@@ -881,9 +885,9 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
 
   if (!dialog) return null;
   const titles: Record<string, string> = {
-    assign: assignList.length > 1 ? `批量归属 ${assignList.length} 项` : '归属到本体对象',
-    delete: '删除字典行', alias: '收编为业务别名', 'metric-draft': '转为指标草稿',
-    'dim-draft': '转为维度草稿', 'to-term': '转入业务术语缓冲区',
+    assign: assignList.length > 1 ? t('k_82da6f9feb', { p0: assignList.length }) : t('k_112ee32be5'),
+    delete: t('k_8d57e08bd5'), alias: t('k_e3b3907ae1'), 'metric-draft': t('k_9a37a77217'),
+    'dim-draft': t('k_89dde23a8a'), 'to-term': t('k_020bd120ea'),
   };
 
   return (
@@ -896,93 +900,89 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
           {/* 单项出口点名是哪条待办；批量只给计数与汇总，不逐条摊标题（与背后清单重复、且只显第一条会误导） */}
           {dialog.kind === 'assign' && assignList.length > 1 ? (
             <div className="text-xs text-muted-foreground">
-              本次处理 <span className="text-foreground font-medium">{assignList.length}</span> 项：
-              {assignList.map((t) => t.title).join('、')}
+              {t('k_c668aefc12', { p0: assignList.length })}
+              {assignList.map((t) => t.title).join(', ')}
             </div>
           ) : task && (
             <div className="text-xs text-muted-foreground">
-              待办：<span className="text-foreground font-medium">{task.title}</span>
-              {task.cand?.datasource_name && <span className="ml-1">（数据源 {task.cand.datasource_name}）</span>}
+              {t('k_08a4d71586')}<span className="text-foreground font-medium">{task.title}</span>
+              {task.cand?.datasource_name && <span className="ml-1">{t('k_b0d4d3ebda', { p0: task.cand.datasource_name })}</span>}
               {task.cand?.source === 'parse_fail' && (
-                <span className="ml-1">{"· 用户这么问没解析通才进到这里"}</span>)}
+                <span className="ml-1">{t('k_18ecd32934')}</span>)}
             </div>
           )}
 
           {dialog.kind === 'assign' && (
             <>
               <p className="text-xs text-muted-foreground">
-                字典行按 <code>bound_object_key</code> 指向本体对象才算归属完成；
-                指向后取数与检索才能把它算进这个对象的口径。
+                {t('k_b75546e743', { p0: <code>bound_object_key</code> })}
               </p>
               <OptionList options={objectOptions} value={objKey} onChange={setObjKey}
-                placeholder={"搜索并选择对象（显示业务名）"} />
+                placeholder={t('k_e96bb3bc25')} />
             </>
           )}
 
           {dialog.kind === 'delete' && (
             <p className="text-sm text-muted-foreground">
-              将物理删除{task?.queue === 'metric' ? '指标' : '维度'}字典行
-              <strong className="text-foreground mx-1">{task?.title}</strong>，不可恢复。
-              若它还在被某个对象使用，请改用「归属到对象」而不是删除。
+              {t('k_b2972726f3', { p0: task?.queue === 'metric' ? t('k_1dfc810a7b') : t('k_72fa9ecdc4'), p1: task?.title })}
             </p>
           )}
 
           {dialog.kind === 'alias' && (
             <>
               <p className="text-xs text-muted-foreground">
-                收编 = 把这个说法加进已存在资产的业务名别名词表，下次用户这么说就能解析上。
-                目标资产不存在时应改走「转指标/维度草稿」出口。
+                {t('k_2275d7e6d3')}
               </p>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground shrink-0">{"目标类型"}</span>
+                <span className="text-xs text-muted-foreground shrink-0">{t('k_c44a4e3da1')}</span>
                 <Select value={targetType} onValueChange={(v) => { setTargetType(v); setTargetRef(''); }}>
                   <SelectTrigger className="h-8 text-xs w-40"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="dimension">{"维度字典行"}</SelectItem>
-                    <SelectItem value="metric">{"指标字典行"}</SelectItem>
-                    <SelectItem value="object">{"本体对象"}</SelectItem>
+                    <SelectItem value="dimension">{t('k_4f1918eeb6')}</SelectItem>
+                    <SelectItem value="metric">{t('k_a2f1ce2da5')}</SelectItem>
+                    <SelectItem value="object">{t('k_e5b5171f27')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="text-xs text-muted-foreground flex items-center gap-1">
-                {optsLoading ? <><Loader2 className="h-3 w-3 animate-spin" />{"加载目标清单…"}</> : null}
+                {optsLoading ? <><Loader2 className="h-3 w-3 animate-spin" />{t('k_76de2d49b5')}</> : null}
               </div>
               <OptionList options={targetOptions} value={targetRef} onChange={setTargetRef}
-                placeholder={"搜索并选择目标"} disabled={optsLoading} />
+                placeholder={t('k_508016c121')} disabled={optsLoading} />
             </>
           )}
 
           {dialog.kind === 'to-term' && (
             <>
               <p className="text-xs text-muted-foreground">
-                转入按数据源分桶的业务术语缓冲区（还没确定该绑哪个对象的黑话先收在这里）。
+                {t('k_321e62a6e1')}
               </p>
               <Textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={3}
-                placeholder={"术语释义（可选，写清业务含义便于后续绑定）"} className="text-xs" />
+                placeholder={t('k_71a40f2fb6')} className="text-xs" />
             </>
           )}
 
           {(dialog.kind === 'metric-draft' || dialog.kind === 'dim-draft') && (
             <>
               <p className="text-xs text-muted-foreground">
-                草稿落库为未启用行：补完口径再启用，避免未核对的口径直接被问数命中。
+                {t('k_9b2dc2c756')}
               </p>
               <div className="space-y-2">
                 <div>
-                  <label className="text-xs text-muted-foreground">{"归属对象"}</label>
+                  <label className="text-xs text-muted-foreground">{t('k_3d44b0cfee')}</label>
                   <OptionList options={objectOptions} value={objKey}
                     onChange={(v) => { setObjKey(v); setForm((f) => ({ ...f, property_name: '' })); }}
-                    placeholder={"搜索并选择对象"} />
+                    placeholder={t('k_3074e5ba35')} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs text-muted-foreground">{"业务显示名"}</label>
+                    <label className="text-xs text-muted-foreground">{t('k_c35a132911')}</label>
                     <Input value={form.display_name || ''} className="h-8 text-xs"
                       onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))} />
                   </div>
                   {dialog.kind === 'metric-draft' ? (
                     <div>
-                      <label className="text-xs text-muted-foreground">{"聚合方式"}</label>
+                      <label className="text-xs text-muted-foreground">{t('k_fa3207b98d')}</label>
                       <Select value={form.agg_type || 'COUNT'}
                         onValueChange={(v) => setForm((f) => ({ ...f, agg_type: v }))}>
                         <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
@@ -994,13 +994,13 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                     </div>
                   ) : (
                     <div>
-                      <label className="text-xs text-muted-foreground">{"分类"}</label>
-                      <Select value={form.category || '属性'}
+                      <label className="text-xs text-muted-foreground">{t('k_435c5259e4')}</label>
+                      <Select value={form.category || t('k_24d67862f8')}
                         onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}>
                         <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {(categories.length ? categories : ['属性']).map((c) => (
-                            <SelectItem key={c} value={c}>{c}</SelectItem>))}
+                          {(categories.length ? categories : [tr('k_24d67862f8')]).map((c) => (
+                            <SelectItem key={c} value={c}>{dimensionCategoryLabel(c)}</SelectItem>))}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1009,28 +1009,28 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                 {dialog.kind === 'metric-draft' ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-xs text-muted-foreground">{"口径公式（可选，服务端治理后才可执行）"}</label>
+                      <label className="text-xs text-muted-foreground">{t('k_3c006a1f49')}</label>
                       <Input value={form.formula || ''} className="h-8 text-xs"
                         onChange={(e) => setForm((f) => ({ ...f, formula: e.target.value }))} />
                     </div>
                     <div>
-                      <label className="text-xs text-muted-foreground">{"单位"}</label>
+                      <label className="text-xs text-muted-foreground">{t('k_8ec8c8c712')}</label>
                       <Input value={form.unit || ''} className="h-8 text-xs"
                         onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} />
                     </div>
                   </div>
                 ) : (
                   <div>
-                    <label className="text-xs text-muted-foreground">{"业务属性名（从对象主表的属性清单里选）"}</label>
-                    {optsLoading && <div className="text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 inline animate-spin mr-1" />{"加载属性清单…"}</div>}
-                    {!objKey && <div className="text-[11px] text-muted-foreground">{"先选归属对象，属性清单按对象的物理表带出"}</div>}
+                    <label className="text-xs text-muted-foreground">{t('k_242977a103')}</label>
+                    {optsLoading && <div className="text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 inline animate-spin mr-1" />{t('k_22a54c63e7')}</div>}
+                    {!objKey && <div className="text-[11px] text-muted-foreground">{t('k_faa36bc873')}</div>}
                     {!!objKey && <OptionList options={props} value={form.property_name || ''}
                       onChange={(v) => setForm((f) => ({ ...f, property_name: v }))}
-                      placeholder={"搜索并选择业务属性"} disabled={optsLoading} />}
+                      placeholder={t('k_16489ce1f7')} disabled={optsLoading} />}
                   </div>
                 )}
                 <div>
-                  <label className="text-xs text-muted-foreground">{"口径说明"}</label>
+                  <label className="text-xs text-muted-foreground">{t('k_53a989d8cc')}</label>
                   <Textarea value={form.description || ''} rows={2} className="text-xs"
                     onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
                 </div>
@@ -1045,10 +1045,10 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={submitting}>{"取消"}</Button>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>{t('k_4d0b4688c7')}</Button>
           <Button onClick={() => void submit()} disabled={!canSubmit}>
             {submitting && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-            {dialog.kind === 'delete' ? '确认删除' : '确定'}
+            {dialog.kind === 'delete' ? t('k_3c06abe116') : t('k_f526c89937')}
           </Button>
         </DialogFooter>
       </DialogContent>

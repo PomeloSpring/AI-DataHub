@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -51,61 +51,61 @@ const fmtShort = (s: string) => { const v = toInputDT(s); return v ? v.replace('
 // 入口筛选项:Chat 已全面走 Qoder 执行层(pipelineMode 恒为 agent),
 // 旧 chat/quick/deep 入口不再产生数据,已从可选项移除。
 const ENTRYPOINTS = [
-  { value: 'all', label: '全部入口' },
+  { value: 'all', label: t('k_f8f2860ed7') },
   { value: 'agent', label: 'Chat / Qoder（Agent）' },
   { value: 'playground', label: 'Playground' },
 ];
 
 // 时间范围快捷选项(小时数;0=全部)。默认近 1 小时。
 const RANGE_PRESETS = [
-  { key: '1h', label: '近1小时', hours: 1 },
-  { key: '3h', label: '近3小时', hours: 3 },
-  { key: '1d', label: '近1天', hours: 24 },
-  { key: '7d', label: '近1周', hours: 24 * 7 },
-  { key: 'all', label: '全部', hours: 0 },
+  { key: '1h', label: t('k_d956598c75'), hours: 1 },
+  { key: '3h', label: t('k_e162cea985'), hours: 3 },
+  { key: '1d', label: t('k_451c0cd688'), hours: 24 },
+  { key: '7d', label: t('k_e6ff9178a1'), hours: 24 * 7 },
+  { key: 'all', label: t('k_778fc8f994'), hours: 0 },
 ];
 
 // span 类型中文标签(执行步骤/产物)
 const SPAN_KIND_LABELS: Record<string, string> = {
-  llm_call: '模型请求',
-  assistant: '模型输出',
-  tool_call: '工具调用',
-  retrieval: '知识库检索',
-  phase: '前置阶段',
-  result: '执行结果',
-  intent_route: '前置分流判定',
+  llm_call: t('k_890ceb1b84'),
+  assistant: t('k_423fcf7f61'),
+  tool_call: t('k_850b4e4dcc'),
+  retrieval: t('k_0730538b51'),
+  phase: t('k_8bfd170043'),
+  result: t('k_adaf94c06b'),
+  intent_route: t('k_f7e29f5c6a'),
 };
 
 // 处理方（意图漏斗拦截率口径）与判定标签的中文显示名——页面不得把枚举直给用户看
 const HANDLED_BY_LABELS: Record<string, string> = {
-  agent: '模型（Harness）',
-  intent_gate: '前置意图层直答',
+  agent: t('k_d5b5ef9f7f'),
+  intent_gate: t('k_7ee49dad6c'),
 };
 
 // 模型通道显示名：两条通道计量单位不同，页面必须把单位说清而不是只换个名字
 export const CHANNEL_LABELS: Record<string, string> = {
-  'qoder-gateway': 'Qoder 网关（按 Credit）',
-  'anthropic-direct': '供应商直连（按 Token）',
+  'qoder-gateway': t('k_63999d32e9'),
+  'anthropic-direct': t('k_7fecb86f77'),
   // 这两个是“伪桶”：库里 channel 为 NULL，但语义完全不同，不能混为一谈
-  'not-executed': '未走 Harness（前置拦截）',
-  unrecorded: '未记录（当时未落库）',
+  'not-executed': t('k_21a4b5456d'),
+  unrecorded: t('k_1c028f5541'),
 };
-const channelLabel = (c?: string | null) => CHANNEL_LABELS[c || 'unrecorded'] || c || '未记录';
+const channelLabel = (c?: string | null) => CHANNEL_LABELS[c || 'unrecorded'] || c || t('k_38e1bd74a2');
 const LABEL_LABELS: Record<string, string> = {
-  empty_or_noise: '无效输入',
-  social_ack: '寒暄/应答',
-  probe_refuse: '涉密索要拒答',
-  help_usage: '使用说明',
-  capability_probe: '能力/权限询问',
-  data_query: '业务取数',
-  platform_write: '平台功能动作',
-  context_followup: '多轮延续',
-  ambiguous: '判不准（默认放行）',
+  empty_or_noise: t('k_acb69b3f2d'),
+  social_ack: t('k_d3a9d718a1'),
+  probe_refuse: t('k_5d9e0ff3b4'),
+  help_usage: t('k_9e1bb02b03'),
+  capability_probe: t('k_3ec2cb265c'),
+  data_query: t('k_02c2b08683'),
+  platform_write: t('k_bd195b0051'),
+  context_followup: t('k_3b5b5e69a8'),
+  ambiguous: t('k_ed4d4b1bbc'),
 };
 const DECISION_LABELS: Record<string, string> = {
-  local: '已本地直答',
-  shadow_local: '判定可拦（shadow未拦）',
-  agent: '已交模型',
+  local: t('k_6d448faeaf'),
+  shadow_local: t('k_d5f8ffe1bc'),
+  agent: t('k_65c38a45b9'),
 };
 
 function presetRange(key: string): { start: string; end: string } {
@@ -220,7 +220,7 @@ export default function Observability() {
       else if (tab === 'traces') setTraces(await listTraces({ ...f, conversation_id: convFilter, page: tracePage, size: obsPageSize }));
       // 'funnel' 页签自己拉数据（面板内 useEffect），不在这条主链重复请求
     } catch (e: any) {
-      toast.error('加载失败：' + (e?.response?.data?.detail || e?.message || e));
+      toast.error(t('k_fc3f31a5be', { p0: e?.response?.data?.detail || e?.message || e }));
     } finally {
       setLoading(false);
     }
@@ -248,7 +248,7 @@ export default function Observability() {
 
   const openTrace = async (traceId: string) => {
     try { setDetail(await getTrace(traceId)); }
-    catch (e: any) { toast.error('加载 trace 失败：' + (e?.response?.data?.detail || e?.message)); }
+    catch (e: any) { toast.error(t('k_f878aea078', { p0: e?.response?.data?.detail || e?.message })); }
   };
 
   const s = summary?.summary;
@@ -331,7 +331,7 @@ export default function Observability() {
               <PopoverTrigger asChild>
                 <Button size="sm" variant={rangePreset === 'custom' ? 'default' : 'outline'} className="h-8 px-2 text-xs">
                   <Calendar className="h-3.5 w-3.5 mr-1" />
-                  {rangePreset === 'custom' ? `${fmtShort(start)} ~ ${fmtShort(end)}` : '自定义'}
+                  {rangePreset === 'custom' ? `${fmtShort(start)} ~ ${fmtShort(end)}` : t('k_c493338e8c')}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-64 space-y-3">
@@ -367,13 +367,13 @@ export default function Observability() {
         <TabsContent value="overview" className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <StatCard icon={MessagesSquare} label={t("k_4d72abd2e9")} value={fmt(s?.sessions)} />
-            <StatCard icon={GitBranch} label={t("k_e4197d757a")} value={fmt(s?.turns)} hint={`用户 ${fmt(s?.users)}`} />
-            <StatCard icon={Sparkles} label={t("k_890ceb1b84")} value={fmt(s?.llm_calls)} hint={`平均耗时 ${fmt(s?.avg_duration_ms)}ms`} />
+            <StatCard icon={GitBranch} label={t("k_e4197d757a")} value={fmt(s?.turns)} hint={t('k_75dc38f8a3', { p0: fmt(s?.users) })} />
+            <StatCard icon={Sparkles} label={t("k_890ceb1b84")} value={fmt(s?.llm_calls)} hint={t('k_5125154a57', { p0: fmt(s?.avg_duration_ms) })} />
             <StatCard icon={AlertCircle} label={t("k_b859c7be75")} value={fmt(s?.errors)} />
             <StatCard icon={Activity} label={t("k_2d5ae33603")} value={fmt(s?.total_tokens)}
-              hint="仅供应商直连通道回报；Qoder 网关不回报 token" />
+              hint={t('k_571949dcc9')} />
             <StatCard icon={Activity} label={t("k_58e95fffe1")} value={fmt(s?.credits, 4)}
-              hint="仅 Qoder 网关通道；直连不产生 Credit" />
+              hint={t('k_7099c0fed4')} />
             {/* 成本按币种分别显示：Qoder 通道是按资源包单价折算的 CNY、直连是供应商上报的 USD，
                 历史实现把两者直接相加再挂一个“MAX 出来的币种”，是假数字。 */}
             <StatCard icon={Activity} label={t("k_eb9c6ad937")}
@@ -381,20 +381,20 @@ export default function Observability() {
                 ? '≈ ' + s.cost_by_currency.map(c => fmtCost(c.amount, c.currency)).join(' + ')
                 : '—'}
               hint={s?.cost_by_currency?.length
-                ? `分币种统计：${s.cost_by_currency.map(c => `${(c.currency || '?').toUpperCase()} ${fmt(c.turns)} 回合`).join('，')}；均为估算非账单值`
-                : '按币种分别统计；均为估算非账单值'}
+                ? t('k_4c8c2383bc', { p0: s.cost_by_currency.map(c => tr('k_b924b0a011', { p0: (c.currency || '?').toUpperCase(), p1: fmt(c.turns) })).join('，') })
+                : t('k_fab5414bab')}
             />
             <StatCard icon={ThumbsUp} label={t("k_06aa7bd1ca")} value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
             {/* 前置意图漏斗：拦截掉的回合不起子进程、不烧 credit */}
             <StatCard
               icon={Filter} label={t("k_26bf0fbfdc")}
               value={s?.intercept_rate != null ? Math.round(s.intercept_rate * 1000) / 10 + '%' : '—'}
-              hint={`本地直答 ${fmt(s?.intercepted)} / 回合 ${fmt(s?.turns)}`}
+              hint={t('k_bcded2a153', { p0: fmt(s?.intercepted), p1: fmt(s?.turns) })}
             />
             <StatCard
               icon={Activity} label={t("k_dfe182df6e")}
               value={fmt(s?.estimated_saved_credits, 2)}
-              hint="拦截回合数 × agent 回合均值 credit；Qoder 不回报单回合实测成本"
+              hint={t('k_1d2e2f2678')}
             />
           </div>
           {/* 模型通道分桶：credit 与 token 是两个不可互推的量（Qoder 不报 token、直连没有 credit），
@@ -418,15 +418,15 @@ export default function Observability() {
                           {channelLabel(c.channel)}
                           {!!c.backfilled_turns && (
                             <span className="ml-1 text-xs text-muted-foreground"
-                              title={`其中 ${c.backfilled_turns} 个回合的通道值是按判据回填的（channel_source=backfilled），不是运行时实记`}>
-                              ·含回填 {c.backfilled_turns}
+                              title={t('k_5ed0fd6bbb', { p0: c.backfilled_turns })}>
+                              {t('k_31127c53ef', { p0: c.backfilled_turns })}
                             </span>
                           )}
                         </td>
                         <td className="text-right">{fmt(c.turns)}</td>
                         <td className="text-right">{na ? '—' : fmt(c.llm_calls)}</td>
-                        <td className="text-right">{na ? '—' : (c.channel === 'qoder-gateway' ? '不回报' : fmt(c.total_tokens))}</td>
-                        <td className="text-right">{na || c.channel === 'anthropic-direct' ? '不适用' : fmt(c.credits, 4)}</td>
+                        <td className="text-right">{na ? '—' : (c.channel === 'qoder-gateway' ? t('k_e0fcd3bff7') : fmt(c.total_tokens))}</td>
+                        <td className="text-right">{na || c.channel === 'anthropic-direct' ? t('k_eec46c136f') : fmt(c.credits, 4)}</td>
                         <td className="text-right">{na ? '—' : fmtCost(c.cost_amount, c.cost_currency)}</td>
                       </tr>
                     );
@@ -438,15 +438,12 @@ export default function Observability() {
             )}
             {!!s?.direct_turns && (
               <p className="mt-2 text-xs text-muted-foreground">
-                本窗口有 {fmt(s.direct_turns)} 个回合走供应商直连：它们的成本由百炼等服务商按 Token 结算，
-                <span className="font-medium text-foreground">{t("k_c0f27b46f9")}</span>。
+                {t('k_4a6f89496a', { p0: fmt(s.direct_turns), p1: t('k_c0f27b46f9') })}
               </p>
             )}
             {/* 估算依据必须写清来源：这两个数字都不是账单，且币种不同不能相加 */}
             <p className="mt-2 text-xs text-muted-foreground">
-              成本均为<span className="font-medium text-foreground">{t("k_220cc0a6c3")}</span>：
-              Qoder 网关 = credit × 资源包官方单价折算（CNY，Qoder 不回报账单成本）；
-              供应商直连 = CLI 自报成本（USD，属价格表估算）。两者币种不同，不能相加。
+              {t('k_e9320e47fd', { p0: t('k_220cc0a6c3') })}
             </p>
           </div>
           <QuotaPanel />
@@ -464,7 +461,7 @@ export default function Observability() {
                     <td className="text-right tabular-nums">{fmt(d.errors)}</td>
                   </tr>))}</tbody>
               </table>
-            ) : <div className="text-sm text-muted-foreground">当前筛选无数据。可切换“全部”时间范围和“全部入口”；Qoder 对话归类为“Chat / Qoder（Agent）”。</div>}
+            ) : <div className="text-sm text-muted-foreground">{t('k_ba27220a12')}</div>}
           </div>
         </TabsContent>
 
@@ -474,11 +471,11 @@ export default function Observability() {
 
         <TabsContent value="sessions">
           <DataTable
-            head={['会话', '用户', '入口数据源', '回合', 'Token', 'Credit(回合和)', '错误', '最近活跃', '']}
+            head={[t('k_9a834e9a3e'), t('k_9ba763ea34'), t('k_12ce22c45e'), t('k_52d27a21f8'), 'Token', t('k_2ca61cd46f'), t('k_b859c7be75'), t('k_d672e9d4a8'), '']}
             rows={sessions.items.map(r => [
               <div><div className="font-medium truncate max-w-xs">{r.title || `#${r.conversation_id}`}</div><div className="text-xs text-muted-foreground">conv {r.conversation_id}</div></div>,
               `${r.username}(${r.user_id})`,
-              r.datasource_id ? (dsNames[r.datasource_id] || '数据源已删除') : '未绑定',
+              r.datasource_id ? (dsNames[r.datasource_id] || t('k_32cc05509f')) : t('k_906ad18b48'),
               fmt(r.turns), fmt(r.total_tokens), fmt(r.credits, 2), fmt(r.errors), fmtTime(r.last_active),
               <Button size="sm" variant="ghost" onClick={() => { setConvFilter(r.conversation_id); setTab('traces'); }}>{t("k_3d8532c4ea")}</Button>,
             ])}
@@ -490,12 +487,12 @@ export default function Observability() {
         <TabsContent value="traces">
           {convFilter > 0 && (
             <div className="mb-2 flex items-center gap-2 text-sm">
-              <Badge variant="secondary">会话 #{convFilter}</Badge>
+              <Badge variant="secondary">{t('k_11b07cc5ea', { p0: convFilter })}</Badge>
               <button className="text-muted-foreground hover:text-foreground" onClick={() => setConvFilter(0)}>{t("k_e469cba0a5")}</button>
             </div>
           )}
           <DataTable
-            head={['开始时间', '用户', '入口', '处理方式', '通道/Harness', '模型', '问题', '状态', 'Credit', 'Token', '耗时', '反馈', '']}
+            head={[t('k_e8868af6eb'), t('k_9ba763ea34'), t('k_38e9cd1ffb'), t('k_8085ebce1a'), t('k_fd17d9f4b0'), t('k_98fd0cbd9c'), t('k_2fb49eec39'), t('k_62e951a692'), 'Credit', 'Token', t('k_a9704e1997'), t('k_1d50fa5b3a'), '']}
             rows={traces.items.map(r => [
               fmtTime(r.started_at), `${r.username}`, r.entrypoint,
               <Badge variant={r.handled_by === 'intent_gate' ? 'secondary' : 'outline'}>
@@ -506,15 +503,15 @@ export default function Observability() {
                 {channelLabel(r.channel)}
                 {r.layer_name ? <span className="block text-xs text-muted-foreground">{r.layer_name}</span> : null}
               </span>,
-              r.model_ref || (r.handled_by === 'intent_gate' ? '未调用模型' : '—'),
+              r.model_ref || (r.handled_by === 'intent_gate' ? t('k_4788ad256c') : '—'),
               <span className="truncate max-w-xs inline-block align-bottom" title={r.question}>{r.question}</span>,
               <Badge variant={r.status === 'error' ? 'destructive' : 'outline'}>{r.status}</Badge>,
               // 直连通道没有 credit 这个量：写 0 会被读成“跑了但没花钱”，写 — 又会被当成缺数据
-              r.channel === 'anthropic-direct' ? '不适用'
-                : (r.handled_by === 'intent_gate' ? '未调用模型'
+              r.channel === 'anthropic-direct' ? t('k_eec46c136f')
+                : (r.handled_by === 'intent_gate' ? t('k_4788ad256c')
                   : ((r.channel === 'unrecorded' || !r.channel_source) && !r.credits ? '—' : fmt(r.credits, 2))),
               r.channel === 'anthropic-direct' ? fmt(r.total_tokens)
-                : (r.handled_by === 'intent_gate' ? '—' : '不回报'),
+                : (r.handled_by === 'intent_gate' ? '—' : t('k_e0fcd3bff7')),
               `${fmt(r.duration_ms)}ms`,
               r.feedback_satisfied === 1 ? <ThumbsUp className="h-4 w-4 text-green-600" /> : r.feedback_satisfied === 0 ? <ThumbsDown className="h-4 w-4 text-red-500" /> : '—',
               <Button size="sm" variant="ghost" onClick={() => openTrace(r.trace_id)}>{t("k_4f55ee1e68")}</Button>,
@@ -526,19 +523,17 @@ export default function Observability() {
 
         <TabsContent value="models">
           <DataTable
-            head={['模型', '通道', '回合', '请求数', '输入Token', '输出Token', 'Credit', '成本(估算)']}
+            head={[t('k_98fd0cbd9c'), t('k_f3c5b9d1e6'), t('k_52d27a21f8'), t('k_0f81e35924'), t('k_47f166b021'), t('k_36f616e51f'), 'Credit', t('k_bed3a8acac')]}
             rows={models.map(m => [m.model_ref || '—', channelLabel(m.channel), fmt(m.turns), fmt(m.llm_calls), fmt(m.input_tokens), fmt(m.output_tokens), fmt(m.credits, 4), fmtCost(m.cost_amount, m.cost_currency)])}
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            模型为回合内实际生效模型（未指定时由 Harness 上报的模型名回填）；Credit 为回合增量（会话累计值之差）；
-            成本 = credit × 单价（默认取 Qoder CN 企业资源包官方价 80 元 / 2,000 Credits = ¥0.04/Credit，
-            可用 OBSERVABILITY_CREDIT_COST_RATE / _CURRENCY 改为你自己的实际采购价），属估算而非账单值。
+            {t('k_1ecda8b258')}
           </p>
         </TabsContent>
 
         <TabsContent value="users">
           <DataTable
-            head={['用户', '角色', '会话', '回合', 'Token', 'Credit', '错误', '最近活跃']}
+            head={[t('k_9ba763ea34'), t('k_6b26695e4d'), t('k_9a834e9a3e'), t('k_52d27a21f8'), 'Token', 'Credit', t('k_b859c7be75'), t('k_d672e9d4a8')]}
             rows={users.map(u => [`${u.username}(${u.user_id})`, u.user_role || '—', fmt(u.sessions), fmt(u.turns), fmt(u.total_tokens), fmt(u.credits, 2), fmt(u.errors), fmtTime(u.last_active)])}
           />
         </TabsContent>
@@ -553,7 +548,7 @@ export default function Observability() {
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              Trace 详情
+              {t('k_8537345c0f')}
               {detail?.trace.feedback_satisfied === 1 && <Badge className="bg-green-600"><ThumbsUp className="h-3 w-3 mr-1" />{t("k_fda7539bde")}</Badge>}
               {detail?.trace.feedback_satisfied === 0 && <Badge variant="destructive"><ThumbsDown className="h-3 w-3 mr-1" />{t("k_f497cad99f")}</Badge>}
             </DialogTitle>
@@ -562,28 +557,26 @@ export default function Observability() {
           {detail && (
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-                <KV k="用户" v={`${detail.trace.username}(${detail.trace.user_id})`} />
-                <KV k="入口" v={detail.trace.entrypoint} />
-                <KV k="模型" v={detail.trace.model_ref || '—'} />
-                <KV k="状态" v={detail.trace.status} />
+                <KV k={t('k_9ba763ea34')} v={`${detail.trace.username}(${detail.trace.user_id})`} />
+                <KV k={t('k_38e9cd1ffb')} v={detail.trace.entrypoint} />
+                <KV k={t('k_98fd0cbd9c')} v={detail.trace.model_ref || '—'} />
+                <KV k={t('k_62e951a692')} v={detail.trace.status} />
                 <KV k="Token" v={fmt(detail.trace.total_tokens)} />
-                <KV k="Credit(回合)" v={fmt(detail.trace.credits, 2)} />
-                <KV k="Credit(会话)" v={fmt(detail.trace.session_credits, 2)} />
-                <KV k="模型通道" v={channelLabel(detail.trace.channel)} />
-                <KV k="Harness" v={detail.trace.layer_name || (detail.trace.layer_id ? `#${detail.trace.layer_id}` : '未记录')} />
-                <KV k="成本(估算)" v={fmtCost(detail.trace.cost_amount, detail.trace.cost_currency)} />
-                <KV k="耗时" v={`${fmt(detail.trace.duration_ms)}ms`} />
+                <KV k={t('k_c78ba805e6')} v={fmt(detail.trace.credits, 2)} />
+                <KV k={t('k_34abf8d837')} v={fmt(detail.trace.session_credits, 2)} />
+                <KV k={t('k_6df119c076')} v={channelLabel(detail.trace.channel)} />
+                <KV k="Harness" v={detail.trace.layer_name || (detail.trace.layer_id ? `#${detail.trace.layer_id}` : t('k_38e1bd74a2'))} />
+                <KV k={t('k_bed3a8acac')} v={fmtCost(detail.trace.cost_amount, detail.trace.cost_currency)} />
+                <KV k={t('k_a9704e1997')} v={`${fmt(detail.trace.duration_ms)}ms`} />
               </div>
-              <TextBlock label={`问题（${detail.trace.question?.length || 0} 字）`} text={detail.trace.question} />
+              <TextBlock label={t('k_984cd66d4c', { p0: detail.trace.question?.length || 0 })} text={detail.trace.question} />
               <TextBlock label={t("k_5af5d02385")} text={detail.trace.final_answer} />
               {detail.trace.error_message ? <TextBlock label={t("k_b859c7be75")} text={detail.trace.error_message} /> : null}
               {detail.trace.feedback_reason ? <TextBlock label={t("k_05dda3d34e")} text={detail.trace.feedback_reason} /> : null}
               <div>
-                <div className="font-medium mb-1">执行步骤 / 产物（{detail.spans.length}）</div>
+                <div className="font-medium mb-1">{t('k_84eb47ea23', { p0: detail.spans.length })}</div>
                 <p className="text-xs text-muted-foreground mb-2">
-                  耗时口径：「前置阶段」= 会话领取/资源绑定/建连/拼提示词等固定成本；「模型请求」= 单次请求窗口
-                  （工具执行时间不计入）；「工具调用」= 工具整体执行；「知识库检索」= 只计检索段，
-                  不含工具包装层开销。两者相减即可分辨“知识库真慢”与“工具包装层慢”。
+                  {t('k_915a0acaa8')}
                 </p>
                 <div className="space-y-2">
                   {detail.spans.map(sp => (
@@ -598,8 +591,8 @@ export default function Observability() {
                           {fmt(sp.total_tokens)} tok · {sp.credits != null ? fmt(sp.credits, 3) + ' cr' : '—'} · {fmt(sp.duration_ms)}ms
                         </div>
                       </div>
-                      <TextBlock label="输入 (input)" text={sp.input_text} />
-                      <TextBlock label="输出 (output / SQL / 产物)" text={sp.output_text} />
+                      <TextBlock label={t('k_0ae328132f')} text={sp.input_text} />
+                      <TextBlock label={t('k_69f20aeee8')} text={sp.output_text} />
                       {sp.error_text ? <TextBlock label={t("k_b859c7be75")} text={sp.error_text} /> : null}
                     </div>
                   ))}
@@ -649,18 +642,18 @@ function QuotaPanel() {
     <div className="rounded-lg border bg-card p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Gauge className="h-4 w-4" /> Qoder Credit 配额（账号级真实消耗）
+          <Gauge className="h-4 w-4" /> {t('k_29f21890f6')}
           {quota?.is_quota_exceeded && <Badge variant="destructive">{t("k_707faf6f86")}</Badge>}
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {quota?.available && (
             <span>
-              {quota.layer ? `探测用 Harness：${quota.layer} · ` : ''}
-              {quota.cached ? '缓存值' : '实时读取'} · 采集于 {fmtTime(quota.fetched_at)}
+              {quota.layer ? t('k_c5e7eaa67d', { p0: quota.layer }) : ''}
+              {quota.cached ? t('k_b31566ab8e') : t('k_a08ec5ca10')}{t('k_8b23f69f51', { p0: fmtTime(quota.fetched_at) })}
             </span>
           )}
           <Button size="sm" variant="outline" disabled={busy} onClick={() => load(true)}>
-            <RefreshCw className={`h-3.5 w-3.5 mr-1 ${busy ? 'animate-spin' : ''}`} /> 重读
+            <RefreshCw className={`h-3.5 w-3.5 mr-1 ${busy ? 'animate-spin' : ''}`} /> {t('k_60d296730a')}
           </Button>
         </div>
       </div>
@@ -669,7 +662,7 @@ function QuotaPanel() {
       {quota && !quota.available && (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>credit 配额不可用：{quota.reason || '未知原因'}（下方表格的 credit 仍为回合真实累加值，不受影响）</span>
+          <span>{t('k_25c5986ecb', { p0: quota.reason || t('k_f91d273b96') })}</span>
         </div>
       )}
       {quota?.available && (
@@ -677,21 +670,19 @@ function QuotaPanel() {
           {(quota.buckets || []).map(b => (
             <div key={b.source} className="space-y-1">
               <div className="flex items-center justify-between text-xs">
-                <span className="font-medium">{b.label}{b.available ? '' : '（不可用）'}</span>
+                <span className="font-medium">{b.label}{b.available ? '' : t('k_63f7431407')}</span>
                 <span className="tabular-nums text-muted-foreground">
-                  {fmt(b.used)} / {fmt(b.total)} {b.unit} · 剩 {fmt(b.remaining)}
+                  {fmt(b.used)} / {fmt(b.total)} {b.unit} {t('k_3aca2abfc7', { p0: fmt(b.remaining) })}
                 </span>
               </div>
               {bar(b.percentage)}
               {b.percentage != null && (
-                <div className="text-[11px] text-muted-foreground tabular-nums">已用 {fmt(b.percentage, 1)}%</div>
+                <div className="text-[11px] text-muted-foreground tabular-nums">{t('k_abe5cdb2a7', { p0: fmt(b.percentage, 1) })}</div>
               )}
             </div>
           ))}
           <div className="text-[11px] text-muted-foreground">
-            口径：Qoder 按 credit 计量计费，不回报账单成本（实测 total_cost_usd / costUSD 恒为 0），
-            因此本面板是“实际花了多少配额”的权威口径；下方「成本」列是按资源包官方单价折算的估算值。
-            {quota.expires_at ? ` 配额到期：${fmtTime(quota.expires_at)}` : ''}
+            {t('k_e13c3886fa', { p0: quota.expires_at ? ' ' + t('k_4954d7611b', { p0: fmtTime(quota.expires_at) }) : '' })}
           </div>
         </div>
       )}
@@ -771,7 +762,7 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
       setRows({ items: list.items, total: list.total });
       if (!st.available && st.reason) toast.error(st.reason);
     } catch (e: any) {
-      toast.error('加载意图漏斗数据失败：' + (e?.response?.data?.detail || e?.message || e));
+      toast.error(t('k_d5883e1cff', { p0: e?.response?.data?.detail || e?.message || e }));
     } finally {
       setLoading(false);
     }
@@ -782,14 +773,14 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
   const markReview = async (row: InterceptRow, reviewed: boolean) => {
     // reviewed=1 → 判定成立；reviewed=0 → 误拦（这条本该交给模型）
     try {
-      await reviewFunnelIntercept(row.id, reviewed, reviewed ? '人工确认判定成立' : '误拦：该输入需要模型');
+      await reviewFunnelIntercept(row.id, reviewed, reviewed ? t('k_2acda770c4') : t('k_803daf6a49'));
       setRows(prev => ({
         ...prev,
         items: prev.items.map(r => (r.id === row.id ? { ...r, reviewed: reviewed ? 1 : 0,
-          review_note: reviewed ? '人工确认判定成立' : '误拦：该输入需要模型' } : r)),
+          review_note: reviewed ? t('k_2acda770c4') : t('k_803daf6a49') } : r)),
       }));
     } catch (e: any) {
-      toast.error('标注失败：' + (e?.response?.data?.detail || e?.message || e));
+      toast.error(t('k_4b14097969', { p0: e?.response?.data?.detail || e?.message || e }));
     }
   };
 
@@ -805,13 +796,13 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard icon={Filter} label={t("k_5a44f31020")} value={fmt(o?.judged)} hint={loading ? '加载中…' : undefined} />
+        <StatCard icon={Filter} label={t("k_5a44f31020")} value={fmt(o?.judged)} hint={loading ? t('k_300ee3dee4') : undefined} />
         <StatCard icon={CheckCircle2} label={t("k_6d448faeaf")} value={fmt(o?.local)}
-          hint={stats ? `拦截率 ${stats.intercept_rate != null ? Math.round((stats.intercept_rate || 0) * 1000) / 10 : 0}%` : undefined} />
+          hint={stats ? t('k_989a4fc9fa', { p0: stats.intercept_rate != null ? Math.round((stats.intercept_rate || 0) * 1000) / 10 : 0 }) : undefined} />
         <StatCard icon={Gauge} label={t("k_40dfb51013")} value={fmt(o?.shadow_local)}
-          hint={stats ? `可拦比例 ${stats.eligible_rate != null ? Math.round((stats.eligible_rate || 0) * 1000) / 10 : 0}%` : undefined} />
+          hint={stats ? t('k_fe6a5b787a', { p0: stats.eligible_rate != null ? Math.round((stats.eligible_rate || 0) * 1000) / 10 : 0 }) : undefined} />
         <StatCard icon={AlertCircle} label={t("k_bd425797e5")} value={fmt(o?.gate_errors)}
-          hint={`主动转深度分析 ${fmt(o?.forced_agent)}；平均判定 ${fmt(o?.avg_latency_ms)}ms`} />
+          hint={t('k_a4c40d812c', { p0: fmt(o?.forced_agent), p1: fmt(o?.avg_latency_ms) })} />
       </div>
 
       {stats?.by_label?.length ? (
@@ -831,8 +822,7 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
               </tr>))}</tbody>
           </table>
           <p className="mt-2 text-xs text-muted-foreground">
-            shadow 档下「判定可拦」不改变行为（仍由模型回答），只用于评估切 enforce 的把握；
-            切 enforce 是需要人看这些数据决定的事，不由代码默认放行。
+            {t('k_bdac1f7c69')}
           </p>
         </div>
       ) : null}
@@ -859,16 +849,16 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
           </Select>
         </div>
         <Button size="sm" variant="outline" onClick={() => void load()}>
-          <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> 刷新
+          <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> {t('k_38108eaa1d')}
         </Button>
       </div>
 
       <DataTable
-        head={['时间', '用户', 'AS-BOT', '输入摘要', '判定', '去向', '依据', '耗时', '复盘', '']}
+        head={[t('k_89b4aa6364'), t('k_9ba763ea34'), 'AS-BOT', t('k_33b7512925'), t('k_e777f81234'), t('k_1056c8860d'), t('k_fcf698355a'), t('k_a9704e1997'), t('k_ea87dc05cd'), '']}
         rows={rows.items.map(r => [
           fmtTime(r.dt),
-          r.username || `用户已删除(${r.user_id})`,
-          r.as_bot_name || (r.as_bot_key ? 'AS-BOT 已删除' : '—'),
+          r.username || t('k_193d49f8d0', { p0: r.user_id }),
+          r.as_bot_name || (r.as_bot_key ? t('k_ed7f4cc237') : '—'),
           <span className="truncate max-w-xs inline-block align-bottom" title={r.question_digest}>
             {r.question_digest || '—'}
           </span>,
@@ -881,12 +871,12 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
           </Badge>,
           <span className="text-xs break-words max-w-sm" title={r.signals}>
             {r.gate_error
-              ? <span className="text-destructive">异常放行：{r.gate_error}</span>
+              ? <span className="text-destructive">{t('k_e9ee3d66dd', { p0: r.gate_error })}</span>
               : (r.reason || '—')}
           </span>,
           `${fmt(r.latency_ms)}ms`,
           r.reviewed
-            ? <span className="text-xs text-muted-foreground">{r.review_note || '已标注'}</span>
+            ? <span className="text-xs text-muted-foreground">{r.review_note || t('k_1cb742ed55')}</span>
             : <span className="text-xs text-muted-foreground">{t("k_86f9195e25")}</span>,
           <div className="flex gap-1">
             <Button size="sm" variant="ghost" title={t("k_556b48dcdb")}

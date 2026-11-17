@@ -74,7 +74,8 @@ export default function ScheduledTasks() {
   const loadTasks = useCallback(async () => {
     setLoading(true);
     try {
-      // 系统管理页面：不按 workspace 过滤，显示所有任务
+      // 任务调度跟随创建者（用户），不按角色/工作空间共享：服务端按当前登录人硬过滤，
+      // 这里不传 workspace_id（跨工作空间展示本人的任务），也不要指望 admin 能看到他人任务。
       const res = await listScheduledTasks({ page, size: pageSize });
       setTasks(res.items);
       setTotal(res.total);

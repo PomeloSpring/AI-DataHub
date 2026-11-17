@@ -24,22 +24,23 @@ import { governanceApi, type SensitiveField } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr , t as tr } from '@/i18n/runtime';
 
 const LEVEL_MAP: Record<string, { label: string; color: string }> = {
-  low: { label: '低', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  medium: { label: '中', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  high: { label: '高', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
-  critical: { label: '极高', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  low: { label: i18nTr('k_b9ee259b7f'), color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  medium: { label: i18nTr('k_0869071c92'), color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  high: { label: i18nTr('k_b096b3f5ac'), color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+  critical: { label: i18nTr('k_c34687da2b'), color: 'bg-red-500/10 text-red-500 border-red-500/20' },
 };
 
 // mask_type 与后端 adh_sensitive_fields 枚举一致: full|partial|hash|none|block
 // block = 不能查询出来(合规屏蔽基线), 对所有身份含管理员生效
 const MASK_TYPE_OPTIONS = [
-  { value: 'block', label: '禁止查询（不能查询出来）', danger: true },
-  { value: 'full', label: '完全脱敏' },
-  { value: 'partial', label: '部分脱敏' },
-  { value: 'hash', label: '哈希处理' },
-  { value: 'none', label: '不处理' },
+  { value: 'block', label: i18nTr('k_35ee02d9c2'), danger: true },
+  { value: 'full', label: i18nTr('k_60a4f347fc') },
+  { value: 'partial', label: i18nTr('k_b25959d39d') },
+  { value: 'hash', label: i18nTr('k_29646d0eeb') },
+  { value: 'none', label: i18nTr('k_b90319af3c') },
 ];
 
 const maskTypeLabel = (v: string) =>
@@ -94,7 +95,7 @@ export default function SensitiveData() {
       setFields(Array.isArray(payload) ? payload : (payload?.items || []));
       setTotal(Array.isArray(payload) ? payload.length : (payload?.total ?? 0));
     } catch {
-      toast.error('加载敏感字段失败');
+      toast.error(t('k_9dbf4795ad'));
     } finally {
       setLoading(false);
     }
@@ -123,9 +124,9 @@ export default function SensitiveData() {
   const handleSave = async () => {
     // 数据源 ID: 'global' = 0 (全局), 否则为具体数据源 ID
     const dsId = form.datasource_id === 'global' ? 0 : Number(form.datasource_id);
-    if (!form.column_name.trim()) { toast.error('请输入字段名'); return; }
-    if (!form.sensitivity_level) { toast.error('请选择敏感级别'); return; }
-    if (!form.mask_type) { toast.error('请选择脱敏方式'); return; }
+    if (!form.column_name.trim()) { toast.error(t('k_5755fa7071')); return; }
+    if (!form.sensitivity_level) { toast.error(t('k_1af61f81c0')); return; }
+    if (!form.mask_type) { toast.error(t('k_a226c14dd0')); return; }
     const payload = {
       datasource_id: dsId,
       table_name: form.table_name.trim(),
@@ -137,15 +138,15 @@ export default function SensitiveData() {
     try {
       if (editField) {
         await governanceApi.updateSensitiveField(editField.id, payload);
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await governanceApi.createSensitiveField(payload);
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       loadFields();
     } catch {
-      toast.error('保存失败');
+      toast.error(t('k_6de920b4e4'));
     }
   };
 
@@ -153,17 +154,17 @@ export default function SensitiveData() {
     if (!deleteTarget) return;
     try {
       await governanceApi.deleteSensitiveField(deleteTarget.id);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       setDeleteTarget(null);
       loadFields();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
   const handleScan = async () => {
     if (!scanDatasourceId) {
-      toast.error('请选择数据源');
+      toast.error(t('k_9acb966d94'));
       return;
     }
     setScanning(true);
@@ -172,10 +173,10 @@ export default function SensitiveData() {
       const dsId = scanDatasourceId === 'global' ? 0 : Number(scanDatasourceId);
       const res = await governanceApi.scanSensitiveFields(dsId, workspaceId);
       const count = res.data?.found ?? res.data?.count ?? 0;
-      toast.success(`扫描完成，发现 ${count} 个敏感字段`);
+      toast.success(t('k_c7e7f5a90c', { p0: count }));
       loadFields();
     } catch {
-      toast.error('扫描失败');
+      toast.error(t('k_5ec14542d7'));
     } finally {
       setScanning(false);
     }
@@ -191,11 +192,11 @@ export default function SensitiveData() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadFields}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button size="sm" onClick={openCreate}>
             <Plus className="w-4 h-4 mr-1" />
-            添加字段
+            {t('k_4484fa04e7')}
           </Button>
         </div>
       </div>
@@ -219,10 +220,10 @@ export default function SensitiveData() {
         </Select>
         <Button size="sm" variant="outline" onClick={handleScan} disabled={scanning}>
           <ScanSearch className="w-4 h-4 mr-1" />
-          {scanning ? '扫描中...' : '扫描敏感字段'}
+          {scanning ? t('k_e6c2d5d31a') : t('k_d0e34b8577')}
         </Button>
         <span className="text-xs text-muted-foreground">
-          自动识别数据源中的敏感字段（手机号、身份证、邮箱等）
+          {t('k_1d0ad3d3c5')}
         </span>
       </div>
 
@@ -245,13 +246,13 @@ export default function SensitiveData() {
             {loading ? (
               <tr>
                 <td colSpan={7} className="p-8 text-center text-muted-foreground">
-                  加载中...
+                  {t('k_26b5bd4947')}
                 </td>
               </tr>
             ) : fields.length === 0 ? (
               <tr>
                 <td colSpan={7} className="p-8 text-center text-muted-foreground">
-                  暂无敏感字段记录
+                  {t('k_1c388efdd6')}
                 </td>
               </tr>
             ) : (
@@ -283,8 +284,8 @@ export default function SensitiveData() {
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
                     {field.datasource_id === 0
-                      ? '全局'
-                      : (datasources.find(d => d.id === field.datasource_id)?.name || '数据源已删除')}
+                      ? t('k_2be75b1044')
+                      : (datasources.find(d => d.id === field.datasource_id)?.name || t('k_32cc05509f'))}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
                     {new Date(field.created_at).toLocaleString()}
@@ -336,11 +337,11 @@ export default function SensitiveData() {
           onInteractOutside={(e) => e.preventDefault()}
         >
           <DialogHeader>
-            <DialogTitle>{editField ? '编辑敏感字段' : '添加敏感字段'}</DialogTitle>
+            <DialogTitle>{editField ? t('k_064b0cd408') : t('k_3dd6572dee')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium">数据源 *</label>
+              <label className="text-sm font-medium">{t('k_0e3c853488')}</label>
               <Select
                 value={form.datasource_id || 'global'}
                 onValueChange={v => setForm(f => ({ ...f, datasource_id: v }))}
@@ -369,7 +370,7 @@ export default function SensitiveData() {
                   className="mt-1"
                   value={form.table_name}
                   onChange={e => setForm(f => ({ ...f, table_name: e.target.value }))}
-                  placeholder="留空 = 对所有表按列名生效"
+                  placeholder={t('k_24858e2d28')}
                   disabled={!!editField}
                 />
                 {!editField && (
@@ -377,19 +378,19 @@ export default function SensitiveData() {
                 )}
               </div>
               <div>
-                <label className="text-sm font-medium">字段名 *</label>
+                <label className="text-sm font-medium">{t('k_970457073d')}</label>
                 <Input
                   className="mt-1"
                   value={form.column_name}
                   onChange={e => setForm(f => ({ ...f, column_name: e.target.value }))}
-                  placeholder="如: phone_number"
+                  placeholder={t('k_e532fca59c')}
                   disabled={!!editField}
                 />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">敏感级别 *</label>
+                <label className="text-sm font-medium">{t('k_c7eb07ad03')}</label>
                 <Select
                   value={form.sensitivity_level}
                   onValueChange={v => setForm(f => ({ ...f, sensitivity_level: v }))}
@@ -406,7 +407,7 @@ export default function SensitiveData() {
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium">脱敏方式 *</label>
+                <label className="text-sm font-medium">{t('k_e2dfe5d6e9')}</label>
                 <Select
                   value={form.mask_type}
                   onValueChange={v => setForm(f => ({ ...f, mask_type: v }))}
@@ -425,7 +426,7 @@ export default function SensitiveData() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave}>{editField ? '更新' : '添加'}</Button>
+            <Button onClick={handleSave}>{editField ? t('k_d9db02d07a') : t('k_94191ce210')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -436,8 +437,7 @@ export default function SensitiveData() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除敏感字段「{deleteTarget?.table_name ? deleteTarget.table_name + '.' : '（全局）'}{deleteTarget?.column_name}」的脱敏配置吗？
-            </DialogDescription>
+              {tr('k_cf36331024')}{deleteTarget?.table_name ? deleteTarget.table_name + '.' : t('k_b698d2f0d6')}{deleteTarget?.column_name}{tr('k_be20fe7f99')}{' '}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

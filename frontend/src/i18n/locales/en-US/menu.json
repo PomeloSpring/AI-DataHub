@@ -2,7 +2,23 @@
   "section": {
     "analytics": "Analytics",
     "cloud": "Cloud Space",
-    "automation": "Automation"
+    "automation": "Automation",
+    "dataSources": "Data Sources",
+    "catalog": "Data Catalog",
+    "security": "Security",
+    "quality": "Data Quality",
+    "sync": "Data Sync",
+    "ai": "AI Configuration",
+    "knowledge": "Knowledge",
+    "visual": "Visualization",
+    "integration": "Integrations",
+    "access": "Security & Access",
+    "ops": "Operations",
+    "system": "System",
+    "contentWorkbench": "My Workbench",
+    "contentProduction": "Production",
+    "contentConfig": "Curation",
+    "contentKnowledge": "Knowledge Operations"
   },
   "workspace": {
     "dashboards": "Dashboards",
@@ -10,6 +26,74 @@
     "reports": "Reports",
     "assets": "Assets",
     "scheduled": "Schedules"
+  },
+  "data": {
+    "datasources": "Data Sources",
+    "tables": "Tables & Fields",
+    "playground": "SQL Playground",
+    "datasets": "Datasets",
+    "ontology": "Ontology Modeling",
+    "assetPool": "Modeling Queue",
+    "scenario": "Analysis Scenarios",
+    "metrics": "Metrics & Dimensions",
+    "knowledgeGraph": "Knowledge Graph",
+    "decisions": "Decision Rules",
+    "sensitive": "Sensitive Data",
+    "rls": "Security Policies",
+    "quality": "Quality Overview",
+    "qualityRules": "Quality Rules",
+    "lineage": "Data Lineage",
+    "standards": "Data Standards",
+    "sync": "Sync Tasks",
+    "syncLogs": "Run Logs",
+    "udfs": "UDF Management"
+  },
+  "system": {
+    "models": "Model Center",
+    "mcp": "MCP Services",
+    "asBots": "AS-BOT Config",
+    "skills": "Skills",
+    "promptConfig": "Prompt Config",
+    "knowledgeBase": "Knowledge Bases",
+    "dashboards": "Dashboard Admin",
+    "visLibrary": "UI Style Library",
+    "reportTemplates": "Template Center",
+    "notificationChannels": "Notification Channels",
+    "users": "Users",
+    "workspaces": "Workspaces",
+    "roles": "Roles & Permissions",
+    "audit": "Audit Log",
+    "monitoring": "System Monitoring",
+    "taskMonitor": "Task Monitor",
+    "sandbox": "Sandbox",
+    "observability": "LLM Observability",
+    "eval": "Evaluation",
+    "evolution": "Evolution",
+    "releaseNotes": "Release Notes",
+    "settings": "System Settings"
+  },
+  "content": {
+    "drafts": "My Drafts",
+    "manage": "Content Management",
+    "taxonomy": "Sections & Tags",
+    "kbDocs": "Knowledge Docs"
+  },
+  "userMenu": {
+    "guide": "Product tour",
+    "profile": "Profile",
+    "memory": "My memory",
+    "logout": "Sign out"
+  },
+  "theme": {
+    "dark": { "label": "Dark", "desc": "Dark background, easy on the eyes" },
+    "light": { "label": "Light", "desc": "Bright, clear light background" },
+    "datafoundry": { "label": "DataFoundry", "desc": "Restrained elegance, near-black with gem tones" },
+    "tech": { "label": "Tech", "desc": "Deep blue base with neon highlights" },
+    "finance": { "label": "Finance", "desc": "Dark navy with gold accents" },
+    "bento": { "label": "Bento Grid", "desc": "Soft rounded cards in a colorful block layout" },
+    "glass": { "label": "Glass", "desc": "Dark translucent frosted-glass look" },
+    "ainative": { "label": "AI-Native", "desc": "Deep-space neural network with glowing borders" },
+    "medical": { "label": "Medical", "desc": "Fresh blue-green, professional and trustworthy" }
   },
   "switcher": {
     "trigger": "Switch module",
@@ -19,6 +103,12 @@
     "data": "Data Platform",
     "content": "Content Center",
     "system": "System Config"
+  },
+  "home": {
+    "workspaceDesc": "Dashboards and AI Q&A",
+    "dataDesc": "Data sources / Ontology / Security",
+    "contentDesc": "Authoring / Review / Publishing",
+    "systemDesc": "Models / AS-BOT / Users"
   },
   "releaseNotes": {
     "trigger": "Release Notes",

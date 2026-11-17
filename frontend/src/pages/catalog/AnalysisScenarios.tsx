@@ -16,6 +16,7 @@ import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Edit, Trash2, Workflow, Search, BookX } from 'lucide-react';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr } from '@/i18n/runtime';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ export default function AnalysisScenarios() {
     } catch (e: any) {
       // 404 = 暂无数据，不弹 toast
       if (e?.response?.status && e.response.status >= 500) {
-        toast.error('加载失败');
+        toast.error(t('k_866b795eae'));
       }
     } finally {
       setLoading(false);
@@ -140,7 +141,7 @@ export default function AnalysisScenarios() {
       const { data } = await client.get('/admin/knowledge/subjects');
       setSubjects(Array.isArray(data?.items) ? data.items : []);
     } catch (e: any) {
-      setSubjectsError(e?.response?.data?.detail || '主体清单加载失败，请重试');
+      setSubjectsError(e?.response?.data?.detail || t('k_16740df890'));
     }
   }, []);
 
@@ -154,7 +155,7 @@ export default function AnalysisScenarios() {
       const { data } = await client.get('/admin/knowledge/report-templates');
       setReportTemplates(Array.isArray(data?.items) ? data.items : []);
     } catch (e: any) {
-      setReportTemplatesError(e?.response?.data?.detail || '报告模板清单加载失败，请重试');
+      setReportTemplatesError(e?.response?.data?.detail || t('k_56025ae1f0'));
     }
   }, []);
 
@@ -192,16 +193,16 @@ export default function AnalysisScenarios() {
 
   const handleSave = async () => {
     if (!form.title.trim() || !form.content.trim()) {
-      toast.error('请填写场景名称和查询步骤说明');
+      toast.error(t('k_39fcc83d53'));
       return;
     }
     if (splitTriggers(form.triggers).length === 0) {
-      toast.error('请至少配置一个触发词');
+      toast.error(t('k_c0d93f7a98'));
       return;
     }
     // 主体范围必须显式声明：服务端也会 422 拒，但前端先拦一层，不让用户白点一次保存
     if (!form.subject_all && form.subjects.length === 0) {
-      toast.error('请至少选择一个主体，或勾选「不限主体」——未声明主体的场景对所有角色都不会命中');
+      toast.error(t('k_fc6ce67e50'));
       return;
     }
     setSaving(true);
@@ -229,17 +230,17 @@ export default function AnalysisScenarios() {
 
       if (editItem) {
         await client.put(`/admin/knowledge/${editItem.id}`, payload);
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await client.post('/admin/knowledge', payload);
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       loadItems();
     } catch (e: any) {
       // 必须把服务端原因原样递出去（422 “主体不存在/未声明主体”等），
       // 统一成“保存失败”会把可诊断的口径问题变成猜谜
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -249,11 +250,11 @@ export default function AnalysisScenarios() {
     if (!deleteTarget) return;
     try {
       await client.delete(`/admin/knowledge/${deleteTarget.id}`);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       setDeleteTarget(null);
       loadItems();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
@@ -262,7 +263,7 @@ export default function AnalysisScenarios() {
       await client.patch(`/admin/knowledge/${item.id}/toggle`);
       loadItems();
     } catch {
-      toast.error('切换状态失败');
+      toast.error(t('k_c2312c491e'));
     }
   };
 
@@ -274,17 +275,14 @@ export default function AnalysisScenarios() {
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Workflow className="h-6 w-6" />
-            分析场景
+            {t('k_b2be89d785')}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            用 Markdown 描述的场景化查询步骤，本质是对已建模的对象/指标/维度的编排。
-            用户问题命中触发词时，这份说明会注入 AI 取数上下文（相当于针对本系统的定制版技能），
-            所以改动会直接影响取数行为。
-            可见范围按主体授权：角色对场景所绑本体对象的数据源有权限，才能看到并命中它。
+            {t('k_faf550d2a6')}
           </p>
         </div>
         <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-1" />新增分析场景
+          <Plus className="h-4 w-4 mr-1" />{t('k_5bd56c5159')}
         </Button>
       </div>
 
@@ -293,7 +291,7 @@ export default function AnalysisScenarios() {
         <div className="relative">
           <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="搜索场景名称或步骤..."
+            placeholder={t('k_e0cba2043d')}
             value={searchText}
             onChange={e => { setSearchText(e.target.value); setPage(1); }}
             className="pl-8 w-64"
@@ -306,7 +304,7 @@ export default function AnalysisScenarios() {
           会把两三条场景撑成整屏，反而看不清有哪些场景（去编辑弹窗里看）。 */}
       <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
-        <div className="text-center py-8 text-muted-foreground">加载中...</div>
+        <div className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
       ) : items.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <BookX className="h-10 w-10 mx-auto mb-3 opacity-30" />
@@ -330,8 +328,8 @@ export default function AnalysisScenarios() {
             <tbody>
               {items.map(item => {
                 const noTrigger = splitTriggers((item.metadata?.triggers || []).join(',')).length === 0;
-                const subjectText = item.subject_all ? '不限主体（所有角色可见）'
-                  : (item.subject_names || []).join('、') || '未绑定主体';
+                const subjectText = item.subject_all ? t('k_5216e74601')
+                  : (item.subject_names || []).join(t('k_b505660a97')) || t('k_737f192a0d');
                 return (
                   <tr key={item.id} className="border-b last:border-b-0 hover:bg-muted/30">
                     <td className="px-4 py-2 min-w-0">
@@ -346,12 +344,12 @@ export default function AnalysisScenarios() {
                       {item.metadata?.report_template && (
                         <p className="mt-0.5 pl-5 text-xs text-muted-foreground"
                           title={t("k_3aeb0a262d")}>
-                          报告模板：{item.metadata.report_template}
+                          {t('k_08ff53ef7d', { p0: item.metadata.report_template })}
                         </p>
                       )}
                     </td>
                     <td className="px-4 py-2 min-w-0">
-                      <span className="text-sm" title={`场景按所绑主体授权：角色对该主体有数据源权限才能看到与命中它`}>{subjectText}</span>
+                      <span className="text-sm" title={t('k_65e7ca7c61')}>{subjectText}</span>
                       {/* 不可见原因属于配置事实，必须当场看见（而不是到问答里发现“怎么没生效”） */}
                       {item.visible_to_me === false && item.visibility_note && (
                         <p className="mt-0.5 text-xs text-amber-600">{item.visibility_note}</p>
@@ -400,26 +398,26 @@ export default function AnalysisScenarios() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editItem ? '编辑分析场景' : '新增分析场景'}</DialogTitle>
+            <DialogTitle>{editItem ? t('k_a3ff0d0814') : t('k_5bd56c5159')}</DialogTitle>
             <DialogDescription>
-              配置场景名称、触发词与查询步骤说明；命中后这份说明会注入 AI 取数上下文
+              {t('k_6266d2b2f8')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>场景名称 *</Label>
+              <Label>{t('k_d2f28317ae')}</Label>
               <Input
                 value={form.title}
                 onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                placeholder="如: 按月统计销售额"
+                placeholder={t('k_047add24a6')}
               />
             </div>
             <div>
-              <Label>触发词 *（逗号分隔）</Label>
+              <Label>{t('k_f558d82c4d')}</Label>
               <Input
                 value={form.triggers}
                 onChange={e => setForm(f => ({ ...f, triggers: e.target.value }))}
-                placeholder="如: 销售额, GMV, 成交金额"
+                placeholder={t('k_b19a14c672')}
               />
               <p className="text-xs text-muted-foreground mt-1">{t("k_1d107b19d6")}</p>
             </div>
@@ -454,7 +452,7 @@ export default function AnalysisScenarios() {
                     <SelectItem value={NO_TEMPLATE}>{t("k_71a045b6fc")}</SelectItem>
                     {reportTemplates.map(t => (
                       <SelectItem key={t.name} value={t.name}>
-                        {t.name}{t.usable ? '' : '（未登记版式，只有示例正文）'}
+                        {t.name}{t.usable ? '' : i18nTr('k_e87351d2d6')}
                       </SelectItem>
                     ))}
                     {reportTemplates.length === 0 && (
@@ -464,17 +462,15 @@ export default function AnalysisScenarios() {
                 </Select>
               )}
               <p className="text-xs text-muted-foreground mt-1">
-                绑定后：命中本场景的回合会把该模板的章节与图位写成版式契约交给 AI（数值仍一律取本轮查询）；
-                模板被下架/读不到时会在回答里显式说明，不会默默换个版式。
+                {t('k_7e456f6f56')}
               </p>
               {boundMissing && (
                 <p className="mt-1 text-xs text-amber-600">
-                  当前绑定的「{form.report_template}」不在可用模板清单里（可能已下架或改名），请换一个或改为不绑定。
-                </p>
+                  {t('k_ec73638eec', { p0: form.report_template })}</p>
               )}
             </div>
             <div>
-              <Label>主体范围 *</Label>
+              <Label>{t('k_7584e655d3')}</Label>
               {/* 场景按主体授权：角色对哪个本体对象有数据源权限，才能看到/命中该场景。
                   选择框从主体清单选（显示业务名），不让人手输 object_key。 */}
               <div className="mt-1 flex items-center gap-2">
@@ -483,8 +479,7 @@ export default function AnalysisScenarios() {
                 <Label className="text-xs font-normal">{t("k_51607eff2b")}</Label>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
-                勾选下方主体 = 只有拿到该数据源权限的角色能用这个场景；选「不限主体」是显式扩权，
-                请确认这份查询步骤对所有角色都合适。
+                {t('k_2e63c0d8f5')}
               </p>
               {!form.subject_all && (
                 subjectsError ? (
@@ -515,7 +510,7 @@ export default function AnalysisScenarios() {
               )}
             </div>
             <div>
-              <Label>查询步骤说明（Markdown）*</Label>
+              <Label>{t('k_7c13baa2c0')}</Label>
               <Textarea
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
@@ -528,7 +523,7 @@ export default function AnalysisScenarios() {
               <Input
                 value={form.related_tables}
                 onChange={e => setForm(f => ({ ...f, related_tables: e.target.value }))}
-                placeholder="逗号分隔，如: orders,users（可选）"
+                placeholder={t('k_1c502b6384')}
               />
             </div>
             <div>
@@ -552,7 +547,7 @@ export default function AnalysisScenarios() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? '保存中...' : '保存'}
+              {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -564,8 +559,7 @@ export default function AnalysisScenarios() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除 "{deleteTarget?.title}" 吗？此操作不可撤销。
-            </DialogDescription>
+              {t('k_5851dad150', { p0: deleteTarget?.title })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

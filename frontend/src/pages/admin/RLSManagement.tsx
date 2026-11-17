@@ -26,6 +26,7 @@ import {
   type RLSPolicy, type RLSAuditLog, type SelectOption,
 } from '@/api/rls';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface Datasource { id: number; name: string; db_type?: string; }
 
@@ -132,7 +133,7 @@ export default function RLSManagement() {
       if (tab === 'column') { setColPolicies(items); setColTotal(total); }
       else if (tab === 'table') { setTablePolicies(items); setTableTotal(total); }
       else { setRowPolicies(items); setRowTotal(total); }
-    } catch { toast.error('加载策略失败'); }
+    } catch { toast.error(t('k_9b895c37ff')); }
     finally { setLoading(false); }
   }, [tab, page, pageSize]);
 
@@ -143,7 +144,7 @@ export default function RLSManagement() {
       const data = await listRLSAuditLogs(0, undefined, auditPage, auditPageSize);
       setAuditLogs(data.items || []);
       setAuditTotal(data.total || 0);
-    } catch { toast.error('加载审计日志失败'); }
+    } catch { toast.error(t('k_73026bb9e2')); }
   }, [auditPage, auditPageSize]);
 
   // 审计日志页签激活时才拉数（页签切换即刷新，避免停在旧页）
@@ -238,17 +239,17 @@ export default function RLSManagement() {
             mask_pattern: c.mask_pattern || '',
           })),
         }));
-      } catch { toast.error('列策略明细加载失败'); }
+      } catch { toast.error(t('k_cc8d800ef7')); }
     }
   };
 
   const handleSave = async () => {
-    if (!form.name) { toast.error('请填写策略名称'); return; }
-    if (!form.datasource_id) { toast.error('请选择数据源'); return; }
+    if (!form.name) { toast.error(t('k_03c8ace38e')); return; }
+    if (!form.datasource_id) { toast.error(t('k_9acb966d94')); return; }
     // 列策略同样需要目标表(黑名单列属于该表), 不得豁免
-    if (!form.table_name) { toast.error('请选择目标表'); return; }
+    if (!form.table_name) { toast.error(t('k_0e12db279f')); return; }
     if (editContext === 'row' && form.filter_type === 'user_attribute' && !form.user_attribute) {
-      toast.error('请选择属性名'); return;
+      toast.error(t('k_b1074200ea')); return;
     }
     setSaving(true);
     try {
@@ -272,28 +273,28 @@ export default function RLSManagement() {
           column_name: c.column_name, access_type: c.access_type, mask_pattern: c.mask_pattern,
         })));
       }
-      toast.success(editContext === 'column' ? '列策略已保存' : editContext === 'table' ? '表策略已保存' : '行策略已保存');
+      toast.success(editContext === 'column' ? t('k_43a8420d22') : editContext === 'table' ? t('k_ae8bb66545') : t('k_e98d9694cb'));
       setFormOpen(false); loadPolicies();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally { setSaving(false); }
   };
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    try { await deleteRLSPolicy(deleteTarget.id); toast.success('策略已删除'); setDeleteTarget(null); loadPolicies(); }
-    catch { toast.error('删除失败'); }
+    try { await deleteRLSPolicy(deleteTarget.id); toast.success(t('k_4b4c642b45')); setDeleteTarget(null); loadPolicies(); }
+    catch { toast.error(t('k_acf0664a54')); }
   };
 
   const handleToggle = async (policy: RLSPolicy) => {
     try { await updateRLSPolicy(policy.id, { is_active: policy.is_active ? 0 : 1 }); loadPolicies(); }
-    catch { toast.error('切换状态失败'); }
+    catch { toast.error(t('k_c2312c491e')); }
   };
 
   // 黑名单列增删(候选来自列清单搜索框; 已存在的列在选择框中禁选提示)
   const addColToBlacklist = () => {
-    if (!newColName) { toast.error('请选择列名'); return; }
-    if (form.columns.some(c => c.column_name === newColName)) { toast.error('列已存在'); return; }
+    if (!newColName) { toast.error(t('k_ed29686955')); return; }
+    if (form.columns.some(c => c.column_name === newColName)) { toast.error(t('k_4a28e369a1')); return; }
     setForm(f => ({ ...f, columns: [...f.columns, { column_name: newColName, access_type: newColAccess, mask_pattern: '' }] }));
     setNewColName('');
   };
@@ -303,10 +304,10 @@ export default function RLSManagement() {
   };
 
   // 页面显示资源一律用 name; 已删除数据源给可读标注(原 id 仅进 title 次要信息)
-  const dsName = (id: number) => datasources.find(d => d.id === id)?.name || '数据源已删除';
-  const dsTitle = (id: number) => (datasources.find(d => d.id === id) ? undefined : `原数据源 ID: ${id}`);
+  const dsName = (id: number) => datasources.find(d => d.id === id)?.name || tr('k_32cc05509f');
+  const dsTitle = (id: number) => (datasources.find(d => d.id === id) ? undefined : tr('k_377a4fc2e8', { p0: id }));
   // 审计行用户同口径：name 为主，未加载用占位，不可见用户给可读标注(原 id 仅进 title)
-  const auditUserName = (uid: number) => userNames[uid] || (usersLoaded ? '未知用户' : '加载中…');
+  const auditUserName = (uid: number) => userNames[uid] || (usersLoaded ? tr('k_1c2d3afd8b') : tr('k_300ee3dee4'));
 
   const renderPolicyCard = (policy: RLSPolicy, extra?: React.ReactNode) => (
     <div key={policy.id} className="border rounded-lg p-4 flex items-start justify-between">
@@ -314,14 +315,14 @@ export default function RLSManagement() {
         <div className="flex items-center gap-2 mb-1">
           <span className="font-medium">{policy.name}</span>
           <Badge variant={policy.policy_type === 'both' ? 'outline' : 'secondary'}>
-            {policy.policy_type === 'row' ? '行策略' : policy.policy_type === 'column' ? '列策略'
-              : policy.policy_type === 'table' ? '表策略' : '行/列(遗留)'}
+            {policy.policy_type === 'row' ? t('k_aff627e54b') : policy.policy_type === 'column' ? t('k_a8b880d21f')
+              : policy.policy_type === 'table' ? t('k_90fa0ea225') : t('k_8f64c985d2')}
           </Badge>
-          <Badge variant={policy.is_active ? 'default' : 'outline'}>{policy.is_active ? '启用' : '禁用'}</Badge>
+          <Badge variant={policy.is_active ? 'default' : 'outline'}>{policy.is_active ? t('k_d4e9ca3dd4') : t('k_be70be5a2e')}</Badge>
         </div>
         <div className="text-sm text-muted-foreground space-y-1">
-          <p>数据源: <strong title={dsTitle(policy.datasource_id)}>{dsName(policy.datasource_id)}</strong> | 表: <code>{policy.table_name}</code></p>
-          {policy.filter_expr && <p>过滤: <code className="bg-muted px-1 rounded">{policy.filter_expr}</code></p>}
+          <p>{tr('k_d580bbe805')}{' '}<strong title={dsTitle(policy.datasource_id)}>{dsName(policy.datasource_id)}</strong> {tr('k_5615aff38c')}{' '}<code>{policy.table_name}</code></p>
+          {policy.filter_expr && <p>{tr('k_a6781ee3f6')}{' '}<code className="bg-muted px-1 rounded">{policy.filter_expr}</code></p>}
           {extra && <p>{extra}</p>}
           {policy.description && <p>{policy.description}</p>}
         </div>
@@ -368,7 +369,7 @@ export default function RLSManagement() {
     <div className="flex flex-col h-full">
       <h1 className="text-2xl font-bold mb-6 flex items-center gap-2 shrink-0">
         <Shield className="h-6 w-6" />
-        数据安全策略
+        {t('k_e284beb40c')}
       </h1>
 
       <Tabs value={tab} onValueChange={(v) => { setTab(v); setPage(1); setAuditPage(1); }} className="flex-1 min-h-0 flex flex-col">
@@ -383,13 +384,13 @@ export default function RLSManagement() {
         {/* ── 行策略 Tab ──────────────────────────────────────── */}
         <TabsContent value="row" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
-            <p className="text-sm text-muted-foreground shrink-0">共 {rowTotal} 条行策略</p>
+            <p className="text-sm text-muted-foreground shrink-0">{t('k_70ac2b1429', { p0: rowTotal })}</p>
             <div className="flex-1 max-w-xs"><Input value={rowSearch} onChange={e => setRowSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('row')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_bc1cd6e26d")}</Button>
           </div>
           <div className="flex-1 min-h-0 overflow-auto">
-          {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
-            : filteredRows.length === 0 ? renderEmpty('暂无行策略，点击"新建行策略"开始配置', 'row')
+          {loading ? <div className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
+            : filteredRows.length === 0 ? renderEmpty(tr('k_2337f23fe6'), 'row')
             : <div className="space-y-3">{filteredRows.map(p => renderPolicyCard(p))}</div>
           }
           </div>
@@ -399,16 +400,16 @@ export default function RLSManagement() {
         {/* ── 列策略 Tab (纯黑名单) ───────────────────────────── */}
         <TabsContent value="column" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
-            <p className="text-sm text-muted-foreground shrink-0">共 {colTotal} 条列策略</p>
+            <p className="text-sm text-muted-foreground shrink-0">{t('k_2b58833038', { p0: colTotal })}</p>
             <div className="flex-1 max-w-xs"><Input value={colSearch} onChange={e => setColSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('column')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_54023673d4")}</Button>
           </div>
           <p className="text-xs text-muted-foreground mb-3 shrink-0">
-            列策略是黑名单：列出的列将被隐藏/脱敏，未列出的列默认可访问（敏感数据管理的屏蔽列对所有用户额外生效）。
+            {t('k_2b0565f65e')}
           </p>
           <div className="flex-1 min-h-0 overflow-auto">
-          {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
-            : filteredCols.length === 0 ? renderEmpty('暂无列策略，点击"新建列策略"开始配置', 'column')
+          {loading ? <div className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
+            : filteredCols.length === 0 ? renderEmpty(tr('k_06589593c4'), 'column')
             : <div className="space-y-3">{filteredCols.map(p => renderPolicyCard(p))}</div>
           }
           </div>
@@ -418,16 +419,16 @@ export default function RLSManagement() {
         {/* ── 表策略 Tab (白名单) ─────────────────────────────── */}
         <TabsContent value="table" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
-            <p className="text-sm text-muted-foreground shrink-0">共 {tableTotal} 条表策略</p>
+            <p className="text-sm text-muted-foreground shrink-0">{t('k_857536597e', { p0: tableTotal })}</p>
             <div className="flex-1 max-w-xs"><Input value={tableSearch} onChange={e => setTableSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
             <Button onClick={() => openCreate('table')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_c440add3f0")}</Button>
           </div>
           <p className="text-xs text-muted-foreground mb-3 shrink-0">
-            表策略是白名单：角色一旦绑定任一表策略，该角色在此数据源下仅可访问清单内的表；未绑定表策略的角色不受表级限制（仍受角色数据源/表授权约束）。
+            {t('k_741d1763ea')}
           </p>
           <div className="flex-1 min-h-0 overflow-auto">
-          {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
-            : filteredTables.length === 0 ? renderEmpty('暂无表策略，点击"新建表策略"开始配置', 'table')
+          {loading ? <div className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
+            : filteredTables.length === 0 ? renderEmpty(tr('k_fbcda27da7'), 'table')
             : <div className="space-y-3">{filteredTables.map(p => renderPolicyCard(p))}</div>
           }
           </div>
@@ -436,20 +437,20 @@ export default function RLSManagement() {
 
         {/* ─ 审计日志 Tab ─────────────────────────────────────── */}
         <TabsContent value="audit" className="flex-1 min-h-0 flex flex-col">
-          <div className="mb-4 text-sm text-muted-foreground shrink-0">共 {auditTotal} 条审计记录</div>
+          <div className="mb-4 text-sm text-muted-foreground shrink-0">{t('k_0e1ed88ce3', { p0: auditTotal })}</div>
           <div className="flex-1 min-h-0 overflow-auto">
           {auditLogs.length === 0 ? <div className="text-center py-8 text-muted-foreground">{t("k_2c18694012")}<br /><span className="text-xs">{t("k_885907c4ae")}</span></div>
             : <div className="space-y-2">{auditLogs.map(log => {
               const actionLabels: Record<string, string> = {
-                policy_create: '创建策略',
-                policy_update: '修改策略',
-                policy_delete: '删除策略',
-                column_policy_update: '更新列策略',
-                row_filter: '行级过滤',
-                column_hide: '列隐藏',
-                column_mask: '列脱敏',
-                allow: '允许访问',
-                deny: '拒绝访问',
+                policy_create: t('k_f61c59e9e8'),
+                policy_update: t('k_2cc322327f'),
+                policy_delete: t('k_a0315f0b3b'),
+                column_policy_update: t('k_ff21bb59e2'),
+                row_filter: t('k_ef50cfccb7'),
+                column_hide: t('k_1f3958d109'),
+                column_mask: t('k_d630e1be38'),
+                allow: t('k_948e7e19b5'),
+                deny: t('k_b1f44a976e'),
               };
               return (
               <div key={log.id} className="border rounded p-3 text-sm">
@@ -459,19 +460,19 @@ export default function RLSManagement() {
                   </Badge>
                   <span className="text-muted-foreground text-xs">{log.created_at}</span>
                   {log.user_id > 0 && (
-                    <span className="text-xs text-muted-foreground" title={`原用户 ID: ${log.user_id}`}>
-                      用户: {auditUserName(log.user_id)}
+                    <span className="text-xs text-muted-foreground" title={tr('k_e400df6d54', { p0: log.user_id })}>
+                      {t('k_f8e243c725', { p0: auditUserName(log.user_id) })}
                     </span>
                   )}
                 </div>
-                {log.policy_name && <p className="text-xs">策略: {log.policy_name}</p>}
-                {log.table_name && <p className="text-xs">表: {log.table_name}</p>}
+                {log.policy_name && <p className="text-xs">{t('k_8ac0011ea5', { p0: log.policy_name })}</p>}
+                {log.table_name && <p className="text-xs">{t('k_2a2c1d9230', { p0: log.table_name })}</p>}
                 {(log.deny_reason || log.original_sql || log.filtered_sql) && (
                   <details className="mt-1">
                     <summary className="cursor-pointer text-xs text-muted-foreground">{t("k_faea8c1db9")}</summary>
                     <div className="mt-1 space-y-1">
                       {log.deny_reason && (
-                        <p className="text-xs"><span className="text-muted-foreground">拒绝原因:</span> {log.deny_reason}</p>
+                        <p className="text-xs"><span className="text-muted-foreground">{t('k_de77c53f29')}</span> {log.deny_reason}</p>
                       )}
                       {log.original_sql && (
                         <div>
@@ -502,21 +503,21 @@ export default function RLSManagement() {
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
-              {editPolicy ? '编辑' : '新建'}{editContext === 'row' ? '行策略' : editContext === 'column' ? '列策略' : '表策略'}
+              {editPolicy ? t('k_a7f814c0a4') : t('k_0cda8d1c71')}{editContext === 'row' ? t('k_aff627e54b') : editContext === 'column' ? t('k_a8b880d21f') : t('k_90fa0ea225')}
             </DialogTitle>
             <DialogDescription>
-              {editContext === 'row' ? '控制用户在目标表中能看到的行（WHERE 过滤）'
-                : editContext === 'column' ? '黑名单：选择目标表，再勾选要禁止访问的列（列出的列被隐藏/脱敏，其余列不受影响）'
-                : '白名单：勾选该策略允许访问的表；角色绑定任一表策略后，此源仅能访问清单内表'}
+              {editContext === 'row' ? t('k_b30c1850af')
+                : editContext === 'column' ? t('k_5b493fdaac')
+                : t('k_bb423f20ba')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>策略名称 *</Label>
-              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="如: 仅看本区域数据" />
+              <Label>{t('k_adae23a521')}</Label>
+              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder={t('k_7555e4e500')} />
             </div>
             <div>
-              <Label>数据源 *</Label>
+              <Label>{t('k_0e3c853488')}</Label>
               <Select value={form.datasource_id ? String(form.datasource_id) : ''}
                 onValueChange={v => {
                   // 换源后原表/列选择必然失效: 主动清空下游, 不静默保留错配值
@@ -532,9 +533,9 @@ export default function RLSManagement() {
 
             {/* 目标表: 选择搜索框(不手填); 行/列/表三个上下文共用 */}
             <div>
-              <Label>目标表 *</Label>
+              <Label>{t('k_c7c8c8f4b0')}</Label>
               <SearchSelect
-                ariaLabel="目标表"
+                ariaLabel={t('k_442be9c497')}
                 value={form.table_name}
                 onValueChange={v => {
                   // 换表后列黑名单必然失效: 清空, 界面可见不静默
@@ -544,9 +545,9 @@ export default function RLSManagement() {
                 options={form.datasource_id ? (tablesByDs[form.datasource_id] ?? []) : []}
                 disabled={!form.datasource_id}
                 loading={!!tablesLoadingDs || (form.datasource_id !== 0 && tablesByDs[form.datasource_id] === undefined)}
-                error={form.datasource_id && tablesByDs[form.datasource_id] === null ? '表清单加载失败，请检查数据源连接' : null}
+                error={form.datasource_id && tablesByDs[form.datasource_id] === null ? t('k_b19a5a889e') : null}
                 onRetry={() => loadTables(form.datasource_id, true)}
-                placeholder={form.datasource_id ? '搜索并选择表' : '请先选择数据源'}
+                placeholder={form.datasource_id ? t('k_8534f25602') : t('k_192dc9f17f')}
               />
             </div>
 
@@ -566,21 +567,21 @@ export default function RLSManagement() {
                 <div>
                   <Label>{t("k_1048013bc1")}</Label>
                   <Textarea value={form.filter_expr} onChange={e => setForm(f => ({ ...f, filter_expr: e.target.value }))}
-                    placeholder={'如: region = :user_region\n或: status = \'active\''} rows={3} />
-                  <p className="text-xs text-muted-foreground mt-1">自由 SQL 条件（无清单可枚举，允许手填）；使用 :user_xxx 引用角色属性值</p>
+                    placeholder={t('k_7935cecdc8')} rows={3} />
+                  <p className="text-xs text-muted-foreground mt-1">{t('k_d87d895717')}</p>
                 </div>
                 {form.filter_type === 'user_attribute' && (
                   <div>
                     <Label>{t("k_f18a118e3d")}</Label>
                     <SearchSelect
-                      ariaLabel="属性名"
+                      ariaLabel={t('k_f18a118e3d')}
                       value={form.user_attribute}
                       onValueChange={v => setForm(f => ({ ...f, user_attribute: v }))}
                       options={attrKeys ?? []}
                       loading={attrKeys === undefined}
-                      error={attrKeys === null ? '角色属性清单加载失败' : null}
+                      error={attrKeys === null ? t('k_87857c6f12') : null}
                       onRetry={() => loadAttrs(true)}
-                      emptyText="尚未定义角色属性（请先在角色管理中配置）"
+                      emptyText={t('k_a46e7fc51b')}
                       placeholder={t("k_c45755d24d")}
                     />
                   </div>
@@ -595,19 +596,19 @@ export default function RLSManagement() {
                 <div className="flex gap-2">
                   <div className="flex-1">
                     <SearchSelect
-                      ariaLabel="列名"
+                      ariaLabel={t('k_56dc7e14b9')}
                       value={newColName}
                       onValueChange={setNewColName}
                       options={(colOptions ?? []).map(o => ({
                         ...o,
-                        label: form.columns.some(c => c.column_name === o.value) ? `${o.value}（已添加）` : o.value,
+                        label: form.columns.some(c => c.column_name === o.value) ? t('k_cc9a32289d', { p0: o.value }) : o.value,
                       }))}
                       disabled={!form.table_name || !form.datasource_id || colOptions === null}
                       loading={!!colsLoadingKey || (form.datasource_id !== 0 && form.table_name !== '' && colOptions === undefined)}
-                      error={colOptions === null ? '列清单加载失败，请检查数据源连接' : null}
+                      error={colOptions === null ? t('k_357e2dffc9') : null}
                       onRetry={() => loadCols(form.datasource_id, form.table_name, true)}
-                      placeholder={form.table_name ? '搜索并选择列' : '请先选择目标表'}
-                      searchPlaceholder="输入列名/类型/注释过滤…"
+                      placeholder={form.table_name ? t('k_7851e1eddd') : t('k_dd64b3a272')}
+                      searchPlaceholder={t('k_1dfa8de609')}
                     />
                   </div>
                   <Select value={newColAccess} onValueChange={(v: any) => setNewColAccess(v)}>
@@ -630,10 +631,10 @@ export default function RLSManagement() {
                         <div className="flex items-center gap-2">
                           <code className="text-sm">{col.column_name}</code>
                           <Badge variant={col.access_type === 'hidden' ? 'destructive' : 'secondary'}>
-                            {col.access_type === 'hidden' ? '隐藏' : '脱敏'}
+                            {col.access_type === 'hidden' ? t('k_bb0e7e01aa') : t('k_9e5bb0438d')}
                           </Badge>
                         </div>
-                        <Button variant="ghost" size="sm" aria-label={`移除 ${col.column_name}`} onClick={() => removeColFromBlacklist(col.column_name)}>
+                        <Button variant="ghost" size="sm" aria-label={t('k_9cb6e8d291', { p0: col.column_name })} onClick={() => removeColFromBlacklist(col.column_name)}>
                           <X className="h-4 w-4" />
                         </Button>
                       </div>
@@ -645,7 +646,7 @@ export default function RLSManagement() {
 
             <div>
               <Label>{t("k_412f54dc38")}</Label>
-              <Textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="策略说明..." rows={2} />
+              <Textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder={t('k_82f803bb69')} rows={2} />
             </div>
             <div className="flex items-center gap-2">
               <Switch checked={form.is_active} onCheckedChange={v => setForm(f => ({ ...f, is_active: v }))} />
@@ -654,7 +655,7 @@ export default function RLSManagement() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -663,7 +664,7 @@ export default function RLSManagement() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>{t("k_3c06abe116")}</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">确定要删除策略 "{deleteTarget?.name}" 吗？此操作不可撤销。</p>
+          <p className="text-sm text-muted-foreground">{t('k_27995de982', { p0: deleteTarget?.name })}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>

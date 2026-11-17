@@ -11,6 +11,7 @@ import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from '@/components/WorkspaceDeleteDialog';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // 管理员统管: 工作空间为用户个人空间(随用户走, 无成员协作),
 // 管理员在此按用户限制可建空间数与每空间磁盘配额, 并查看磁盘用量。
@@ -70,7 +71,7 @@ export default function WorkspaceManagerV2() {
       const { data } = await client.get('/workspaces/quotas');
       setUsers(Array.isArray(data) ? data : []);
     } catch {
-      toast.error('加载用户工作空间失败');
+      toast.error(tr('k_26b4ea3cd1'));
     } finally {
       setLoading(false);
     }
@@ -89,7 +90,7 @@ export default function WorkspaceManagerV2() {
     const maxWs = Number(editMax);
     const diskBytes = Math.round(Number(editDiskGb) * 1024 ** 3);
     if (!Number.isFinite(maxWs) || maxWs < 1 || !Number.isFinite(diskBytes) || diskBytes < 1) {
-      toast.error('配额必须为正数');
+      toast.error(tr('k_d655915298'));
       return;
     }
     setSaving(true);
@@ -98,11 +99,11 @@ export default function WorkspaceManagerV2() {
         max_workspaces: maxWs,
         disk_quota_bytes: diskBytes,
       });
-      toast.success('配额已保存');
+      toast.success(tr('k_d233c83ffd'));
       setQuotaTarget(null);
       load();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -120,17 +121,15 @@ export default function WorkspaceManagerV2() {
         <div>
           <h1 className="text-2xl font-bold">{t("k_c8b912ff8c")}</h1>
           <p className="text-muted-foreground mt-1">
-            工作空间是用户的个人空间（随用户走，用户自助创建）；在此限制每个用户的空间数量与磁盘配额。
-          </p>
+            {tr('k_8783c25e4a')}</p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
           <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
-          刷新
-        </Button>
+          {tr('k_38108eaa1d')}</Button>
       </div>
 
       {loading ? (
-        <div className="text-center py-8 text-muted-foreground">加载中...</div>
+        <div className="text-center py-8 text-muted-foreground">{tr('k_26b5bd4947')}</div>
       ) : users.length === 0 ? (
         <div className="text-center py-8 text-muted-foreground">{t("k_3d268bdd39")}</div>
       ) : (
@@ -141,17 +140,16 @@ export default function WorkspaceManagerV2() {
                 <div className="flex items-center gap-2 min-w-0">
                   <Users className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                   <span className="font-medium truncate">{u.username}</span>
-                  <Badge variant="secondary">{u.workspaces.length}/{u.max_workspaces} 个空间</Badge>
+                  <Badge variant="secondary">{u.workspaces.length}/{u.max_workspaces} {tr('k_1cad3698ac')}</Badge>
                   <Badge variant="outline" className="text-xs"
-                    title={u.quota_is_default ? '系统缺省（未显式配置），达到上限会拒绝新建会话' : '管理员显式配置'}>
+                    title={u.quota_is_default ? tr('k_2684e4ee00') : tr('k_dbd61ece7f')}>
                     <HardDrive className="h-3 w-3 mr-1" />
-                    每空间 {fmtBytes(u.disk_quota_bytes)}{u.quota_is_default ? '（系统缺省）' : ''}
+                    {tr('k_d57eabbdd2')}{' '}{fmtBytes(u.disk_quota_bytes)}{u.quota_is_default ? tr('k_9f611db98f') : ''}
                   </Badge>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => openQuota(u)}>
                   <Settings2 className="h-4 w-4 mr-1" />
-                  配额设置
-                </Button>
+                  {tr('k_9ed63f5074')}</Button>
               </div>
 
               {u.workspaces.length === 0 ? (
@@ -185,7 +183,7 @@ export default function WorkspaceManagerV2() {
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs text-muted-foreground">
                             <span>{t("k_240cb16114")}</span>
-                            <span>{fmtBytes(ws.disk_usage_bytes)} / {fmtBytes(u.disk_quota_bytes)}{pct >= 90 ? '（接近上限）' : ''}</span>
+                            <span>{fmtBytes(ws.disk_usage_bytes)} / {fmtBytes(u.disk_quota_bytes)}{pct >= 90 ? tr('k_8ddbcf2691') : ''}</span>
                           </div>
                           <UsageBar used={ws.disk_usage_bytes} quota={u.disk_quota_bytes} />
                         </div>
@@ -203,7 +201,7 @@ export default function WorkspaceManagerV2() {
       <Dialog open={!!quotaTarget} onOpenChange={open => { if (!open) setQuotaTarget(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>配额设置 — {quotaTarget?.username}</DialogTitle>
+            <DialogTitle>{tr('k_6c147a1911')}{' '}{quotaTarget?.username}</DialogTitle>
             <DialogDescription>{t("k_560f6d5cc0")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -215,16 +213,15 @@ export default function WorkspaceManagerV2() {
               <Label>{t("k_788216c066")}</Label>
               <Input type="number" min={0.1} step={0.1} value={editDiskGb} onChange={e => setEditDiskGb(e.target.value)} />
               <p className="text-xs text-muted-foreground">
-                达到上限后将拒绝新建会话，用户需归档收藏产物或清理会话文件。
-                {quotaTarget?.quota_is_default
-                  ? '当前为系统缺省值，保存后即成为该用户的显式配置。'
-                  : '当前为该用户的显式配置。'}
+                {tr('k_55f7c50f1f')}{quotaTarget?.quota_is_default
+                  ? tr('k_6327866d41')
+                  : tr('k_d28da7a760')}
               </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setQuotaTarget(null)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={saveQuota} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+            <Button onClick={saveQuota} disabled={saving}>{saving ? tr('k_2a33020e5b') : tr('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -13,12 +13,13 @@ import { normalizeDocObjects, type DocObjectIssue } from '@/lib/ontologyObjects'
 import { ObjectEditButton } from './ModelAssetTabs';
 import { ontologyApi, type ContractObjectRow, type DraftObjectDiff, type PropertyDriftEntry } from '@/api/ontology';
 import { t } from '@/i18n/runtime';
+import { useTranslation } from 'react-i18next';
 
 /** 草案视图下每个对象的状态标记（由服务端 draft_diff 算好，前端不再自己比） */
 const DRAFT_STATE_META: Record<string, { label: string; cls: string }> = {
-  added: { label: '新增', cls: 'text-green-600 border-green-500/40' },
-  changed: { label: '修改', cls: 'text-blue-600 border-blue-500/40' },
-  removed: { label: '删除', cls: 'text-red-600 border-red-500/40' },
+  added: { label: t('k_2cd9e6ce81'), cls: 'text-green-600 border-green-500/40' },
+  changed: { label: t('k_c9c77517fe'), cls: 'text-blue-600 border-blue-500/40' },
+  removed: { label: t('k_3755f56f2f'), cls: 'text-red-600 border-red-500/40' },
   unchanged: { label: '', cls: '' },
 };
 
@@ -69,6 +70,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
   /** 模型 kind（源本体不展示「同构站点部署」页，引导文案需随形态区分） */
   modelKind?: string;
 }) {
+  const { t } = useTranslation('ui');
   const [selKey, setSelKey] = useState<string>('');
   // 上界保护：即便调用方未做归一，也不会因元素缺 key / 非数组而在渲染期崩溃
   const list = useMemo(
@@ -99,7 +101,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
       .catch((e: any) => {
         if (cancelled) return;
         // 读不到绑定层时不得回退到 doc 字段“猜一个绑定了”，必须显式未知 + 原因
-        setBind({ loading: false, error: String(e?.response?.statusText || e?.message || '接口失败'), rows: {}, drift: {} });
+        setBind({ loading: false, error: String(e?.response?.statusText || e?.message || t('k_eb0c1382c1')), rows: {}, drift: {} });
       });
     return () => { cancelled = true; };
   }, [modelId]);
@@ -110,10 +112,10 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
   };
 
   const bindHint = viewMode === 'draft'
-    ? '草案对象尚未部署（发布后在部署绑定层登记物理表）'
+    ? t('k_7d27452eb0')
     : modelKind === 'source'
-      ? '源本体对象的物理绑定由元数据同步自动登记，该对象尚无生效绑定行'
-      : '「编辑对象」填好绑定物理表后保存草案并发布，发布级联会在部署绑定层登记物理表';
+      ? t('k_dd7767afe2')
+      : t('k_da0a0a64d0');
 
   /** 该对象的属性列漂移清单（服务端实时判，不靠前端猜列名） */
   const driftOf = (key: string): PropertyDriftEntry[] =>
@@ -137,12 +139,12 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
         {issues.length > 0 && (
           <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-600">
             <AlertTriangle className="h-3 w-3 mr-1 inline" />
-            {issues.length} 个对象定义无法展示：{issues.map((e) => `${e.label}${e.hint}`).join('；')}
+            {t('k_e216c26667', { p0: issues.length, p1: issues.map((e) => `${e.label}${e.hint}`).join('; ') })}
             <div className="mt-0.5 text-amber-600/80">{t("k_7e5b0f1568")}</div>
           </div>
         )}
         <div className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
-          对象（{list.length}）
+          {t('k_af21e8b47a', { p0: list.length })}
           {viewMode === 'draft' && (
             <Badge variant="outline" className="text-[10px] px-1.5 h-4 border-amber-500/40 text-amber-600">{t("k_bbcb968bf3")}</Badge>
           )}
@@ -181,22 +183,22 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                     <span className="truncate" title={t("k_026380221f")}>
                       {[delta.properties_added?.length ? `+${delta.properties_added.length}` : '',
                         delta.properties_removed?.length ? `-${delta.properties_removed.length}` : '',
-                        delta.links_added?.length ? `关系+${delta.links_added.length}` : '']
+                        delta.links_added?.length ? t('k_c57c604bef', { p0: delta.links_added.length }) : '']
                         .filter(Boolean).join(' ')}
                     </span>
                   ) : null}
                   {o.route?.source_ontology
                     ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30"
-                        title={`路由至 ${o.route.source_ontology}${o.route.object_key ? ' · ' + o.route.object_key : ''}`}>route</Badge>
+                        title={t('k_f1be533989', { p0: o.route.source_ontology, p1: o.route.object_key ? ' · ' + o.route.object_key : '' })}>route</Badge>
                     : bind.loading
                       ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-muted-foreground border-border"
                           title={t("k_2f2d8627fb")}>…</Badge>
                       : bind.error
                         ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-red-500 border-red-500/30"
-                            title={`无法读取部署绑定（${bind.error}），不拿 doc 字段猜绑定状态`}>{t("k_5c067c3c3a")}</Badge>
+                            title={t('k_77d41e766a', { p0: bind.error })}>{t("k_5c067c3c3a")}</Badge>
                         : contractOf(o.key)?.physical_table
                           ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30"
-                              title={`部署绑定: ${contractOf(o.key)!.datasource || '未指定数据源'} · ${contractOf(o.key)!.bind_kind || 'primary'}`}>bound</Badge>
+                              title={t('k_eb00b37218', { p0: contractOf(o.key)!.datasource || t('k_a44b739c55'), p1: contractOf(o.key)!.bind_kind || 'primary' })}>bound</Badge>
                           : <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30"
                               title={bindHint}>{t("k_f059a1e4bf")}</Badge>}
                 {(() => {
@@ -209,14 +211,14 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                   return (<>
                     {missing > 0 && (
                       <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-red-500 border-red-500/30 shrink-0"
-                        title={`属性列不在该表实存列里：${dr.filter((d) => d.verdict !== 'unverified').map((d) => `${d.property}(${d.column})`).join('、')}`}>
-                        列待修{missing}
+                        title={t('k_0d48d341a5', { p0: dr.filter((d) => d.verdict !== 'unverified').map((d) => `${d.property}(${d.column})`).join('、') })}>
+                        {t('k_6791baa85b', { p0: missing })}
                       </Badge>
                     )}
                     {unver > 0 && (
                       <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30 shrink-0"
-                        title={`该表列元数据尚未同步，${unver} 个属性列无法核验（不是列名写错）：请到「表 & 字段」同步这张表的字段`}>
-                        列待同步{unver}
+                        title={t('k_c1d46e565d', { p0: unver })}>
+                        {t('k_1488962e5c', { p0: unver })}
                       </Badge>
                     )}
                   </>);
@@ -232,7 +234,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
       {!obj ? (
         <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
           <Boxes className="h-8 w-8 mr-2 opacity-40" />
-          {issues.length > 0 ? '该模型的对象定义均缺少 key，无法展示（见左侧提示）' : '该模型暂无对象'}
+          {issues.length > 0 ? t('k_d54610fd36') : t('k_4b7be4ab87')}
         </div>
       ) : (
         <div className="flex-1 min-w-0 space-y-4">
@@ -253,11 +255,8 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
             {obj.description && <p className="text-sm text-muted-foreground mt-1">{obj.description}</p>}
             {obj.route?.source_ontology && (
               <div className="text-xs text-muted-foreground mt-1">
-                路由至: 源本体「{obj.route.source_ontology}」
-                {obj.route.object_key ? ` · 对象「${obj.route.object_key}」` : ''}
-                {obj.route.datasource_name ? `（数据源: ${obj.route.datasource_name}）` : ''}
-                {(obj.route.filter_hints || []).length > 0 &&
-                  `，过滤提示: ${obj.route.filter_hints!.map((h) => `${h.dimension}(${(h.examples || []).join('/')})`).join('；')}`}
+                {t('k_007128c7cd', { p0: obj.route.source_ontology, p1: obj.route.object_key ? t('k_31d0f1f3e0', { p0: obj.route.object_key }) : '', p2: obj.route.datasource_name ? t('k_0bfb0f0d36', { p0: obj.route.datasource_name }) : '', p3: (obj.route.filter_hints || []).length > 0 &&
+                  t('k_b841a13976', { p0: obj.route.filter_hints!.map((h) => `${h.dimension}(${(h.examples || []).join('/')})`).join(t('k_c4530db333')) }) })}
               </div>
             )}
             {(() => {
@@ -266,11 +265,11 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                 const dr = driftOf(obj.key);
                 return (
                   <div className="text-xs text-muted-foreground mt-1">
-                    物理绑定: {c.physical_table}
-                    {c.datasource ? <> · 数据源「{c.datasource}」</> : null}
-                    {c.bind_kind === 'dataset' ? ' · 走数据集（快速路径）' : ''}
-                    {c.column_count ? ` · ${c.column_count} 列映射` : ''}
-                    {c.sync_state === 'drifted' ? ' · 状态：形状漂移' : ''}
+                    {t('k_90448b1471', { p0: c.physical_table })}
+                    {c.datasource ? <> {t('k_5e9e5ee725', { p0: c.datasource })}</> : null}
+                    {c.bind_kind === 'dataset' ? t('k_e49adfe7c7') : ''}
+                    {c.column_count ? t('k_a1d2f4fd41', { p0: c.column_count }) : ''}
+                    {c.sync_state === 'drifted' ? t('k_ce21714f0b') : ''}
                     {dr.length > 0 && (
                       <div className="text-amber-600 mt-0.5 flex items-start gap-1">
                         <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
@@ -280,10 +279,10 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                             const bad = dr.filter((d) => d.verdict !== 'unverified');
                             const seg: string[] = [];
                             if (bad.length) {
-                              seg.push(`${bad.length} 个属性列不在该表实存列里（${bad.slice(0, 3).map((d) => `${d.property}→${d.column}`).join('、')}${bad.length > 3 ? ' 等' : ''}）；请在右上「编辑对象 → 属性列映射」改选实存列，该表确实没有这个概念的请取消物理列绑定，保存草案并发布`);
+                              seg.push(t('k_a5104b3dec', { p0: bad.length, p1: bad.slice(0, 3).map((d) => `${d.property}→${d.column}`).join(t('k_b505660a97')) + (bad.length > 3 ? t('k_11ccee3ac8') : '') }));
                             }
                             if (unv.length) {
-                              seg.push(`${unv.length} 个属性列无法核验（${unv.slice(0, 3).map((d) => `${d.property}→${d.column}`).join('、')}${unv.length > 3 ? ' 等' : ''}）：表 ${unv[0]?.table || '该表'} 在本源下还没同步列元数据，请到「表 & 字段」同步这张表的字段后重新查看（此时改列名没有依据）`);
+                              seg.push(t('k_f42836272f', { p0: unv.length, p1: unv.slice(0, 3).map((d) => `${d.property}→${d.column}`).join(t('k_b505660a97')) + (unv.length > 3 ? t('k_11ccee3ac8') : ''), p2: unv[0]?.table || t('k_9b93c54366') }));
                             }
                             return seg.join(' ');
                           })()}
@@ -297,19 +296,19 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                 // 调用方显式传入的绑定快照（非本页自取）保留展示，但不参与徽标裁决
                 return (
                   <div className="text-xs text-muted-foreground mt-1">
-                    绑定: {obj.execution_binding.physical_table || obj.primary_table || '-'}
+                    {t('k_d039f4564c', { p0: obj.execution_binding.physical_table || obj.primary_table || '-' })}
                     {obj.execution_binding.query_mode && <> · {obj.execution_binding.query_mode}</>}
                     {obj.execution_binding.bind_kind === 'dataset' && obj.execution_binding.dataset_ref &&
-                      <> · 查询数据集 {obj.execution_binding.dataset_ref}</>}
+                      <> {t('k_149a1caef7', { p0: obj.execution_binding.dataset_ref })}</>}
                   </div>
                 );
               }
-              if (bind.loading) return <div className="text-xs text-muted-foreground mt-1">物理绑定: 加载中…</div>;
+              if (bind.loading) return <div className="text-xs text-muted-foreground mt-1">{t('k_104875140a')}</div>;
               if (bind.error) return (
-                <div className="text-xs text-red-500/80 mt-1">物理绑定: 读取部署绑定失败（{bind.error}）</div>);
+                <div className="text-xs text-red-500/80 mt-1">{t('k_40ae01a569', { p0: bind.error })}</div>);
               return (
                 <div className="text-xs text-amber-600 mt-1 flex items-center gap-1">
-                  <AlertTriangle className="h-3 w-3" />物理绑定: 该对象尚无生效的部署绑定行，无法取数 · {bindHint}
+                  <AlertTriangle className="h-3 w-3" />{t('k_6a285a8f45', { p0: bindHint })}
                 </div>);
             })()}
           </div>
@@ -318,7 +317,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
             {/* 属性 */}
             <div className="rounded-lg border">
               <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2">
-                <Layers className="h-4 w-4 text-muted-foreground" /> 属性（{(obj.properties || []).length}）
+                <Layers className="h-4 w-4 text-muted-foreground" /> {t('k_83489a8e2f', { p0: (obj.properties || []).length })}
               </div>
               <ScrollArea className="h-56">
                 <div className="p-1">
@@ -334,13 +333,13 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                             {d && (
                               <Badge variant="outline" className="text-[10px] px-1 h-4 text-red-500 border-red-500/40"
                                 title={d.verdict === 'unverified'
-                                  ? `该表列元数据尚未同步，无法核验列 ${d.column}（请到「表 & 字段」同步字段）`
-                                  : `列 ${d.column} 不在 ${d.table} 的实存列里（换库/改表后的漂移），请在「编辑对象 → 属性列映射」改成实际列名`}>
-                                {d.verdict === 'unverified' ? '未核验' : '列不存在'}
+                                  ? t('k_7eb22f2e8c', { p0: d.column })
+                                  : t('k_863abb4a59', { p0: d.column, p1: d.table })}>
+                                {d.verdict === 'unverified' ? t('k_a9a5e3e6f1') : t('k_79d66eb6b3')}
                               </Badge>
                             )}
                             {p.is_key && <Badge variant="outline" className="text-[10px] px-1 h-4">PK</Badge>}
-                            {p.enum?.length ? <Badge variant="outline" className="text-[10px] px-1 h-4">枚举{p.enum.length}</Badge> : null}
+                            {p.enum?.length ? <Badge variant="outline" className="text-[10px] px-1 h-4">{t('k_c85885de70', { p0: p.enum.length })}</Badge> : null}
                           </span>
                         </div>
                       );
@@ -355,7 +354,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
             {/* 关系 */}
             <div className="rounded-lg border">
               <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2">
-                <Link2 className="h-4 w-4 text-muted-foreground" /> 关系 Link（{(obj.links || []).length}）
+                <Link2 className="h-4 w-4 text-muted-foreground" /> {t('k_73286542d3', { p0: (obj.links || []).length })}
               </div>
               <ScrollArea className="h-56">
                 <div className="p-1">
@@ -375,8 +374,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                   })}
                   {orphanLinks.length > 0 && (
                     <div className="px-2 py-1.5 text-[11px] text-amber-500">
-                      ⚠ {orphanLinks.length} 条 Link 目标不在本模型，激活校验会拒绝
-                    </div>
+                      {t('k_286d6ce2dd', { p0: orphanLinks.length })}</div>
                   )}
                   {!(obj.links || []).length && <div className="text-xs text-muted-foreground p-3">{t("k_d1db64962d")}</div>}
                 </div>

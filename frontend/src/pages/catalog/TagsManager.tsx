@@ -35,6 +35,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr } from '@/i18n/runtime';
 
 interface TagCategory {
   id: number;
@@ -93,16 +94,16 @@ interface QueryCondition {
 }
 
 const TAG_TYPES = [
-  { value: 'manual', label: '手动标签' },
-  { value: 'rule', label: '规则标签' },
-  { value: 'computed', label: '计算标签' },
+  { value: 'manual', label: i18nTr('k_68004de140') },
+  { value: 'rule', label: i18nTr('k_8fca52eaa6') },
+  { value: 'computed', label: i18nTr('k_05c58fbe8d') },
 ];
 
 const ENTITY_TYPES = [
-  { value: 'user', label: '用户' },
-  { value: 'table', label: '表' },
-  { value: 'column', label: '字段' },
-  { value: 'metric', label: '指标' },
+  { value: 'user', label: i18nTr('k_9ba763ea34') },
+  { value: 'table', label: i18nTr('k_6a954390e3') },
+  { value: 'column', label: i18nTr('k_77a49f2c38') },
+  { value: 'metric', label: i18nTr('k_1dfc810a7b') },
 ];
 
 const TAG_TYPE_COLORS: Record<string, string> = {
@@ -207,17 +208,17 @@ export default function TagsManager() {
 
   const handleCreateCategory = async () => {
     if (!categoryForm.name) {
-      toast.error('请填写分类名称');
+      toast.error(t('k_a176ce1dd1'));
       return;
     }
     try {
       await tagsApi.createCategory({ ...categoryForm, workspace_id: currentWorkspaceId });
-      toast.success('分类已创建');
+      toast.success(t('k_dc6e658d40'));
       setCategoryFormOpen(false);
       setCategoryForm(emptyCategoryForm);
       loadCategories();
     } catch {
-      toast.error('创建分类失败');
+      toast.error(t('k_5d26bddb54'));
     }
   };
 
@@ -244,22 +245,22 @@ export default function TagsManager() {
 
   const handleSaveTag = async () => {
     if (!tagForm.name || !tagForm.display_name) {
-      toast.error('请填写标签名称和显示名称');
+      toast.error(t('k_770da4f225'));
       return;
     }
     setSaving(true);
     try {
       if (editTag) {
         await tagsApi.update(editTag.id, { ...tagForm, workspace_id: currentWorkspaceId });
-        toast.success('标签已更新');
+        toast.success(t('k_5b2e92acc6'));
       } else {
         await tagsApi.create({ ...tagForm, workspace_id: currentWorkspaceId });
-        toast.success('标签已创建');
+        toast.success(t('k_e1b1fe7995'));
       }
       setTagFormOpen(false);
       loadTags();
     } catch {
-      toast.error('保存失败');
+      toast.error(t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -269,12 +270,12 @@ export default function TagsManager() {
     if (!deleteTarget) return;
     try {
       await tagsApi.delete(deleteTarget.id);
-      toast.success('标签已删除');
+      toast.success(t('k_722459eec7'));
       setDeleteTarget(null);
       if (selectedTag?.id === deleteTarget.id) setSelectedTag(null);
       loadTags();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
@@ -294,7 +295,7 @@ export default function TagsManager() {
 
   const handleQuery = async () => {
     if (queryConditions.length === 0) {
-      toast.error('请添加至少一个查询条件');
+      toast.error(t('k_6c7e62c155'));
       return;
     }
     setQueryLoading(true);
@@ -306,9 +307,9 @@ export default function TagsManager() {
       });
       const items = res.data?.items ?? res.data ?? [];
       setQueryResults(items);
-      if (items.length === 0) toast.info('未找到匹配的实体');
+      if (items.length === 0) toast.info(t('k_638c280f60'));
     } catch {
-      toast.error('查询失败');
+      toast.error(t('k_0d66ed02d7'));
     } finally {
       setQueryLoading(false);
     }
@@ -378,11 +379,11 @@ export default function TagsManager() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => { loadCategories(); loadTags(); }}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button variant="outline" size="sm" onClick={() => setQueryOpen(true)}>
             <Filter className="w-4 h-4 mr-1" />
-            标签查询
+            {t('k_ddb558cc28')}
           </Button>
         </div>
       </div>
@@ -416,7 +417,7 @@ export default function TagsManager() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder="搜索标签..."
+                placeholder={t('k_6efccc0615')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 h-8"
@@ -424,12 +425,12 @@ export default function TagsManager() {
             </div>
             <Button size="sm" onClick={handleOpenCreateTag}>
               <Plus className="w-4 h-4 mr-1" />
-              新建标签
+              {t('k_ef17979507')}
             </Button>
           </div>
           <div className="flex-1 overflow-y-auto">
             {loading ? (
-              <div className="p-8 text-center text-muted-foreground">加载中...</div>
+              <div className="p-8 text-center text-muted-foreground">{t('k_26b5bd4947')}</div>
             ) : tags.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground">{t("k_ec7eb0e788")}</div>
             ) : (
@@ -445,7 +446,7 @@ export default function TagsManager() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 min-w-0">
                         <Tag className="w-4 h-4 text-muted-foreground shrink-0" />
-                        <span className="font-medium truncate">{tag.display_name || tag.name || '(未命名)'}</span>
+                        <span className="font-medium truncate">{tag.display_name || tag.name || t('k_ac52a99171')}</span>
                         <Badge variant="outline" className={TAG_TYPE_COLORS[tag.tag_type] || ''}>
                           {TAG_TYPES.find((t) => t.value === tag.tag_type)?.label || tag.tag_type}
                         </Badge>
@@ -476,16 +477,16 @@ export default function TagsManager() {
         <div className="w-80 border rounded-lg flex flex-col shrink-0">
           <div className="p-3 border-b">
             <span className="text-sm font-medium">
-              {selectedTag ? `${selectedTag.display_name || selectedTag.name || '(未命名)'} - 标签值` : '标签值'}
+              {selectedTag ? t('k_b709ab7a13', { p0: selectedTag.display_name || selectedTag.name || t('k_ac52a99171') }) : t('k_143a4d6ab5')}
             </span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {!selectedTag ? (
               <div className="p-8 text-center text-muted-foreground text-sm">
-                点击标签查看其值
+                {t('k_a8f4125d48')}
               </div>
             ) : valuesLoading ? (
-              <div className="p-8 text-center text-muted-foreground">加载中...</div>
+              <div className="p-8 text-center text-muted-foreground">{t('k_26b5bd4947')}</div>
             ) : tagValues.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-sm">{t("k_a6a3d71296")}</div>
             ) : (
@@ -513,9 +514,9 @@ export default function TagsManager() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">分类名称 *</label>
+              <label className="text-sm font-medium">{t('k_de50f95528')}</label>
               <Input
-                placeholder="如: business"
+                placeholder={t('k_56fb9bf148')}
                 value={categoryForm.name}
                 onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
               />
@@ -523,7 +524,7 @@ export default function TagsManager() {
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("k_75ae6a8a7d")}</label>
               <Input
-                placeholder="如: 业务标签"
+                placeholder={t('k_0b8ef8ee7a')}
                 value={categoryForm.display_name}
                 onChange={(e) => setCategoryForm({ ...categoryForm, display_name: e.target.value })}
               />
@@ -548,22 +549,22 @@ export default function TagsManager() {
       <Dialog open={tagFormOpen} onOpenChange={setTagFormOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editTag ? '编辑标签' : '新建标签'}</DialogTitle>
+            <DialogTitle>{editTag ? t('k_4f3b1f6754') : t('k_ef17979507')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">标签名称 *</label>
+                <label className="text-sm font-medium">{t('k_30a7bc2745')}</label>
                 <Input
-                  placeholder="如: vip_level"
+                  placeholder={t('k_5f5701e5b0')}
                   value={tagForm.name}
                   onChange={(e) => setTagForm({ ...tagForm, name: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">显示名称 *</label>
+                <label className="text-sm font-medium">{t('k_f75459f6f0')}</label>
                 <Input
-                  placeholder="如: VIP等级"
+                  placeholder={t('k_7e4289958d')}
                   value={tagForm.display_name}
                   onChange={(e) => setTagForm({ ...tagForm, display_name: e.target.value })}
                 />
@@ -614,7 +615,7 @@ export default function TagsManager() {
             </div>
             {tagForm.tag_type === 'rule' && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">规则配置 (JSON)</label>
+                <label className="text-sm font-medium">{t('k_f9ae4186e1')}</label>
                 <Input
                   placeholder='{"field": "amount", "operator": ">", "value": 1000}'
                   value={tagForm.rule_config}
@@ -634,7 +635,7 @@ export default function TagsManager() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setTagFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSaveTag} disabled={saving}>
-              {saving ? '保存中...' : '保存'}
+              {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -647,7 +648,7 @@ export default function TagsManager() {
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除标签 <strong>{deleteTarget?.display_name || deleteTarget?.name || '(未命名)'}</strong> 吗？此操作不可恢复。
+            {t('k_8a8093d488', { p0: deleteTarget?.display_name || deleteTarget?.name || t('k_ac52a99171') })}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
@@ -670,17 +671,17 @@ export default function TagsManager() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="intersection">交集 (AND)</SelectItem>
-                  <SelectItem value="union">并集 (OR)</SelectItem>
+                  <SelectItem value="intersection">{t('k_898f57087b')}</SelectItem>
+                  <SelectItem value="union">{t('k_56c1c56cd2')}</SelectItem>
                 </SelectContent>
               </Select>
               <Button variant="outline" size="sm" onClick={addQueryCondition}>
                 <Plus className="w-4 h-4 mr-1" />
-                添加条件
+                {t('k_8db825de05')}
               </Button>
             </div>
             {queryConditions.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">点击"添加条件"开始构建查询</p>
+              <p className="text-sm text-muted-foreground text-center py-4">{t('k_2c61766be4')}</p>
             ) : (
               <div className="space-y-2">
                 {queryConditions.map((cond, idx) => (
@@ -725,7 +726,7 @@ export default function TagsManager() {
             )}
             {queryConditions.length > 0 && (
               <Button onClick={handleQuery} disabled={queryLoading} className="w-full">
-                {queryLoading ? '查询中...' : '执行查询'}
+                {queryLoading ? t('k_4ea9bfb770') : t('k_4fb36a6129')}
               </Button>
             )}
             {queryResults.length > 0 && (

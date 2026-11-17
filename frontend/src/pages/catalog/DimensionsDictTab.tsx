@@ -17,7 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -29,6 +29,7 @@ import { toast } from '@/lib/toast';
 import {
   DICT_UNSET, dimensionCategoryLabel, objectLabel, withCount,
 } from '@/lib/dictLabels';
+import { useTranslation } from 'react-i18next';
 
 interface DictDimension {
   id: number;
@@ -58,12 +59,12 @@ function parseJson<T>(v: unknown, fallback: T): T {
 }
 
 const CATEGORIES = [
-  { value: '基础属性', label: '基础属性' },
-  { value: '时间', label: '时间' },
-  { value: '地理', label: '地理' },
-  { value: '状态枚举', label: '状态枚举' },
-  { value: '业务分类', label: '业务分类' },
-  { value: '组织人员', label: '组织人员' },
+  { value: '基础属性', label: t('k_4bef8bfb50') },
+  { value: '时间', label: t('k_89b4aa6364') },
+  { value: '地理', label: t('k_8af663f981') },
+  { value: '状态枚举', label: t('k_3dd597f42a') },
+  { value: '业务分类', label: t('k_e50e8a3ff0') },
+  { value: '组织人员', label: t('k_9d3d4bfab5') },
 ];
 
 export default function DimensionsDictTab({
@@ -82,6 +83,7 @@ export default function DimensionsDictTab({
   facetsError?: string | null;
   onRetryFacets?: () => void;
 } = {}) {
+  const { t } = useTranslation('ui');
   const [items, setItems] = useState<DictDimension[]>([]);
   const [loading, setLoading] = useState(false);
   // 加载失败与“确实没有数据”必须可区分(与指标字典 Tab 同口径)
@@ -111,9 +113,9 @@ export default function DimensionsDictTab({
     } catch (e: any) {
       // 失败即暴露: 不把接口错误吞成“暂无维度数据”
       setItems([]);
-      const msg = e?.response?.data?.detail || e?.message || '未知错误';
+      const msg = e?.response?.data?.detail || e?.message || t('k_974e748456');
       setLoadError(String(msg));
-      toast.error(`维度字典加载失败: ${msg}`);
+      toast.error(t('k_2d90b7843d', { p0: msg }));
     } finally {
       setLoading(false);
     }
@@ -151,8 +153,8 @@ export default function DimensionsDictTab({
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([k, count]) => ({
         value: k,
-        label: k === DICT_UNSET ? '未归属' : objectLabel(objectNames, k),
-        description: `${k === DICT_UNSET ? '待归属维度' : k} ${count} 条`,
+        label: k === DICT_UNSET ? t('k_46a9e40651') : objectLabel(objectNames, k),
+        description: withCount(k === DICT_UNSET ? t('k_a54c43e021') : k, count),
       }));
   }, [items, objectNames]);
   const counts = useMemo(() => ({
@@ -211,9 +213,8 @@ export default function DimensionsDictTab({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        全局维度字典（adh_dimensions）：run_semantic_query 解析维度名/别名/枚举标签的权威来源。
-        名称与数据源归属由同步与本体链路维护，此处编辑别名、枚举标签与属性 ——
-        <span className="text-foreground font-medium">{t("k_f9f51d2b21")}</span>。
+        {t('k_086d1e674e')}
+        <span className="text-foreground font-medium">{t("k_f9f51d2b21")}</span>{t('k_81197c2d02')}
       </p>
 
       {/* 筛选栏: 选项与计数都从已加载的全量行派生(列表不分页 ⇒ 精确)，不得写死枚举 ——
@@ -221,12 +222,12 @@ export default function DimensionsDictTab({
           并不同名，拿它当筛选项会做出永远查不出结果的死选项。 */}
       <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Filter className="w-4 h-4" /> 筛选
+          <Filter className="w-4 h-4" /> {t('k_dcce9a144a')}
         </div>
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
-            placeholder="搜索名称/英文名/别名/枚举/对象..."
+            placeholder={t('k_20526a3a59')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8 h-8 w-60"
@@ -249,17 +250,17 @@ export default function DimensionsDictTab({
           onValueChange={setFObject}
           options={objectOptions}
           placeholder={t("k_3d44b0cfee")}
-          searchPlaceholder="搜索对象名称..."
-          emptyText="暂无已挂接对象"
+          searchPlaceholder={t('k_916389c59c')}
+          emptyText={t('k_eb636dff41')}
           className="h-8 w-44 text-xs"
-          ariaLabel="归属对象"
+          ariaLabel={t('k_3d44b0cfee')}
         />
         <Select value={fCertified} onValueChange={setFCertified}>
           <SelectTrigger className="h-8 w-32" aria-label={t("k_ccac8dbb04")}><SelectValue placeholder={t("k_ccac8dbb04")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_ee14c7f323")}</SelectItem>
-            <SelectItem value="1">{withCount('已认证', counts.certified)}</SelectItem>
-            <SelectItem value="0">{withCount('草稿', items.length - counts.certified)}</SelectItem>
+            <SelectItem value="1">{withCount(t('k_09f11a24a6'), counts.certified)}</SelectItem>
+            <SelectItem value="0">{withCount(t('k_0f436818c0'), items.length - counts.certified)}</SelectItem>
           </SelectContent>
         </Select>
         {/* 口径状态与指标字典同义：停用/未发布的行也要可见可恢复 */}
@@ -267,42 +268,42 @@ export default function DimensionsDictTab({
           <SelectTrigger className="h-8 w-32" aria-label={t("k_b9dc554215")}><SelectValue placeholder={t("k_b9dc554215")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_552e6c1d17")}</SelectItem>
-            <SelectItem value="1">{withCount('启用', counts.active)}</SelectItem>
-            <SelectItem value="0">{withCount('已停用', items.length - counts.active)}</SelectItem>
+            <SelectItem value="1">{withCount(t('k_d4e9ca3dd4'), counts.active)}</SelectItem>
+            <SelectItem value="0">{withCount(t('k_6c7dcbb73a'), items.length - counts.active)}</SelectItem>
           </SelectContent>
         </Select>
         <Select value={fEnum} onValueChange={setFEnum}>
           <SelectTrigger className="h-8 w-36" aria-label={t("k_4e17518cc7")}><SelectValue placeholder={t("k_4e17518cc7")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_66c8bee3f0")}</SelectItem>
-            <SelectItem value="has">{withCount('已有码值', counts.withEnum)}</SelectItem>
-            <SelectItem value="missing">{withCount('缺失码值', items.length - counts.withEnum)}</SelectItem>
+            <SelectItem value="has">{withCount(t('k_3adc4b6a0b'), counts.withEnum)}</SelectItem>
+            <SelectItem value="missing">{withCount(t('k_4e2d7f78e7'), items.length - counts.withEnum)}</SelectItem>
           </SelectContent>
         </Select>
         <Select value={fBind} onValueChange={setFBind}>
           <SelectTrigger className="h-8 w-36" aria-label={t("k_8689bc7aa6")}><SelectValue placeholder={t("k_8689bc7aa6")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_242ef2fb99")}</SelectItem>
-            <SelectItem value="bound">{withCount('已绑定', counts.bound)}</SelectItem>
-            <SelectItem value="unbound">{withCount('未绑定', items.length - counts.bound)}</SelectItem>
+            <SelectItem value="bound">{withCount(t('k_b3addb5e3f'), counts.bound)}</SelectItem>
+            <SelectItem value="unbound">{withCount(t('k_906ad18b48'), items.length - counts.bound)}</SelectItem>
           </SelectContent>
         </Select>
         {hasFilters && (
           <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetFilters}>
-            清除筛选
+            {t('k_4bbc4e5fd9')}
           </Button>
         )}
         <Button variant="outline" size="sm" className="h-8 ml-auto" onClick={load}>
-          <RefreshCw className="w-4 h-4 mr-1" /> 刷新
+          <RefreshCw className="w-4 h-4 mr-1" /> {t('k_38108eaa1d')}
         </Button>
-        <span className="text-xs text-muted-foreground">共 {filtered.length} / {items.length} 条</span>
+        <span className="text-xs text-muted-foreground">{t('k_e4e4905902', { p0: filtered.length, p1: items.length })}</span>
       </div>
       {facetsError && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
-          <span>对象业务名词表加载失败：{facetsError}（归属对象暂以 key 显示，名称/列/分类筛选仍可用）</span>
+          <span>{t('k_2348b3b553', { p0: facetsError })}</span>
           {onRetryFacets && (
             <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onRetryFacets}>
-              <RefreshCw className="w-3 h-3 mr-1" />重试
+              <RefreshCw className="w-3 h-3 mr-1" />{t('k_e2d53a6d3a')}
             </Button>
           )}
         </div>
@@ -324,15 +325,15 @@ export default function DimensionsDictTab({
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+              <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">{t('k_26b5bd4947')}</td></tr>
             ) : loadError ? (
-              <tr><td colSpan={8} className="p-8 text-center text-destructive">维度字典加载失败：{loadError}</td></tr>
+              <tr><td colSpan={8} className="p-8 text-center text-destructive">{t('k_70e49892e1', { p0: loadError })}</td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">
                 {hasFilters ? (
                   <span>{t("k_cad87d0b56")} <button
                     className="underline underline-offset-2 hover:text-foreground" onClick={resetFilters}>{t("k_4bbc4e5fd9")}</button></span>
-                ) : '暂无维度数据'}
+                ) : t('k_835817bcc0')}
               </td></tr>
             ) : (
               filtered.map((d) => {
@@ -352,12 +353,12 @@ export default function DimensionsDictTab({
                     </td>
                     <td className="p-3 text-muted-foreground">{d.name_en || '-'}</td>
                     <td className="p-3">
-                      <Badge variant={d.category === '时间' ? 'default' : 'outline'} className="text-xs">
+                      <Badge variant={d.category === tr('k_89b4aa6364') ? 'default' : 'outline'} className="text-xs">
                         {dimensionCategoryLabel(d.category)}
                       </Badge>
                     </td>
                     <td className="p-3 text-muted-foreground" title={d.bound_object_key || ''}>
-                      {d.bound_object_key ? objectLabel(objectNames, d.bound_object_key) : '未归属'}
+                      {d.bound_object_key ? objectLabel(objectNames, d.bound_object_key) : t('k_46a9e40651')}
                     </td>
                     <td className="p-3 font-mono text-xs text-muted-foreground">
                       {d.target_table ? `${d.target_table}.${d.target_column}` : '-'}
@@ -367,7 +368,7 @@ export default function DimensionsDictTab({
                     </td>
                     <td className="p-3 text-xs">
                       {labelCount
-                        ? <Badge variant="secondary" className="text-xs">{labelCount} 个码值</Badge>
+                        ? <Badge variant="secondary" className="text-xs">{t('k_3906aa6472', { p0: labelCount })}</Badge>
                         : <span className="text-muted-foreground">-</span>}
                     </td>
                     <td className="p-3 text-right">
@@ -414,6 +415,7 @@ function CreateDimensionDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const [form, setForm] = useState({
     display_name: '', name_en: '', category: '属性', bound_object_key: '',
     target_table: '', target_column: '', aliases: '', value_labels: '', description: '',
@@ -429,14 +431,14 @@ function CreateDimensionDialog({
     [objectNames]);
 
   const handleSave = async () => {
-    if (!form.display_name.trim()) { toast.error('请填写维度名称（业务名）'); return; }
-    if (!form.bound_object_key) { toast.error('请选择归属对象（维度必须挂在业务对象上）'); return; }
+    if (!form.display_name.trim()) { toast.error(t('k_85d48e93d7')); return; }
+    if (!form.bound_object_key) { toast.error(t('k_f5e27ad96e')); return; }
     const labels: Record<string, string> = {};
     for (const line of form.value_labels.split('\n')) {
       const s = line.trim();
       if (!s) continue;
       const i = s.indexOf('=');
-      if (i <= 0) { toast.error(`枚举标签格式应为 码值=业务名: ${s}`); return; }
+      if (i <= 0) { toast.error(t('k_91981ae38e', { p0: s })); return; }
       labels[s.slice(0, i).trim()] = s.slice(i + 1).trim();
     }
     setSaving(true);
@@ -452,11 +454,11 @@ function CreateDimensionDialog({
         value_labels: Object.keys(labels).length ? labels : null,
         description: form.description.trim(),
       });
-      toast.success('维度已创建');
+      toast.success(t('k_5ffa76ea3f'));
       onSaved();
     } catch (e: any) {
       // 透传服务端具体错因（如归属对象引用校验失败），不换成通用文案
-      toast.error(e.response?.data?.detail || '创建失败');
+      toast.error(e.response?.data?.detail || t('k_a889286a51'));
     } finally {
       setSaving(false);
     }
@@ -469,13 +471,13 @@ function CreateDimensionDialog({
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>维度名称（业务名）*</Label>
-              <Input value={form.display_name} placeholder="如: 注册日期"
+              <Label>{t('k_2a1042fa50')}</Label>
+              <Input value={form.display_name} placeholder={t('k_7d4270947a')}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <Label>{t("k_decc83f773")}</Label>
-              <Input value={form.name_en} placeholder="如: register_date"
+              <Input value={form.name_en} placeholder={t('k_ebbdec06e0')}
                 onChange={(e) => setForm({ ...form, name_en: e.target.value })} />
             </div>
             <div className="space-y-1.5">
@@ -488,10 +490,10 @@ function CreateDimensionDialog({
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>归属对象 *</Label>
+              <Label>{t('k_8251ec3d2b')}</Label>
               <Select value={form.bound_object_key || undefined}
                 onValueChange={(v) => setForm({ ...form, bound_object_key: v })}>
-                <SelectTrigger><SelectValue placeholder={objectEntries.length ? '选择业务对象' : '对象清单为空'} /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={objectEntries.length ? t('k_63d7b41003') : t('k_7effe43d70')} /></SelectTrigger>
                 <SelectContent>
                   {objectEntries.map(([key, label]) => (
                     <SelectItem key={key} value={key}>{label || key} ({key})</SelectItem>
@@ -512,13 +514,13 @@ function CreateDimensionDialog({
           </div>
           <div className="space-y-1.5">
             <Label>{t("k_0bd97c46ad")}</Label>
-            <Input value={form.aliases} placeholder="如: 下单渠道, 渠道来源"
+            <Input value={form.aliases} placeholder={t('k_31dc3e30cb')}
               onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label>枚举标签（每行一条，码值=业务名；查询结果自动翻译）</Label>
+            <Label>{t('k_44ef532b2e')}</Label>
             <Textarea rows={4} className="font-mono text-xs" value={form.value_labels}
-              placeholder={'0=否\n1=是\n2=已上传'}
+              placeholder={t('k_7d133568fd')}
               onChange={(e) => setForm({ ...form, value_labels: e.target.value })} />
           </div>
           <div className="space-y-1.5">
@@ -528,7 +530,7 @@ function CreateDimensionDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? '创建中…' : '创建'}</Button>
+          <Button onClick={handleSave} disabled={saving}>{saving ? t('k_d156b373ad') : t('k_fcbd093292')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -546,9 +548,10 @@ function EditDimensionDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const [form, setForm] = useState({
     name_en: dimension.name_en || '',
-    category: dimension.category || '基础属性',
+    category: dimension.category || tr('k_4bef8bfb50'),
     description: dimension.description || '',
     aliases: parseJson<string[]>(dimension.aliases, []).join(', '),
     value_labels: Object.entries(parseJson<Record<string, string>>(dimension.value_labels, {}))
@@ -568,7 +571,7 @@ function EditDimensionDialog({
       const s = line.trim();
       if (!s) continue;
       const i = s.indexOf('=');
-      if (i <= 0) { toast.error(`枚举标签格式应为 码值=业务名: ${s}`); return; }
+      if (i <= 0) { toast.error(t('k_91981ae38e', { p0: s })); return; }
       labels[s.slice(0, i).trim()] = s.slice(i + 1).trim();
     }
     setSaving(true);
@@ -582,10 +585,10 @@ function EditDimensionDialog({
         aliases: form.aliases.split(/[,，]/).map((x) => x.trim()).filter(Boolean),
         value_labels: labels,
       });
-      toast.success('维度已更新');
+      toast.success(t('k_c1c34736c9'));
       onSaved();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '更新失败');
+      toast.error(e.response?.data?.detail || t('k_930442e2f4'));
     } finally {
       setSaving(false);
     }
@@ -595,7 +598,7 @@ function EditDimensionDialog({
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>编辑维度 — {dimension.name}</DialogTitle>
+          <DialogTitle>{t('k_60cc88275a', { p0: dimension.name })}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
@@ -618,17 +621,17 @@ function EditDimensionDialog({
             <Input
               value={form.aliases}
               onChange={(e) => setForm({ ...form, aliases: e.target.value })}
-              placeholder="如: 下单渠道, 渠道来源"
+              placeholder={t('k_31dc3e30cb')}
             />
           </div>
           <div className="space-y-1.5">
-            <Label>枚举标签（每行一条，码值=业务名；查询结果自动翻译）</Label>
+            <Label>{t('k_44ef532b2e')}</Label>
             <Textarea
               rows={5}
               className="font-mono text-xs"
               value={form.value_labels}
               onChange={(e) => setForm({ ...form, value_labels: e.target.value })}
-              placeholder={'0=否\n1=是\n2=已上传'}
+              placeholder={t('k_7d133568fd')}
             />
           </div>
           <div className="space-y-1.5">
@@ -644,7 +647,7 @@ function EditDimensionDialog({
               className="h-4 w-4 rounded border-input"
             />
             <Label htmlFor="certified" className="text-sm font-normal cursor-pointer">
-              认证维度（口径已确认，UI 展示绿色对勾）
+              {t('k_1ffefa718b')}
             </Label>
           </div>
           {/* 口径状态（is_active）：停用与 AS-BOT 未发布同义 —— 行保留但不参与检索/取数。
@@ -658,21 +661,18 @@ function EditDimensionDialog({
               className="h-4 w-4 rounded border-input"
             />
             <Label htmlFor="is_active" className="text-sm font-normal cursor-pointer">
-              启用（参与语义检索与取数）
+              {t('k_d7b43aab71')}
             </Label>
           </div>
           {!form.is_active && (
             <p className="text-xs text-amber-600">{t("k_cf279a8930")}</p>
           )}
           <p className="text-xs text-muted-foreground">
-            物理绑定 {dimension.target_table || '-'}.{dimension.target_column || '-'}
-            {dimension.bound_object_key ? ` · 本体对象 ${dimension.bound_object_key}` : ''}
-            （由同步与本体链路维护，不在此编辑）
-          </p>
+            {t('k_6f7686d67d', { p0: dimension.target_table || '-', p1: dimension.target_column || '-', p2: dimension.bound_object_key ? t('k_059db7d35d', { p0: dimension.bound_object_key }) : '' })}</p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+          <Button onClick={handleSave} disabled={saving}>{saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

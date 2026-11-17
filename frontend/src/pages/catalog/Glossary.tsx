@@ -30,6 +30,7 @@ import {
   ToggleLeft,
   ToggleRight,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface Term {
   id: number;
@@ -55,11 +56,11 @@ interface TermFormData {
 }
 
 const TERM_TYPES = [
-  { value: 'dimension', label: '维度' },
-  { value: 'measure', label: '度量' },
-  { value: 'concept', label: '概念' },
-  { value: 'abbreviation', label: '缩写' },
-  { value: 'business', label: '业务术语' },
+  { value: 'dimension', label: t('k_72fa9ecdc4') },
+  { value: 'measure', label: t('k_a285e2aa8c') },
+  { value: 'concept', label: t('k_b59c9e0fa6') },
+  { value: 'abbreviation', label: t('k_58b7c5b448') },
+  { value: 'business', label: t('k_779b13e3d9') },
 ];
 
 const TERM_TYPE_COLORS: Record<string, string> = {
@@ -90,6 +91,7 @@ export default function Glossary({
   /** 模型对象的 primary_table 集(小写): 工作区作用域的真锚点(不依赖 datasource_id, 系统本体 ds=0 也能正确隔离) */
   tables?: string[];
 } = {}) {
+  const { t } = useTranslation('ui');
   const [terms, setTerms] = useState<Term[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -151,22 +153,22 @@ export default function Glossary({
 
   const handleSave = async () => {
     if (!formData.term_cn) {
-      toast.error('请填写中文术语');
+      toast.error(t('k_1e3eacfdfd'));
       return;
     }
     setSaving(true);
     try {
       if (editTerm) {
         await client.put(`/admin/terms/${editTerm.id}`, formData);
-        toast.success('术语已更新');
+        toast.success(t('k_0c8034664d'));
       } else {
         await client.post('/admin/terms', formData);
-        toast.success('术语已创建');
+        toast.success(t('k_16ea742adc'));
       }
       setFormOpen(false);
       loadTerms();
     } catch {
-      toast.error('保存失败');
+      toast.error(t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -176,21 +178,21 @@ export default function Glossary({
     if (!deleteTarget) return;
     try {
       await client.delete(`/admin/terms/${deleteTarget.id}`);
-      toast.success('术语已删除');
+      toast.success(t('k_31209a9248'));
       setDeleteTarget(null);
       loadTerms();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
   const handleToggle = async (term: Term) => {
     try {
       await client.put(`/admin/terms/${term.id}/toggle`);
-      toast.success(term.is_active ? '已禁用' : '已启用');
+      toast.success(term.is_active ? t('k_0fe5a98e9f') : t('k_53ace4305f'));
       loadTerms();
     } catch {
-      toast.error('操作失败');
+      toast.error(t('k_5fa802bef5'));
     }
   };
 
@@ -213,11 +215,11 @@ export default function Glossary({
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadTerms}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button size="sm" onClick={handleOpenCreate}>
             <Plus className="w-4 h-4 mr-1" />
-            新建术语
+            {t('k_78f6fd78ce')}
           </Button>
         </div>
       </div>
@@ -227,7 +229,7 @@ export default function Glossary({
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
-            placeholder="搜索术语名称..."
+            placeholder={t('k_e83ed6ae36')}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             className="pl-9"
@@ -254,13 +256,13 @@ export default function Glossary({
             {loading ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  加载中...
+                  {t('k_26b5bd4947')}
                 </td>
               </tr>
             ) : terms.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  暂无术语数据
+                  {t('k_1081a887c3')}
                 </td>
               </tr>
             ) : (
@@ -288,7 +290,7 @@ export default function Glossary({
                     <button
                       onClick={() => handleToggle(term)}
                       className="inline-flex items-center"
-                      title={term.is_active ? '点击禁用' : '点击启用'}
+                      title={term.is_active ? t('k_b10cc9d385') : t('k_d9c7e6c89d')}
                     >
                       {term.is_active ? (
                         <ToggleRight className="w-5 h-5 text-green-500" />
@@ -332,14 +334,14 @@ export default function Glossary({
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editTerm ? '编辑术语' : '新建术语'}</DialogTitle>
+            <DialogTitle>{editTerm ? t('k_42c15579f1') : t('k_78f6fd78ce')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">中文术语 *</label>
+                <label className="text-sm font-medium">{t('k_4fc55513ed')}</label>
                 <Input
-                  placeholder="如: 交易总额"
+                  placeholder={t('k_5139413eed')}
                   value={formData.term_cn}
                   onChange={(e) => setFormData({ ...formData, term_cn: e.target.value })}
                 />
@@ -347,7 +349,7 @@ export default function Glossary({
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("k_41ab8d041b")}</label>
                 <Input
-                  placeholder="如: GMV"
+                  placeholder={t('k_00de6a3d53')}
                   value={formData.term_en}
                   onChange={(e) => setFormData({ ...formData, term_en: e.target.value })}
                 />
@@ -396,7 +398,7 @@ export default function Glossary({
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? '保存中...' : '保存'}
+              {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -409,7 +411,7 @@ export default function Glossary({
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除术语 <strong>{deleteTarget?.term_cn}</strong> 吗？此操作不可恢复。
+            {t('k_af8a74ed80', { p0: deleteTarget?.term_cn })}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

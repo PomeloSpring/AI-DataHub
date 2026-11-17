@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import client from '../../api/client';
 import { listSites, saveSite, removeSite, type Site } from '../../api/sites';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /**
  * 站点管理（多站点部署拓扑清单）。
@@ -49,7 +50,7 @@ export default function SiteManagement() {
       setDsBySite(grouped);
     } catch (e: any) {
       // 加载失败显式报错并可重试，不静默渲成空清单（no-silent-degradation）
-      setError(e?.response?.data?.detail || '站点清单加载失败');
+      setError(e?.response?.data?.detail || t('k_e1edaf7b96'));
     } finally {
       setLoading(false);
     }
@@ -75,7 +76,7 @@ export default function SiteManagement() {
     const code = String(form.site_code || '').trim();
     const name = String(form.display_name || '').trim();
     if (!code || !name) {
-      toast.error('站点代码与名称都不能为空');
+      toast.error(t('k_1b8b3d046c'));
       return;
     }
     const field_values: Record<string, string> = {};
@@ -84,37 +85,37 @@ export default function SiteManagement() {
       const value = String(row.value || '').trim();
       if (!key && !value) continue;              // 全空行当作没填
       if (!key) {
-        toast.error(`字段取值「${value}」没写字段名（如 site / region）`);
+        toast.error(t('k_ea05abb525', { p0: value }));
         return;
       }
       if (!value) {
-        toast.error(`字段「${key}」的取值不能为空，不需要就删掉这一行`);
+        toast.error(t('k_7f1b813476', { p0: key }));
         return;
       }
       if (field_values[key]) {
-        toast.error(`字段「${key}」重复登记，一个字段只能有一个取值`);
+        toast.error(t('k_581fc2b45d', { p0: key }));
         return;
       }
       field_values[key] = value;
     }
     try {
       await saveSite({ ...form, site_code: code, display_name: name, field_values });
-      toast.success(editing ? '已更新站点' : '已新增站点');
+      toast.success(editing ? t('k_780bf7a555') : t('k_e4608a244c'));
       setModalOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     }
   };
 
   const handleDelete = async (site: Site) => {
     try {
       await removeSite(site.site_code);
-      toast.success('已删除站点');
+      toast.success(t('k_313aa495d5'));
       load();
     } catch (e: any) {
       // 被数据源/本体引用时后端返回 409 + 占用清单，原样转述（不静默成功）
-      toast.error(e?.response?.data?.detail || '删除失败');
+      toast.error(e?.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -124,16 +125,16 @@ export default function SiteManagement() {
         <div>
           <h3 className="text-lg font-semibold">{t("k_f40b79d76f")}</h3>
           <p className="text-sm text-muted-foreground">
-            多站点部署拓扑的取值域：数据源在此声明的站点上归属，业务本体按站点声明适用范围。
+            {t('k_2bb7ff0f78')}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4 mr-2" />
-            新增站点
+            {t('k_504c3874b1')}
           </Button>
         </div>
       </div>
@@ -180,15 +181,15 @@ export default function SiteManagement() {
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground space-y-1">
-                  <div>排序：{s.sort_order}</div>
-                  <div title={`站点代码 ${s.site_code}`}>
-                    归属数据源：{bound.length ? bound.join('、') : (s.is_aggregate ? '（聚合态不挂数据源）' : '暂无')}
+                  <div>{t('k_9c4738dc9d', { p0: s.sort_order })}</div>
+                  <div title={t('k_ad1a747632', { p0: s.site_code })}>
+                    {tr('k_c356ac4747')}{bound.length ? bound.join('、') : (s.is_aggregate ? t('k_e208a2e9c4') : t('k_f61f4cf6d0'))}
                   </div>
                   {/* 字段取值映射是看板筛选能不能命中数的配置，不能只能编辑时看得到 */}
                   <div>
-                    字段取值：{s.is_aggregate
-                      ? '（聚合态不参与，选了即不按该字段筛选）'
-                      : (fvText || '未配置（按站点代码原样下发）')}
+                    {tr('k_4822c4aca0')}{s.is_aggregate
+                      ? t('k_0533b7779e')
+                      : (fvText || t('k_dbed17fc6a'))}
                   </div>
                 </div>
               </div>
@@ -200,11 +201,11 @@ export default function SiteManagement() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[460px]">
           <DialogHeader>
-            <DialogTitle>{editing ? '编辑站点' : '新增站点'}</DialogTitle>
+            <DialogTitle>{editing ? t('k_c45a1e3d66') : t('k_504c3874b1')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>站点代码 *</Label>
+              <Label>{t('k_530728a11c')}</Label>
               <Input
                 value={form.site_code || ''}
                 disabled={!!editing}
@@ -216,7 +217,7 @@ export default function SiteManagement() {
               )}
             </div>
             <div className="space-y-2">
-              <Label>站点名称 *</Label>
+              <Label>{t('k_f6e17ae8e3')}</Label>
               <Input
                 value={form.display_name || ''}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
@@ -250,9 +251,7 @@ export default function SiteManagement() {
             <div className="space-y-2">
               <Label>{t("k_02095fbcee")}</Label>
               <p className="text-xs text-muted-foreground">
-                同一个站点不同业务字段上写法可以不同，看板选本站点时按字段换成这里的值
-                （实测：新加坡站点在业务表 site 列写 global，在日志侧 region 列写 en）。
-                没登记的字段按站点代码原样下发，图卡会提示可能筛不到数。
+                {t('k_a8fc3eb492')}
               </p>
               {fvRows.map((row, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -281,13 +280,13 @@ export default function SiteManagement() {
               ))}
               <Button size="sm" variant="outline" onClick={() => setFvRows([...fvRows, { field: '', value: '' }])}>
                 <Plus className="h-3.5 w-3.5 mr-1" />
-                添加字段
+                {t('k_4484fa04e7')}
               </Button>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave}>{editing ? '更新' : '创建'}</Button>
+            <Button onClick={handleSave}>{editing ? t('k_d9db02d07a') : t('k_fcbd093292')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

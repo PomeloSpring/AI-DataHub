@@ -20,18 +20,19 @@ import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { RefreshCw, Search } from 'lucide-react';
 import { syncApi, type SyncLog, type SyncTask } from '@/api/sync';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
-  success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  failed: { label: '失败', color: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  running: { label: '运行中', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  partial: { label: '部分成功', color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  success: { label: tr('k_51991a5d11'), color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  failed: { label: tr('k_3e3c8068bb'), color: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  running: { label: tr('k_5942497005'), color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  partial: { label: tr('k_2f2b7e05e3'), color: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
 };
 
 const TRIGGER_MAP: Record<string, string> = {
-  cron: '定时触发',
-  manual: '手动触发',
-  retry: '重试',
+  cron: tr('k_16c7773fd8'),
+  manual: tr('k_0cc990ba99'),
+  retry: tr('k_e2d53a6d3a'),
 };
 
 export default function SyncLogs() {
@@ -66,7 +67,7 @@ export default function SyncLogs() {
       setLogs(res.data.items || res.data);
       setTotal(res.data.total || 0);
     } catch {
-      toast.error('加载同步日志失败');
+      toast.error(tr('k_1f53c773e3'));
     } finally {
       setLoading(false);
     }
@@ -88,8 +89,7 @@ export default function SyncLogs() {
         </div>
         <Button variant="outline" size="sm" onClick={loadLogs}>
           <RefreshCw className="w-4 h-4 mr-1" />
-          刷新
-        </Button>
+          {tr('k_38108eaa1d')}</Button>
       </div>
 
       {/* Filters */}
@@ -101,7 +101,7 @@ export default function SyncLogs() {
           <SelectContent>
             <SelectItem value="all">{t("k_e12f5f8e8c")}</SelectItem>
             {taskOptions.map(t => (
-              <SelectItem key={t.id} value={String(t.id)}>{t.name || `任务 ${t.id}`}</SelectItem>
+              <SelectItem key={t.id} value={String(t.id)}>{t.name || tr('k_45da45dbfc', { p0: t.id })}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -131,8 +131,7 @@ export default function SyncLogs() {
         />
         <Button size="sm" onClick={handleSearch}>
           <Search className="w-4 h-4 mr-1" />
-          查询
-        </Button>
+          {tr('k_711363c424')}</Button>
       </div>
 
       {/* Logs Table：仅此区滚动（页头/分页固定，参考表&字段） */}
@@ -155,14 +154,12 @@ export default function SyncLogs() {
             {loading ? (
               <tr>
                 <td colSpan={9} className="p-8 text-center text-muted-foreground">
-                  加载中...
-                </td>
+                  {tr('k_26b5bd4947')}</td>
               </tr>
             ) : logs.length === 0 ? (
               <tr>
                 <td colSpan={9} className="p-8 text-center text-muted-foreground">
-                  暂无同步日志
-                </td>
+                  {tr('k_ae733366a8')}</td>
               </tr>
             ) : (
               logs.map(log => (
@@ -171,7 +168,7 @@ export default function SyncLogs() {
                   className="border-t hover:bg-muted/30 cursor-pointer"
                   onClick={() => setExpandedLog(log)}
                 >
-                  <td className="p-3 font-medium">{log.task_name || `任务 #${log.sync_task_id}`}</td>
+                  <td className="p-3 font-medium">{log.task_name || tr('k_e30b5c21bf', { p0: log.sync_task_id })}</td>
                   <td className="p-3">
                     <Badge variant="outline" className={STATUS_MAP[log.status]?.color}>
                       {STATUS_MAP[log.status]?.label || log.status}
@@ -195,8 +192,7 @@ export default function SyncLogs() {
                   </td>
                   <td className="p-3 text-right">
                     <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setExpandedLog(log); }}>
-                      详情
-                    </Button>
+                      {tr('k_4f55ee1e68')}</Button>
                   </td>
                 </tr>
               ))
@@ -227,7 +223,7 @@ export default function SyncLogs() {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <span className="text-muted-foreground">{t("k_0e6b3399a6")}</span>
-                  {expandedLog.task_name || `任务 #${expandedLog.sync_task_id}`}
+                  {expandedLog.task_name || tr('k_e30b5c21bf', { p0: expandedLog.sync_task_id })}
                 </div>
                 <div>
                   <span className="text-muted-foreground">{t("k_bf0ac89783")}</span>

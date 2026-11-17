@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import client from '../api/client';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 function TableSkeleton({ rows = 8 }: { rows?: number }) {
   return (
@@ -60,7 +61,7 @@ export default function History({ compact = false }: { compact?: boolean }) {
       });
     } catch (err) {
       console.error('History load error:', err);
-      toast.error('加载失败');
+      toast.error(tr('k_866b795eae'));
     } finally {
       setLoading(false);
     }
@@ -95,14 +96,13 @@ export default function History({ compact = false }: { compact?: boolean }) {
             </SelectTrigger>
             <SelectContent>
               {[1, 3, 7, 14, 30].map((d) => (
-                <SelectItem key={d} value={String(d)}>近 {d} 天</SelectItem>
+                <SelectItem key={d} value={String(d)}>{tr('k_c68a31cb46')}{' '}{d} {tr('k_249aba7632')}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" onClick={() => load(pagination.current, pagination.pageSize)}>
             <RefreshCw className="h-4 w-4 mr-2" />
-            刷新
-          </Button>
+            {tr('k_38108eaa1d')}</Button>
         </div>
       </div>
 
@@ -146,7 +146,7 @@ export default function History({ compact = false }: { compact?: boolean }) {
                     </td>
                     <td className="p-4 align-middle text-sm">{row.username}</td>
                     <td className="p-4 align-middle text-sm">
-                      <Badge variant="outline">{row.datasource_name || '默认'}</Badge>
+                      <Badge variant="outline">{row.datasource_name || tr('k_c8d09cf955')}</Badge>
                     </td>
                     <td className="p-4 align-middle text-sm max-w-[200px] truncate" title={row.question}>{row.question}</td>
                     <td className="p-4 align-middle text-sm max-w-[300px] truncate" title={row.generated_sql}>
@@ -154,7 +154,7 @@ export default function History({ compact = false }: { compact?: boolean }) {
                     </td>
                     <td className="p-4 align-middle">
                       <Badge variant={row.execution_status === 'success' ? 'default' : 'destructive'}>
-                        {row.execution_status === 'success' ? '成功' : '失败'}
+                        {row.execution_status === 'success' ? tr('k_51991a5d11') : tr('k_3e3c8068bb')}
                       </Badge>
                     </td>
                     <td className="p-4 align-middle text-sm tabular-nums">{row.row_count}</td>

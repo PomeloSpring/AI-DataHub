@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
   BarChart3, Check, ChevronsUpDown,
@@ -62,8 +62,8 @@ const OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'like'];
 // 它的 ES 身份由服务端下发的执行通道位 `is_es` 表达，不在前端拿枚举反推。
 const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
-  semantic: '语义对象',
-  both: '语义 + SQL',
+  semantic: tr('k_668cea6a49'),
+  both: tr('k_764b4b7d97'),
 };
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
 const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
@@ -116,7 +116,7 @@ export default function DatasetDetail() {
       setDs(normalizeDataset(data));
       setFields((data.fields || []).map((f: any) => ({ ...f })));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '加载数据集失败');
+      toast.error(e.response?.data?.detail || tr('k_1c9be3339b'));
       navigate('/data/datasets');
     } finally {
       setLoading(false);
@@ -142,11 +142,11 @@ export default function DatasetDetail() {
       });
       setDs(normalizeDataset(data));
       load(true);
-      toast.success('配置已保存（基本信息 / 查询定义 / 图表预设）');
+      toast.success(tr('k_0d047f16cb'));
       // 服务端告警（如跨引擎无方言正文）必须显式递到人眼前，不得静默存下
       (data?.warnings || []).forEach((w: string) => toast.warning(w));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -178,8 +178,8 @@ export default function DatasetDetail() {
       <Tabs defaultValue="config" className="mt-2">
         <TabsList>
           <TabsTrigger value="config">{t("k_d7d7ce790b")}</TabsTrigger>
-          <TabsTrigger value="fields">字段定义 ({fields.length})</TabsTrigger>
-        <TabsTrigger value="params">入参 ({(ds.param_plan || []).length})</TabsTrigger>
+          <TabsTrigger value="fields">{tr('k_30d05c4484')}{fields.length})</TabsTrigger>
+        <TabsTrigger value="params">{tr('k_e8ca2dfff9')}{(ds.param_plan || []).length})</TabsTrigger>
           <TabsTrigger value="scopes">{t("k_6fe882318f")}</TabsTrigger>
           <TabsTrigger value="refs">{t("k_23c0e102a0")}</TabsTrigger>
         </TabsList>
@@ -194,8 +194,7 @@ export default function DatasetDetail() {
                 <div className="flex items-center gap-2">
                   <Button size="sm" onClick={saveConfig} disabled={saving}>
                     {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-                    保存配置
-                  </Button>
+                    {tr('k_ed752639f1')}</Button>
                   <span className="text-xs text-muted-foreground">{t("k_b21acfc2de")}</span>
                 </div>
               )}
@@ -290,7 +289,7 @@ export default function DatasetDetail() {
                           </Select>
                         ) : (
                           <Badge variant={f.role === 'measure' ? 'default' : 'secondary'} className="text-[10px]">
-                            {f.role === 'measure' ? '度量' : '维度'}
+                            {f.role === 'measure' ? tr('k_a285e2aa8c') : tr('k_72fa9ecdc4')}
                           </Badge>
                         )}
                       </td>
@@ -316,12 +315,12 @@ export default function DatasetDetail() {
                           <span className="text-xs text-muted-foreground">
                             {f.display_format
                               ? FIELD_DISPLAY_FORMATS.find(o => o.value === f.display_format)?.example || f.display_format
-                              : '原样'}
+                              : tr('k_51b0912abe')}
                           </span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
-                        {f.description || (f.aliases?.length ? `别名: ${f.aliases.join(', ')}` : '')}
+                        {f.description || (f.aliases?.length ? tr('k_d9460737bc', { p0: f.aliases.join(', ') }) : '')}
                         {f.calculation ? ` · ${f.calculation}` : ''}
                       </td>
                     </tr>
@@ -334,11 +333,7 @@ export default function DatasetDetail() {
             </table>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            SQL 独有列与映射关系保存在 field_config。
-            「显示格式」只改**怎么给人看**（取数结果仍是可比较、可运算的原值）：时间列配成
-            「按日」后，图表 X 轴、tooltip、表值图与明细表同时变成 2026-10-12，
-            不再是一排被截断的 2026-10-12T00:00:00.000。
-          </p>
+            {tr('k_fd5ab669c2')}</p>
           {canManage && (
             <Button size="sm" className="mt-3" onClick={async () => {
               // 落库 field_config: config 项原样保存 + 语义字段的 SQL 列映射(maps_to)
@@ -351,12 +346,11 @@ export default function DatasetDetail() {
                                display_format: f.display_format || '' })));
               try {
                 await client.put(`/datasets/${datasetId}`, { field_config: cfg });
-                toast.success('字段配置已保存');
+                toast.success(tr('k_967cd94c4b'));
                 load();
-              } catch (e: any) { toast.error(e.response?.data?.detail || '保存失败'); }
+              } catch (e: any) { toast.error(e.response?.data?.detail || tr('k_6de920b4e4')); }
             }}>
-              <Save className="h-3.5 w-3.5 mr-1" /> 保存字段配置
-            </Button>
+              <Save className="h-3.5 w-3.5 mr-1" /> {tr('k_afac10613d')}</Button>
           )}
         </TabsContent>
 
@@ -376,7 +370,7 @@ export default function DatasetDetail() {
               <div key={r.chart_id} className="flex items-center justify-between px-3 py-2 text-sm">
                 <span>{r.chart_name}</span>
                 <Link className="text-xs text-primary hover:underline" to={`/dashboard/editor/${r.dashboard_id}`}>
-                  看板: {r.dashboard_name}
+                  {tr('k_ac892f7492')}{' '}{r.dashboard_name}
                 </Link>
               </div>
             ))}
@@ -405,9 +399,8 @@ function ExecPanel({ ds, canManage, onDsChange }: {
       {/* 执行正文：所有通道都是“执行数据源 + 可用范围 + 正文”，不存在第二套登记口径 */}
       <div className="border rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-1.5 text-sm font-medium">
-          <Code2 className="h-4 w-4" /> 执行 SQL
-          <Badge variant="outline" className="text-[10px]">
-            {isEs ? 'ES SQL 方言 · 单表 SELECT，必须 LIMIT' : '实际执行通道 · 仅 SELECT/WITH'}
+          <Code2 className="h-4 w-4" /> {tr('k_a8c191126e')}<Badge variant="outline" className="text-[10px]">
+            {isEs ? tr('k_883ea24866') : tr('k_c597baca65')}
           </Badge>
         </div>
         <div className="space-y-1.5">
@@ -427,9 +420,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
             onChange={v => onDsChange({ available_datasources: v })}
           />
           <p className="text-xs text-muted-foreground">
-            不填 = 仅能在执行数据源上跑。填入多个源后，同一份 SQL 可在这些源上执行
-            （看板与 Chat 取数时服务端按当前用户的已授权源定源，多义时会要求指定站点）。
-          </p>
+            {tr('k_3124e96f2d')}</p>
         </div>
         {(ds.warnings || []).length > 0 && (
           <div className="border rounded-md p-2 bg-amber-50 dark:bg-amber-950/30 space-y-1">
@@ -453,8 +444,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
           <p className="text-[10px] leading-relaxed text-muted-foreground">{ds.es_sql_hint}</p>
         )}
         <p className="text-xs text-muted-foreground">
-          修改后点击上方「保存配置」统一提交（含基本信息与图表预设）
-        </p>
+          {tr('k_0a99627d47')}</p>
       </div>
 
       {/* 结果形状声明：能不能按页取是正文决定的，所以登记在数据集而不是图表 */}
@@ -468,11 +458,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
           <Label className="text-sm font-medium">{t("k_f45074d9e8")}</Label>
         </div>
         <p className="text-xs text-muted-foreground">
-          开启后，看板上的表值图会按「每页行数 / 页号」向服务端取数（每页上限 100 行），
-          不再一次拉全量再在前端切片。数据源型数据集可直接跳页，ES 型数据集按游标逐页往后翻。
-          正文是 GROUP BY / 聚合统计的（本身就是完整的一页）请关闭本项，
-          否则翻页会对统计结果套页限、把趋势砍没。
-        </p>
+          {tr('k_a73c3b11a4')}</p>
       </div>
     </div>
   );
@@ -491,8 +477,7 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        预设图表类型与字段映射，看板编辑器「从数据集引入」时直接搬入图表配置。
-      </p>
+        {tr('k_ce493f8656')}</p>
       <div className="space-y-1.5">
         <Label>{t("k_e891b46dbb")}</Label>
         <Select
@@ -558,8 +543,7 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        修改后点击上方「保存配置」统一提交；保存/改动会即时反映到右侧「数据预览」的图表预览
-      </p>
+        {tr('k_d8d071a753')}</p>
     </div>
   );
 }
@@ -607,7 +591,7 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
   }, []);
   const selected = value || [];
   const siteLabel = (code: string) =>
-    sites.find((s: any) => s.site_code === code)?.display_name || code || '未归属站点';
+    sites.find((s: any) => s.site_code === code)?.display_name || code || tr('k_169bf559a0');
   const groups: Array<{ code: string; label: string; items: any[] }> = [];
   list.forEach((d: any) => {
     const code = String(d.site_code || '');
@@ -618,10 +602,10 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
   const toggle = (name: string) => onChange(
     selected.includes(name) ? selected.filter(x => x !== name) : [...selected, name]);
   const display = selected.length === 0
-    ? (execName ? `仅执行数据源（${execName}）` : '仅执行数据源')
+    ? (execName ? tr('k_556dfa5d06', { p0: execName }) : tr('k_1439f145e0'))
     : selected.length <= 2
       ? selected.join('、')
-      : `已选 ${selected.length} 个源`;
+      : tr('k_4cb7abe58a', { p0: selected.length });
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -647,7 +631,7 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
                   className={`flex items-center gap-2 px-3 py-1.5 text-sm ${
                     isExec ? 'opacity-60' : 'cursor-pointer hover:bg-accent'}`}
                   onClick={() => { if (!isExec) toggle(d.name); }}
-                  title={isExec ? '已是执行数据源，默认属于可用范围' : undefined}
+                  title={isExec ? tr('k_44b53f8542') : undefined}
                 >
                   <div className={`w-4 h-4 border rounded flex items-center justify-center ${
                     on ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
@@ -713,7 +697,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
       });
       setResult(data);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '预览失败');
+      toast.error(e.response?.data?.detail || tr('k_6a3a5ef00d'));
     } finally {
       setRunning(false);
     }
@@ -765,15 +749,11 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
         )}
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-          预览取数
-        </Button>
+          {tr('k_c0fe21f845')}</Button>
       </div>
       {isEs && (
         <p className="text-[10px] text-muted-foreground">
-          ES 执行通道直接跑已保存正文（不做维度/度量重聚合）。
-          列级脱敏/屏蔽与行级策略已编译进待执行 SQL（与其他数据源同口径）。
-          超时预算按数据源配（「数据源」页高级配置），时间留空时按数据集声明的滚动窗取。
-        </p>
+          {tr('k_8adabe4643')}</p>
       )}
 
       {result && (
@@ -785,20 +765,18 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
                   编“未施加列级/行级策略”——内置通道退役后那句话已不成立。 */}
               <Badge variant="outline" className="text-[10px]"
                 title={result.governance?.note || ''}>
-                ES 数据源 · 已施加列级/行级策略
-              </Badge>
+                {tr('k_1c2c561335')}</Badge>
               <span title={result.governance?.note || ''}>
-                范围: {(result.es_indexes || []).join(', ') || result.es_scope || '-'}
-                {(result.es_indexes || []).length > 0 && `・命中索引: ${result.es_indexes.join(', ')}`}
-                ・本次 {result.row_count ?? (result.rows || []).length} 行
-              </span>
+                {tr('k_41319194e8')}{' '}{(result.es_indexes || []).join(', ') || result.es_scope || '-'}
+                {(result.es_indexes || []).length > 0 && tr('k_c7d5e215de', { p0: result.es_indexes.join(', ') })}
+                {tr('k_bbd200aa08')}{' '}{result.row_count ?? (result.rows || []).length} {tr('k_2a2b777ae4')}</span>
             </div>
           )}
           {/* 图表预览: 按已保存的图表预设同步渲染(预设改动即时反映, 不需重新取数) */}
           {ds.chart_type && (
             <div className="border rounded-lg p-3">
               <div className="text-sm font-medium mb-2 flex items-center gap-1.5">
-                <BarChart3 className="h-4 w-4" /> 图表预览 · {CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type}
+                <BarChart3 className="h-4 w-4" /> {tr('k_d3b67655bc')}{' '}{CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type}
                 <Badge variant="outline" className="text-[10px]">{t("k_8acafb5e1f")}</Badge>
               </div>
               {(result.rows || []).length > 0 ? (
@@ -817,13 +795,13 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
             </div>
           )}
           <div className="text-xs text-muted-foreground flex gap-3 flex-wrap">
-            <span>{result.row_count} 行</span>
+            <span>{result.row_count} {tr('k_2a2b777ae4')}</span>
             {result.execution_mode && (
-              <span>执行方式: {result.execution_mode === 'sql' ? '执行 SQL' : '语义查询'}</span>
+              <span>{tr('k_027b7201fb')}{' '}{result.execution_mode === 'sql' ? tr('k_a8c191126e') : tr('k_c8c6211192')}</span>
             )}
             {result.elapsed_ms != null && <span>{Math.round(result.elapsed_ms)}ms</span>}
             {result.applied_rls ? <span className="text-amber-600">{t("k_0fe55c1585")}</span> : <span>{t("k_f6b3a589bc")}</span>}
-            {!!result.masked_columns?.length && <span className="text-destructive">脱敏列: {result.masked_columns.join(', ')}</span>}
+            {!!result.masked_columns?.length && <span className="text-destructive">{tr('k_98bda1b101')}{' '}{result.masked_columns.join(', ')}</span>}
           </div>
           <div className="border rounded-lg overflow-auto max-h-[60vh]">
             <table className="w-full text-xs">
@@ -845,8 +823,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
       )}
       {!result && !running && (
         <div className="text-center py-8 text-muted-foreground text-sm border rounded-lg">
-          点击「预览取数」经统一治理入口查询(自动施加你的权限/RLS/敏感脱敏/行级范围)
-        </div>
+          {tr('k_8a8a88ba84')}</div>
       )}
     </div>
   );
@@ -889,9 +866,9 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
       await client.put(`/datasets/${datasetId}/scopes`, { scopes });
       const { data } = await client.get(`/datasets/${datasetId}/scopes`);
       setScopes(data.scopes || []);
-      toast.success('行级范围已保存');
+      toast.success(tr('k_7cad26be11'));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -903,14 +880,9 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
     return (
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          ES 型数据集不支持本页的“行级范围”：该能力靠将正文包成子查询后拼 WHERE 注入，
-          而 ES SQL 无派生表，不接受这种形状，配了也不会生效。
-        </p>
+          {tr('k_3d4a9318df')}</p>
         <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-          要收窄数据请把条件直接写进查询正文（如 WHERE "region" = 'cn'）；
-          要按角色隔离行可见性，请到「数据源」页给该 ES 数据源配「行级策略」
-          （与其他数据源同一条治理口，谓词会 AND 进待执行 SQL 的顶层 WHERE）。
-        </p>
+          {tr('k_c3c5e4f439')}</p>
       </div>
     );
   }
@@ -918,12 +890,11 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        为指定用户/角色追加行过滤条件（在 RLS 与敏感基线之上叠加，只收紧不放宽）。
-      </p>
+        {tr('k_425d0b2b67')}</p>
       {scopes.map((s, i) => {
         const subjectName = s.subject_type === 'user'
-          ? users.find(u => u.id === s.subject_id)?.username || `用户#${s.subject_id}`
-          : roles.find(r => r.id === s.subject_id)?.display_name || `角色#${s.subject_id}`;
+          ? users.find(u => u.id === s.subject_id)?.username || tr('k_4d52560084', { p0: s.subject_id })
+          : roles.find(r => r.id === s.subject_id)?.display_name || tr('k_58e4b614b8', { p0: s.subject_id });
         return (
           <div key={i} className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
@@ -945,8 +916,8 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
                     <SelectContent>
                       <SelectItem value="__none__">{t("k_6db0631820")}</SelectItem>
                       {(s.subject_type === 'user'
-                        ? users.map(u => ({ id: u.id, label: u.username || u.display_name || `用户#${u.id}` }))
-                        : roles.map(r => ({ id: r.id, label: r.display_name || r.name || `角色#${r.id}` }))
+                        ? users.map(u => ({ id: u.id, label: u.username || u.display_name || tr('k_4d52560084', { p0: u.id }) }))
+                        : roles.map(r => ({ id: r.id, label: r.display_name || r.name || tr('k_58e4b614b8', { p0: r.id }) }))
                       ).map(o => <SelectItem key={o.id} value={String(o.id)}>{o.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
@@ -973,7 +944,7 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
                   <SelectContent>{OPS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
                 </Select>
                 <Input className="h-8 w-44 text-xs" value={Array.isArray(f.value) ? f.value.join(',') : String(f.value ?? '')}
-                  disabled={!canManage} placeholder="值(in 用逗号分隔)"
+                  disabled={!canManage} placeholder={tr('k_e339d4894f')}
                   onChange={e => updateFilter(i, fi, {
                     value: f.op === 'in' ? e.target.value.split(',').map(x => x.trim()).filter(Boolean) : e.target.value,
                   })} />
@@ -983,8 +954,7 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
               <Button variant="outline" size="sm" onClick={() => update(i, {
                 filters: [...s.filters, { field: fields[0]?.field || '', op: 'eq', value: '' }],
               })}>
-                <Plus className="h-3 w-3 mr-1" /> 条件
-              </Button>
+                <Plus className="h-3 w-3 mr-1" /> {tr('k_72f1cf759c')}</Button>
             )}
           </div>
         );
@@ -995,10 +965,9 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
             subject_type: 'user', subject_id: 0,  // 不默认第一个用户, 主体由选择器显式指定
             filters: [{ field: fields[0]?.field || '', op: 'eq', value: '' }],
           }])}>
-            <Plus className="h-3.5 w-3.5 mr-1" /> 添加范围
-          </Button>
+            <Plus className="h-3.5 w-3.5 mr-1" /> {tr('k_567898bd00')}</Button>
           <Button size="sm" onClick={save} disabled={saving || scopes.some(s => !s.subject_id)}>
-            {saving ? '保存中…' : '保存行级范围'}
+            {saving ? tr('k_6644f06197') : tr('k_9d66fcc156')}
           </Button>
         </div>
       )}
@@ -1075,9 +1044,7 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
 
   if (!plan.length) {
     return <div className="rounded-md border p-4 text-xs text-muted-foreground">
-      该数据集没有声明入参。若正文里写了 <code className="font-mono">${'{'}参数名{'}'}</code>，
-      请声明对应入参，否则看板无法为它提供筛选，取数会按正文默认值执行。
-    </div>;
+      {tr('k_2dc3199d48')}{' '}<code className="font-mono">${'{'}{tr('k_ecb6c72b4c')}{'}'}</code>{tr('k_492fb8288b')}</div>;
   }
 
   const save = async () => {
@@ -1098,10 +1065,10 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
         }
       }
       await client.put(`/datasets/${datasetId}`, { variables: JSON.stringify(base) });
-      toast.success('入参归属已保存');
+      toast.success(tr('k_6f95e67bb3'));
       onSaved();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -1110,12 +1077,10 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
   return <div className="space-y-3">
     <div className="flex items-center justify-between gap-2">
       <p className="text-xs text-muted-foreground">
-        这些入参决定看板上会出现哪些筛选控件。控件在看板「引入数据集」时按这里的声明自动装配，
-        口径仍由数据集正文负责（看板不能改正文）。
-      </p>
+        {tr('k_52f9236053')}</p>
       {canManage && <Button size="sm" onClick={save} disabled={saving || !dirty}>
         {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
-        保存入参归属{dirty ? `（${dirty} 处改动）` : ''}
+        {tr('k_a640691feb')}{dirty ? tr('k_2041453847', { p0: dirty }) : ''}
       </Button>}
     </div>
 
@@ -1125,10 +1090,10 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
           <div className="text-sm font-medium">{g.label}</div>
           <div className="text-[11px] text-muted-foreground">
             {KIND_LABELS[g.kind] || g.kind}
-            {' · '}{VALUE_TYPE_LABELS[g.value_type] || g.value_type || '形态待定'}
+            {' · '}{VALUE_TYPE_LABELS[g.value_type] || g.value_type || tr('k_9d13c6dc14')}
             {' · '}{g.control
-              ? `看板控件：${CHART_TYPES.find(c => c.value === g.control)?.label || CONTROL_LABELS[g.control]}`
-              : '不自动建控件'}
+              ? tr('k_ac589d82dd', { p0: CHART_TYPES.find(c => c.value === g.control)?.label || CONTROL_LABELS[g.control] })
+              : tr('k_886f636518')}
           </div>
         </div>
 
@@ -1139,15 +1104,15 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
               <span className="w-32 shrink-0 text-muted-foreground">{ROLE_LABELS[t.role] || t.role}</span>
               {canManage
                 ? <Input className="h-6 w-40 text-xs font-mono" list="adh-param-key-candidates"
-                    value={dashKeys[t.var] || ''} aria-label={`归属逻辑参数 ${t.var}`} placeholder={g.key}
+                    value={dashKeys[t.var] || ''} aria-label={tr('k_c635d7bc37', { p0: t.var })} placeholder={g.key}
                     onChange={e => setDashKeys(v => ({ ...v, [t.var]: e.target.value }))} />
                 : <span className="font-mono text-muted-foreground">{g.key}</span>}
               {!(dashKeys[t.var] || '').trim() && (
-                <span className="text-[10px] text-muted-foreground">留空 = 按正文形状归到 {g.key}</span>
+                <span className="text-[10px] text-muted-foreground">{tr('k_7a5442351a')}{' '}{g.key}</span>
               )}
               {canManage ? (
                 <Select value={domains[t.var] || 'none'} onValueChange={(v) => setDomains((prev) => ({ ...prev, [t.var]: v === 'none' ? '' : v }))}>
-                  <SelectTrigger className="h-6 w-36 text-xs" aria-label={`入参值域 ${t.var}`}>
+                  <SelectTrigger className="h-6 w-36 text-xs" aria-label={tr('k_3c8d0fd3e6', { p0: t.var })}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1166,7 +1131,7 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
           <label className="flex flex-wrap items-center gap-2 text-xs">
             <span className="shrink-0 text-muted-foreground">{t("k_93cf80247a")}</span>
             <Input className="h-6 w-56 text-xs"
-              value={groupLabels[g.key] || ''} aria-label={`看板显示名 ${g.key}`} placeholder={g.suggested_label || g.key}
+              value={groupLabels[g.key] || ''} aria-label={tr('k_4d14969e7c', { p0: g.key })} placeholder={g.suggested_label || g.key}
               onChange={e => setGroupLabels(v => ({ ...v, [g.key]: e.target.value }))} />
             <span className="text-[10px] text-muted-foreground">{t("k_e7b3f915ca")}</span>
           </label>

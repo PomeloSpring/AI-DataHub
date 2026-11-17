@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { GUIDES, type TourStep } from '@/lib/onboarding/guides';
+import { GUIDES, asTranslate, type TourStep } from '@/lib/onboarding/guides';
 import { GUIDE_ALL_KEY, guideKey } from '@/api/releaseNotes';
 import { useGuideStore } from '@/stores/guideStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -43,7 +43,8 @@ function findTarget(target: string): HTMLElement | null {
 }
 
 export default function TourEngine({ guideId }: { guideId: string }) {
-  const { t } = useTranslation('ui');
+  // 步骤 key 由 guides.ts 数据驱动（动态 key），走 asTranslate 适配避免逐处断言
+  const t = asTranslate(useTranslation('onboarding').t);
   const guide = GUIDES[guideId];
   const navigate = useNavigate();
   const { workspaceId } = useParams();
@@ -69,7 +70,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
       || useWorkspaceStore.getState().currentWorkspaceId
       || useWorkspaceStore.getState().getDefaultWorkspaceId();
     if (!wsId) {
-      setMissing('未确定当前工作空间，无法打开该页面');
+      setMissing(t('tour.missingWorkspace'));
       return;
     }
     navDoneFor.current = mark;
@@ -98,7 +99,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
       //   静默前进一步，不能报“页面变化或窗口过小”——那会把有意的收起当成异常，误导排查。
       //   末步无下一步可退，退回居中说明卡（与省略 target 的同款行为）。
       if (step?.optional && !isLast) { setMissing(''); setIndex(i => i + 1); return; }
-      setMissing(`未找到「${step?.title}」入口（页面变化或窗口过小），已跳过这一步`);
+      setMissing(t('tour.missingTarget', { title: t(step?.titleKey || 'tour.defaultLabel') }));
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -107,10 +108,10 @@ export default function TourEngine({ guideId }: { guideId: string }) {
   useEffect(() => {
     if (missing) {
       // 显式提示后自动前进; 最后一步缺失时不自动"完成"(见 finish 分支)
-      const t = setTimeout(() => {
+      const timer = setTimeout(() => {
         if (!isLast) setIndex(i => i + 1);
       }, MISSING_HOLD_MS);
-      return () => clearTimeout(t);
+      return () => clearTimeout(timer);
     }
     const onReflow = () => {
       const target = step?.target;
@@ -142,14 +143,14 @@ export default function TourEngine({ guideId }: { guideId: string }) {
   const finish = async () => {
     if (missing && isLast) {
       // 末步没讲到就退出: 不落 completed, 让用户知道本次没走完
-      toast.warning('本次引导未走完（页面元素未出现），可从用户菜单「新手引导」重试');
+      toast.warning(t('tour.finishIncomplete'));
       stopGuide();
       return;
     }
     const ok = await putState([guideKey(guideId)], 'completed');
     if (!ok) return;
     stopGuide();
-    toast.success('引导已完成，可随时从右上角用户菜单「新手引导」重新观看');
+    toast.success(t('tour.finishDone'));
   };
 
   const skipGuide = async () => {
@@ -175,7 +176,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
   const zBase = 120;
 
   return createPortal(
-    <div role="dialog" aria-label={`${guide.label}引导`} data-testid="tour-engine">
+    <div role="dialog" aria-label={t('tour.ariaLabel', { label: t(guide.labelKey) })} data-testid="tour-engine">
       {/* 点击拦截层: 引导期间不响应页面操作(说明用, 页面跳转由引擎负责) */}
       <div data-testid="tour-blocker" style={{ position: 'fixed', inset: 0, zIndex: zBase - 2 }} />
       {/* 压暗 + 挖洞高亮 */}
@@ -200,42 +201,42 @@ export default function TourEngine({ guideId }: { guideId: string }) {
         className="rounded-xl border border-border/70 bg-card p-4 shadow-2xl"
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="text-sm font-semibold text-card-foreground">{step.title}</div>
+          <div className="text-sm font-semibold text-card-foreground">{t(step.titleKey)}</div>
           <Button
             variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground"
-            aria-label={t("k_47a3242c89")} onClick={skipGuide}
+            aria-label={t('tour.skipGuideEsc')} onClick={skipGuide}
           >
             <X className="h-3.5 w-3.5" />
           </Button>
         </div>
-        <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{step.body}</div>
+        <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t(step.bodyKey)}</div>
         {missing && (
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-400">
             {missing}
           </div>
         )}
         <div className="mt-3 flex items-center justify-between gap-2">
-          <span className="text-[11px] text-muted-foreground">第 {index + 1}/{steps.length} 步</span>
+          <span className="text-[11px] text-muted-foreground">{t('tour.stepOf', { index: index + 1, total: steps.length })}</span>
           <div className="flex items-center gap-1.5">
             <Button variant="outline" size="sm" className="h-7 px-2 text-xs"
-              disabled={index === 0} onClick={() => setIndex(i => Math.max(0, i - 1))}>{t("k_75ef1241c0")}</Button>
+              disabled={index === 0} onClick={() => setIndex(i => Math.max(0, i - 1))}>{t('tour.previous')}</Button>
             <Button size="sm" className="h-7 px-2.5 text-xs" onClick={next}>
-              {isLast ? '完成' : '下一步'}
+              {isLast ? t('tour.finish') : t('tour.next')}
             </Button>
           </div>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/60 pt-2">
           <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground"
             onClick={() => { if (!isLast) setIndex(i => i + 1); else void finish(); }}>
-            跳过这一步
+            {t('tour.skipStep')}
           </button>
           <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground"
             onClick={skipGuide}>
-            跳过本引导
+            {t('tour.skipGuide')}
           </button>
           <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground"
-            onClick={muteAll} title={t("k_4eb018fa60")}>
-            不再自动弹出
+            onClick={muteAll} title={t('tour.muteAllTitle')}>
+            {t('tour.muteAll')}
           </button>
         </div>
       </div>

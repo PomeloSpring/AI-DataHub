@@ -17,12 +17,13 @@ import { brandNameOf } from '@/lib/brand';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const features = [
-  { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },
-  { icon: BarChart3, title: '智能可视化', desc: '自动推荐最佳图表类型' },
-  { icon: Zap, title: '实时分析', desc: '秒级返回查询结果' },
-  { icon: Shield, title: '安全可控', desc: 'SQL 校验与权限管理' },
+  { icon: MessageSquare, title: tr('k_dd839ce128'), desc: tr('k_3adf277e99') },
+  { icon: BarChart3, title: tr('k_90f1e74a71'), desc: tr('k_453b494cda') },
+  { icon: Zap, title: tr('k_89b5cfce87'), desc: tr('k_7150b4df08') },
+  { icon: Shield, title: tr('k_e7f1aaa20f'), desc: tr('k_7a9d1811ea') },
 ];
 
 /** 左侧品牌区的迷你图表剪影（纯装饰，随主色变化） */
@@ -81,7 +82,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username || !password) {
-      toast.error('请输入用户名/邮箱和密码');
+      toast.error(tr('k_f0f978d253'));
       return;
     }
 
@@ -93,7 +94,7 @@ export default function Login() {
       // 由它拉清单后跳到该用户默认空间的智能问数；无可访问空间时显式告知原因，不静默转首页。
       navigate(workspaceLandingPath(useWorkspaceStore.getState().getDefaultWorkspaceId()));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '登录失败');
+      toast.error(e.response?.data?.detail || tr('k_b6076a055f'));
     } finally {
       setLoading(false);
     }
@@ -137,13 +138,10 @@ export default function Login() {
               />
 
               <h1 className="mt-10 text-[26px] font-bold leading-snug tracking-tight">
-                让数据问答
-                <br />
-                像对话一样自然
-              </h1>
+                {tr('k_c24e9cabd8')}<br />
+                {tr('k_642a3decfa')}</h1>
               <p className="mt-3 text-sm opacity-75 leading-relaxed max-w-[300px]">
-                连接你的数据源，用一句中文获得可信的查询结果、图表与洞察。
-              </p>
+                {tr('k_04262e2fa2')}</p>
 
               <ul className="mt-8 space-y-3 max-w-[320px]">
                 {features.map((f) => {
@@ -165,8 +163,7 @@ export default function Login() {
 
             <div className="relative z-10 mt-6 flex items-center gap-1.5 text-[11px] opacity-70">
               <Sparkles className="h-3.5 w-3.5" />
-              AI大模型 * 语义层 * 全链路权限治理
-            </div>
+              {tr('k_1901fb1cba')}</div>
             <ChartSilhouette />
           </div>
 
@@ -216,7 +213,7 @@ export default function Login() {
                     <button
                       type="button"
                       tabIndex={-1}
-                      aria-label={showPwd ? '隐藏密码' : '显示密码'}
+                      aria-label={showPwd ? tr('k_dd909adbe3') : tr('k_5f26be784a')}
                       onClick={() => setShowPwd((v) => !v)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                     >
@@ -230,14 +227,13 @@ export default function Login() {
                   disabled={loading}
                 >
                   {loading ? <Spinner className="mr-2" size={14} /> : null}
-                  {loading ? '登录中...' : '登录'}
+                  {loading ? tr('k_04c8f7267c') : tr('k_402d19e50f')}
                   {!loading && <ArrowRight className="ml-1.5 h-4 w-4 transition-transform group-hover:translate-x-0.5" />}
                 </Button>
               </form>
 
               <div className="mt-8 pt-6 border-t border-border/60 text-center text-[11px] text-muted-foreground">
-                受权限治理的安全数据环境 · 所有查询均留审计痕迹
-              </div>
+                {tr('k_3c63ad8338')}</div>
             </CardContent>
           </Card>
         </div>

@@ -2,7 +2,6 @@ import { useRef, useState } from 'react';
 import { Download, Paperclip, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatBytes } from '@/api/monitoring';
-import { t } from '@/i18n/runtime';
 import {
   CONTENT_FILE_ACCEPT, CONTENT_FILE_MAX_COUNT, CONTENT_FILE_MAX_MB,
   contentApi, contentError, downloadContentFile, type ContentFile,
@@ -43,6 +42,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
   /** 上传/删除后让父层重拉详情（附件清单随详情带出，不在本组件另存一份真值） */
   onRefresh?: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -58,14 +58,14 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
     setError(''); setNotice('');
     // 客户端先挡一层是省一次往返，不是裁决：服务端还会按同一份白名单再判一次
     if (!ALLOWED_EXT.includes(extOf(file.name))) {
-      setError(`不支持的附件类型「${extOf(file.name) || '无扩展名'}」。只收 ${ALLOWED_EXT.join(' ')}`);
+      setError(t('k_1877d368f3', { p0: extOf(file.name) || t('k_03727cde8a'), p1: ALLOWED_EXT.join(' ') }));
       return;
     }
     if (file.size > CONTENT_FILE_MAX_MB * 1024 * 1024) {
-      setError(`「${file.name}」${formatBytes(file.size)}，超过单文件上限 ${CONTENT_FILE_MAX_MB}MB`);
+      setError(t('k_7075f78675', { p0: file.name, p1: formatBytes(file.size), p2: CONTENT_FILE_MAX_MB }));
       return;
     }
-    if (!slug) { setError('请先保存草稿再上传附件'); return; }
+    if (!slug) { setError(t('k_ca64e50a13')); return; }
     setBusy(true);
     try {
       const res = await contentApi.uploadFile(slug, file);
@@ -86,8 +86,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
       const res = await contentApi.removeFile(slug, f.file_id);
       // 对象没删干净时服务端会带 warning：存储里的残留文件不影响展示，但必须说出来
       // （不得拿它顶掉“已删除”这个结论，也不得只报成功而吞掉残留）
-      setNotice(`已删除附件「${res.data.filename}」`
-        + (res.data.warning ? ` —— ${res.data.warning}` : ''));
+      setNotice(t('k_6505e67299', { p0: res.data.filename, p1: res.data.warning ? ` —— ${res.data.warning}` : '' }));
       onRefresh?.();
     } catch (err) {
       setError(contentError(err));
@@ -115,7 +114,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
         {editable && (
           <>
             <Button size="sm" variant="outline" onClick={pick} disabled={busy || full || !slug}>
-              <Upload className="mr-1.5 h-3.5 w-3.5" />{busy ? '上传中' : '上传附件'}
+              <Upload className="mr-1.5 h-3.5 w-3.5" />{busy ? t('k_fc09a73e52') : t('k_0063c51e22')}
             </Button>
             <input
               ref={inputRef} type="file" className="hidden" aria-label={t("k_0c836c15f9")}
@@ -132,16 +131,14 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
       {/* 未落库就直说“现在传不了、为什么”，而不是藏掉按钮让人以为附件功能没做 */}
       {editable && !slug && (
         <p className="text-xs text-amber-600">
-          保存草稿后即可上传附件：附件挂在具体条目上，服务端没有“先传后挂”的暂存区。
+          {t('k_b4bebc7acf')}
         </p>
       )}
 
       {files.length === 0 ? (
         editable ? (
           <p className="text-xs text-muted-foreground">
-            还没有附件。支持 Word / PPT / Excel / PDF / HTML，单个最大 {CONTENT_FILE_MAX_MB}MB，
-            一条最多 {CONTENT_FILE_MAX_COUNT} 个；附件在门户里只提供下载，不做站内预览。
-          </p>
+            {t('k_cae508045b', { p0: CONTENT_FILE_MAX_MB, p1: CONTENT_FILE_MAX_COUNT })}</p>
         ) : <p className="text-xs text-muted-foreground">{t("k_5d02b0dae0")}</p>
       ) : (
         <ul className="divide-y rounded-lg border">
@@ -153,11 +150,11 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
               <span className="text-[11px] text-muted-foreground">{formatBytes(f.size)}</span>
               <span className="text-[11px] text-muted-foreground">{(f.uploaded_at || '').slice(0, 16).replace('T', ' ')}</span>
               <Button size="sm" variant="outline" onClick={() => void download(f)} disabled={!slug}>
-                <Download className="mr-1 h-3.5 w-3.5" />下载
+                <Download className="mr-1 h-3.5 w-3.5" />{t('k_f26ef91424')}
               </Button>
               {editable && (
                 <Button size="sm" variant="ghost" className="text-destructive"
-                  aria-label={`删除附件 ${f.filename}`} disabled={busy} onClick={() => void remove(f)}>
+                  aria-label={t('k_df41429710', { p0: f.filename })} disabled={busy} onClick={() => void remove(f)}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               )}
@@ -168,8 +165,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
 
       {editable && (
         <p className="text-[11px] text-muted-foreground">
-          附件不进版本链：替换或删除会**立即**改变门户里能下载到的文件，不会把已发布内容
-          打回草稿、也不会自动触发重新审核。换文件前请确认新文件本身就是可对外的那一版。
+          {t('k_57e93053da')}
         </p>
       )}
     </div>

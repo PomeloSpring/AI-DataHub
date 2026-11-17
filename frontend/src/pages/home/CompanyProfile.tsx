@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { contentApi } from '@/api/content';
 import { ABOUT_CATEGORY } from './shared';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 
 /**
  * 首页 Hero 右侧的「企业简介」卡。
@@ -73,11 +73,9 @@ export default function CompanyProfile({
       <div className="flex h-full min-h-[150px] flex-col justify-center gap-2 rounded-xl border bg-background p-3.5">
         <p className="text-[13px] font-medium">{t("k_6af8cbc7ba")}</p>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          暂时拿不到已发布的企业简介。不是没有内容 —— 可能是接口或服务未就绪。
-        </p>
+          {tr('k_e6ccff8289')}</p>
         <Button size="sm" variant="outline" className="mt-1 h-7 w-fit text-[11px]" onClick={retry}>
-          <RefreshCw className="mr-1.5 h-3 w-3" />重试
-        </Button>
+          <RefreshCw className="mr-1.5 h-3 w-3" />{tr('k_e2d53a6d3a')}</Button>
       </div>
     );
   }
@@ -86,15 +84,12 @@ export default function CompanyProfile({
     return (
       <div className="flex h-full min-h-[150px] flex-col justify-center gap-2 rounded-xl border bg-background p-3.5">
         <p className="flex items-center gap-1.5 text-[13px] font-medium">
-          <Building2 className="h-3.5 w-3.5 text-primary" />企业简介尚未发布
-        </p>
+          <Building2 className="h-3.5 w-3.5 text-primary" />{tr('k_932bd087e7')}</p>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          「关于本公司」栏目下还没有已发布内容。发布后这里会显示公司介绍。
-        </p>
+          {tr('k_a80dc9a4d8')}</p>
         {canManage && onManage && (
           <Button size="sm" variant="outline" className="mt-1 h-7 w-fit text-[11px]" onClick={onManage}>
-            去内容中心创建
-          </Button>
+            {tr('k_c9f78bc2e3')}</Button>
         )}
       </div>
     );
@@ -108,15 +103,13 @@ export default function CompanyProfile({
     >
       {/* 卡片是 <button>，内部只能用 span 组内容（与 NewsFeed 的可点卡同一写法） */}
       <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-        <Building2 className="h-3.5 w-3.5 text-primary" />关于本公司
-      </span>
+        <Building2 className="h-3.5 w-3.5 text-primary" />{tr('k_929e3a958a')}</span>
       <span className="mt-1.5 line-clamp-2 text-[13.5px] font-semibold leading-snug">{profile!.title}</span>
       <span className="mt-1.5 line-clamp-4 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
-        {profile!.summary || '（本篇未填摘要，点开看正文）'}
+        {profile!.summary || tr('k_ce45a32548')}
       </span>
       <span className="mt-2.5 flex items-center gap-1 border-t pt-2 text-[11px] font-medium text-primary">
-        查看完整简介
-        <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+        {tr('k_85b73a214c')}<ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
       </span>
     </button>
   );

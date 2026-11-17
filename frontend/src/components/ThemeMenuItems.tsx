@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Brain, Gem, GlassWater, Grid3x3, Heart, Moon, Sun, TrendingUp, Zap, type LucideIcon,
 } from 'lucide-react';
@@ -6,6 +7,7 @@ import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useThemeStore, type ThemeId } from '@/stores/themeStore';
 import { themePackAvailability } from '@/lib/dashboardDesign';
+import { t as runtimeT } from '@/i18n/runtime';
 import { toast } from '@/lib/toast';
 
 /**
@@ -35,7 +37,20 @@ export const THEMES: { id: ThemeId; label: string; icon: LucideIcon; desc: strin
 /** 主题包编码 → 系统主题（反查）：管理页禁用主题包时要把“系统主题里对应主题也会不可选”说清楚 */
 export const themeOfPackCode = (code: string) => THEMES.find(t => `tp_${t.id}` === code);
 
+/**
+ * 主题业务名/描述的非 hook 取值处（管理页 toast 等）。
+ *
+ * 文案真值源 = menu 命名空间的 `theme.<id>.label|desc`（随包加载，切语言即时生效）；
+ * THEMES 里的 label/desc 仅作语言包缺失时的中文兜底，不再作为展示主源。
+ */
+export const themeLabel = (id: ThemeId): string => {
+  const key = `theme.${id}.label`;
+  const v = runtimeT(key, { ns: 'menu' });
+  return v === key ? (THEMES.find(t => t.id === id)?.label || id) : v;
+};
+
 export default function ThemeMenuItems() {
+  const { t } = useTranslation('menu');
   // 判定要全量清单（含下架/禁用），否则区分不出"被禁用"与"库里没有"
   const { items, loaded } = useVisLibrary(true, true);
   const theme = useThemeStore(s => s.theme);
@@ -47,17 +62,17 @@ export default function ThemeMenuItems() {
 
   return (
     <>
-      {shown.map(t => {
-        const Icon = t.icon;
+      {shown.map(item => {
+        const Icon = item.icon;
         return (
-          <DropdownMenuItem key={t.id} onClick={() => setTheme(t.id)}
-            className={`flex items-center gap-3 ${theme === t.id ? 'bg-accent' : ''}`}>
+          <DropdownMenuItem key={item.id} onClick={() => setTheme(item.id)}
+            className={`flex items-center gap-3 ${theme === item.id ? 'bg-accent' : ''}`}>
             <Icon className="h-4 w-4" />
             <div className="flex-1 min-w-0">
-              <div className={`text-sm ${theme === t.id ? 'font-medium' : ''}`}>{t.label}</div>
-              <div className="text-xs text-muted-foreground truncate">{t.desc}</div>
+              <div className={`text-sm ${theme === item.id ? 'font-medium' : ''}`}>{t(`theme.${item.id}.label`)}</div>
+              <div className="text-xs text-muted-foreground truncate">{t(`theme.${item.id}.desc`)}</div>
             </div>
-            {theme === t.id && <span className="text-xs text-primary">✓</span>}
+            {theme === item.id && <span className="text-xs text-primary">✓</span>}
           </DropdownMenuItem>
         );
       })}
@@ -74,6 +89,7 @@ export default function ThemeMenuItems() {
  * 同一条原因只提醒一次（清单刷新/重渲染不重复弹）。
  */
 export function useThemePackGuard() {
+  const { t } = useTranslation('menu');
   const { items, loaded, error } = useVisLibrary(true, true);
   const theme = useThemeStore(s => s.theme);
   const setTheme = useThemeStore(s => s.setTheme);
@@ -83,13 +99,13 @@ export function useThemePackGuard() {
     if (!loaded || error) return;
     const current = themePackAvailability(theme, items);
     if (current.state !== 'blocked') return;
-    const next = THEMES.find(t => t.id !== theme && themePackAvailability(t.id, items).state !== 'blocked');
+    const next = THEMES.find(item => item.id !== theme && themePackAvailability(item.id, items).state !== 'blocked');
     const key = `${current.pack?.code || theme}|${next?.id || ''}`;
     if (notified.current === key) return;
     notified.current = key;
     if (next) {
       setTheme(next.id);
-      toast.warning(`${current.reason}，系统主题已切换为「${next.label}」`, {
+      toast.warning(`${current.reason}，系统主题已切换为「${t(`theme.${next.id}.label`)}」`, {
         description: '如需继续使用该主题，请在「系统配置 → UI 字模库」重新启用对应主题包。',
         duration: 6000,
       });
@@ -99,5 +115,5 @@ export function useThemePackGuard() {
         duration: 6000,
       });
     }
-  }, [loaded, error, items, theme, setTheme]);
+  }, [loaded, error, items, theme, setTheme, t]);
 }

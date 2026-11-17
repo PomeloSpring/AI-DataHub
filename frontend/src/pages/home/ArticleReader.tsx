@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, CalendarClock, ExternalLink, FileText, MessageSquareQuote } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -92,7 +92,7 @@ export default function ArticleReader({
 
   const askAbout = () => {
     if (!article) return;
-    stashQuestion(`关于《${article.title}》：`);
+    stashQuestion(tr('k_602fa8aa55', { p0: article.title }));
     const wsId = getDefaultWorkspaceId();
     // 落点与首页/模块切换同口径（默认工作空间的 chat），无默认空间落 /workspace 由入口解析
     navigate(wsId ? `/ws/${wsId}/chat` : '/workspace');
@@ -121,8 +121,7 @@ export default function ArticleReader({
 
         {!loading && !error && !article && (
           <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-            这篇内容不存在，或已被下架。
-          </div>
+            {tr('k_d243168d1d')}</div>
         )}
 
         {article && (
@@ -133,7 +132,7 @@ export default function ArticleReader({
                 <a href="/" className="hover:text-primary">{t("k_ff93ad0e4e")}</a>
               )}
               {showHomeCrumb && <span>·</span>}
-              <span>{article.category_label || '栏目未知'}</span>
+              <span>{article.category_label || tr('k_ab6318298c')}</span>
               <span>·</span>
               <span className="truncate text-foreground/80">{article.title}</span>
             </nav>
@@ -144,10 +143,12 @@ export default function ArticleReader({
                 {article.pinned ? <span className="rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-medium text-primary">{t("k_7bcf18641f")}</span> : null}
                 {(article.viewing_release ?? article.release) > 0 && (
                   <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400"
-                    title={article.release_count > 1 ? `本篇共 ${article.release_count} 期` : undefined}>
-                    第 {article.viewing_release || article.release} 期
-                    {article.viewing_release_label || article.release_label
-                      ? `·${article.viewing_release_label || article.release_label}` : ''}
+                    title={article.release_count > 1 ? tr('k_d40676ee48', { p0: article.release_count }) : undefined}>
+                    {t('k_f5e7cef264', {
+                      p0: article.viewing_release || article.release,
+                      p1: article.viewing_release_label || article.release_label
+                        ? `·${article.viewing_release_label || article.release_label}` : '',
+                    })}
                   </span>
                 )}
                 {(article.kind !== 'markdown' && article.kind !== 'html') && (
@@ -161,14 +162,14 @@ export default function ArticleReader({
                 </p>
               )}
               <div className="mt-3 flex flex-wrap items-center gap-3 text-[11.5px] text-muted-foreground">
-                <span>发布 {relTime(article.published_at || article.updated_at) || '日期未知'}</span>
+                <span>{tr('k_83611abd5f')}{' '}{relTime(article.published_at || article.updated_at) || tr('k_8962914131')}</span>
                 <span>·</span>
-                <span>{article.author || '平台内容组'}</span>
+                <span>{article.author || tr('k_e5ef22667d')}</span>
                 <span>·</span>
-                <span>{viewCount(article.view_count)} 阅读</span>
+                <span>{viewCount(article.view_count)} {tr('k_aac0ef6c1c')}</span>
                 {article.review_by && (
                   <span className="flex items-center gap-1">
-                    <CalendarClock className="h-3 w-3" />建议 {article.review_by.slice(0, 10)} 前复核
+                    <CalendarClock className="h-3 w-3" />{t('k_7eda415cd1', { p0: article.review_by.slice(0, 10) })}
                   </span>
                 )}
               </div>
@@ -178,15 +179,15 @@ export default function ArticleReader({
                 当前看的是中文、界面上又倾向英文（或用户显式在找英文版）时，
                 必须**显式**说「暂无英文版」而不是静默回落 —— no-silent-degradation。 */}
             {(() => {
-              const tr = article.translation || {};
-              const en = tr.en || {};
-              const zh = tr.zh || {};
+              const tmap = article.translation || {};
+              const en = tmap.en || {};
+              const zh = tmap.zh || {};
               const cur = article.lang || 'zh-CN';
               const target: { slug: string; label: string; to: 'en-US' | 'zh-CN' } | null =
                 cur !== 'en-US' && en.available && en.slug
                   ? { slug: en.slug, label: 'Read in English', to: 'en-US' }
                   : cur !== 'zh-CN' && zh.available && zh.slug
-                    ? { slug: zh.slug, label: '切到中文版', to: 'zh-CN' }
+                    ? { slug: zh.slug, label: tr('k_409e049be3'), to: 'zh-CN' }
                     : null;
               const missingEn = cur === 'zh-CN' && !en.available;
               if (!target && !missingEn) return null;
@@ -209,8 +210,7 @@ export default function ArticleReader({
                       data-testid="article-lang-missing-en"
                       title="This article has not been translated yet; the Chinese version is shown instead of silently switching."
                     >
-                      该篇暂无英文版 · No English version yet
-                    </span>
+                      {tr('k_51dad2fdd2')}</span>
                   )}
                 </div>
               );
@@ -225,11 +225,18 @@ export default function ArticleReader({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="0">
-                      最新一期（第 {article.release} 期{article.release_label ? `·${article.release_label}` : ''}）
+                      {t('k_66c2738cd7', {
+                        p0: article.release,
+                        p1: article.release_label ? `·${article.release_label}` : '',
+                      })}
                     </SelectItem>
                     {releases.filter(r => !r.is_current).map(r => (
                       <SelectItem key={r.release} value={String(r.release)}>
-                        第 {r.release} 期·{r.label}{r.released_at ? `（${r.released_at.slice(0, 10)}）` : ''}
+                        {t('k_c6fbd9f8be', {
+                          p0: r.release,
+                          p1: r.label,
+                          p2: r.released_at ? `（${r.released_at.slice(0, 10)}）` : '',
+                        })}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -238,28 +245,28 @@ export default function ArticleReader({
             )}
             {historyHidden && article.release_count > 1 && (
               <p className="mt-2 text-[11px] text-muted-foreground">
-                该内容只发布最新版本，不提供历史期次阅读。
-              </p>
+                {tr('k_efac421584')}</p>
             )}
             {release > 0 && article.viewing_is_current === false && (
               <div className="mt-3 rounded-xl border bg-muted/40 p-3 text-xs leading-5">
-                你正在阅读第 {release} 期的旧内容，当前在线的是第 {article.release} 期
-                {article.release_label ? `〈${article.release_label}〉` : ''}。
+                {t('k_f7350216bc', {
+                  p0: release,
+                  p1: article.release,
+                  p2: article.release_label ? `〈${article.release_label}〉` : '',
+                })}
                 <button type="button" className="ml-1.5 text-primary hover:underline" onClick={() => onPickRelease('0')}>
-                  看最新一期
-                </button>
+                  {tr('k_5a2417a0bd')}</button>
               </div>
             )}
 
             {article.kind === 'link' && article.link_url && (
               <div className="mt-4 rounded-xl border bg-card p-4">
                 <p className="mb-2.5 text-sm leading-relaxed">
-                  外链条目：正文在原始站点维护，站内只保留导读，避免抄一份之后两边口径不一致。
-                </p>
+                  {tr('k_ec61ad8f92')}</p>
                 <Button asChild variant="outline" size="sm">
                   <a href={article.link_url} target="_blank" rel="noopener noreferrer">
                     <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                    {article.link_label || '前往原文'}
+                    {article.link_label || tr('k_650f4ce888')}
                   </a>
                 </Button>
               </div>
@@ -278,13 +285,11 @@ export default function ArticleReader({
             {!!article.files?.length && (
               <section className="mt-4 rounded-xl border bg-card p-4">
                 <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-                  <FileText className="h-4 w-4" />附件
-                </h2>
+                  <FileText className="h-4 w-4" />{tr('k_99f6fe6c41')}</h2>
                 <ArticleFiles slug={article.slug} files={article.files} scope="articles" editable={false} />
                 {release > 0 && attachmentsShared && (
                   <p className="mt-2 text-[11px] text-muted-foreground">
-                    附件与期次无关：上面这些是条目当前挂载的附件，不会随阅读的历史期次而变。
-                  </p>
+                    {tr('k_3e235975bd')}</p>
                 )}
               </section>
             )}
@@ -292,8 +297,7 @@ export default function ArticleReader({
             {!!article.refs?.length && (
               <section className="mt-4 rounded-xl border bg-muted/30 p-4">
                 <h2 className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
-                  <FileText className="h-4 w-4" />引用出处
-                </h2>
+                  <FileText className="h-4 w-4" />{tr('k_b2fc15da9e')}</h2>
                 <p className="mb-2 text-[11px] text-muted-foreground">{t("k_6ffe478471")}</p>
                 <ol className="list-decimal space-y-1 pl-5 text-xs">
                   {article.refs.map((r, i) => (
@@ -312,8 +316,7 @@ export default function ArticleReader({
             <div className="mt-6 flex justify-center">
               <Button onClick={askAbout} size="sm">
                 <MessageSquareQuote className="mr-1.5 h-4 w-4" />
-                就本主题提问
-              </Button>
+                {tr('k_ffdc32f7e6')}</Button>
             </div>
 
             {!!related.length && (

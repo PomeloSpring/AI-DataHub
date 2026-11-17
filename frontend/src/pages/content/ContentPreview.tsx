@@ -83,7 +83,7 @@ export default function ContentPreview() {
     <div data-page-width={widthModeForKind(article?.kind)} className={`${shell} space-y-4`}>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="ghost" onClick={() => navigate('/content/manage')}>
-          <ArrowLeft className="mr-1 h-4 w-4" />返回内容管理
+          <ArrowLeft className="mr-1 h-4 w-4" />{t('k_8cfbef1bc1')}
         </Button>
         {/* 期次切换：与报告中心“只有一版不给下拉”同一判据（候选 ≤ 1 就不画开关） */}
         {releases.length > 1 && (
@@ -92,10 +92,10 @@ export default function ContentPreview() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="0">当前线上（第 {article?.release ?? 0} 期）</SelectItem>
+              <SelectItem value="0">{t('k_dd89c5ed8d', { p0: article?.release ?? 0 })}</SelectItem>
               {releases.map(r => (
                 <SelectItem key={r.release} value={String(r.release)}>
-                  第 {r.release} 期·{r.label}{r.is_current ? '（线上）' : ''}
+                  {t('k_9cc86af559', { p0: r.release, p1: r.label, p2: r.is_current ? t('k_437ed0e858') : '' })}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -105,7 +105,7 @@ export default function ContentPreview() {
           <Button size="sm" variant={revision === 'head' ? 'default' : 'outline'} className="ml-auto"
             onClick={() => setRevision(r => (r === 'head' ? 'live' : 'head'))}>
             <PencilLine className="mr-1 h-3.5 w-3.5" />
-            {revision === 'head' ? '看线上版本' : '看改动后的新版本'}
+            {revision === 'head' ? t('k_ebebf44318') : t('k_73619cbf97')}
           </Button>
         )}
       </div>
@@ -113,12 +113,11 @@ export default function ContentPreview() {
       <div className="flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-xs leading-5">
         <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-muted-foreground">
-          这是内容中心的编排预览，只有具备编辑权限的人看得到，也不计入阅读数。
-          正式对全员展示的资讯门户是独立模块，内容必须经这里发布后才能进入门户。
+          {t('k_b11ec67e21')}
         </span>
       </div>
 
-      {loading && <LoadingRow text="正在加载稿件" />}
+      {loading && <LoadingRow text={t('k_5537e7bc0b')} />}
       <ErrorBanner message={error} onRetry={load} />
 
       {/* 历史期次的三个事实必须同时说出：它是哪一期、它现在是不是线上展示的那一期、
@@ -126,23 +125,20 @@ export default function ContentPreview() {
       {!loading && article && release > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs leading-5">
           <p>
-            正在预览<strong>第 {article.viewing_release ?? release} 期</strong>
+            {t('k_f5278865ea')}<strong>{t('k_59151b6db0', { p0: article.viewing_release ?? release })}</strong>
             {article.viewing_release_label ? `〈${article.viewing_release_label}〉` : ''}
             {article.viewing_is_current
-              ? '（就是当前线上展示的那一期）'
-              : '，它不是当前展示的那一期：读者现在从门户进去看到的是第 '
-                + `${article.release} 期〈${article.release_label}〉`}
-            。
+              ? t('k_947a344185')
+              : t('k_77064f1024', { p0: article.release, p1: article.release_label })}
+            {t('k_81197c2d02')}
           </p>
           {article.history_hidden && (
             <p className="mt-1 text-amber-700 dark:text-amber-400">
-              本篇策略为「{article.versioning_label || VERSIONING_LABELS.latest_only}」：
-              除线上那一期外的历史期次只对编排面开放，读者页面拿不到它们。
-            </p>
+              {t('k_1be348feb6', { p0: article.versioning_label || VERSIONING_LABELS.latest_only })}</p>
           )}
           {attachmentsShared && (
             <p className="mt-1 text-muted-foreground">
-              附件挂在条目上、不进期次版本链：这里列出的附件就是当前那份，不会随期次而变。
+              {t('k_f3bd7b68f6')}
             </p>
           )}
         </div>
@@ -150,7 +146,7 @@ export default function ContentPreview() {
 
       {!loading && !error && !article && (
         <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-          内容不存在或已被删除。
+          {t('k_6225db39c1')}
         </div>
       )}
 
@@ -168,26 +164,25 @@ export default function ContentPreview() {
               {!!article.release && (
                 <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 font-medium text-sky-600 dark:text-sky-400"
                   title={article.history_hidden
-                    ? '只保留最新版本：历史期次不对读者展示' : '读者可在本页翻看历史期次'}>
-                  第 {article.release} 期{article.release_label ? `·${article.release_label}` : ''}
-                  {article.release_count > 1 ? ` / 共 ${article.release_count} 期` : ''}
+                    ? t('k_b050086876') : t('k_c291314fdc')}>
+                  {t('k_b6e6d6552d', { p0: article.release, p1: article.release_label ? `·${article.release_label}` : '', p2: article.release_count > 1 ? t('k_ec0696f41e', { p0: article.release_count }) : '' })}
                 </span>
               )}
               {revision === 'head' && release === 0 && article.has_pending_change && (
                 <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-400">
-                  未发布的新版本
+                  {t('k_34fd7ecda1')}
                 </span>
               )}
             </div>
             <h1 className="text-2xl font-semibold leading-8">{article.title}</h1>
             <p className="text-sm leading-6 text-muted-foreground">{article.summary}</p>
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>发布日 {(article.published_at || '—').slice(0, 10) || '—'}</span>
-              <span>作者 {article.author}</span>
-              <span>最后编辑 {article.updated_by || article.author} · {article.updated_at.slice(0, 16).replace('T', ' ')}</span>
+              <span>{t('k_07353da050', { p0: (article.published_at || '—').slice(0, 10) || '—' })}</span>
+              <span>{t('k_d86da8537c', { p0: article.author })}</span>
+              <span>{t('k_66f24f95ab', { p0: article.updated_by || article.author, p1: article.updated_at.slice(0, 16).replace('T', ' ') })}</span>
               {article.review_by && (
                 <span className="flex items-center gap-1">
-                  <CalendarClock className="h-3 w-3" />建议 {formatDate(article.review_by)} 前复核
+                  <CalendarClock className="h-3 w-3" />{t('k_7eda415cd1', { p0: formatDate(article.review_by) })}
                 </span>
               )}
             </div>
@@ -197,11 +192,11 @@ export default function ContentPreview() {
           {article.kind === 'link' && article.link_url && (
             <div className="rounded-xl border bg-card p-4">
               <p className="mb-2 text-sm">
-                外链条目：正文在原始站点维护，站内只保留导读，避免抄一份后两边口径不一致。
+                {t('k_02c0040664')}
               </p>
               <Button asChild variant="outline" size="sm">
                 <a href={article.link_url} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />{article.link_label || '打开原文'}
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />{article.link_label || t('k_28f2fe4b7f')}
                 </a>
               </Button>
             </div>
@@ -233,10 +228,10 @@ export default function ContentPreview() {
           {!!article.refs?.length && (
             <section className="rounded-xl border bg-muted/30 p-4">
               <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
-                <FileText className="h-4 w-4" />引用出处
+                <FileText className="h-4 w-4" />{t('k_b2fc15da9e')}
               </h2>
               <p className="mb-2 text-[11px] text-muted-foreground">
-                文中数值以原文为准。审核人据此核对，正文里的外部数字必须有出处。
+                {t('k_c5b776890b')}
               </p>
               <ol className="list-decimal space-y-1 pl-5 text-xs">
                 {article.refs.map((r, i) => (

@@ -46,14 +46,15 @@ import {
   type MessageTemplate,
 } from '@/api/messageTemplate';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const CHANNEL_TYPE_MAP: Record<string, { label: string; icon: string }> = {
-  dingtalk: { label: '钉钉', icon: '🤖' },
-  feishu: { label: '飞书', icon: '🐦' },
-  wecom: { label: '企业微信', icon: '💬' },
-  email: { label: '邮件', icon: '📧' },
+  dingtalk: { label: tr('k_4a0e9142e7'), icon: '🤖' },
+  feishu: { label: tr('k_7714e5cf3c'), icon: '🐦' },
+  wecom: { label: tr('k_ff17b9f9cd'), icon: '💬' },
+  email: { label: tr('k_1c8e464184'), icon: '📧' },
   webhook: { label: 'Webhook', icon: '🔗' },
-  sms: { label: '短信', icon: '📱' },
+  sms: { label: tr('k_17e1a481d8'), icon: '📱' },
 };
 
 /**
@@ -64,7 +65,7 @@ const CHANNEL_TYPE_MAP: Record<string, { label: string; icon: string }> = {
 const TEMPLATE_NONE = '__platform_default__';
 
 /** 短信参数分层：服务商凭据只读 backend/.env，渠道里只放业务参数（凭据写进 config 就是泄露面） */
-const SMS_FIELD_NOTE = '服务商凭据（AccessKey 等）只读 backend/.env，不填在这里：渠道 config 在页面上可读可导出。';
+const SMS_FIELD_NOTE = tr('k_a650ee74d4');
 
 interface FormData {
   name: string;
@@ -103,7 +104,7 @@ export default function NotificationChannels() {
       const data = await listNotificationChannels();
       setChannels(Array.isArray(data) ? data : []);
     } catch {
-      toast.error('加载通知渠道失败');
+      toast.error(t('k_11bb85d173'));
     } finally {
       setLoading(false);
     }
@@ -116,7 +117,7 @@ export default function NotificationChannels() {
       // include_inactive=true：已下架的模板也得认得出来 —— 渠道正引用它时要显式提示，不能当成"没选"
       setTemplates(await listMessageTemplates('', true));
     } catch {
-      toast.error('加载消息模板失败：本次无法核对渠道引用的模板');
+      toast.error(t('k_bf0c8b7031'));
     }
   }, []);
 
@@ -157,7 +158,7 @@ export default function NotificationChannels() {
 
   const handleSave = async () => {
     if (!form.name.trim()) {
-      toast.error('请输入渠道名称');
+      toast.error(t('k_3fdb506c84'));
       return;
     }
     setSaving(true);
@@ -175,15 +176,15 @@ export default function NotificationChannels() {
       };
       if (editChannel) {
         await updateNotificationChannel(editChannel.id, req);
-        toast.success('更新成功');
+        toast.success(t('k_55aa6366c0'));
       } else {
         await createNotificationChannel(req);
-        toast.success('创建成功');
+        toast.success(t('k_04a691b377'));
       }
       setFormOpen(false);
       loadChannels();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -197,15 +198,15 @@ export default function NotificationChannels() {
       // 只报一句"发送成功"会把"发的是默认文案/模板已失效"掩掉（§1）
       const meta = out?.result || {};
       const notes: string[] = [];
-      if (meta.status === 'default') notes.push('渠道未选消息模板，发的是平台默认文案');
-      if (meta.status === 'degraded') notes.push(`引用的模板不可用：${(meta.reasons || []).join('；') || '未知原因'}`);
-      if (meta.unknown_variables?.length) notes.push(`变量未登记、已原样发出：${meta.unknown_variables.join('、')}`);
+      if (meta.status === 'default') notes.push(tr('k_00e6e3308a'));
+      if (meta.status === 'degraded') notes.push(tr('k_5c393d9a9a', { p0: (meta.reasons || []).join('；') || tr('k_f91d273b96') }));
+      if (meta.unknown_variables?.length) notes.push(tr('k_ef177bce23', { p0: meta.unknown_variables.join('、') }));
       if (meta.warnings?.length) notes.push(...meta.warnings);
-      if (notes.length) toast.warning(`已发送，但${notes.join('；')}`);
-      else toast.success('测试消息已按所选模板发送');
+      if (notes.length) toast.warning(t('k_a07ecab6f2', { p0: notes.join('；') }));
+      else toast.success(t('k_97daa3b62c'));
       loadChannels();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '测试失败');
+      toast.error(e?.response?.data?.detail || t('k_9710d9b9f1'));
     } finally {
       setTesting(null);
     }
@@ -215,11 +216,11 @@ export default function NotificationChannels() {
     if (!deleteTarget) return;
     try {
       await deleteNotificationChannel(deleteTarget.id);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       setDeleteTarget(null);
       loadChannels();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
@@ -347,8 +348,7 @@ export default function NotificationChannels() {
               placeholder="13800000000, 13900000000" />
           </div>
           <p className="text-xs text-amber-600">
-            短信通道本期为占位：以上参数配齐仍会显式报「服务商未配置」，接入凭据与适配器后才会真实下发。
-            国内短信正文须走运营商已审核的 template_code，平台消息模板只是文案镜像。
+            {t('k_6ea8d02cc2')}
           </p>
           <p className="text-[11px] text-muted-foreground">{SMS_FIELD_NOTE}</p>
         </>
@@ -392,11 +392,11 @@ export default function NotificationChannels() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadChannels}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button size="sm" onClick={openCreate}>
             <Plus className="w-4 h-4 mr-1" />
-            新建渠道
+            {t('k_82bd472eab')}
           </Button>
         </div>
       </div>
@@ -404,7 +404,7 @@ export default function NotificationChannels() {
       {/* Channel List */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading ? (
-          <div className="col-span-full text-center p-8 text-muted-foreground">加载中...</div>
+          <div className="col-span-full text-center p-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
         ) : channels.length === 0 ? (
           <div className="col-span-full text-center p-8 text-muted-foreground">{t("k_5709a77ffe")}</div>
         ) : (
@@ -421,13 +421,13 @@ export default function NotificationChannels() {
                     {/* 文案来自哪：一眼看出这个渠道按哪条消息模板发（还是根本没选、在发默认文案） */}
                     <div className="text-xs text-muted-foreground">
                       {ch.config?.message_template_key
-                        ? `模板：${templateOf(String(ch.config.message_template_key))?.name || '引用已失效（发默认文案）'}`
-                        : '模板：未选（发平台默认文案）'}
+                        ? tr('k_ddc15fc814', { p0: templateOf(String(ch.config.message_template_key))?.name || tr('k_0ab2cd648f') })
+                        : t('k_faf0435e6b')}
                     </div>
                   </div>
                 </div>
                 <Badge variant="outline" className={ch.is_active ? 'text-green-500' : 'text-gray-500'}>
-                  {ch.is_active ? '启用' : '禁用'}
+                  {ch.is_active ? t('k_d4e9ca3dd4') : t('k_be70be5a2e')}
                 </Badge>
               </div>
               {ch.last_test_at && (
@@ -437,7 +437,7 @@ export default function NotificationChannels() {
                   ) : (
                     <XCircle className="w-3 h-3 text-red-500" />
                   )}
-                  测试于 {new Date(ch.last_test_at).toLocaleString()}
+                  {tr('k_e2ba385eca')}{' '}{new Date(ch.last_test_at).toLocaleString()}
                 </div>
               )}
               <div className="flex justify-end gap-1">
@@ -448,7 +448,7 @@ export default function NotificationChannels() {
                   disabled={testing === ch.id}
                 >
                   <Send className="w-4 h-4 mr-1" />
-                  {testing === ch.id ? '发送中...' : '测试'}
+                  {testing === ch.id ? t('k_ba1a3a35e6') : t('k_db06c78d1e')}
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => openEdit(ch)} aria-label={t("k_a7f814c0a4")}>
                   <Edit className="w-4 h-4" />
@@ -466,7 +466,7 @@ export default function NotificationChannels() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editChannel ? '编辑渠道' : '新建渠道'}</DialogTitle>
+            <DialogTitle>{editChannel ? t('k_c4714508f3') : t('k_82bd472eab')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
@@ -496,8 +496,7 @@ export default function NotificationChannels() {
             </div>
             {typeReset && (
               <p role="alert" className="text-xs text-amber-600">
-                切换渠道类型已清空原来填的参数（Webhook/密钥、收件人与消息模板引用）：不同通道参数不通用，
-                请重新填写并选择消息模板后再保存。
+                {t('k_918d426dba')}
               </p>
             )}
             {renderConfigFields()}
@@ -520,27 +519,25 @@ export default function NotificationChannels() {
                   {/* 引用已失效时保留一条只读顶位：不然下拉框只剩“默认”，用户以为是自已没选 */}
                   {brokenReference && (
                     <SelectItem value={selectedKey} disabled>
-                      {selectedTemplate?.name || '引用已失效'}（已下架或分类不符）
-                    </SelectItem>
+                      {selectedTemplate?.name || t('k_7ac64dc888')}{tr('k_82bc955af4')}{' '}</SelectItem>
                   )}
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                文案在「系统配置 → 模板中心 → {KIND_LABELS[templateKind]}」维护；这里只选引用，改文案一处生效。
-              </p>
+                {t('k_de26c90023', { p0: KIND_LABELS[templateKind] })}</p>
               {!templateOptions.length && (
                 <p role="alert" className="text-xs text-destructive">
-                  当前分类下没有可用模板：先到模板中心新建再回来选（不选则按平台默认文案发送）。
+                  {t('k_50e2e6a08b')}
                 </p>
               )}
               {form.config.message_template && (
                 <p role="alert" className="text-xs text-destructive">
-                  渠道里还留着旧的内联文案（message_template）：它已不再消费、不会发出去，本次保存会一并清掉，请把文案维护到模板中心。
+                  {t('k_1ac0189e7e')}
                 </p>
               )}
               {brokenReference && (
                 <p role="alert" className="text-xs text-destructive">
-                  引用的模板已下架/删除或分类不符：发送会退回平台默认文案（执行日志与测试发送都会显式标注）。
+                  {t('k_aa8ba86266')}
                 </p>
               )}
               {selectedTemplate && (
@@ -548,16 +545,16 @@ export default function NotificationChannels() {
                 <div className="rounded-md border bg-muted/30 p-2 space-y-1">
                   <div className="text-xs font-medium">{selectedTemplate.name}</div>
                   {selectedTemplate.subject && (
-                    <div className="text-xs text-muted-foreground">主题：{selectedTemplate.subject}</div>
+                    <div className="text-xs text-muted-foreground">{t('k_6ea6ffb1fc', { p0: selectedTemplate.subject })}</div>
                   )}
                   <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">{selectedTemplate.content}</pre>
                   <div className="text-[11px] text-muted-foreground">
-                    用到变量：{(selectedTemplate.variables || []).length
+                    {tr('k_6c41a5b2e0')}{(selectedTemplate.variables || []).length
                       ? (selectedTemplate.variables || []).map(v => `{{${v}}}`).join(' ')
-                      : '无（固定文案）'}
+                      : t('k_1627e8961a')}
                     {!!(selectedTemplate.unregistered_variables || []).length && (
                       <span className="text-destructive">
-                        　发不出去（会原样留字面量）：{(selectedTemplate.unregistered_variables || []).join('、')}
+                        　{t('k_bd30afcefd', { p0: (selectedTemplate.unregistered_variables || []).join('、') })}
                       </span>
                     )}
                   </div>
@@ -575,7 +572,7 @@ export default function NotificationChannels() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -586,8 +583,7 @@ export default function NotificationChannels() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除通知渠道「{deleteTarget?.name}」吗？
-            </DialogDescription>
+              {t('k_ddba134119', { p0: deleteTarget?.name })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

@@ -54,6 +54,7 @@ import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 import { hasPerm } from '@/stores/permissionStore';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface Datasource {
   id: number;
@@ -62,9 +63,9 @@ interface Datasource {
 }
 
 const STATUS_META: Record<OntologyStatus, { label: string; cls: string }> = {
-  draft: { label: '草案', cls: 'bg-amber-500/10 text-amber-500 border-amber-500/20' },
-  active: { label: '激活', cls: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  archived: { label: '已归档', cls: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+  draft: { label: tr('k_bbcb968bf3'), cls: 'bg-amber-500/10 text-amber-500 border-amber-500/20' },
+  active: { label: tr('k_83a991d77c'), cls: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  archived: { label: tr('k_c3ba167c87'), cls: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
 };
 
 /** 从 JSON 内容解析对象列表（预览用，容错）：旧字段名在本层适配，无法定位身份的元素交 UI 显式提示 */
@@ -86,6 +87,7 @@ function ModelGroup({ title, list, selectedId, onPick }: {
   selectedId: number | null;
   onPick: (id: number) => void;
 }) {
+  const { t } = useTranslation('ui');
   if (!list.length) return null;
   return (
     <div>
@@ -107,8 +109,7 @@ function ModelGroup({ title, list, selectedId, onPick }: {
                 <span className="flex items-center gap-1 flex-shrink-0">
                   {(m.deployment_count ?? 0) >= 2 && (
                     <Badge variant="outline" className="border-indigo-300 text-indigo-600">
-                      契约模型 · {m.deployment_count} 站部署
-                    </Badge>
+                      {t('k_973147137c', { p0: m.deployment_count })}</Badge>
                   )}
                   <Badge variant="outline" className={`flex-shrink-0 ${meta.cls}`}>
                     {meta.label}
@@ -116,13 +117,13 @@ function ModelGroup({ title, list, selectedId, onPick }: {
                   {/* 有未发布草案：在列表层就提醒“改了还没生效”，不让人到详情页才发现对象不见了 */}
                   {m.has_draft && (
                     <Badge variant="outline" className="flex-shrink-0 border-amber-500/40 text-amber-600">
-                      待发布
+                      {t('k_0737ae75a2')}
                     </Badge>
                   )}
                 </span>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
-                {m.domain ? `${m.domain} · ` : ''}{m.object_count} 个对象 · {m.updated_at?.slice(0, 16).replace('T', ' ')}
+                {t('k_314bbc9736', { p0: m.domain ? `${m.domain} · ` : '', p1: m.object_count, p2: m.updated_at?.slice(0, 16).replace('T', ' ') })}
               </div>
             </button>
           );
@@ -171,7 +172,7 @@ export default function OntologyModeling() {
 
   const handleImportYaml = async () => {
     if (!datasourceId) {
-      toast.warning('请先在右上角选择数据源');
+      toast.warning(t('k_acac930033'));
       return;
     }
     setImporting(true);
@@ -179,12 +180,12 @@ export default function OntologyModeling() {
       const { data } = await client.post('/catalog/ontology/import-yaml', {
         datasource_id: datasourceId, dir: yamlDir, rebuild_graph: true,
       });
-      toast.success(`导入完成：${data.object_count ?? '?'} 对象 / ${data.links ?? '?'} Link，图谱已重建`);
+      toast.success(t('k_ef1c89aa30', { p0: data.object_count ?? '?', p1: data.links ?? '?' }));
       setYamlOpen(false);
       await loadModels();
       if (data.model_id) loadModel(data.model_id);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '导入失败');
+      toast.error(e?.response?.data?.detail || t('k_fddcd7c6e4'));
     } finally {
       setImporting(false);
     }
@@ -301,11 +302,11 @@ export default function OntologyModeling() {
     if (!draftStatus?.has_draft) return '';
     const parts: string[] = [];
     if (draftStatus.added.length) {
-      parts.push(`新增「${draftStatus.added.map((a) => a.display_name || a.key).join('、')}」`);
+      parts.push(t('k_d9bd023660', { p0: draftStatus.added.map((a) => a.display_name || a.key).join(t('k_b505660a97')) }));
     }
-    if (draftStatus.changed.length) parts.push(`修改 ${draftStatus.changed.length} 个对象`);
-    if (draftStatus.removed.length) parts.push(`删除 ${draftStatus.removed.length} 个对象`);
-    return parts.join('；');
+    if (draftStatus.changed.length) parts.push(t('k_e661d0e42f', { p0: draftStatus.changed.length }));
+    if (draftStatus.removed.length) parts.push(t('k_cbf20245c7', { p0: draftStatus.removed.length }));
+    return parts.join(t('k_c4530db333'));
   }, [draftStatus]);
 
   // 对象清单用的草案状态（key 小写 → diff 项），仅草案视图消费
@@ -330,7 +331,7 @@ export default function OntologyModeling() {
       // 草案状态是服务端事实：选中即拉，否则 AS-BOT 写的草案对页面不可见
       void loadDraftStatus(id);
     } catch {
-      if (selectedIdRef.current === id) toast.error('加载模型失败');
+      if (selectedIdRef.current === id) toast.error(t('k_bf77543ebf'));
     }
   }, [loadDraftStatus]);
 
@@ -340,7 +341,7 @@ export default function OntologyModeling() {
     if (mode === 'draft') {
       const content = await loadDraftContent(model.id);
       if (!content) {
-        toast.error(draftStatus ? '没有可展示的草案正文（可能刚被发布或丢弃）' : '草案状态未加载成功，请刷新重试');
+        toast.error(draftStatus ? t('k_4fc822ea4b') : t('k_0a5a1a4a65'));
         void loadDraftStatus(model.id);
         return;
       }
@@ -358,23 +359,23 @@ export default function OntologyModeling() {
   const applyTaskResult = useCallback((task: GenerateTask) => {
     setGenTask(task);
     if (task.status === 'running') return;
-    const viewAction = { label: '在 AS-BOT 中查看', onClick: () => openTaskConversation(task.conversation_id) };
+    const viewAction = { label: t('k_dc4f492def'), onClick: () => openTaskConversation(task.conversation_id) };
     void loadModels();
     if (task.status === 'done' && task.model_id) {
       void loadModel(task.model_id);
-      toast.success(`草案已生成：${task.object_count} 个业务对象`, { action: viewAction, duration: 10000 });
+      toast.success(t('k_ffd20f4aab', { p0: task.object_count }), { action: viewAction, duration: 10000 });
       return;
     }
     // 未落库/被取消/被重启打断：按真实终态告知，不假报成功
-    const reason = task.status === 'cancelled' ? '生成任务已取消'
-      : task.status === 'interrupted' ? '服务重启，生成任务已中断，请重新发起'
-      : (task.error || '生成失败');
-    toast.error(reason, { description: '执行明细见 AS-BOT 会话', action: viewAction, duration: 12000 });
+    const reason = task.status === 'cancelled' ? t('k_99570f6d9e')
+      : task.status === 'interrupted' ? t('k_68d5cf5395')
+      : (task.error || t('k_7f7de8a201'));
+    toast.error(reason, { description: t('k_9f44625085'), action: viewAction, duration: 12000 });
   }, [loadModels, loadModel, openTaskConversation]);
 
   const handleGenerate = async () => {
     if (!datasourceId) {
-      toast.warning('请先选择数据源');
+      toast.warning(t('k_192dc9f17f'));
       return;
     }
     try {
@@ -382,15 +383,15 @@ export default function OntologyModeling() {
       setGenTask(task);
       // 直接打开 AS-BOT 侧边窗口看任务（关面板/离开页面都不影响执行）
       openTaskConversation(task.conversation_id);
-      toast.success('生成任务已在后台开始执行', {
+      toast.success(t('k_9afeb6ad06'), {
         description: kbIds.length
-          ? `已带 ${kbIds.length} 个参考知识库；进度见 AS-BOT 侧边栏，可离开本页`
-          : '进度见 AS-BOT 侧边栏，可离开本页',
+          ? t('k_a6252502e9', { p0: kbIds.length })
+          : t('k_e3da8453bd'),
         duration: 6000,
       });
     } catch (e: any) {
       // 错误显式展示服务端 detail（执行层不可用/无权限/数据源未授权/已有任务在跑）
-      toast.error(e?.response?.data?.detail || e?.message || '生成任务派发失败');
+      toast.error(e?.response?.data?.detail || e?.message || t('k_3429036a3d'));
     }
   };
 
@@ -399,7 +400,7 @@ export default function OntologyModeling() {
     try {
       applyTaskResult(await cancelOntologyGenerateTask(genTask.conversation_id));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '取消失败，任务仍在后台执行');
+      toast.error(e?.response?.data?.detail || t('k_0000707549'));
     }
   };
 
@@ -422,7 +423,7 @@ export default function OntologyModeling() {
     if (!model) return;
     if (viewMode !== 'draft' && draftPending) {
       // 顶栏已禁用编辑入口，走到这里只可能是旧组件缓存的回调：不静默覆盖，显式引导
-      toast.warning('该模型已有未发布草案，已切到草案视图；请在草案上重新编辑，以免顶掉草案内容');
+      toast.warning(t('k_7dd74b20b9'));
       void switchView('draft');
       return;
     }
@@ -436,9 +437,9 @@ export default function OntologyModeling() {
       // 首次写入（之前无草案）：自动切到草案视图，让人立刻看到“我的改动落在哪”
       if (viewMode !== 'draft') setViewMode('draft');
       setTab('changes');
-      toast.success('已写入草案（尚未生效）：已打开「变更对比」，核对无误后点发布');
+      toast.success(t('k_58272cf7ae'));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '存草案失败');
+      toast.error(e.response?.data?.detail || t('k_2281d5a551'));
     } finally {
       setSaving(false);
     }
@@ -463,19 +464,17 @@ export default function OntologyModeling() {
       const merged = (assets?.metrics_merged?.length || 0) + (assets?.dimensions_merged?.length || 0);
       const blocked = assets?.blocked?.length || 0;
       const warns = data?.warnings || [];
-      toast.success('已发布生效：对象表/部署绑定/图谱已级联刷新'
-        + (created || merged ? `；口径字典收编 ${created + merged} 条（其中新建 ${created}）` : '')
-        + '；知识库按后台对账周期重推（可在「关系图谱」页手动同步）');
+      toast.success(t('k_fc975e5ae8', { p0: created || merged ? t('k_748608846f', { p0: created + merged, p1: created }) : '' }));
       // 级联里“没成功”的部分必须看得见：只报“发布成功”就是把缺口径留给线上错数
       if (blocked || warns.length) {
         const first = assets?.blocked?.[0]
           ? `${assets.blocked[0].kind}「${assets.blocked[0].name}」：${assets.blocked[0].reason}`
           : String(warns[0] || '');
-        toast.warning(`发布有 ${blocked + warns.length} 条建模告警需处理：${first.slice(0, 180)}`);
+        toast.warning(t('k_91f0f4630b', { p0: blocked + warns.length, p1: first.slice(0, 180) }));
       }
     } catch (e: any) {
       // 透传服务端具体错因（如“生效版已被他人改动”），不换成通用文案
-      toast.error(e.response?.data?.detail || '发布失败');
+      toast.error(e.response?.data?.detail || t('k_250688d7c9'));
     } finally {
       setPublishing(false);
     }
@@ -488,7 +487,7 @@ export default function OntologyModeling() {
     setTab('hub');
     loadModels();
     await loadModel(model.id);
-    toast.success('草案已丢弃，生效版与图谱/知识库未受影响');
+    toast.success(t('k_19ec113608'));
   };
 
   // ── 激活 ──
@@ -503,12 +502,12 @@ export default function OntologyModeling() {
       } catch {
         // RDF 写入失败不阻塞激活
       }
-      toast.success('模型已激活，RDF 已写入 Oxigraph，对象向量已重建');
+      toast.success(t('k_c80ce8073f'));
       setActivateOpen(false);
       await loadModels();
       await loadModel(model.id);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '激活失败');
+      toast.error(e.response?.data?.detail || t('k_912efdba9d'));
     } finally {
       setActivating(false);
     }
@@ -519,11 +518,11 @@ export default function OntologyModeling() {
     if (!model) return;
     try {
       await ontologyApi.archive(model.id);
-      toast.success('模型已归档');
+      toast.success(t('k_e77d15aefc'));
       await loadModels();
       await loadModel(model.id);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '归档失败');
+      toast.error(e.response?.data?.detail || t('k_2950599a85'));
     }
   };
 
@@ -535,9 +534,9 @@ export default function OntologyModeling() {
       setModel(data);
       setJsonDraft(data.json_content || '');
       loadModels();
-      toast.success('已还原为草案，可继续编辑后激活');
+      toast.success(t('k_3f3c6a8113'));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '还原失败');
+      toast.error(e?.response?.data?.detail || t('k_7bd43c8055'));
     }
   };
 
@@ -548,13 +547,13 @@ export default function OntologyModeling() {
     if (!model) return;
     try {
       await ontologyApi.remove(model.id);
-      toast.success('模型已删除');
+      toast.success(t('k_66ca4c11c7'));
       setModel(null);
       setSelectedId(null);
       setJsonDraft('');
       loadModels();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -565,7 +564,7 @@ export default function OntologyModeling() {
       const { data } = await ontologyApi.versions(id);
       setVersions(data.items || []);
     } catch {
-      toast.error('加载版本历史失败');
+      toast.error(t('k_44d85a531c'));
       setVersions([]);
     } finally {
       setVersionsLoading(false);
@@ -587,12 +586,12 @@ export default function OntologyModeling() {
       } catch {
         // RDF 写入失败不阻塞激活
       }
-      toast.success('已回滚并激活该版本');
+      toast.success(t('k_69ec3a9599'));
       await loadModels();
       await loadModel(id);
       await fetchVersions(id);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '激活失败');
+      toast.error(e.response?.data?.detail || t('k_912efdba9d'));
     }
   };
 
@@ -614,7 +613,7 @@ export default function OntologyModeling() {
 
   const editable = !!model && model.status !== 'archived';
   /** 草案视图下对象清单的引导文案：说清“此处编辑落在哪”，避免用户以为在改线上口径 */
-  const draftHint = '此处显示的是草案内容：新建/编辑只写草案，不会改动线上生效版；核对后到「变更对比」点发布才级联。';
+  const draftHint = t('k_f8f48c2e2b');
   /** 生效版视图且已有草案：编辑入口关闭（要改必须切草案，否则整份提交会顶掉草案） */
   const liveLocked = viewMode === 'live' && draftPending;
   /** 编辑入口是否可用：生效版不可直接改（线上口径），有未发布草案时必须先到草案视图 */
@@ -671,15 +670,15 @@ export default function OntologyModeling() {
           <PopoverTrigger asChild>
             <Button variant="outline" className="h-9 font-normal">
               <BookMarked className="h-4 w-4 mr-1 text-muted-foreground" />
-              参考知识库
+              {t('k_66928ed465')}
               <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5">
-                {kbIds.length ? `已选 ${kbIds.length}` : '未选'}
+                {kbIds.length ? t('k_481be38f76', { p0: kbIds.length }) : t('k_55dc6ec014')}
               </Badge>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-72 p-2">
             <div className="text-xs text-muted-foreground px-1 pb-1.5">
-              选中知识库会作为业务背景/关系线索辅助归纳（仅参考，不臆造口径）
+              {t('k_c4c7395856')}
             </div>
             <div className="max-h-64 overflow-y-auto space-y-0.5">
               {knowledgeBases.map((kb) => (
@@ -698,20 +697,20 @@ export default function OntologyModeling() {
         </Popover>
         <Button onClick={handleGenerate} disabled={running || !datasourceId}>
           {running ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
-          {running ? '后台执行中…' : '生成本体模型'}
+          {running ? t('k_5e59fed789') : t('k_2113dcf9f2')}
         </Button>
         {running && (
           <Button variant="outline" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
-            查看进度
+            {t('k_9600c91810')}
           </Button>
         )}
         {running && (
           <Button variant="ghost" className="text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
-            取消任务
+            {t('k_d926e2f58e')}
           </Button>
         )}
         <Button variant="outline" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
-          <Upload className="h-4 w-4 mr-1" />导入 YAML
+          <Upload className="h-4 w-4 mr-1" />{t('k_2916bd30b8')}
         </Button>
         <Button
           variant="outline"
@@ -726,13 +725,13 @@ export default function OntologyModeling() {
         <Card className="xl:col-span-1">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-sm">模型列表（{models.length}）</CardTitle>
+              <CardTitle className="text-sm">{t('k_7f3b6807d1', { p0: models.length })}</CardTitle>
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                 <Switch checked={showArchived} onCheckedChange={(v) => {
                   setShowArchived(v);
                   loadModels(v);
                 }} />
-                显示归档
+                {t('k_494afe2b9b')}
               </label>
             </div>
             <div className="relative mt-2">
@@ -744,12 +743,12 @@ export default function OntologyModeling() {
           <CardContent className="space-y-4">
             {models.length === 0 && (
               <div className="text-xs text-muted-foreground py-4 text-center">
-                暂无模型，选择数据源后点击"生成本体模型"
+                {t('k_08f1e09ffd')}
               </div>
             )}
             {models.length > 0 && !filteredBizModels.length && !filteredSourceModels.length
               && !filteredSysModels.length && !filteredLegacyModels.length && (
-              <div className="text-xs text-muted-foreground py-3 text-center">没有匹配“{modelKw}”的模型</div>
+              <div className="text-xs text-muted-foreground py-3 text-center">{t('k_ab2ff2ce5f', { p0: modelKw })}</div>
             )}
             <ModelGroup
               title={t("k_d381fb12f2")} list={filteredBizModels}
@@ -775,9 +774,9 @@ export default function OntologyModeling() {
             >
               <div className="flex items-center gap-2">
                 <Inbox className="h-4 w-4 text-amber-500" />
-                建模待办（未归属资产）
+                {t('k_0f31c91cb2')}
                 {poolTotal > 0 && (
-                  <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{poolTotal} 项</Badge>
+                  <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{t('k_397dbb2060', { p0: poolTotal })}</Badge>
                 )}
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">{t("k_4cd3a552c0")}</div>
@@ -790,7 +789,7 @@ export default function OntologyModeling() {
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <CardTitle className="text-sm flex items-center gap-2 flex-wrap">
-                {model ? model.name : '工作区'}
+                {model ? model.name : t('k_4fa8c1a36b')}
                 {model && (
                   <Badge variant="outline" className={`text-[10px] font-normal ${STATUS_META[model.status]?.cls}`}>
                     {STATUS_META[model.status]?.label}
@@ -798,7 +797,7 @@ export default function OntologyModeling() {
                 )}
                 {model && viewMode === 'draft' && (
                   <Badge variant="outline" className="text-[10px] font-normal border-amber-500/40 text-amber-600">
-                    草案视图·未生效
+                    {t('k_ce96c43684')}
                   </Badge>
                 )}
                 {saving && <span className="text-xs text-muted-foreground">{t("k_8dd685ca90")}</span>}
@@ -814,20 +813,20 @@ export default function OntologyModeling() {
                       className={`h-7 rounded px-2.5 text-xs transition-colors ${
                         viewMode === 'live' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
                     >
-                      生效版 · {draftStatus?.effective_object_count ?? objects.length}
+                      {t('k_3a49375c2d', { p0: draftStatus?.effective_object_count ?? objects.length })}
                     </button>
                     <button
                       onClick={() => switchView('draft')}
                       disabled={!draftPending}
                       title={draftPending
-                        ? `草案 ${draftStatus?.draft_object_count} 个对象（${draftStatus?.draft_updated_by || '未知'} 于 ${draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存）；此处编辑直接写入草案`
-                        : '当前没有待发布的草案'}
+                        ? t('k_85f0dcdf2c', { p0: draftStatus?.draft_object_count, p1: draftStatus?.draft_updated_by || t('k_1622dc9b6b'), p2: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—' }) + t('k_3ea200ef76')
+                        : t('k_30257fb09d')}
                       className={`h-7 rounded px-2.5 text-xs inline-flex items-center gap-1 transition-colors ${
                         !draftPending ? 'text-muted-foreground/50 cursor-not-allowed'
                           : viewMode === 'draft' ? 'bg-amber-500/15 text-amber-700 shadow-sm font-medium'
                             : 'text-amber-600 hover:bg-amber-500/10'}`}
                     >
-                      草案 · {draftStatus?.draft_object_count ?? 0}
+                      {t('k_2b37a18790', { p0: draftStatus?.draft_object_count ?? 0 })}
                       {pendingChangeCount > 0 && (
                         <Badge variant="outline" className="text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
                           {pendingChangeCount}
@@ -838,7 +837,7 @@ export default function OntologyModeling() {
                   {(model.datasource_id || 0) > 0 && (
                     /* v0.5: 业务本体默认同步系统知识库，不再手动选库 */
                     <Badge variant="outline" className="h-8 px-3 text-muted-foreground">
-                      系统知识库 · 自动同步
+                      {t('k_36e30e1540')}
                     </Badge>
                   )}
                   <span title={t("k_4af21def1e")}>
@@ -846,7 +845,7 @@ export default function OntologyModeling() {
                   </span>
                   <Button size="sm" variant="outline" onClick={handleOpenVersions}>
                     <History className="h-3.5 w-3.5 mr-1" />
-                    版本管理
+                    {t('k_fe86275d4d')}
                   </Button>
                   {/* 发布 = 两段式第二段：按 ontology:publish 显隐（无码不渲染，不给死开关）；
                       可用性由服务端草案状态裁决，AS-BOT 写的草案同样可发 */}
@@ -854,31 +853,31 @@ export default function OntologyModeling() {
                     <Button size="sm" variant="default" onClick={handlePublish}
                       disabled={publishing || !!draftStatus?.base_stale || !!draftStatus?.draft_parse_error}
                       title={draftStatus?.base_stale
-                        ? '生效版在草案写入后又被改动，发布会被并发保护阻断；请基于最新生效版重做草案'
+                        ? t('k_107765e1d2')
                         : draftStatus?.draft_parse_error
-                          ? '草案正文结构异常，请先修正后再发布'
-                          : `发布后级联刷新对象表/部署绑定/图谱（知识库另行对账同步）：${draftSummary || '有改动'}`}
+                          ? t('k_374f7b7caf')
+                          : t('k_a7711f40b9', { p0: draftSummary || t('k_3f445de47a') })}
                     >
                       {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-                      发布草案（{pendingChangeCount}）
+                      {t('k_d4768779cc', { p0: pendingChangeCount })}
                     </Button>
                   )}
                   {(model.status === 'draft' || model.status === 'archived') && (
                     <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                      确认激活
+                      {t('k_4366cd37a7')}
                     </Button>
                   )}
                   {model.status === 'archived' && (
                     <Button size="sm" variant="outline" onClick={handleRestore}>
                       <Undo2 className="h-3.5 w-3.5 mr-1" />
-                      还原为草案
+                      {t('k_3c01021917')}
                     </Button>
                   )}
                   {model.status === 'active' && (
                     <Button size="sm" variant="outline" onClick={handleArchive}>
                       <Archive className="h-3.5 w-3.5 mr-1" />
-                      归档
+                      {t('k_2f51c18f49')}
                     </Button>
                   )}
                   {model.status !== 'active' && (
@@ -897,34 +896,34 @@ export default function OntologyModeling() {
                 <div className="min-w-0 space-y-0.5">
                   <div className="font-medium text-amber-700">
                     {viewMode === 'draft'
-                      ? `正在查看草案（${draftStatus?.draft_object_count} 个对象）：此处新建/编辑直接写入草案，不影响线上口径。`
-                      : `有 ${pendingChangeCount} 项待发布改动尚未生效（对象 ${draftStatus?.effective_object_count} → ${draftStatus?.draft_object_count}）。`}
+                      ? t('k_f35f5fb7ff', { p0: draftStatus?.draft_object_count })
+                      : t('k_ccc18bda24', { p0: pendingChangeCount, p1: draftStatus?.effective_object_count, p2: draftStatus?.draft_object_count })}
                   </div>
                   <div className="text-muted-foreground">
-                    {draftSummary || '草案与生效版对象清单一致（可能只改了属性/关系以外的内容）'}
-                    {' · '}{draftStatus?.draft_updated_by || '未知'} 于 {draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存
+                    {draftSummary || t('k_f576516de9')}
+                    {' · '}{t('k_08445af37d', { p0: draftStatus?.draft_updated_by || t('k_1622dc9b6b'), p1: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—' })}
                     {draftStatus?.base_stale && (
                       <span className="ml-1 text-red-600">{t("k_8b2f6ff8c9")}</span>
                     )}
                   </div>
                   {viewMode === 'live' && (
                     <div className="text-muted-foreground">
-                      草案内容在发布前不会进入取数链路（不展开到对象表、不进图谱/知识库），所以生效版视图里看不到它。
+                      {t('k_c2e9e0351c')}
                     </div>
                   )}
                 </div>
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   <Button size="sm" variant="outline" className="h-7 text-xs"
                     onClick={() => { setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }}>
-                    <GitCompare className="h-3 w-3 mr-1" />变更对比
+                    <GitCompare className="h-3 w-3 mr-1" />{t('k_8d535108e6')}
                   </Button>
                   {viewMode === 'live' ? (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
-                      <Eye className="h-3 w-3 mr-1" />切到草案
+                      <Eye className="h-3 w-3 mr-1" />{t('k_983646f300')}
                     </Button>
                   ) : (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('live')}>
-                      返回生效版
+                      {t('k_a2fe5d62d8')}
                     </Button>
                   )}
                 </div>
@@ -933,19 +932,19 @@ export default function OntologyModeling() {
             {model && (
               <div className="text-xs text-muted-foreground mt-2">
                 {viewMode === 'draft'
-                  ? '草案视图：改动只写草案、不级联；在「变更对比」核对后点发布才同步对象表/图谱/知识库。同构站点部署为模型级配置，不受草案/发布影响。'
+                  ? t('k_4385768c31')
                   : model.status === 'archived'
-                    ? '已归档模型只读；可「还原为草案」继续编辑，或「确认激活」直接恢复为生效（归档数据始终可查看）。'
+                    ? t('k_256ef3f80b')
                     : draftPending
-                      ? '生效版只读（线上正在用的口径）；要改建模请切到草案视图。'
-                      : '新增/编辑对象会先存为草案，点「发布」才级联同步对象/图谱/维度字典；同构多站部署由模型级「同构站点部署」声明统一路由，跨源去重/汇总口径请在知识库文档描述。'}
+                      ? t('k_4652cc5256')
+                      : t('k_1dc730d887')}
               </div>
             )}
           </CardHeader>
           <CardContent>
             {!model ? (
               <div className="text-sm text-muted-foreground py-12 text-center">
-                从左侧选择模型（业务/系统能力本体），或先生成本体草案
+                {t('k_774903319b')}
               </div>
             ) : (
               <Tabs key={model.id} value={tab} onValueChange={setTab}>
@@ -953,7 +952,7 @@ export default function OntologyModeling() {
                   <TabsTrigger value="hub">{t("k_27424f442a")}</TabsTrigger>
                   {draftPending && (
                     <TabsTrigger value="changes">
-                      变更对比
+                      {t('k_8d535108e6')}
                       <Badge variant="outline" className="ml-1 text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
                         {pendingChangeCount}
                       </Badge>
@@ -969,9 +968,7 @@ export default function OntologyModeling() {
                 {hiddenM234 && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
                     <AlertTriangle className="h-3 w-3 mr-1 inline" />
-                    该模型不承载行为/规则/场景建模位（{model.kind === 'source' ? '源本体是单源物理表语义投影' : '系统能力面才用行为/规则建模'}），
-                    但 doc 内仍有 {m234Declared} 条声明未展示：写动作权限请配在菜单与功能权限码，口径规则请登记指标字典，
-                    并从 JSON 内容中删除这些声明。
+                    {t('k_9a994413e8', { p0: model.kind === 'source' ? t('k_51ff5d00ed') : t('k_581cece70a'), p1: m234Declared })}
                   </div>
                 )}
                 <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
@@ -982,12 +979,12 @@ export default function OntologyModeling() {
                     )}
                     {liveLocked && editable && (
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
-                        <Pencil className="h-3 w-3 mr-1" />切到草案后编辑
+                        <Pencil className="h-3 w-3 mr-1" />{t('k_417166e66b')}
                       </Button>
                     )}
                     {viewMode === 'draft' && (
                       <span className="text-[11px] text-muted-foreground">
-                        新建/编辑的对象只进草案，发布后才进对象表与图谱
+                        {t('k_3a1c86f9b5')}
                       </span>
                     )}
                   </div>
@@ -1052,18 +1049,16 @@ export default function OntologyModeling() {
             <div>
               <label className="text-sm font-medium block mb-1">{t("k_d3ba8eca71")}</label>
               <Input value={yamlDir} onChange={(e) => setYamlDir(e.target.value)}
-                placeholder="如: ontology" />
+                placeholder={t('k_7eedd66ca4')} />
               <p className="text-xs text-muted-foreground mt-1">
-                目标数据源：{datasources.find((d) => d.id === datasourceId)?.name || '-'}；
-                导入将合并全部域为单个全量本体并立即激活、重建图谱。
-              </p>
+                {t('k_8a178518df', { p0: datasources.find((d) => d.id === datasourceId)?.name || '-' })}</p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setYamlOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleImportYaml} disabled={importing}>
               {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}
-              {importing ? '导入中…' : '开始导入'}
+              {importing ? t('k_9b1a865cd8') : t('k_7d2ff42cf9')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1080,18 +1075,18 @@ export default function OntologyModeling() {
             <ul className="list-disc pl-5 space-y-1">
               <li>{t("k_93bc92d2ab")}</li>
               <li>{t("k_ee23325510")}</li>
-              <li>逐对象 MD 段重新向量化写入向量库（{objects.length} 个对象）</li>
-              <li>ontology_first 检索策略将使用新模型</li>
+              <li>{t('k_c13c1d4d54', { p0: objects.length })}</li>
+              <li>{t('k_577cb94670')}</li>
             </ul>
             <p>{t("k_f610b131c2")}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setActivateOpen(false)} disabled={activating}>
-              取消
+              {t('k_4d0b4688c7')}
             </Button>
             <Button onClick={handleActivate} disabled={activating}>
               {activating && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-              确认激活
+              {t('k_4366cd37a7')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1103,15 +1098,15 @@ export default function OntologyModeling() {
       <Dialog open={versionsOpen} onOpenChange={setVersionsOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>版本管理 · {model?.name}</DialogTitle>
+            <DialogTitle>{t('k_d86ec1fbdb', { p0: model?.name })}</DialogTitle>
           </DialogHeader>
           <div className="text-xs text-muted-foreground">
-            同一模型（数据源 + 名称）的全部版本；当前激活版本置顶，已归档的历史版本在此呈现，不占用主列表。
+            {t('k_808c6be7af')}
           </div>
           <ScrollArea className="h-[50vh] mt-2">
             {versionsLoading ? (
               <div className="py-6 text-center text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />加载中…
+                <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />{t('k_300ee3dee4')}
               </div>
             ) : versions.length === 0 ? (
               <div className="py-6 text-center text-sm text-muted-foreground">{t("k_e65efc0072")}</div>
@@ -1130,7 +1125,7 @@ export default function OntologyModeling() {
                           <Badge variant="outline" className={meta.cls}>{meta.label}</Badge>
                         </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
-                          {v.object_count} 个对象 · {v.created_by || '—'} · 更新于 {v.updated_at?.slice(0, 16).replace('T', ' ')}
+                          {t('k_4c2c4be63a', { p0: v.object_count, p1: v.created_by || '—', p2: v.updated_at?.slice(0, 16).replace('T', ' ') })}
                         </div>
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
@@ -1139,11 +1134,11 @@ export default function OntologyModeling() {
                           variant="ghost"
                           onClick={() => { loadModel(v.id); setVersionsOpen(false); }}
                         >
-                          查看
+                          {t('k_f7acefd2d4')}
                         </Button>
                         {v.status !== 'active' && (
                           <Button size="sm" variant="outline" onClick={() => handleRestoreVersion(v.id)}>
-                            激活
+                            {t('k_83a991d77c')}
                           </Button>
                         )}
                       </div>

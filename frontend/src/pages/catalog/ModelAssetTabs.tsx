@@ -113,7 +113,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
     const next = cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code].sort();
     if (!next.length) {
       const name = objects.find((o) => o.object_key === objectKey)?.object_name || objectKey;
-      setError(`对象「${name}」至少保留一个适用站点；要全站停用请在上方取消勾选该站点`);
+      setError(t('k_db27ad9c49', { p0: name }));
       return;
     }
     setError('');
@@ -134,7 +134,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
       if (!enabled[s.site_code]) continue;
       const ds = route[s.site_code] || '';
       if (!ds) {
-        setError(`站点「${s.display_name}」还未选择路由数据源`);
+        setError(t('k_8857b7c9ad', { p0: s.display_name }));
         return;
       }
       payload.push({ site_code: s.site_code, datasource: ds });
@@ -146,7 +146,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
       const kept = codes.filter((c) => keepCodes.has(c));
       if (!kept.length) {
         const name = objects.find((o) => o.object_key === ok)?.object_name || ok;
-        setError(`对象「${name}」的适用站点已全部取消勾选：请至少保留一个，或点「不限」`);
+        setError(t('k_a2927861cf', { p0: name }));
         return;
       }
       rulesOut[ok] = kept;
@@ -155,12 +155,12 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
     setError('');
     try {
       const r: any = await ontologyApi.saveSites(modelId, payload, rulesOut);
-      toast.success('同构站点部署已保存（未收紧的对象仍适用全部勾选站点）');
+      toast.success(t('k_64756ef231'));
       (r?.data?.pruned || []).forEach((msg: string) => toast.warning(msg));
       load();
     } catch (e: any) {
       // 校验失败原样外显（不静默回滚成旧配置）
-      setError(String(e?.response?.data?.detail || e?.message || '保存失败'));
+      setError(String(e?.response?.data?.detail || e?.message || t('k_6de920b4e4')));
     } finally {
       setSaving(false);
     }
@@ -171,19 +171,16 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
       <div className="p-3 space-y-4">
         <div className="text-xs font-medium text-muted-foreground space-y-1">
           <p>
-            同构站点部署（一份契约 × N 站）：在此声明的业务本体整体适用于哪些站点，取数时按站点自动路由到对应数据源。
-            某站点数据结构不同时，请为该站单独配一个本体或直接使用源本体。
-            跨源去重/汇总口径（如全球去重用户数）不在这里声明，请在知识库文档中描述。
+            {t('k_cd8b33222c')}
           </p>
           <p>
-            「同构多站但某些对象只在部分站点有」：在下方对象契约清单里点掉该对象不适用的站点即可——
-            没配过的对象默认适用全部勾选站点（无需逐个配置），配过的只在所选站点可查。
+            {t('k_24c42e47e8')}
           </p>
         </div>
         {error && <div className="text-xs text-destructive">{error}</div>}
         {loaded && !sites.length && (
           <div className="text-sm text-muted-foreground">
-            暂无可用站点。请先在「系统管理 → 数据源 → 站点管理」维护站点清单，并在数据源上配置归属站点。
+            {t('k_370daf3f0c')}
           </div>
         )}
         {!!sites.length && (
@@ -208,7 +205,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                     onValueChange={(v) => setRoute({ ...route, [s.site_code]: v })}
                   >
                     <SelectTrigger className="w-[220px] h-8">
-                      <SelectValue placeholder={s.datasource_options.length ? '选择该站数据源' : '该站无数据源'} />
+                      <SelectValue placeholder={s.datasource_options.length ? t('k_5609b4cbe1') : t('k_ccfbbd77d6')} />
                     </SelectTrigger>
                     <SelectContent>
                       {s.datasource_options.map((name) => (
@@ -222,7 +219,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
             {!readonly && (
               <div className="flex items-center gap-2 pt-1">
                 <Button size="sm" onClick={save} disabled={!dirty || saving}>
-                  {saving ? '保存中…' : '保存站点部署'}
+                  {saving ? t('k_6644f06197') : t('k_079223cf61')}
                 </Button>
                 {!dirty && <span className="text-xs text-muted-foreground">{t("k_38f5c9d9d7")}</span>}
               </div>
@@ -232,14 +229,11 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
 
         <div>
           <div className="text-xs font-medium text-muted-foreground mb-2">
-            对象契约清单（共 {objects.length} 个对象，其中 {Object.keys(objRules).length} 个已限定站点；
-            每对象只登记一份形状描述，站点由上方声明展开）
-          </div>
+            {t('k_7b2e57339c', { p0: objects.length, p1: Object.keys(objRules).length })}</div>
           {!objects.length && <div className="text-sm text-muted-foreground">{t("k_2aa068ab63")}</div>}
           {!!objects.length && !!enabledCodes.length && !readonly && (
             <div className="text-[11px] text-muted-foreground mb-2">
-              「适用站点」列默认全部点亮 = 未收紧（上方勾选的站点都可用）；点灰某个站点 = 该对象在此站没有这张表。
-              契约源/物理表是对象绑定（建模页的主表配置）的结果，本页只读。
+              {t('k_65178265b7')}
             </div>
           )}
           {!!objects.length && (
@@ -268,7 +262,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                         variant="outline"
                         className={r.sync_state === 'bound' ? 'text-green-600 border-green-300' : 'text-muted-foreground'}
                       >
-                        {r.sync_state === 'bound' ? '✓ 已绑定' : (r.sync_state || '—')}
+                        {r.sync_state === 'bound' ? t('k_3f946dd267') : (r.sync_state || '—')}
                       </Badge>
                     </td>
                     <td className="py-1.5">
@@ -284,7 +278,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                                 key={code}
                                 type="button"
                                 disabled={readonly}
-                                title={on ? `${label}：可查（点击设为不适用）` : `${label}：不适用（点击恢复可查）`}
+                                title={on ? t('k_ab74fd3669', { p0: label }) : t('k_a84eaeaa03', { p0: label })}
                                 onClick={() => toggleObjectSite(r.object_key, code)}
                                 className={`px-1.5 py-0.5 rounded border text-[11px] whitespace-nowrap ${
                                   on
@@ -303,7 +297,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                               className="text-[11px] text-primary whitespace-nowrap"
                               title={t("k_761cfb40f1")}
                             >
-                              不限
+                              {t('k_8441b348c3')}
                             </button>
                           )}
                         </div>
@@ -336,6 +330,7 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
   /** 当前选中的本体模型 id：business 域默认按此聚焦（只看本模型对象），留空则看全业务图。 */
   modelId?: number;
 }) {
+  const { t } = useTranslation('ui');
   // 系统域仅当 kind=system（不是 datasource_id=0）
   const systemScope = kind === 'system';
   // 工作区默认统一大图(unified); singleView 传入时锁定旧单视图(向后兼容)。
@@ -389,24 +384,27 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
         {unified && (
           <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none">
             <Switch checked={showProps} onCheckedChange={setShowProps} />
-            显示属性
+            {t('k_7566a7315d')}
           </label>
         )}
         {isBusiness && !!modelId && (
           <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none"
             title={t("k_d5bf58dd5f")}>
             <Switch checked={showAllBusiness} onCheckedChange={setShowAllBusiness} />
-            看全业务图
+            {t('k_0f9ad366f2')}
           </label>
         )}
         <span className="ml-auto text-[11px] text-muted-foreground">
-          {systemScope ? 'AS-BOT 系统能力本体（系统域·已隔离业务本体）'
-            : kind === 'business' ? `业务本体${domain ? `·${domain}` : ''}（${showAllBusiness ? '全业务合并图' : '当前模型'}）`
-            : kind === 'source' ? `源本体·数据源 #${datasourceId}`
-            : singleView ? 'AS-BOT 系统能力本体' : `数据源 #${datasourceId}`} · {loading ? '加载中…' : `${graphData?.nodes.length ?? 0} 节点 / ${graphData?.edges.length ?? 0} 边 · 可拖拽布局, ↻ 一键还原`}
+          {systemScope ? t('k_dac2018ccd')
+            : kind === 'business' ? t('k_ae4250f7e4', {
+              p0: domain ? t('k_45fdbccd1b', { p0: domain }) : '',
+              p1: showAllBusiness ? t('k_e5570dd407') : t('k_e18ae87522'),
+            })
+            : kind === 'source' ? t('k_2f51081dde', { p0: datasourceId })
+            : singleView ? t('k_ecf61faaf7') : t('k_345f1060a8', { p0: datasourceId })} · {loading ? t('k_300ee3dee4') : t('k_faf141c63b', { p0: graphData?.nodes.length ?? 0, p1: graphData?.edges.length ?? 0 })}
         </span>
         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={load}>{t("k_38108eaa1d")}</Button>
-        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={fullscreen ? '退出全屏' : '全屏'}
+        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={fullscreen ? t('k_49041f2450') : t('k_93c44f6b1b')}
           onClick={() => setFullscreen((f) => !f)}>
           {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </Button>
@@ -415,8 +413,8 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
         {stale && (
           <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
             <div className="text-center text-sm text-muted-foreground bg-card/80 border rounded-lg px-6 py-4">
-              {isBusiness && !showAllBusiness && modelId ? '该模型图谱暂无节点' : '该数据源图谱暂无节点'}
-              <div className="text-xs mt-1">激活模型或保存 active 模型会自动重建图谱；也可点上方「图谱生成」手动重建{isBusiness && modelId ? '，或打开「看全业务图」' : ''}</div>
+              {isBusiness && !showAllBusiness && modelId ? t('k_3ab2e7b8ab') : t('k_72fd239464')}
+              <div className="text-xs mt-1">{t('k_1bbd64f226', { p0: isBusiness && modelId ? t('k_44883ea5c1') : '' })}</div>
             </div>
           </div>
         )}
@@ -505,10 +503,10 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          对象按主表继承标签（打标实体 = 物理表）；标签定义与打标在标签中心维护。
+          {t('k_c2d2d88ff9')}
         </div>
         <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-          {loading ? '加载中…' : '刷新'}
+          {loading ? t('k_300ee3dee4') : t('k_38108eaa1d')}
         </Button>
       </div>
       <ScrollArea className="h-[55vh]">
@@ -519,7 +517,7 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
               <div key={o.key} className="flex items-center gap-3 border rounded-lg px-3 py-2">
                 <div className="min-w-0 w-52">
                   <div className="text-sm font-medium truncate">{o.display_name || o.key}</div>
-                  <div className="text-[11px] font-mono text-muted-foreground truncate">{o.primary_table || '未绑定表'}</div>
+                  <div className="text-[11px] font-mono text-muted-foreground truncate">{o.primary_table || t('k_66fa310a42')}</div>
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {ts.length ? ts.map((t) => (
@@ -537,11 +535,11 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
       </ScrollArea>
       {unusedTags.length > 0 && (
         <div className="text-xs text-muted-foreground border-t pt-2">
-          未被本模型任何表使用的标签：
+          {t('k_659a89487f')}
           {unusedTags.slice(0, 12).map((t) => (
             <Badge key={t.id} variant="outline" className="ml-1 text-[10px] font-normal">{t.name}</Badge>
           ))}
-          {unusedTags.length > 12 && ` 等 ${unusedTags.length} 个`}
+          {unusedTags.length > 12 && t('k_674c56abd3', { p0: unusedTags.length })}
         </div>
       )}
     </div>
@@ -559,6 +557,7 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
 export function SyncBadges({ modelId, refreshKey, kind }: {
   modelId: number; refreshKey?: number; kind?: string;
 }) {
+  const { t } = useTranslation('ui');
   const [st, setSt] = useState<{
     graph: { state: string; classes?: number; objects?: number; graph_datasource_id?: number };
     kb: { state: string; error?: string; targets?: number; target_names?: string[]; synced_at?: string };
@@ -585,19 +584,19 @@ export function SyncBadges({ modelId, refreshKey, kind }: {
     <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-green-500' : warn ? 'bg-amber-500' : 'bg-gray-400'}`} />;
   const gOk = g.state === 'synced', gWarn = g.state === 'lagging' || g.state === 'unreachable';
   const gLabel = ({
-    synced: '已同步',
+    synced: t('k_8bf97a5b00'),
     // 方向写清：旧文案“滞后 1/4”看不出谁多谁少
-    lagging: `滞后（图中 ${g.classes ?? 0}/模型 ${g.objects ?? 0}）`,
-    absent: '未生成', draft: '草案未激活', unreachable: '图服务不可达',
+    lagging: t('k_adce72ea39', { p0: g.classes ?? 0, p1: g.objects ?? 0 }),
+    absent: t('k_da3b420e78'), draft: t('k_be8adfb9d2'), unreachable: t('k_62329246b2'),
   } as Record<string, string>)[g.state] || g.state;
   const gNeedRebuild = g.state === 'lagging' || g.state === 'absent';
   const gTip = [
-    g.graph_datasource_id == null ? '' : `比对命名图 ds:${g.graph_datasource_id}`,
-    `图中 ${g.classes ?? 0} 个对象类 / 模型 ${g.objects ?? 0} 个对象`,
+    g.graph_datasource_id == null ? '' : t('k_f9e44fab1d', { p0: g.graph_datasource_id }),
+    t('k_946c362890', { p0: g.classes ?? 0, p1: g.objects ?? 0 }),
     g.state === 'lagging'
-      ? '含义：模型已改过而图没跟着重建（不是数据错），点「图谱生成」重建即对齐'
-      : g.state === 'absent' ? '含义：该命名图里还没有本模型的对象，点「图谱生成」建图' : '',
-  ].filter(Boolean).join('；');
+      ? t('k_77aaa7dfb8')
+      : g.state === 'absent' ? t('k_1cb4c155dd') : '',
+  ].filter(Boolean).join(t('k_c4530db333'));
 
   const kTargets = k.target_names || [];
   const kOk = k.state === 'success';
@@ -605,28 +604,28 @@ export function SyncBadges({ modelId, refreshKey, kind }: {
   const kByDesign = (k.state === 'no_kb' || k.state === 'no_kb_bound') && kind === 'source';
   const kWarn = k.state === 'failed' || k.state === 'no_kb_bound';
   const kStateLabel = ({
-    success: '已同步',
-    failed: k.error ? `失败: ${k.error.slice(0, 30)}` : '失败',
-    pending: '待同步', removed: '已下线',
-    no_kb: kByDesign ? '不适用（源本体）' : '未开启同步',
-    no_kb_bound: kByDesign ? '不适用（源本体）' : '未绑定知识库',
+    success: t('k_8bf97a5b00'),
+    failed: k.error ? t('k_393a572a31', { p0: k.error.slice(0, 30) }) : t('k_3e3c8068bb'),
+    pending: t('k_a0bf20e813'), removed: t('k_0a6667596a'),
+    no_kb: kByDesign ? t('k_1e1bbcbf03') : t('k_809437f4f5'),
+    no_kb_bound: kByDesign ? t('k_1e1bbcbf03') : t('k_8413f6bfac'),
   } as Record<string, string>)[k.state] || k.state;
   const kLabel = kStateLabel + (kTargets.length
-    ? ` → ${kTargets[0]}${kTargets.length > 1 ? ` 等 ${kTargets.length} 个` : ''}` : '');
+    ? ` → ${kTargets[0]}${kTargets.length > 1 ? ' ' + t('k_674c56abd3', { p0: kTargets.length }) : ''}` : '');
   const kTip = [
-    kTargets.length ? `目标知识库：${kTargets.join(' / ')}`
-      : (kByDesign ? '源本体只服务语义检索/取数，按设计不入知识库' : '未解析到目标知识库'),
-    k.synced_at ? `最近同步：${k.synced_at}` : '',
-    k.error ? `错误：${k.error}` : '',
-  ].filter(Boolean).join('；');
+    kTargets.length ? t('k_c053f6447d', { p0: kTargets.join(' / ') })
+      : (kByDesign ? t('k_855629ef9a') : t('k_ec91548961')),
+    k.synced_at ? t('k_5b7c452524', { p0: k.synced_at }) : '',
+    k.error ? t('k_3cbd8ca072', { p0: k.error }) : '',
+  ].filter(Boolean).join(t('k_c4530db333'));
   return (
     <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1" title={gTip}>
-        {dot(gOk, gWarn)}图谱 {gLabel}
+        {dot(gOk, gWarn)}{t('k_34778e2933')} {gLabel}
         {gNeedRebuild && <span className="text-amber-600">{t("k_10faa62c5c")}</span>}
       </span>
       <span className="flex items-center gap-1" title={kTip}>
-        {dot(kOk, kWarn)}知识库 {kLabel}
+        {t('k_a2e0483367', { p0: dot(kOk, kWarn), p1: kLabel })}
       </span>
     </span>
   );
@@ -656,8 +655,8 @@ function parseM234(jsonContent: string): M234Doc | null {
 }
 
 const ruleBadge = (type?: string) =>
-  type === 'permission' ? '权限规则' : type === 'metric_constraint' ? '口径规则'
-    : type === 'business_constraint' ? '业务约束' : type === 'quality' ? '质量规则' : (type || '规则');
+  type === 'permission' ? t('k_95f4519aab') : type === 'metric_constraint' ? t('k_3402b1c79a')
+    : type === 'business_constraint' ? t('k_705ff04956') : type === 'quality' ? t('k_e974beee2d') : (type || t('k_ed904c685a'));
 
 function M234Empty({ hint }: { hint: string }) {
   return <div className="p-4 text-sm text-muted-foreground">{hint}</div>;
@@ -725,6 +724,7 @@ function useSourceOntologies() {
 
 /** 对象/场景的路由编辑器：选目标源本体（+可选源对象 +源内过滤提示） */
 function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: RouteValue) => void }) {
+  const { t } = useTranslation('ui');
   const sources = useSourceOntologies();
   const [srcObjects, setSrcObjects] = useState<{ key: string; label: string }[]>([]);
 
@@ -759,14 +759,14 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="source">{t("k_a0b36e2428")}</SelectItem>
-            <SelectItem value="object_filter">选对象+过滤（问题落在源内对象/维度）</SelectItem>
+            <SelectItem value="object_filter">{t('k_4cf8e8301d')}</SelectItem>
           </SelectContent>
         </Select>
       </Field>
       <Field label={t("k_5444af3edb")}>
         <Select value={value.source_ontology || undefined}
           onValueChange={(v) => onChange({ ...value, source_ontology: v, object_key: undefined })}>
-          <SelectTrigger><SelectValue placeholder={sources.length ? '选择源本体' : '暂无 active 源本体'} /></SelectTrigger>
+          <SelectTrigger><SelectValue placeholder={sources.length ? t('k_ee05d3489d') : t('k_d922dcc2f6')} /></SelectTrigger>
           <SelectContent>
             {sources.map((s) => <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>)}
           </SelectContent>
@@ -776,14 +776,14 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
         <Field label={t("k_6092a35eee")}>
           <Select value={value.object_key || undefined}
             onValueChange={(v) => onChange({ ...value, object_key: v })}>
-            <SelectTrigger><SelectValue placeholder={value.source_ontology ? (srcObjects.length ? '选择源对象' : '加载中/源本体无对象') : '请先选源本体'} /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={value.source_ontology ? (srcObjects.length ? t('k_921996ff91') : t('k_f4e691ac5a')) : t('k_54dfdbbc8f')} /></SelectTrigger>
             <SelectContent>
               {srcObjects.map((o) => <SelectItem key={o.key} value={o.key}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </Field>
       )}
-      <Field label="源内过滤提示（可选；如 站点=日本/美国，是维度过滤、不是选源）">
+      <Field label={t('k_751208caa8')}>
         {hints.map((h, i) => (
           <div key={i} className="flex gap-2 mb-1">
             <Input placeholder={t("k_0551151d1e")} value={h.dimension}
@@ -794,7 +794,7 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
           </div>
         ))}
         <Button variant="outline" size="sm"
-          onClick={() => setHints([...hints, { dimension: '', examples: [] }])}>+ 过滤提示</Button>
+          onClick={() => setHints([...hints, { dimension: '', examples: [] }])}>{t('k_6fa78c155f')}</Button>
       </Field>
     </div>
   );
@@ -856,13 +856,14 @@ function CheckList({ options, value, onChange, empty }: {
 
 /** M2 行为页签：对象级分析/操作行为（支持新建/编辑/删除，落库走 save_draft 级联）。 */
 export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+  const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
     mode: 'create' | 'edit'; origKey?: string; objectKey: string; key: string;
     label: string; effect: string; read_only: boolean; risk: string; requires_approval: boolean;
   }>(null);
 
-  if (!doc) return <M234Empty hint="模型内容不是合法 JSON，无法解析建模声明" />;
+  if (!doc) return <M234Empty hint={t('k_0814573a76')} />;
   const objects = doc.objects || [];
   const actionsByObj = objects
     .map((o) => ({ obj: o, acts: o.actions || [] }))
@@ -894,7 +895,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
   };
 
   const remove = (objKey: string, akey: string) => {
-    if (!window.confirm(`确认删除行为「${akey}」？`)) return;
+    if (!window.confirm(t('k_b83544c032', { p0: akey }))) return;
     applyEdit(jsonContent, (d) => {
       const obj = (d.objects || []).find((o: any) => o.key === objKey);
       if (obj) obj.actions = (obj.actions || []).filter((a: any) => a.key !== akey);
@@ -904,13 +905,13 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title={t("k_eb4d32abb7")} count={totalActs} unit="个分析/操作行为"
-          createLabel="新建行为"
+        <TabToolbar title={t("k_eb4d32abb7")} count={totalActs} unit={t('k_d55ccdf498')}
+          createLabel={t('k_d474378d6e')}
           onCreate={() => setEditing({
             mode: 'create', objectKey: objects[0]?.key || '', key: '', label: '',
             effect: '', read_only: true, risk: 'medium', requires_approval: true,
           })} />
-        {totalActs === 0 && <M234Empty hint="本模型暂无行为声明（M2 建模位为空）" />}
+        {totalActs === 0 && <M234Empty hint={t('k_b5f73c3b86')} />}
         <div className="space-y-3">
           {actionsByObj.map(({ obj, acts }) => (
             <div key={obj.key} className="border rounded-lg p-3">
@@ -925,7 +926,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                     title={a.effect || ''}>
                     {a.label || a.key}
                     <span className={a.read_only ? 'text-muted-foreground' : 'text-amber-600'}>
-                      {a.read_only ? '·只读' : `·写${a.risk ? `(${a.risk})` : ''}`}
+                      {a.read_only ? t('k_981506ab42') : t('k_acfe9ff42a', { p0: a.risk ? `(${a.risk})` : '' })}
                     </span>
                     <button className="text-muted-foreground hover:text-foreground" title={t("k_a7f814c0a4")}
                       onClick={() => setEditing({
@@ -950,7 +951,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
       <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
-            <DialogTitle>{editing?.mode === 'edit' ? '编辑行为' : '新建行为'}</DialogTitle>
+            <DialogTitle>{editing?.mode === 'edit' ? t('k_c3f5a25f12') : t('k_d474378d6e')}</DialogTitle>
           </DialogHeader>
           {editing && (
             <div className="space-y-3">
@@ -967,7 +968,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="行为 key（全局唯一，如 case.trend）">
+              <Field label={t('k_2cd4bc3642')}>
                 <Input value={editing.key} disabled={editing.mode === 'edit'}
                   onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
               </Field>
@@ -1018,6 +1019,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
 
 /** M3 规则页签：口径/约束/质量/权限规则（支持新建/编辑/删除）。 */
 export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+  const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
     mode: 'create' | 'edit'; origKey?: string; key: string; type: string;
@@ -1025,7 +1027,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
     subject: string; action: string; level: string; applies_to: string[];
   }>(null);
 
-  if (!doc) return <M234Empty hint="模型内容不是合法 JSON，无法解析建模声明" />;
+  if (!doc) return <M234Empty hint={t('k_0814573a76')} />;
   const rules = doc.rules || [];
   const objOptions = (doc.objects || []).map((o) => ({ value: o.key || '', label: o.display_name || o.key || '' }));
 
@@ -1052,7 +1054,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
   };
 
   const remove = (rkey: string) => {
-    if (!window.confirm(`确认删除规则「${rkey}」？`)) return;
+    if (!window.confirm(t('k_a00da004f0', { p0: rkey }))) return;
     applyEdit(jsonContent, (d) => {
       d.rules = (d.rules || []).filter((r: any) => r.key !== rkey);
     }, onSave);
@@ -1061,13 +1063,13 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title={t("k_9f21293dc9")} count={rules.length} unit="条约束/口径"
-          createLabel="新建规则"
+        <TabToolbar title={t("k_9f21293dc9")} count={rules.length} unit={t('k_ecb4f20944')}
+          createLabel={t('k_f10ed4681f')}
           onCreate={() => setEditing({
             mode: 'create', key: '', type: 'business_constraint', statement: '', source: '',
             subject: 'role:admin', action: '*', level: 'allow', applies_to: [],
           })} />
-        {rules.length === 0 && <M234Empty hint="本模型暂无规则声明（M3 建模位为空）" />}
+        {rules.length === 0 && <M234Empty hint={t('k_9d43a19751')} />}
         <div className="space-y-2">
           {rules.map((r) => (
             <div key={r.key} className="border rounded-lg p-3">
@@ -1086,14 +1088,13 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                   })}
                   onDelete={() => remove(r.key || '')} />
               </div>
-              <div className="text-sm mt-1.5">{r.statement || '(缺规则说明)'}</div>
+              <div className="text-sm mt-1.5">{r.statement || t('k_42957a482d')}</div>
               {r.enforcement?.subject && (
                 <div className="text-xs text-muted-foreground mt-1">
-                  适用: {r.enforcement.subject}
-                  {r.enforcement.action ? ` × ${r.enforcement.action}` : ''}
+                  {t('k_f2f1c917ed', { p0: r.enforcement.subject, p1: r.enforcement.action ? ` × ${r.enforcement.action}` : '' })}
                 </div>
               )}
-              {r.source && <div className="text-xs text-muted-foreground mt-0.5">依据: {r.source}</div>}
+              {r.source && <div className="text-xs text-muted-foreground mt-0.5">{t('k_e97b6e0954', { p0: r.source })}</div>}
             </div>
           ))}
         </div>
@@ -1102,11 +1103,11 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
       <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
-            <DialogTitle>{editing?.mode === 'edit' ? '编辑规则' : '新建规则'}</DialogTitle>
+            <DialogTitle>{editing?.mode === 'edit' ? t('k_a1d940b0dc') : t('k_f10ed4681f')}</DialogTitle>
           </DialogHeader>
           {editing && (
             <div className="space-y-3">
-              <Field label="规则 key（全局唯一，如 rule_exclude_deleted）">
+              <Field label={t('k_54ffe94bb7')}>
                 <Input value={editing.key} disabled={editing.mode === 'edit'}
                   onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
               </Field>
@@ -1127,16 +1128,16 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                   onChange={(e) => setEditing({ ...editing, statement: e.target.value })} />
               </Field>
               <Field label={t("k_b88fdb4275")}>
-                <Input value={editing.source} placeholder="如：业务约定 / ontology-modeling §3"
+                <Input value={editing.source} placeholder={t('k_b50a4f70b8')}
                   onChange={(e) => setEditing({ ...editing, source: e.target.value })} />
               </Field>
               {editing.type === 'permission' ? (
                 <>
-                  <Field label="授权主体（role:<角色名>）">
+                  <Field label={t('k_9871775e33')}>
                     <Input value={editing.subject} placeholder="role:admin"
                       onChange={(e) => setEditing({ ...editing, subject: e.target.value })} />
                   </Field>
-                  <Field label="动作（action key 或 * 通配）">
+                  <Field label={t('k_3db63f8c0e')}>
                     <Input value={editing.action} placeholder="*"
                       onChange={(e) => setEditing({ ...editing, action: e.target.value })} />
                   </Field>
@@ -1146,7 +1147,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="allow">{t("k_f687b1634f")}</SelectItem>
-                        <SelectItem value="require_approval">require_approval（需审批）</SelectItem>
+                        <SelectItem value="require_approval">{t('k_5072107492')}</SelectItem>
                         <SelectItem value="deny">{t("k_d93d771421")}</SelectItem>
                       </SelectContent>
                     </Select>
@@ -1154,7 +1155,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                 </>
               ) : (
                 <Field label={t("k_c763413aa1")}>
-                  <CheckList options={objOptions} value={editing.applies_to} empty="本模型暂无对象"
+                  <CheckList options={objOptions} value={editing.applies_to} empty={t('k_4c2bfa7fb6')}
                     onChange={(v) => setEditing({ ...editing, applies_to: v })} />
                 </Field>
               )}
@@ -1172,6 +1173,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
 
 /** M4 场景页签：使用场景（支持新建/编辑/删除）。 */
 export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+  const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
     mode: 'create' | 'edit'; origKey?: string; key: string; title: string; goal: string;
@@ -1179,7 +1181,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
     route_sources: string[]; join_hint: string;
   }>(null);
 
-  if (!doc) return <M234Empty hint="模型内容不是合法 JSON，无法解析建模声明" />;
+  if (!doc) return <M234Empty hint={t('k_0814573a76')} />;
   const scenarios = doc.scenarios || [];
   const srcOptions = useSourceOntologies().map((s) => ({ value: s.name, label: s.name }));
   const objOptions = (doc.objects || []).map((o) => ({ value: o.key || '', label: o.display_name || o.key || '' }));
@@ -1230,7 +1232,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
   };
 
   const remove = (skey: string) => {
-    if (!window.confirm(`确认删除场景「${skey}」？`)) return;
+    if (!window.confirm(t('k_eef5c7f5c8', { p0: skey }))) return;
     applyEdit(jsonContent, (d) => {
       d.scenarios = (d.scenarios || []).filter((s: any) => s.key !== skey);
     }, onSave);
@@ -1239,14 +1241,14 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title={t("k_b1d78e638d")} count={scenarios.length} unit="个使用场景"
-          createLabel="新建场景"
+        <TabToolbar title={t("k_b1d78e638d")} count={scenarios.length} unit={t('k_a256b2d857')}
+          createLabel={t('k_a5cab13a74')}
           onCreate={() => setEditing({
             mode: 'create', key: '', title: '', goal: '',
             uses_objects: [], uses_actions: [], uses_rules: [], eval_seed: '',
             route_sources: [], join_hint: '',
           })} />
-        {scenarios.length === 0 && <M234Empty hint="本模型暂无场景声明（M4 建模位为空）" />}
+        {scenarios.length === 0 && <M234Empty hint={t('k_792634f3c2')} />}
         <div className="space-y-2">
           {scenarios.map((s) => (
             <div key={s.key} className="border rounded-lg p-3">
@@ -1268,25 +1270,25 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
               </div>
               {s.goal && <div className="text-sm text-muted-foreground mt-1">{s.goal}</div>}
               <div className="flex flex-wrap gap-1.5 mt-2">
-                {(s.uses_objects || []).map((x) => <Badge key={`o${x}`} variant="secondary">对象 {x}</Badge>)}
-                {(s.uses_actions || []).map((x) => <Badge key={`a${x}`} variant="secondary">行为 {x}</Badge>)}
-                {(s.uses_rules || []).map((x) => <Badge key={`r${x}`} variant="secondary">规则 {x}</Badge>)}
+                {(s.uses_objects || []).map((x) => <Badge key={`o${x}`} variant="secondary">{t('k_21277ce209', { p0: x })}</Badge>)}
+                {(s.uses_actions || []).map((x) => <Badge key={`a${x}`} variant="secondary">{t('k_1c3f28486c', { p0: x })}</Badge>)}
+                {(s.uses_rules || []).map((x) => <Badge key={`r${x}`} variant="secondary">{t('k_46dbc21389', { p0: x })}</Badge>)}
               </div>
               {(s.route?.sources || []).length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 mt-2">
                   {(s.route!.sources || []).map((e) => (
                     <Badge key={e.source_ontology} variant="outline" className="text-[10px]">
-                      路由源: {e.source_ontology}{e.object_keys?.length ? ` · ${e.object_keys.join('/')}` : ''}
+                      {t('k_88b42b4ce6', { p0: e.source_ontology, p1: e.object_keys?.length ? ` · ${e.object_keys.join('/')}` : '' })}
                     </Badge>
                   ))}
                   {s.route!.join_hint && (
-                    <span className="text-xs text-muted-foreground">跨源关联: {s.route!.join_hint}</span>
+                    <span className="text-xs text-muted-foreground">{t('k_c3c35a7ce9', { p0: s.route!.join_hint })}</span>
                   )}
                 </div>
               )}
               {(s.eval_seed || []).length > 0 && (
                 <div className="text-xs text-muted-foreground mt-1.5">
-                  典型问题: {s.eval_seed!.join(' / ')}
+                  {t('k_685ecdeb53', { p0: s.eval_seed!.join(' / ') })}
                 </div>
               )}
             </div>
@@ -1297,12 +1299,12 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
       <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-xl max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
-            <DialogTitle>{editing?.mode === 'edit' ? '编辑场景' : '新建场景'}</DialogTitle>
+            <DialogTitle>{editing?.mode === 'edit' ? t('k_583eb8ba99') : t('k_a5cab13a74')}</DialogTitle>
           </DialogHeader>
           {editing && (
             <div className="space-y-3 min-w-0">
               <div className="grid grid-cols-2 gap-3">
-                <Field label="场景 key（全局唯一，如 ana_case_trend）">
+                <Field label={t('k_bacfe3ad20')}>
                   <Input value={editing.key} disabled={editing.mode === 'edit'}
                     onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
                 </Field>
@@ -1315,32 +1317,32 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
                 <Input value={editing.goal} placeholder={t("k_81f799fe01")}
                   onChange={(e) => setEditing({ ...editing, goal: e.target.value })} />
               </Field>
-              <FormSection title={t("k_55ef356fe5")} hint="勾选本场景用到的对象 / 行为 / 规则">
+              <FormSection title={t("k_55ef356fe5")} hint={t('k_1b8abac041')}>
                 <Field label={t("k_a25c9c51df")}>
-                  <CheckList options={objOptions} value={editing.uses_objects} empty="本模型暂无对象"
+                  <CheckList options={objOptions} value={editing.uses_objects} empty={t('k_4c2bfa7fb6')}
                     onChange={(v) => setEditing({ ...editing, uses_objects: v })} />
                 </Field>
                 <Field label={t("k_fe49fdf2be")}>
-                  <CheckList options={actOptions} value={editing.uses_actions} empty="本模型暂无行为声明"
+                  <CheckList options={actOptions} value={editing.uses_actions} empty={t('k_c42f0232ba')}
                     onChange={(v) => setEditing({ ...editing, uses_actions: v })} />
                 </Field>
                 <Field label={t("k_fedd386c5c")}>
-                  <CheckList options={ruleOptions} value={editing.uses_rules} empty="本模型暂无规则声明"
+                  <CheckList options={ruleOptions} value={editing.uses_rules} empty={t('k_164947fc67')}
                     onChange={(v) => setEditing({ ...editing, uses_rules: v })} />
                 </Field>
               </FormSection>
-              <FormSection title={t("k_37f8e66df7")} hint="eval 用例来源，每行一个自然语言问题">
+              <FormSection title={t("k_37f8e66df7")} hint={t('k_50b1b03a9f')}>
                 <Field label={t("k_059c632309")}>
-                  <Textarea rows={3} value={editing.eval_seed} placeholder={"最近30天案例量趋势如何？"}
+                  <Textarea rows={3} value={editing.eval_seed} placeholder={t('k_e57725f322')}
                     onChange={(e) => setEditing({ ...editing, eval_seed: e.target.value })} />
                 </Field>
               </FormSection>
-              <FormSection title={t("k_73785c79b8")} hint="数据去哪个源本体查；单源场景可不填">
+              <FormSection title={t("k_73785c79b8")} hint={t('k_e0e7c09e35')}>
                 <Field label={t("k_1704ee052c")}>
-                  <CheckList options={srcOptions} value={editing.route_sources} empty="暂无 active 源本体"
+                  <CheckList options={srcOptions} value={editing.route_sources} empty={t('k_d922dcc2f6')}
                     onChange={(v) => setEditing({ ...editing, route_sources: v })} />
                 </Field>
-                <Field label="跨源关联说明（join_hint，人话口径，不含物理 JOIN）">
+                <Field label={t('k_009ae3480c')}>
                   <Input value={editing.join_hint} placeholder={t("k_bdce2e1691")}
                     onChange={(e) => setEditing({ ...editing, join_hint: e.target.value })} />
                 </Field>
@@ -1383,6 +1385,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
   edits: Record<number, string>;
   onEdit: (index: number, column: string | null) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [cols, setCols] = useState<ObjectColumnOption[]>([]);
   const [resolvedTable, setResolvedTable] = useState('');
   const [note, setNote] = useState('');
@@ -1408,7 +1411,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
           setCols([]);
           setNote('');
           // 拿不到候选必须出声：静默当作“没列可改”会把漂移留到线上错数才暴露
-          setError(String(e?.response?.data?.detail || e?.message || '接口失败'));
+          setError(String(e?.response?.data?.detail || e?.message || t('k_eb0c1382c1')));
           setLoading(false);
         });
     }, 350);
@@ -1435,7 +1438,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
   return (
     <div className="rounded-md border p-2">
       <div className="flex items-center gap-1.5 text-xs font-medium mb-1">
-        属性列映射（{properties.length}）
+        {t('k_ddd8060872', { p0: properties.length })}
         <span className="text-[11px] font-normal text-muted-foreground">{t("k_827281b669")}</span>
       </div>
       {drift.length > 0 && (
@@ -1445,9 +1448,9 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
             const unv = drift.filter((d) => d.verdict === 'unverified').length;
             const bad = drift.length - unv;
             const seg: string[] = [];
-            if (bad) seg.push(`${bad} 个属性的列名不在该表实存列里（标红）：改选正确列，或在该表确实没这个概念时选「不绑定物理列」`);
-            if (unv) seg.push(`${unv} 个属性无法核验：这张表的列元数据还没同步，候选清单不完整，请先去「表 & 字段」同步字段再改（现在改列名没有依据）`);
-            return seg.join('；') + '。改完「保存为草案」并发布才生效';
+            if (bad) seg.push(t('k_4c9cb60d58', { p0: bad }));
+            if (unv) seg.push(t('k_2cac71eab0', { p0: unv }));
+            return seg.join(t('k_c4530db333')) + t('k_81b580e835');
           })()}
         </div>
       )}
@@ -1456,8 +1459,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
       )}
       {error && (
         <div className="mb-1.5 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[11px] text-red-600">
-          列候选读取失败（{error}）：已改为手动填写列名，请自行对着「表 & 字段」核实
-        </div>
+          {t('k_237d529482', { p0: error })}</div>
       )}
       {!loading && !error && note && (
         <div className="mb-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700">
@@ -1483,14 +1485,14 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
               {useSelect ? (
                 <Select value={selected} onValueChange={(v) => onEdit(i, v.startsWith(KEEP_COLUMN_PREFIX)
                   ? null : (v === NONE_COLUMN_VALUE ? '' : v))}>
-                  <SelectTrigger aria-label={`${String(p?.name || raw)} 的物理列`}
+                  <SelectTrigger aria-label={t('k_66c5f8bce2', { p0: String(p?.name || raw) })}
                     className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`}>
                     <SelectValue placeholder={t("k_62a91b82a0")} />
                   </SelectTrigger>
                   <SelectContent>
                     {!names.includes(cur) && (
                       <SelectItem value={`${KEEP_COLUMN_PREFIX}${raw}`} className="text-[11px]">
-                        <span className="text-red-500">不修改（当前 {raw || '未填'}，该表无此列）</span>
+                        <span className="text-red-500">{t('k_a5d914a4c5', { p0: raw || t('k_0e223ebb16') })}</span>
                       </SelectItem>
                     )}
                     {bad && (
@@ -1510,15 +1512,15 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
               ) : (
                 // 无候选可枚举（接口失败 / 元数据未同步 / 走数据集）：回退为手填并在上方说明原因
                 <Input value={edited ?? raw} onChange={(e) => onEdit(i, e.target.value)}
-                  aria-label={`${String(p?.name || raw)} 的物理列`}
+                  aria-label={t('k_66c5f8bce2', { p0: String(p?.name || raw) })}
                   className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`} />
               )}
               {bad && (
                 <Badge variant="outline" className="text-[10px] px-1 h-4 shrink-0 text-red-500 border-red-500/40"
                   title={driftOfProp(p)?.verdict === 'unverified'
-                    ? `该表列元数据尚未同步，无法核验列 ${raw}`
-                    : `列 ${raw} 不在 ${driftOfProp(p)?.table || resolvedTable || '该表'} 的实存列里`}>
-                  {driftOfProp(p)?.verdict === 'unverified' ? '未核验' : '列不存在'}
+                    ? t('k_b60cf7abdb', { p0: raw })
+                    : t('k_6f0901b493', { p0: raw, p1: driftOfProp(p)?.table || resolvedTable || t('k_9b93c54366') })}>
+                  {driftOfProp(p)?.verdict === 'unverified' ? t('k_a9a5e3e6f1') : t('k_79d66eb6b3')}
                 </Badge>
               )}
             </div>
@@ -1541,6 +1543,7 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
   /** 模型行的 kind（真值源）；存量 doc 顶层可能没写 kind */
   modelKind?: string;
 }) {
+  const { t } = useTranslation('ui');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ key: '', display_name: '', description: '', primary_table: '' });
   const [route, setRoute] = useState<RouteValue>({
@@ -1566,7 +1569,7 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
     // 查重按归一后的对象身份（不是裸 o.key）：存量 doc 只有 object_key 时，
     // 按 o.key 比永远不命中 → 同名对象被重复 push，保存才被服务端判重拒掉（错在更早的环节）。
     if (findObjectIndex(doc.objects, key) >= 0) {
-      window.alert(`对象 key 已存在: ${key}`);
+      window.alert(t('k_afdc4db8f4', { p0: key }));
       return;
     }
     const hints = (route.filter_hints || []).filter((h) => h.dimension.trim());
@@ -1598,7 +1601,7 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
   return (
     <>
       <Button size="sm" onClick={() => setOpen(true)}>
-        <Plus className="h-4 w-4 mr-1" />新建对象
+        <Plus className="h-4 w-4 mr-1" />{t('k_fab82bea2e')}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={isBusiness ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden' : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
@@ -1606,7 +1609,7 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
             <DialogTitle>{t("k_4897a8af7d")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <Field label="对象 key（唯一，snake_case，如 order_item）">
+            <Field label={t('k_c82e0b6ba6')}>
               <Input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} />
             </Field>
             <Field label={t("k_c35a132911")}>
@@ -1621,9 +1624,9 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
               <RouteEditor value={route} onChange={setRoute} />
             ) : null}
             <Field label={isBusiness
-              ? '绑定物理表（可选；不配路由时在此声明物理形状，保存草案后点「发布」由级联登记部署绑定）'
-              : '绑定物理表（可选；数据产品登记后可在编辑器补绑定）'}>
-              <Input value={form.primary_table} placeholder="如：t_order_item"
+              ? t('k_df45ea2b1f')
+              : t('k_d87c90f8b0')}>
+              <Input value={form.primary_table} placeholder={t('k_45fd0871f6')}
                 onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
             </Field>
           </div>
@@ -1662,6 +1665,7 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
       object_key?: string; filter_hints?: { dimension?: string; examples?: string[] }[] };
   };
 }) {
+  const { t } = useTranslation('ui');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(() => ({
     display_name: target.display_name || '',
@@ -1715,7 +1719,7 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     // 写入口若只认 o.key 就会假报「对象不存在」并把保存静默中止（历史缺陷）。
     const idx = findObjectIndex(doc.objects, key);
     if (idx < 0) {
-      window.alert(`当前正文里没有对象「${target.display_name || key}」(key=${key})；请确认切到了对象所属的正文（生效/草案）后重试`);
+      window.alert(t('k_5fdc26f2d8', { p0: target.display_name || key, p1: key }));
       return;
     }
     const hints = (route.filter_hints || []).filter((h) => h.dimension.trim());
@@ -1753,14 +1757,14 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
   return (
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        <Pencil className="h-3.5 w-3.5 mr-1" />编辑对象
+        <Pencil className="h-3.5 w-3.5 mr-1" />{t('k_b7eb43c06d')}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={(editRoute || showColumnMap)
           ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden'
           : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
           <DialogHeader>
-            <DialogTitle>编辑对象 · {target.display_name || target.key}</DialogTitle>
+            <DialogTitle>{t('k_49030f2381', { p0: target.display_name || target.key })}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <Field label={t("k_90675ca431")}>
@@ -1771,7 +1775,7 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
             </Field>
             <Field label={t("k_e1ddcc8f96")}>
-              <Input value={form.aliases} placeholder="如：用户, 客户, 账号"
+              <Input value={form.aliases} placeholder={t('k_72ce31f7e4')}
                 onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
             </Field>
             <Field label={t("k_581778ce60")}>
@@ -1781,8 +1785,8 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
             {editRoute ? (
               <RouteEditor value={route} onChange={setRoute} />
             ) : (
-              <Field label="绑定物理表（表名，与「表 & 字段」里的实存表一致）">
-                <Input value={form.primary_table} placeholder="如：t_order_item"
+              <Field label={t('k_f8b7cb9d18')}>
+                <Input value={form.primary_table} placeholder={t('k_45fd0871f6')}
                   onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
               </Field>
             )}

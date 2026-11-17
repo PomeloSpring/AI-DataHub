@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -40,10 +40,10 @@ const KIND_ALL = '__kind_all__';
 
 /** 形态筛选项（label 与服务端 KIND_LABELS 一致；promoted 未开放所以不列） */
 const KIND_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'markdown', label: '站内正文' },
-  { value: 'html', label: 'HTML 版式' },
-  { value: 'link', label: '外链条目' },
-  { value: 'file', label: '附件' },
+  { value: 'markdown', label: t('k_7d99f875bc') },
+  { value: 'html', label: t('k_207e892ecc') },
+  { value: 'link', label: t('k_05f2ab04cf') },
+  { value: 'file', label: t('k_99f6fe6c41') },
 ];
 
 /**
@@ -58,7 +58,7 @@ function statusOptionsOf(scope: 'all' | 'mine'): Array<{ value: 'all' | ArticleS
   return [
     // 状态筛选直接用服务端的 'all' 取值（不是本文件的 __all__ 哨兵）：
     // 'all' 才是"不加状态条件", 见下方 load 的注释
-    { value: 'all', label: '全部状态' },
+    { value: 'all', label: t('k_1a4c26d92d') },
     ...(scope === 'mine'
       ? [{ value: 'draft' as 'all' | ArticleStatus, label: STATUS_LABELS.draft }, ...flow]
       : flow),
@@ -86,7 +86,7 @@ function publishModeOf(a: ContentArticle): 'publish' | 'archive' | 'republish' |
 }
 
 const PUBLISH_MODE_LABELS: Record<'publish' | 'archive' | 'republish', string> = {
-  publish: '发布', archive: '下架', republish: '上架',
+  publish: t('k_83611abd5f'), archive: t('k_a2698bcf9e'), republish: t('k_4a50988f83'),
 };
 
 /** 「提交审核」的可用性：草稿，或下架后又改了正文（那一版没审过，只能重走审核） */
@@ -122,25 +122,24 @@ const BATCH_META: Record<BatchKind, {
   hint: string;
 }> = {
   submit: {
-    label: '批量提交审核', verb: '提交审核', perm: 'edit',
-    hint: '逐条跑提交门禁：缺必填项、正文含内部标识的当场拒并说明缺什么；软提醒随条目回给审核人（仍需逐条确认）。已在审核中的会被拒。',
+    label: t('k_298be1b390'), verb: t('k_646db08406'), perm: 'edit',
+    hint: t('k_d511bc75e2'),
   },
   publish: {
-    label: '批量发布', verb: '发布', perm: 'publish',
-    hint: '只发布「已通过待发布」的内容，发布后对全体登录用户可见（不受数据权限过滤）。'
-      + '正在改下一版而未重新审核的不在本批范围：那需要逐篇走审核，或显式勾「免审直发」并写明原因。',
+    label: t('k_f082b0ae9d'), verb: t('k_83611abd5f'), perm: 'publish',
+    hint: t('k_ce837ac2ae'),
   },
   republish: {
-    label: '批量上架', verb: '上架', perm: 'publish',
-    hint: '把各篇下架时在线的那一版放回门户 —— 那一版当初是审核通过才上线的，所以这一步不重新走审核；下架之后改的正文不会被顺带放出去。',
+    label: t('k_644c0dcae8'), verb: t('k_4a50988f83'), perm: 'publish',
+    hint: t('k_bd05f5dc51'),
   },
   archive: {
-    label: '批量下架', verb: '下架', perm: 'publish',
-    hint: '下架后门户立即不再展示。已发布内容代表公司立场，下架同样进审计与审核流水；原因对本次每篇共用。',
+    label: t('k_d5e0154790'), verb: t('k_a2698bcf9e'), perm: 'publish',
+    hint: t('k_d88cc3059e'),
   },
   delete: {
-    label: '批量删除', verb: '删除', perm: 'edit', destructive: true,
-    hint: '删除草稿、它的全部历史版本与挂在上面的附件（附件文件同时从存储里删掉），不可撤销。已上线的内容会被逐条拒（必须先下架）。',
+    label: t('k_7fb62b3011'), verb: t('k_3755f56f2f'), perm: 'edit', destructive: true,
+    hint: t('k_b88eb88ef0'),
   },
 };
 
@@ -261,18 +260,18 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
     <div className="space-y-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
-          <h1 className="text-xl font-semibold">{scope === 'mine' ? t('workspace:contentDraftsTitle', '我的草稿') : t('workspace:contentManageTitle', '内容管理')}</h1>
+          <h1 className="text-xl font-semibold">{scope === 'mine' ? t('workspace:contentDraftsTitle', tr('k_cb8fe10b39')) : t('workspace:contentManageTitle', tr('k_03141fc2a3'))}</h1>
           <p className="text-sm text-muted-foreground">
             {scope === 'mine'
-              ? '这里只列你名下未发布的工作稿，新建内容也在这里；提交审核后仍会留在列表里，直到审核出结论。'
-              : '编排已提交的内容：待审、已通过、已发布与已下架。未提交的草稿（含被驳回退回的）只在「我的草稿」，新建与编写也在那里；审核与发布都在行上，按各自权限码给。'}
+              ? t('k_70e4d4d361')
+              : t('k_59cbc67176')}
           </p>
         </div>
         {/* 新建入口只给「我的草稿」：写作是作者在自己名下开工，内容管理是编排面
             （看待审/已发布/已下架 + 发布与同步），在那里放个“新建”会把两个职责混成一个 */}
         {canEdit && scope === 'mine' && (
           <Button onClick={() => { setEditingSlug(undefined); setEditorOpen(true); }}>
-            <Plus className="mr-1.5 h-4 w-4" />新建内容
+            <Plus className="mr-1.5 h-4 w-4" />{t('k_f048c7b9dc')}
           </Button>
         )}
       </header>
@@ -282,54 +281,54 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
           <Input
             value={qInput} onChange={e => setQInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { setQ(qInput.trim()); setPage(1); } }}
-            placeholder={t("workspace:contentSearchPlaceholder", "搜索标题或摘要，回车检索")} aria-label={t("workspace:contentSearchAria", "搜索内容")}
+            placeholder={t("workspace:contentSearchPlaceholder", tr('k_c3ae4d542b'))} aria-label={t("workspace:contentSearchAria", tr('k_9131beb744'))}
           />
         </div>
         <Select value={status} onValueChange={v => { setStatus(v as 'all' | ArticleStatus); setPage(1); }}>
-          <SelectTrigger className="w-[150px]" aria-label={t("workspace:filterByStatus", "状态筛选")}><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-[150px]" aria-label={t("workspace:filterByStatus", tr('k_f0b2137cbd'))}><SelectValue /></SelectTrigger>
           <SelectContent>
             {statusOptionsOf(scope).map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={category} onValueChange={v => { setCategory(v); setPage(1); }}>
-          <SelectTrigger className="w-[160px]" aria-label={t("workspace:filterByCategory", "栏目筛选")}><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-[160px]" aria-label={t("workspace:filterByCategory", tr('k_b98247a458'))}><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>{t("workspace:allCategories", "全部栏目")}</SelectItem>
+            <SelectItem value={ALL}>{t("workspace:allCategories", tr('k_f1485f8d0c'))}</SelectItem>
             {categories.map(c => <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={kind} onValueChange={v => { setKind(v); setPage(1); }}>
-          <SelectTrigger className="w-[130px]" aria-label={t("workspace:filterByKind", "形态筛选")}><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-[130px]" aria-label={t("workspace:filterByKind", tr('k_9e015a509b'))}><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value={KIND_ALL}>{t("workspace:allKinds", "全部形态")}</SelectItem>
+            <SelectItem value={KIND_ALL}>{t("workspace:allKinds", tr('k_a2d2cd9bf2'))}</SelectItem>
             {KIND_OPTIONS.map(k => <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>)}
           </SelectContent>
         </Select>
         {/* 语言筛（双语条目落地护栏）：只筛不猜、不就近 —— 服务端 normalize_locale 是唯一裁决口 */}
         <Select value={lang || 'all'} onValueChange={v => { setLang(v === 'all' ? '' : (v as 'zh-CN' | 'en-US')); setPage(1); }}>
-          <SelectTrigger className="w-[130px]" aria-label={t("workspace:filterByLang", "语言筛选")}><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-[130px]" aria-label={t("workspace:filterByLang", tr('k_919fb249ff'))}><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">{t("workspace:allLanguages", "全部语言")}</SelectItem>
-            <SelectItem value="zh-CN">{t("workspace:langZhBody", "中文正文")}</SelectItem>
-            <SelectItem value="en-US">{t("ui:k_ffdb9b071d")}</SelectItem>
+            <SelectItem value="all">{t("workspace:allLanguages", tr('k_e701cb9a7c'))}</SelectItem>
+            <SelectItem value="zh-CN">{t("workspace:langZhBody", tr('k_b1ef48e0dd'))}</SelectItem>
+            <SelectItem value="en-US">{t('k_464fbc58b4')}</SelectItem>
           </SelectContent>
         </Select>
-        <Button variant="outline" onClick={() => { setQ(qInput.trim()); setPage(1); }}>{t("common:action.search", "搜索")}</Button>
+        <Button variant="outline" onClick={() => { setQ(qInput.trim()); setPage(1); }}>{t("common:action.search", tr('k_f04090805c'))}</Button>
         {/* 到期复核快捷筛选：它不是状态而是“该重新确认口径”（已上线且 review_by 过期），
             原「审核发布」页顶部那张清单并入到这里，口径仍走服务端同一谓词 */}
         {canReview && scope === 'all' && (
           <Button variant={expired ? 'default' : 'outline'} size="sm" aria-pressed={expired}
             title={t("ui:k_1ac5088a64")}
             onClick={() => { setExpired(v => !v); setStatus('all'); setPage(1); }}>
-            到期复核
+            {t('k_47d199fa58')}
           </Button>
         )}
         {/* 批量入口按权限给：只读角色本来也进不了这一页（菜单按 article:manage 反查） */}
         {(canEdit || canPublish) && (
           <Button variant={batchMode ? 'default' : 'outline'} aria-pressed={batchMode}
-            title={batchMode ? '退出批量操作' : '批量操作：勾选多条后统一提交审核 / 发布 / 上架 / 下架 / 删除'}
+            title={batchMode ? t('k_e9abb00400') : t('k_26752d7002')}
             onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}>
-            <ListChecks className="mr-1.5 h-4 w-4" />批量操作
+            <ListChecks className="mr-1.5 h-4 w-4" />{t('k_7f7c624a84')}
           </Button>
         )}
       </div>
@@ -340,7 +339,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
 
       {batchMode && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/30 px-3 py-2">
-          <span className="text-xs font-medium">已选 {picked.length} 项</span>
+          <span className="text-xs font-medium">{t('k_cd549520b9', { p0: picked.length })}</span>
           {BATCH_ORDER
             .filter(k => (BATCH_META[k].perm === 'edit' ? canEdit : canPublish))
             .map(k => {
@@ -349,7 +348,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                 <Button key={k} size="sm"
                   variant={BATCH_META[k].destructive ? 'destructive' : 'outline'}
                   disabled={!n}
-                  title={n ? BATCH_META[k].hint : `已选内容里没有可${BATCH_META[k].verb}的（判据与服务端一致，换对应动作即可）`}
+                  title={n ? BATCH_META[k].hint : t('k_f0566c1744', { p0: BATCH_META[k].verb })}
                   onClick={() => setBatchKind(k)}>
                   {BATCH_META[k].label}{n ? ` (${n})` : ''}
                 </Button>
@@ -357,23 +356,23 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
             })}
           <Button size="sm" variant="ghost" disabled={!picked.length} onClick={() => setSelected([])}>{t("ui:k_f02e943954")}</Button>
           <span className="ml-auto text-[11px] text-muted-foreground">
-            只处理当前页勾选项；服务端逐条裁决，不合格的点名回原因
+            {t('k_571b43534c')}
           </span>
         </div>
       )}
 
-      {loading && <LoadingRow text="正在加载内容清单" />}
+      {loading && <LoadingRow text={t('k_65bc8cad9b')} />}
 
       {/* 拉失败时不得再画“没有符合条件的内容”：那是把 500 伪装成空结果。
           空态文案要指对地方：内容管理页已不放新建按钮，再让人“点右上”就是空承诺。 */}
       {!loading && !error && items.length === 0 && (
         <EmptyState
-          title={scope === 'mine' ? '你名下还没有草稿' : '没有符合条件的内容'}
+          title={scope === 'mine' ? t('k_624d225116') : t('k_a994e5f6fb')}
           hint={canEdit
             ? (scope === 'mine'
-              ? '点右上「新建内容」开始编写；保存草稿不会影响门户。'
-              : '这里是编排面：新建与编写在左侧「我的草稿」进行，内容发布后回到这里审核与下架。')
-            : '内容需要由具备编辑权限的同事编写并发布。'}
+              ? t('k_70939706b4')
+              : t('k_fa9de3528f'))
+            : t('k_d48dc5dc02')}
         />
       )}
 
@@ -407,7 +406,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                   {batchMode && (
                     <td className="px-3 py-2">
                       <input type="checkbox" className="size-3.5 accent-primary"
-                        aria-label={`选择 ${a.title}`} checked={selected.includes(a.slug)}
+                        aria-label={t('k_f7c57733fd', { p0: a.title })} checked={selected.includes(a.slug)}
                         onChange={() => toggleRow(a.slug)} />
                     </td>
                   )}
@@ -438,7 +437,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                     {(a.lang && a.lang !== 'zh-CN') && (
                       <div className="mt-1">
                         <span className="inline-flex rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400"
-                              title={t("ui:k_3f3b853b25")}>EN</span>
+                              title={t('k_464fbc58b4')}>EN</span>
                       </div>
                     )}
                     {(() => {
@@ -453,7 +452,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                             className="text-[10px] text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
                             onClick={(e) => { e.stopPropagation(); navigate(`/content/preview/${sib.slug}`); }}
                           >
-                            {cur === 'zh-CN' ? '→ English' : '→ 中文版'}
+                            {cur === 'zh-CN' ? '→ English' : t('k_94afaf06a5')}
                           </button>
                         </div>
                       );
@@ -465,7 +464,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                         {a.history_hidden && (
                           <span className="text-[10px] text-muted-foreground"
                             title={VERSIONING_LABELS.latest_only}>
-                            历史期次不对读者展示
+                            {t('k_2ca3d8b4f4')}
                           </span>
                         )}
                       </div>
@@ -484,27 +483,27 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button size="sm" variant="ghost" aria-label={`查看 ${a.title}`} onClick={() => navigate(`/content/preview/${a.slug}`)}>
+                      <Button size="sm" variant="ghost" aria-label={t('k_8bd30c24c0', { p0: a.title })} onClick={() => navigate(`/content/preview/${a.slug}`)}>
                         <Eye className="h-3.5 w-3.5" />
                       </Button>
                       {canEdit && (
                         <>
-                          <Button size="sm" variant="ghost" aria-label={`编辑 ${a.title}`}
+                          <Button size="sm" variant="ghost" aria-label={t('k_b6f728c315', { p0: a.title })}
                             onClick={() => { setEditingSlug(a.slug); setEditorOpen(true); }}>
                             <PencilLine className="h-3.5 w-3.5" />
                           </Button>
                           {/* 已下架且 head 是下架后新改的版本也要给提交入口：否则那篇既走不了一键上架
                               （没可放回的下架版）又看不到送审入口，只能重新建一篇 */}
                           {canSubmitRow(a) && (
-                            <Button size="sm" variant="ghost" aria-label={`提交审核 ${a.title}`}
+                            <Button size="sm" variant="ghost" aria-label={t('k_971a26118d', { p0: a.title })}
                               title={a.status === 'archived'
-                                ? '下架之后改过正文，这一版需要重新审核才能上线' : undefined}
-                              onClick={() => act(() => contentApi.submit(a.slug), '已提交审核')}>
+                                ? t('k_03c1950b13') : undefined}
+                              onClick={() => act(() => contentApi.submit(a.slug), t('k_792e1c4f3f'))}>
                               <Send className="h-3.5 w-3.5" />
                             </Button>
                           )}
                           {!a.is_live && (
-                            <Button size="sm" variant="ghost" className="text-destructive" aria-label={`删除 ${a.title}`}
+                            <Button size="sm" variant="ghost" className="text-destructive" aria-label={t('k_4b741e296c', { p0: a.title })}
                               onClick={() => setDeleteTarget(a)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -512,7 +511,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                         </>
                       )}
                       {canSyncKb && (
-                        <Button size="sm" variant="ghost" aria-label={`同步到知识库 ${a.title}`}
+                        <Button size="sm" variant="ghost" aria-label={t('k_8de0f47991', { p0: a.title })}
                           title={t("ui:k_293851241d")}
                           onClick={() => setSyncTarget(a)}>
                           <Library className="h-3.5 w-3.5" />
@@ -525,7 +524,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                           只会把“作者个人区”又变成审核工作台 */}
                       {canReview && scope === 'all' && a.status === 'in_review' && !expired && (
                         <Button size="sm" variant="outline" onClick={() => setReviewTarget(a)}>
-                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />审核
+                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />{t('k_cf13b1a678')}
                         </Button>
                       )}
                       {canPublish && mode && (
@@ -536,7 +535,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                       {/* 切换展示版本（回滚）：服务端算得“至少两期已发布且未下架”才给入口
                           （can_rollback）：只有一期时这个开关只能选中自己，点了也不会变 */}
                       {canPublish && a.can_rollback && (
-                        <Button size="sm" variant="ghost" aria-label={`切换展示版本 ${a.title}`}
+                        <Button size="sm" variant="ghost" aria-label={t('k_cd622539f7', { p0: a.title })}
                           title={t("ui:k_8ef41d2edc")}
                           onClick={() => setRollbackTarget(a)}>
                           <History className="h-3.5 w-3.5" />
@@ -575,15 +574,15 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         open={!!deleteTarget}
         title={t("ui:k_59358b12cb")}
         description={deleteTarget
-          ? `确定删除「${deleteTarget.title}」？草稿、它的全部历史版本与挂在上面的附件会被一并移除（附件文件同时从存储里删掉），此操作不可撤销。已上线的内容必须先下架。`
+          ? t('k_5681c79669', { p0: deleteTarget.title })
           : ''}
-        confirmLabel="删除"
+        confirmLabel={t('k_3755f56f2f')}
         destructive
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
           const a = deleteTarget!;
           setDeleteTarget(null);
-          act(() => contentApi.remove(a.slug), '已删除');
+          act(() => contentApi.remove(a.slug), t('k_5cc232620c'));
         }}
       />
 
@@ -650,16 +649,17 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
 
 /** 「本期/共几期」徽标：期次是发布出来的那一版，与 `status`（head 工作流态）是两套口径 */
 function ReleaseBadge({ article }: { article: ContentArticle }) {
+  const { t } = useTranslation('ui');
   if (!article.release) return null;
   return (
     <span
       title={article.release_count > 1
-        ? `本篇共 ${article.release_count} 期：读者在内容页可翻历史期次`
-        : '本篇目前只有这一期'}
+        ? t('k_0c777556d1', { p0: article.release_count })
+        : t('k_3a0d0aedb5')}
       className="inline-flex rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-600 dark:text-sky-400"
     >
-      第 {article.release} 期{article.release_label ? `·${article.release_label}` : ''}
-      {article.release_count > 1 && <span className="ml-1 opacity-80">/ 共 {article.release_count} 期</span>}
+      {t('k_ba93f835f8', { p0: article.release, p1: article.release_label ? `·${article.release_label}` : '' })}
+      {article.release_count > 1 && <span className="ml-1 opacity-80">{t('k_c795b03b67', { p0: article.release_count })}</span>}
     </span>
   );
 }
@@ -684,6 +684,7 @@ function ReviewDialog({ article, onClose, onDone }: {
   onClose: () => void;
   onDone: (msg: string, warnings: string[]) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [detail, setDetail] = useState<ContentArticle | null>(null);
   const [acks, setAcks] = useState<Record<string, boolean>>({});
   const [comment, setComment] = useState('');
@@ -714,7 +715,7 @@ function ReviewDialog({ article, onClose, onDone }: {
   const run = (kind: 'approve' | 'reject') => {
     if (kind === 'reject' && !comment.trim()) {
       // 前端先拦一次，服务端同样会拒（驳回必须有原因，作者要据此改）
-      setError('驳回必须写原因，作者要据此修改。');
+      setError(t('k_6df55031e9'));
       return;
     }
     setBusy(true); setError('');
@@ -734,21 +735,21 @@ function ReviewDialog({ article, onClose, onDone }: {
         <DialogHeader>
           <DialogTitle>{t("ui:k_4054a4f677")}</DialogTitle>
           <DialogDescription>
-            审核是人的判断，AI 不参与批与发。通过后可由具「发布与下架内容」权限的人上线。
+            {t('k_3aa6efecd6')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <ErrorBanner message={error} />
-          {!detail && !error && <LoadingRow text="正在读稿与门禁结果" />}
+          {!detail && !error && <LoadingRow text={t('k_6e00944c64')} />}
 
           {detail && (
             <div className="space-y-3">
               <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 space-y-1.5">
                 <p className="font-medium text-sm">{detail.title}</p>
                 <p className="flex flex-wrap items-center gap-1.5">
-                  当前状态：<StatusBadge article={detail} />
-                  {!!detail.submitted_by && <span className="text-muted-foreground">· 提交人 {detail.submitted_by}</span>}
+                  {t('k_70f7379871')}<StatusBadge article={detail} />
+                  {!!detail.submitted_by && <span className="text-muted-foreground">{t('k_2f7cfd0b4e', { p0: detail.submitted_by })}</span>}
                   <a
                     href={`/content/preview/${detail.slug}`} target="_blank" rel="noreferrer"
                     className="ml-auto text-primary hover:underline"
@@ -784,10 +785,10 @@ function ReviewDialog({ article, onClose, onDone }: {
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t("ui:k_4d0b4688c7")}</Button>
           <Button variant="outline" onClick={() => run('reject')} disabled={busy}>
-            驳回
+            {t('k_32525478cd')}
           </Button>
           <Button onClick={() => run('approve')} disabled={busy || !canApprove}>
-            {busy ? '处理中' : '审核通过'}
+            {busy ? t('k_5d459d550a') : t('k_871a30c099')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -801,6 +802,7 @@ function PublishDialog({ article, onClose, onDone }: {
   /** 第二个参数是服务端返回的提醒（如“已同步的语料还在库里”），不得被丢弃 */
   onDone: (msg: string, warnings: string[]) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [waive, setWaive] = useState(false);
   const [reason, setReason] = useState('');
   // 期次名由**发布人**给（缺省则服务端按当月自动命名）：批量发布不收它，一律用自动建议值
@@ -842,7 +844,7 @@ function PublishDialog({ article, onClose, onDone }: {
               reason: reason.trim(),
               release_label: releaseLabel.trim(),
             });
-      onDone(res.data.message || '操作完成', [res.data.warning ?? ''].filter(Boolean));
+      onDone(res.data.message || t('k_04fe5af3f8'), [res.data.warning ?? ''].filter(Boolean));
     } catch (err) {
       setError(contentError(err));
     } finally {
@@ -855,14 +857,14 @@ function PublishDialog({ article, onClose, onDone }: {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {mode === 'archive' ? '下架内容' : mode === 'republish' ? '重新上架' : '发布内容'}
+            {mode === 'archive' ? t('k_5f8da748df') : mode === 'republish' ? t('k_a0c3e7a4a2') : t('k_bb00e4d738')}
           </DialogTitle>
           <DialogDescription>
             {mode === 'archive'
-              ? '下架后门户立即不再展示。已发布内容代表公司立场，下架同样进审计与审核流水。'
+              ? t('k_f88b087c22')
               : mode === 'republish'
-                ? '上架后门户立即恢复展示下架前那一版。那一版当初是审核通过才上线的，所以这一步不重新走审核。'
-                : '发布后对全体登录用户可见（不受数据权限过滤）。'}
+                ? t('k_c6b806b9c6')
+                : t('k_09d63a92eb')}
           </DialogDescription>
         </DialogHeader>
 
@@ -874,14 +876,11 @@ function PublishDialog({ article, onClose, onDone }: {
               <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 space-y-1.5">
                 <p className="flex items-center gap-1.5">{t("ui:k_70f7379871")}<StatusBadge article={article} /></p>
                 <p className="text-muted-foreground">
-                  放回的是下架时在线的那一版{article.archived_at
-                    ? `（下架于 ${article.archived_at.slice(0, 16).replace('T', ' ')}）` : ''}；
-                  下架之后改的正文不会被顺带放出去。
-                </p>
+                  {t('k_6099b2d6da', { p0: article.archived_at
+                    ? t('k_58f1e0fd12', { p0: article.archived_at.slice(0, 16).replace('T', ' ') }) : '' })}</p>
                 {article.head_changed_since_archive && (
                   <p className="text-amber-700 dark:text-amber-400">
-                    这篇在下架之后又改过正文：改动不会跟着上线（那一版没经过审核）。
-                    要发这一版请「提交审核」通过后发布。
+                    {t('k_6b2ce71741')}
                   </p>
                 )}
               </div>
@@ -895,40 +894,30 @@ function PublishDialog({ article, onClose, onDone }: {
 
           {mode === 'publish' && (
             <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5">
-              <p>{t("ui:k_70f7379871")}<StatusBadge article={article} />{article.has_pending_change ? '（线上已有版本，发布会替换成这一版）' : ''}</p>
+              <p>{t("ui:k_70f7379871")}<StatusBadge article={article} />{article.has_pending_change ? t('k_34ec576eff') : ''}</p>
               <div className="mt-2 space-y-1">
                 <Label htmlFor="publish-release-label">{t("ui:k_18abe910da")}</Label>
                 <Input id="publish-release-label" value={releaseLabel}
                   onChange={e => setReleaseLabel(e.target.value)}
-                  placeholder={`留空则自动用发布当月：${suggestReleaseLabel()}`} />
+                  placeholder={t('k_0666fd862e', { p0: suggestReleaseLabel() })} />
                 <p className="text-[11px] text-muted-foreground">
-                  本次发布会让这一版成为新的第 {article.release_count + 1} 期；
-                  期次号由服务端逐次分配，不靠名字排序（改名不会打乱期次顺序）。
-                </p>
+                  {t('k_cca0802f3d', { p0: article.release_count + 1 })}</p>
               </div>
               {/* 策略后果必须在点之前说清：只留最新不是“删了旧的”，但读者确实从此翻不到 */}
               {article.versioning === 'latest_only' ? (
                 <p className="mt-1.5 text-amber-700 dark:text-amber-400">
-                  本篇策略为「{VERSIONING_LABELS.latest_only}」：发布后上一期
-                  {article.release_label ? `〈${article.release_label}〉` : ''}
-                  不再对读者展示（历史期次仍可在编辑器版本清单与审核流水里看到，切回去也还能切）。
-                </p>
+                  {t('k_346b10224e', { p0: VERSIONING_LABELS.latest_only, p1: article.release_label ? `〈${article.release_label}〉` : '' })}</p>
               ) : article.release_count >= 1 ? (
                 <p className="mt-1.5 text-muted-foreground">
-                  本篇策略为「{VERSIONING_LABELS.keep_history}」：发布后共 {article.release_count + 1} 期，
-                  读者可在内容页历史期次里翻看旧期。
-                </p>
+                  {t('k_892144efae', { p0: VERSIONING_LABELS.keep_history, p1: article.release_count + 1 })}</p>
               ) : null}
               <label className="mt-2 flex items-center gap-2 text-sm">
                 <Switch checked={waive} onCheckedChange={setWaive} />
-                免审直发（跳过审核直接上线）
+                {t('k_4143488caf')}
               </label>
               {needsWaive && (
                 <p className="mt-1.5 text-amber-700 dark:text-amber-400">
-                  这一版还没审核通过（当前是「{STATUS_LABELS[article.status]}」）。
-                  正常路径是「提交审核 → 审核人通过 → 发布」；
-                  要跳过这一步只能勾下面的「免审直发」并写明原因（进审计）。
-                </p>
+                  {t('k_95f69b5392', { p0: STATUS_LABELS[article.status] })}</p>
               )}
               {waive && (
                 <div className="mt-2 space-y-1">
@@ -939,7 +928,7 @@ function PublishDialog({ article, onClose, onDone }: {
               )}
               {!waive && !needsWaive && (
                 <p className="mt-1.5 text-muted-foreground">
-                  未走审核的内容不能发布。需要跳过审核请显式勾选「免审直发」并写明原因 —— 这个例外会留下痕迹，不是暗门。
+                  {t('k_92e5cd1934')}
                 </p>
               )}
             </div>
@@ -951,8 +940,7 @@ function PublishDialog({ article, onClose, onDone }: {
               <Textarea id="archive-reason" rows={2} value={reason} onChange={e => setReason(e.target.value)}
                 placeholder={t("ui:k_bb69f057c5")} />
               <p className="text-[11px] text-muted-foreground">
-                下架不会自动撤回已同步的知识库语料（那会动云端文档，是单独一个动作）。
-                若这篇已进过语料，回执里会把“AS-BOT 仍会检索到”显式说出来，并指回「知识库文档」去处理。
+                {t('k_568ef6301f')}
               </p>
             </div>
           )}
@@ -963,9 +951,9 @@ function PublishDialog({ article, onClose, onDone }: {
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t("ui:k_4d0b4688c7")}</Button>
           <Button onClick={submit}
             disabled={busy || blockedByReview || (mode === 'publish' && waive && !reason.trim())}>
-            {busy ? '处理中'
-              : mode === 'archive' ? '确认下架'
-                : mode === 'republish' ? '确认上架' : '确认发布'}
+            {busy ? t('k_5d459d550a')
+              : mode === 'archive' ? t('k_02d4dbab69')
+                : mode === 'republish' ? t('k_2817528a1f') : t('k_cb87fd0ebf')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -988,6 +976,7 @@ function RollbackDialog({ article, onClose, onDone }: {
   onClose: () => void;
   onDone: (msg: string, warnings: string[]) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [releases, setReleases] = useState<ReleaseItem[] | null>(null);
   const [target, setTarget] = useState('');
   const [reason, setReason] = useState('');
@@ -1015,7 +1004,7 @@ function RollbackDialog({ article, onClose, onDone }: {
     setError('');
     try {
       const res = await contentApi.rollbackRelease(article.slug, Number(target), reason.trim(), article.version);
-      onDone(res.data.message || '已切换展示版本', [res.data.warning ?? ''].filter(Boolean));
+      onDone(res.data.message || t('k_e4ecd7de53'), [res.data.warning ?? ''].filter(Boolean));
     } catch (err) {
       setError(contentError(err));
     } finally {
@@ -1029,20 +1018,18 @@ function RollbackDialog({ article, onClose, onDone }: {
         <DialogHeader>
           <DialogTitle>{t("ui:k_6a6963de93")}</DialogTitle>
           <DialogDescription>
-            把门户现在展示的这一期切回已经发布过的另一期。切过去的那一版本来就审过才上线，
-            所以这一步不重新走审核；正文不会被重写，也不会把草稿位没审过的改动顺带上线。
+            {t('k_adf8627075')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <ErrorBanner message={error} onRetry={() => setReloadKey(k => k + 1)} />
           <p className="text-xs text-muted-foreground">
-            当前展示：第 {article.release} 期{article.release_label ? `〈${article.release_label}〉` : ''}。
-            {article.versioning === 'latest_only'
-              && ' 本篇策略为只保留最新版本：下面列出的历史期次读者现在看不到，但可以切成当前展示那一期。'}
+            {t('k_dad7bd6338', { p0: article.release, p1: article.release_label ? `〈${article.release_label}〉` : '', p2: article.versioning === 'latest_only'
+              && t('k_6b7890e89d') })}
           </p>
 
-          {!releases && !error && <LoadingRow text="正在取已发布期次…" />}
+          {!releases && !error && <LoadingRow text={t('k_c5ed1d314f')} />}
           {!!releases?.length && (
             <div className="space-y-1.5">
               <Label>{t("ui:k_b01d2110b2")}</Label>
@@ -1051,14 +1038,13 @@ function RollbackDialog({ article, onClose, onDone }: {
                 <SelectContent>
                   {options.map(r => (
                     <SelectItem key={r.release} value={String(r.release)}>
-                      第 {r.release} 期{r.label ? `·${r.label}` : ''}
-                      {r.released_at ? `（发布于 ${r.released_at.slice(0, 10)}）` : ''}
+                      {t('k_b6e6d6552d', { p0: r.release, p1: r.label ? `·${r.label}` : '', p2: r.released_at ? t('k_75cb3e27d6', { p0: r.released_at.slice(0, 10) }) : '' })}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                附件不进版本链：切换期次只换正文，条目上的附件清单不变。
+                {t('k_7fdc11b177')}
               </p>
             </div>
           )}
@@ -1078,7 +1064,7 @@ function RollbackDialog({ article, onClose, onDone }: {
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t("ui:k_4d0b4688c7")}</Button>
           <Button onClick={submit}
             disabled={busy || !target || !reason.trim() || !options.length}>
-            {busy ? '处理中' : '确认切换'}
+            {busy ? t('k_5d459d550a') : t('k_586cd83396')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1107,6 +1093,7 @@ function KbSyncDialog({ article, onClose, onDone }: {
   onClose: () => void;
   onDone: (msg: string, warnings: string[]) => void;
 }) {
+  const { t } = useTranslation('ui');
   const [bases, setBases] = useState<KbBase[]>([]);
   const [kbName, setKbName] = useState('');
   const [parentId, setParentId] = useState(ROOT_DIR);
@@ -1161,8 +1148,7 @@ function KbSyncDialog({ article, onClose, onDone }: {
         <DialogHeader>
           <DialogTitle>{t("ui:k_bb08c17358")}</DialogTitle>
           <DialogDescription>
-            把这篇的已发布版本推成 AS-BOT 可检索的语料。发布与同步是两个动作：
-            发布只决定门户展不展示，同步才动知识库。
+            {t('k_48f6980171')}
           </DialogDescription>
         </DialogHeader>
 
@@ -1171,8 +1157,7 @@ function KbSyncDialog({ article, onClose, onDone }: {
 
           {!live && (
             <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5">
-              只有「已发布」的内容能进知识库。草稿与已下架的稿子还没定稿，推成语料会让
-              AS-BOT 拿未审内容回答用户 —— 请先发布（或让审核人发布）再同步。
+              {t('k_5f012fe6c6')}
             </div>
           )}
 
@@ -1180,17 +1165,17 @@ function KbSyncDialog({ article, onClose, onDone }: {
             <>
               <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5">
                 <p className="flex items-center gap-1.5">
-                  当前语料状态：<KbSyncBadge sync={current} />
-                  {current ? <span className="text-muted-foreground">库「{current.kb_name}」· 文档 {current.doc_title}</span> : null}
+                  {t('k_21738dd335')}<KbSyncBadge sync={current} />
+                  {current ? <span className="text-muted-foreground">{t('k_e21d7968bf', { p0: current.kb_name, p1: current.doc_title })}</span> : null}
                 </p>
                 <p className="mt-1.5 text-muted-foreground">
-                  语料文档名按条目标识（slug）生成，改标题不会新建副本；重复同步是更新同一篇，不是再传一份。
+                  {t('k_544b271265')}
                 </p>
               </div>
 
               <div className="space-y-1">
                 <Label>{t("ui:k_ad232ec43b")}</Label>
-                {loading && <LoadingRow text="正在加载知识库清单" />}
+                {loading && <LoadingRow text={t('k_270ff6c527')} />}
                 {!loading && (
                   <Select value={kbName} onValueChange={pickKb}>
                     <SelectTrigger aria-label={t("ui:k_f4595123e6")}><SelectValue placeholder={t("ui:k_9bae067b03")} /></SelectTrigger>
@@ -1200,7 +1185,7 @@ function KbSyncDialog({ article, onClose, onDone }: {
                         const usable = b.supports_docs && b.can_edit;
                         return (
                           <SelectItem key={b.name} value={b.name} disabled={!usable}>
-                            {b.name}{usable ? '' : `（${b.reason || '不可写'}）`}
+                            {b.name}{usable ? '' : t('k_a912d84b99', { p0: b.reason || t('k_0a8807fd16') })}
                           </SelectItem>
                         );
                       })}
@@ -1225,17 +1210,14 @@ function KbSyncDialog({ article, onClose, onDone }: {
                   {/* 目录拉不到时不静默当成“没子目录”：说清楚，并保留“根目录”这个真实选项 */}
                   {treeError && (
                     <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                      目录清单加载失败（{treeError}），只能先放根目录；重试可拿到子目录。
-                    </p>
+                      {t('k_c54c2978e4', { p0: treeError })}</p>
                   )}
                 </div>
               )}
 
               {switching && (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs leading-5 text-amber-700 dark:text-amber-400">
-                  一篇内容只能对一个库。本次会在新库建立语料，并撤掉旧库「{current?.kb_name}」里那篇；
-                  撤不掉时回执里会作为提醒说出来（两处都有同名语料会被重复检索命中）。
-                </p>
+                  {t('k_a3520e8206', { p0: current?.kb_name })}</p>
               )}
             </>
           )}
@@ -1245,7 +1227,7 @@ function KbSyncDialog({ article, onClose, onDone }: {
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t("ui:k_6c14bd7f6f")}</Button>
           {live && (
             <Button onClick={submit} disabled={busy || !kbName || !target?.can_edit}>
-              {busy ? '同步中' : current && !current.stale && !switching ? '重新同步' : '开始同步'}
+              {busy ? t('k_2b76972cd5') : current && !current.stale && !switching ? t('k_c761d4982b') : t('k_932a4333a0')}
             </Button>
           )}
         </DialogFooter>
@@ -1269,6 +1251,7 @@ function BatchDialog({ kind, articles, onClose, onDone }: {
   onClose: () => void;
   onDone: (res: BatchResult) => void;
 }) {
+  const { t } = useTranslation('ui');
   const meta = BATCH_META[kind];
   const targets = articles.filter(a => batchApplies(a, kind));
   const skipped = articles.filter(a => !batchApplies(a, kind));
@@ -1309,7 +1292,7 @@ function BatchDialog({ kind, articles, onClose, onDone }: {
           <ErrorBanner message={error} />
 
           <div className="space-y-1">
-            <p className="text-xs font-medium">本次处理 {targets.length} 篇</p>
+            <p className="text-xs font-medium">{t('k_d1f4eb7c27', { p0: targets.length })}</p>
             <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border p-2 text-xs">
               {targets.map(a => (
                 <div key={a.slug} className="truncate" title={a.title}>· {a.title}</div>
@@ -1320,8 +1303,7 @@ function BatchDialog({ kind, articles, onClose, onDone }: {
           {skipped.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                另有 {skipped.length} 篇当前状态不适用，本次不处理（保留勾选，换对应动作即可）
-              </p>
+                {t('k_fb9e66e3b3', { p0: skipped.length })}</p>
               <div className="max-h-28 space-y-1 overflow-y-auto rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
                 {skipped.map(a => (
                   <div key={a.slug} className="flex items-center gap-2">
@@ -1336,24 +1318,23 @@ function BatchDialog({ kind, articles, onClose, onDone }: {
           {hasReason && (
             <div className="space-y-1">
               <Label htmlFor="batch-reason">
-                {kind === 'archive' ? '下架原因' : '上架原因'}（选填，写入每篇的审核流水）
-              </Label>
+                {t('k_8acd6ededc', { p0: kind === 'archive' ? t('k_58d2b7bad8') : t('k_320851e6c6') })}</Label>
               <Textarea id="batch-reason" rows={2} value={reason} onChange={e => setReason(e.target.value)}
                 placeholder={kind === 'archive'
-                  ? '例如：引用的法规条款已更新，待复核后重发'
-                  : '例如：法规条款已复核，口径无需修改'} />
+                  ? t('k_bb69f057c5')
+                  : t('k_e509fc16a0')} />
             </div>
           )}
 
           {kind === 'delete' && (
             <p className="text-[11px] text-destructive">
-              删除会一并移除草稿、它的全部历史版本与挂在上面的附件（附件文件同时从存储里删掉），此操作不可撤销。
+              {t('k_feb3fd6897')}
             </p>
           )}
 
           {kind === 'publish' && (
             <p className="text-[11px] text-muted-foreground">
-              批量不代开「免审直发」：那条例外需要逐篇写明原因并入审计，所以未审核通过的会被逐条拒掉并说明下一步。
+              {t('k_aaa846b7cb')}
             </p>
           )}
         </div>
@@ -1362,7 +1343,7 @@ function BatchDialog({ kind, articles, onClose, onDone }: {
           <Button variant="ghost" onClick={onClose} disabled={busy}>{t("ui:k_4d0b4688c7")}</Button>
           <Button variant={meta.destructive ? 'destructive' : 'default'} onClick={submit}
             disabled={busy || targets.length === 0}>
-            {busy ? '处理中' : `确认${meta.verb} ${targets.length} 篇`}
+            {busy ? t('k_5d459d550a') : t('k_16fa5483f5', { p0: meta.verb, p1: targets.length })}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1381,6 +1362,7 @@ function BatchResultBanner({ result, onDismiss }: {
   result: BatchResult;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation('ui');
   const partial = result.failed_count > 0;
   const warned = result.succeeded.filter(s => s.warning || (s.warnings?.length ?? 0) > 0);
   return (
@@ -1390,12 +1372,11 @@ function BatchResultBanner({ result, onDismiss }: {
       {result.failed.length > 0 && (
         <ul className="mt-2 space-y-1">
           {result.failed.slice(0, 8).map(f => (
-            <li key={f.slug} className="text-destructive">「{f.title || '该条目'}」{f.reason}</li>
+            <li key={f.slug} className="text-destructive">「{f.title || t('k_9f69d543ef')}」{f.reason}</li>
           ))}
           {result.failed.length > 8 && (
             <li className="text-xs text-muted-foreground">
-              …另有 {result.failed.length - 8} 条未处理，可缩小勾选范围分批重试
-            </li>
+              {t('k_ffdd763d3f', { p0: result.failed.length - 8 })}</li>
           )}
         </ul>
       )}
@@ -1403,11 +1384,11 @@ function BatchResultBanner({ result, onDismiss }: {
         <ul className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-400">
           {warned.slice(0, 5).map(s => (
             <li key={s.slug}>
-              「{s.title || '该条目'}」{s.warning || `有 ${s.warnings?.length ?? 0} 条提醒，审核人仍需逐条确认`}
+              「{s.title || t('k_9f69d543ef')}」{s.warning || t('k_efa6f68979', { p0: s.warnings?.length ?? 0 })}
             </li>
           ))}
           {warned.length > 5 && (
-            <li>…另有 {warned.length - 5} 条带提醒</li>
+            <li>{t('k_379caa6579', { p0: warned.length - 5 })}</li>
           )}
         </ul>
       )}

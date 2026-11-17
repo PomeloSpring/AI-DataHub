@@ -58,8 +58,8 @@ export function useContentPerms() {
  * 就会把"线上有内容、正在改下一版"错报成"草稿"。
  */
 export function statusText(a: Pick<ContentArticle, 'status' | 'is_live' | 'has_pending_change'>): string {
-  if (a.has_pending_change && a.is_live) return '已发布 · 有改动待审';
-  if (a.status === 'draft' && a.is_live) return '已发布 · 正在改下一版';
+  if (a.has_pending_change && a.is_live) return t('k_7ef1707dce');
+  if (a.status === 'draft' && a.is_live) return t('k_09309005e1');
   return STATUS_LABELS[a.status as ArticleStatus] ?? a.status;
 }
 
@@ -92,29 +92,29 @@ export function KbSyncBadge({ sync }: { sync?: KbSyncState | null }) {
   if (sync.state !== 'synced') {
     return (
       <span
-        title={sync.last_error || '上次同步失败，服务端未给出原因'}
+        title={sync.last_error || t('k_ab6c1a5055')}
         className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive"
       >
-        <AlertTriangle className="h-3 w-3" />同步失败
+        <AlertTriangle className="h-3 w-3" />{t('k_d61036e7f5')}
       </span>
     );
   }
   if (sync.stale) {
     return (
       <span
-        title={`已同步到「${sync.kb_name}」的还不是当前版本，需重新同步`}
+        title={t('k_b02c3a6ace', { p0: sync.kb_name })}
         className="inline-flex items-center rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
       >
-        有改动未同步
+        {t('k_cbdbb4c4ce')}
       </span>
     );
   }
   return (
     <span
-      title={`文档「${sync.doc_title}」· 同步于 ${sync.synced_at}`}
+      title={t('k_db91910033', { p0: sync.doc_title, p1: sync.synced_at })}
       className="inline-flex items-center rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400"
     >
-      已同步·{sync.kb_name}
+      {t('k_4d7895c5c9', { p0: sync.kb_name })}
     </span>
   );
 }
@@ -123,6 +123,7 @@ export function KbSyncBadge({ sync }: { sync?: KbSyncState | null }) {
 
 /** 错误条：后端 detail 原样显示（含门禁拒绝原因），并提供重试而不是静默清空 */
 export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const { t } = useTranslation('ui');
   if (!message) return null;
   return (
     <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">
@@ -130,7 +131,7 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
       <span className="flex-1 min-w-[200px]">{message}</span>
       {onRetry && (
         <Button size="sm" variant="outline" onClick={onRetry}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1" />重试
+          <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_e2d53a6d3a')}
         </Button>
       )}
     </div>
@@ -149,7 +150,7 @@ export function NoticeBanner({ message, onDismiss }: { message: string; onDismis
   );
 }
 
-export function LoadingRow({ text = '加载中' }: { text?: string }) {
+export function LoadingRow({ text = t('k_f013ea9dcb') }: { text?: string }) {
   return (
     <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
       <Loader2 className="h-4 w-4 animate-spin" />{text}
@@ -190,12 +191,13 @@ export function GateList({ items, kind, acknowledge, onAck }: {
   acknowledge?: Record<string, boolean>;
   onAck?: (code: string, value: boolean) => void;
 }) {
+  const { t } = useTranslation('ui');
   if (!items.length) return null;
   const hard = kind === 'hard';
   return (
     <div className={`rounded-lg border p-3 text-sm ${hard ? 'border-destructive/40 bg-destructive/5' : 'border-amber-500/40 bg-amber-500/5'}`}>
       <p className={`mb-2 font-medium ${hard ? 'text-destructive' : 'text-amber-700 dark:text-amber-400'}`}>
-        {hard ? '硬阻断（必须修完才能提交/通过）' : '软提醒（不阻断，但审核人需逐条确认）'}
+        {hard ? t('k_0abbb2a8ef') : t('k_8710030533')}
       </p>
       <ul className="space-y-1.5">
         {items.map(g => (
@@ -206,14 +208,14 @@ export function GateList({ items, kind, acknowledge, onAck }: {
                 className="mt-1 size-3.5 accent-primary"
                 checked={!!acknowledge?.[g.code]}
                 onChange={e => onAck(g.code, e.target.checked)}
-                aria-label={`确认已看过提醒：${g.message}`}
+                aria-label={t('k_0f55c76508', { p0: g.message })}
               />
             ) : (
               <AlertTriangle className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${hard ? 'text-destructive' : 'text-amber-600'}`} />
             )}
             <span className="flex-1">
               {g.message}
-              {g.line ? <span className="ml-1 text-xs text-muted-foreground">（第 {g.line} 行）</span> : null}
+              {g.line ? <span className="ml-1 text-xs text-muted-foreground">{t('k_780abab888', { p0: g.line })}</span> : null}
             </span>
           </li>
         ))}

@@ -6,6 +6,7 @@
  */
 import type common from './locales/zh-CN/common.json';
 import type menu from './locales/zh-CN/menu.json';
+import type onboarding from './locales/zh-CN/onboarding.json';
 import type workspace from './locales/zh-CN/workspace.json';
 import type chat from './locales/zh-CN/chat.json';
 import type dashboard from './locales/zh-CN/dashboard.json';
@@ -18,6 +19,7 @@ declare module 'i18next' {
     resources: {
       common: typeof common;
       menu: typeof menu;
+      onboarding: typeof onboarding;
       workspace: typeof workspace;
       chat: typeof chat;
       dashboard: typeof dashboard;

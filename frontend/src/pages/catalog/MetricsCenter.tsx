@@ -4,7 +4,6 @@ import type { DictFilters, MetricListQuery } from '@/api/metrics';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { t } from '@/i18n/runtime';
 import {
   Dialog,
   DialogContent,
@@ -44,6 +43,8 @@ import {
   objectLabel,
   withCount,
 } from '@/lib/dictLabels';
+import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface Metric {
   id: number;
@@ -133,7 +134,7 @@ function metricRdfPreview(f: MetricFormData): string {
   if (f.calculation_type) lines.push(`${subj} adh:aggregation "${f.calculation_type.toUpperCase()}" .`);
   if (f.unit) lines.push(`${subj} adh:unit "${f.unit}" .`);
   if (f.description) lines.push(`${subj} rdfs:comment "${f.description}" .`);
-  lines.push(`# formula 仅存服务端, 不对外/不上云`);
+  lines.push(tr('k_352b2a8289'));
   return lines.join('\n');
 }
 
@@ -191,6 +192,7 @@ export default function MetricsCenter({
   /** 模型内对象清单(嵌入时传): 新建指标的"归属对象"引用选择器 */
   objects?: { key: string; display_name: string }[];
 } = {}) {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState<'metrics' | 'dimensions'>(view);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [total, setTotal] = useState(0);
@@ -256,9 +258,9 @@ export default function MetricsCenter({
       // 失败即暴露: 保留可读错误供空态渲染, 不把错误伪装成“暂无指标数据”
       setMetrics([]);
       setTotal(0);
-      const msg = e?.response?.data?.detail || e?.message || '未知错误';
+      const msg = e?.response?.data?.detail || e?.message || t('k_974e748456');
       setLoadError(String(msg));
-      toast.error(`指标字典加载失败: ${msg}`);
+      toast.error(t('k_5827ba9348', { p0: msg }));
     } finally {
       setLoading(false);
     }
@@ -278,7 +280,7 @@ export default function MetricsCenter({
     } catch (e: any) {
       // 降级要显式: 词表缺失时筛选项不可用是可见事实, 不能假装“字典里就这些值”
       setFacets(null);
-      setFacetsError(String(e?.response?.data?.detail || e?.message || '未知错误'));
+      setFacetsError(String(e?.response?.data?.detail || e?.message || t('k_974e748456')));
     }
   }, [modelId]);
 
@@ -330,7 +332,7 @@ export default function MetricsCenter({
 
   const handleSaveMetric = async () => {
     if (!formData.name || !formData.display_name) {
-      toast.error('请填写名称和显示名称');
+      toast.error(t('k_336d5cec6d'));
       return;
     }
     setSaving(true);
@@ -339,15 +341,15 @@ export default function MetricsCenter({
         aliases: formData.aliases.split(',').map((s) => s.trim()).filter(Boolean) };
       if (editMetric) {
         await metricsApi.update(editMetric.id, payload);
-        toast.success('指标已更新');
+        toast.success(t('k_f5e88fe8dc'));
       } else {
         await metricsApi.create(payload);
-        toast.success('指标已创建');
+        toast.success(t('k_45eda4ad25'));
       }
       setFormOpen(false);
       loadMetrics();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -369,13 +371,13 @@ export default function MetricsCenter({
       toast.success(next
         // 字典行按 is_active 实时读，启用后取数/语义解析即生效；但图谱与云端知识库
         // 只收录生效行，不提醒会造成“已启用但图谱里查不到”的隐形不一致。
-        ? `已启用「${label}」，语义解析与取数即生效；图谱/知识库请在建模页点「同步」刷新`
-        : `已停用「${label}」，不再参与语义检索与取数`);
+        ? t('k_50a21ee45d', { p0: label })
+        : t('k_c4ce706c5a', { p0: label }));
       setStatusTarget(null);
       loadMetrics();
     } catch (e: any) {
       // 透传服务端错因（如权限/参数校验），不把失败伪装成“已提交”
-      toast.error(e?.response?.data?.detail || '口径状态更新失败');
+      toast.error(e?.response?.data?.detail || t('k_a39e0c3839'));
     } finally {
       setStatusBusy(false);
     }
@@ -385,27 +387,27 @@ export default function MetricsCenter({
     if (!deleteTarget) return;
     try {
       await metricsApi.delete(deleteTarget.id);
-      toast.success('指标已删除');
+      toast.success(t('k_6aa57f5472'));
       setDeleteTarget(null);
       loadMetrics();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
   const handleAddDimension = async () => {
     if (!detailMetric || !dimensionForm.name || !dimensionForm.column_name) {
-      toast.error('请填写维度名称和列名');
+      toast.error(t('k_44803b69c0'));
       return;
     }
     try {
       await metricsApi.addDimension(detailMetric.id, dimensionForm);
-      toast.success('维度已添加');
+      toast.success(t('k_d0d3a2966f'));
       setDimensionFormOpen(false);
       setDimensionForm(emptyDimensionForm);
       await loadDimensions(detailMetric.id);
     } catch {
-      toast.error('添加维度失败');
+      toast.error(t('k_74f6165ed7'));
     }
   };
 
@@ -422,11 +424,11 @@ export default function MetricsCenter({
       .map((o) => ({
         value: o.key,
         label: o.display_name || o.key,
-        description: `${o.key} · 指标 ${o.metric_count} 条`,
+        description: t('k_13bb7be27f', { p0: o.key, p1: o.metric_count }),
       }));
     const unbound = facets?.metrics?.unbound_objects || 0;
     if (unbound > 0) {
-      list.push({ value: DICT_UNSET, label: '未归属', description: `待归属指标 ${unbound} 条` });
+      list.push({ value: DICT_UNSET, label: t('k_46a9e40651'), description: t('k_56aacf7c89', { p0: unbound }) });
     }
     return list;
   }, [facets]);
@@ -489,10 +491,10 @@ export default function MetricsCenter({
         {!embedded && (
         <TabsList className="shrink-0 self-start">
           <TabsTrigger value="metrics" className="flex items-center gap-2">
-            <BarChart3 className="w-4 h-4" /> 指标字典
+            <BarChart3 className="w-4 h-4" /> {t('k_a652828a2b')}
           </TabsTrigger>
           <TabsTrigger value="dimensions" className="flex items-center gap-2">
-            <Layers className="w-4 h-4" /> 维度字典
+            <Layers className="w-4 h-4" /> {t('k_d8fec2efb4')}
           </TabsTrigger>
         </TabsList>
         )}
@@ -501,11 +503,11 @@ export default function MetricsCenter({
       <div className="flex justify-end gap-2 shrink-0">
         <Button variant="outline" size="sm" onClick={loadMetrics}>
           <RefreshCw className="w-4 h-4 mr-1" />
-          刷新
+          {t('k_38108eaa1d')}
         </Button>
         <Button size="sm" onClick={handleOpenCreate}>
           <Plus className="w-4 h-4 mr-1" />
-          新建指标
+          {t('k_e4f7015bed')}
         </Button>
       </div>
 
@@ -516,12 +518,12 @@ export default function MetricsCenter({
           业务域分类与口径标签分两个下拉（两个正交维度不再挤在同一列/同一个下拉）。 */}
       <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30 shrink-0">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Filter className="w-4 h-4" /> 筛选
+          <Filter className="w-4 h-4" /> {t('k_dcce9a144a')}
         </div>
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
-            placeholder="搜索名称/英文名/别名/口径..."
+            placeholder={t('k_576d820446')}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             className="pl-8 h-8 w-56"
@@ -546,12 +548,12 @@ export default function MetricsCenter({
             <SelectItem value="all">{t("k_ffd92f5524")}</SelectItem>
             {tagOptions.map((f) => (
               <SelectItem key={f.value} value={f.value}>
-                {withCount(f.value === DICT_UNSET ? '未打标签' : f.value, f.count)}
+                {withCount(f.value === DICT_UNSET ? t('k_7bde2eeec3') : f.value, f.count)}
               </SelectItem>
             ))}
             {/* 词表只有固定三档：未采纳过标签时也要可筛（计数 = 总数 - 已打标数） */}
             {tagOptions.length === 0 && (
-              <SelectItem value={DICT_UNSET}>{`未打标签（${facets?.metrics?.total ?? 0}）`}</SelectItem>
+              <SelectItem value={DICT_UNSET}>{t('k_7d74909d16', { p0: facets?.metrics?.total ?? 0 })}</SelectItem>
             )}
           </SelectContent>
         </Select>
@@ -572,22 +574,22 @@ export default function MetricsCenter({
           onValueChange={(v) => { setFObject(v); setPage(1); }}
           options={objectOptions}
           placeholder={t("k_3d44b0cfee")}
-          searchPlaceholder="搜索对象名称..."
-          emptyText="字典中暂无已挂接对象"
+          searchPlaceholder={t('k_916389c59c')}
+          emptyText={t('k_22672a86f3')}
           loading={!facets && !facetsError}
           error={facetsError}
           onRetry={loadFacets}
           disabled={!facetsReady}
           className="h-8 w-44 text-xs"
-          ariaLabel="归属对象"
+          ariaLabel={t('k_3d44b0cfee')}
         />
         <Select value={fCertified} disabled={!facetsReady}
                 onValueChange={(v) => { setFCertified(v); setPage(1); }}>
           <SelectTrigger className="h-8 w-32" aria-label={t("k_ccac8dbb04")}><SelectValue placeholder={t("k_ccac8dbb04")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_ee14c7f323")}</SelectItem>
-            <SelectItem value="1">{`已认证（${facets?.metrics?.certified ?? 0}）`}</SelectItem>
-            <SelectItem value="0">{`草稿（${facets?.metrics?.draft ?? 0}）`}</SelectItem>
+            <SelectItem value="1">{t('k_939e480466', { p0: facets?.metrics?.certified ?? 0 })}</SelectItem>
+            <SelectItem value="0">{t('k_7149d49e7f', { p0: facets?.metrics?.draft ?? 0 })}</SelectItem>
           </SelectContent>
         </Select>
         <Select value={fStatus} disabled={!facetsReady}
@@ -595,8 +597,8 @@ export default function MetricsCenter({
           <SelectTrigger className="h-8 w-32" aria-label={t("k_b9dc554215")}><SelectValue placeholder={t("k_b9dc554215")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_552e6c1d17")}</SelectItem>
-            <SelectItem value="1">{`启用（${facets?.metrics?.active ?? 0}）`}</SelectItem>
-            <SelectItem value="0">{`已停用（${facets?.metrics?.inactive ?? 0}）`}</SelectItem>
+            <SelectItem value="1">{t('k_bf2728bf7b', { p0: facets?.metrics?.active ?? 0 })}</SelectItem>
+            <SelectItem value="0">{t('k_a5af738077', { p0: facets?.metrics?.inactive ?? 0 })}</SelectItem>
           </SelectContent>
         </Select>
         <Select value={fTarget} disabled={!facetsReady}
@@ -604,22 +606,22 @@ export default function MetricsCenter({
           <SelectTrigger className="h-8 w-40" aria-label={t("k_1b729397db")}><SelectValue placeholder={t("k_1b729397db")} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("k_da505dba05")}</SelectItem>
-            <SelectItem value="1">{`已派生（${facets?.metrics?.with_target_table ?? 0}）`}</SelectItem>
-            <SelectItem value="0">{`未派生（${facets?.metrics?.without_target_table ?? 0}）`}</SelectItem>
+            <SelectItem value="1">{t('k_b1f9e7160a', { p0: facets?.metrics?.with_target_table ?? 0 })}</SelectItem>
+            <SelectItem value="0">{t('k_61bd197009', { p0: facets?.metrics?.without_target_table ?? 0 })}</SelectItem>
           </SelectContent>
         </Select>
         {hasFilters && (
           <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetFilters}>
-            清除筛选
+            {t('k_4bbc4e5fd9')}
           </Button>
         )}
-        <span className="ml-auto text-xs text-muted-foreground">共 {total} 条</span>
+        <span className="ml-auto text-xs text-muted-foreground">{t('k_1d961ef9b0', { p0: total })}</span>
       </div>
       {facetsError && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-destructive shrink-0">
-          <span>筛选项加载失败：{facetsError}（分类/计算方式/归属对象等下拉暂不可用，关键词搜索仍可用）</span>
+          <span>{t('k_e6385b26bf', { p0: facetsError })}</span>
           <Button variant="outline" size="sm" className="h-7 text-xs" onClick={loadFacets}>
-            <RefreshCw className="w-3 h-3 mr-1" />重试
+            <RefreshCw className="w-3 h-3 mr-1" />{t('k_e2d53a6d3a')}
           </Button>
         </div>
       )}
@@ -646,19 +648,19 @@ export default function MetricsCenter({
             {loading ? (
               <tr>
                 <td colSpan={11} className="p-8 text-center text-muted-foreground">
-                  加载中...
+                  {t('k_26b5bd4947')}
                 </td>
               </tr>
             ) : metrics.length === 0 ? (
               <tr>
                 <td colSpan={11} className="p-8 text-center text-muted-foreground">
                   {loadError ? (
-                    <span className="text-destructive">指标字典加载失败：{loadError}</span>
+                    <span className="text-destructive">{t('k_ea6a8d0d43', { p0: loadError })}</span>
                   ) : hasFilters ? (
                     <span>{t("k_d2bce9e773")} <button
                       className="underline underline-offset-2 hover:text-foreground" onClick={resetFilters}>{t("k_4bbc4e5fd9")}</button></span>
                   ) : (
-                    '暂无指标数据'
+                    t('k_d48b229dac')
                   )}
                 </td>
               </tr>
@@ -727,13 +729,13 @@ export default function MetricsCenter({
                         <Button variant="outline" size="sm" className="h-8 px-2 text-xs"
                                 title={t("k_2419c9e212")}
                                 onClick={() => setStatusTarget({ metric: m, next: 1 })}>
-                          启用
+                          {t('k_d4e9ca3dd4')}
                         </Button>
                       ) : (
                         <Button variant="ghost" size="sm" className="h-8 px-2 text-xs"
                                 title={t("k_98fc269472")}
                                 onClick={() => setStatusTarget({ metric: m, next: 0 })}>
-                          停用
+                          {t('k_5c56a88945')}
                         </Button>
                       )}
                       <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title={t("k_7d28cf218b")}
@@ -760,7 +762,7 @@ export default function MetricsCenter({
         hideWhenSingle
         showTotal={false}
         className={embedded ? 'mt-4 -mx-4 -mb-4 px-4' : 'shrink-0 mt-2'}
-        leftText={`第 ${page} / ${Math.max(1, Math.ceil(total / pageSize))} 页`}
+        leftText={t('k_2057a122ad', { p0: page, p1: Math.max(1, Math.ceil(total / pageSize)) })}
       />
         </TabsContent>
 
@@ -779,21 +781,21 @@ export default function MetricsCenter({
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editMetric ? '编辑指标' : '新建指标'}</DialogTitle>
+            <DialogTitle>{editMetric ? t('k_6bff860500') : t('k_e4f7015bed')}</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">指标名称 *</label>
+              <label className="text-sm font-medium">{t('k_fbf757538f')}</label>
               <Input
-                placeholder="如: gmv"
+                placeholder={t('k_50fecbf25f')}
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">显示名称 *</label>
+              <label className="text-sm font-medium">{t('k_f75459f6f0')}</label>
               <Input
-                placeholder="如: 交易总额"
+                placeholder={t('k_5139413eed')}
                 value={formData.display_name}
                 onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
               />
@@ -812,7 +814,7 @@ export default function MetricsCenter({
                   渲染成空白，看起来像“类型被清空了”。口径标签(基础/衍生/复合)不在本列，见下方标签选择。 */}
               <Select value={formData.category} onValueChange={(v) => setFormData({ ...formData, category: v })}>
                 <SelectTrigger aria-label={t("k_c695bf5821")}>
-                  <SelectValue placeholder={categoryFormOptions.length ? '选择业务域' : '字典中暂无可选分类'} />
+                  <SelectValue placeholder={categoryFormOptions.length ? t('k_af4e7e5c7c') : t('k_111736cc91')} />
                 </SelectTrigger>
                 <SelectContent>
                   {categoryFormOptions.map(([value, label]) => (
@@ -849,8 +851,8 @@ export default function MetricsCenter({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {AGG_TYPE_OPTIONS.map((t) => (
-                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  {AGG_TYPE_OPTIONS.map((agg) => (
+                    <SelectItem key={agg} value={agg}>{aggLabel(agg)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -858,7 +860,7 @@ export default function MetricsCenter({
             <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">{t("k_80a343d78c")}</label>
               <Input
-                placeholder="如: SUM(amount) 或 COUNT(DISTINCT user_id)"
+                placeholder={t('k_a5ad2b377c')}
                 value={formData.expression}
                 onChange={(e) => setFormData({ ...formData, expression: e.target.value })}
               />
@@ -866,7 +868,7 @@ export default function MetricsCenter({
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("k_8ec8c8c712")}</label>
               <Input
-                placeholder="如: 元, 次, %"
+                placeholder={t('k_da50dded17')}
                 value={formData.unit}
                 onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
               />
@@ -874,7 +876,7 @@ export default function MetricsCenter({
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("k_de2e02c66e")}</label>
               <Input
-                placeholder="如: 病例数, total_cases — 语义查询按别名自动解析"
+                placeholder={t('k_378825f36d')}
                 value={formData.aliases}
                 onChange={(e) => setFormData({ ...formData, aliases: e.target.value })}
               />
@@ -882,7 +884,7 @@ export default function MetricsCenter({
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("k_baf051c677")}</label>
               <Input
-                placeholder="如: daily, hourly"
+                placeholder={t('k_0443e61e41')}
                 value={formData.granularity}
                 onChange={(e) => setFormData({ ...formData, granularity: e.target.value })}
               />
@@ -892,13 +894,13 @@ export default function MetricsCenter({
                 此前它被 `{embedded && …}` 锁死，独立页根本看不到，而 bound_object_key 是必填项，
                 导致指标中心页**完全建不了指标**。 */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">归属对象 *</label>
+              <label className="text-sm font-medium">{t('k_8251ec3d2b')}</label>
               <Select
                 value={formData.bound_object_key || undefined}
                 onValueChange={(v) => setFormData({ ...formData, bound_object_key: v })}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder={formObjectList.length ? '选择归属的业务对象' : '对象清单加载中/为空'} />
+                  <SelectValue placeholder={formObjectList.length ? t('k_02ff67e28e') : t('k_e95a129d4d')} />
                 </SelectTrigger>
                 <SelectContent>
                   {formObjectList.map((o) => (
@@ -939,7 +941,7 @@ export default function MetricsCenter({
               </div>
               {formData.is_active === 0 && (
                 <p className="text-xs text-amber-600 pb-2">
-                  当前为停用态：该指标不会被语义检索命中，也不会出现在取数候选里；置为启用即恢复。
+                  {t('k_a0196ad69c')}
                 </p>
               )}
             </div>
@@ -955,7 +957,7 @@ export default function MetricsCenter({
           <DialogFooter className="sticky bottom-0 -mx-5 -mb-5 px-5 pb-5 pt-3 bg-background border-t border-border/60">
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSaveMetric} disabled={saving}>
-              {saving ? '保存中...' : '保存'}
+              {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -967,26 +969,23 @@ export default function MetricsCenter({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {statusTarget?.next === 1 ? '启用' : '停用'}口径「{statusTarget?.metric.display_name || statusTarget?.metric.name}」？
+              {t('k_f7240f58b6', { p0: statusTarget?.next === 1 ? t('k_d4e9ca3dd4') : t('k_5c56a88945'), p1: statusTarget?.metric.display_name || statusTarget?.metric.name })}
             </DialogTitle>
           </DialogHeader>
           {statusTarget?.next === 1 ? (
             <p className="text-sm text-muted-foreground">
-              启用后该口径重新参与语义检索与取数，ChatBI 会开始向用户广告它。
-              若它是行级派生视图（如布尔标记/列换算）或跨对象伪指标，启用等于把一个
-              编译不出来的口径放回目录——请先核对计算表达式与归属对象。
+              {t('k_8b52bac7d3')}
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              停用后该口径不再参与语义检索与取数（与 AS-BOT 未发布同义），字典行与历史报告保留，
-              随时可在本页置回启用。仅影响语义层命中，不会删数据。
+              {t('k_d4a2568ae4')}
             </p>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setStatusTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant={statusTarget?.next === 1 ? 'default' : 'destructive'} disabled={statusBusy}
                     onClick={() => statusTarget && void applyStatus(statusTarget.metric, statusTarget.next)}>
-              {statusBusy ? '提交中...' : (statusTarget?.next === 1 ? '确认启用' : '确认停用')}
+              {statusBusy ? t('k_abe2c5d2b9') : (statusTarget?.next === 1 ? t('k_38f75a54c2') : t('k_6d433d967d'))}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1016,7 +1015,7 @@ export default function MetricsCenter({
               {/* 口径状态可见：停用不能只在列表徽章里出现，详情里也要说清怎么恢复 */}
               <div>
                 <span className="text-muted-foreground">{t("k_1ec29088f7")}</span>
-                {detailMetric?.is_active === 0 ? '已停用（不参与语义检索与取数）' : '启用'}
+                {detailMetric?.is_active === 0 ? t('k_f25648642c') : t('k_d4e9ca3dd4')}
               </div>
               {detailMetric?.expression && (
                 <div className="col-span-2">
@@ -1036,11 +1035,11 @@ export default function MetricsCenter({
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-medium flex items-center gap-2">
                   <Layers className="w-4 h-4" />
-                  维度列表
+                  {t('k_a6951b9ee4')}
                 </h3>
                 <Button variant="outline" size="sm" onClick={() => { setDimensionForm(emptyDimensionForm); setDimensionFormOpen(true); }}>
                   <Plus className="w-4 h-4 mr-1" />
-                  添加维度
+                  {t('k_a7b6cac495')}
                 </Button>
               </div>
               {dimensions.length === 0 ? (
@@ -1084,9 +1083,9 @@ export default function MetricsCenter({
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">维度名称 *</label>
+              <label className="text-sm font-medium">{t('k_f6ad17fca8')}</label>
               <Input
-                placeholder="如: region"
+                placeholder={t('k_31d32c276f')}
                 value={dimensionForm.name}
                 onChange={(e) => setDimensionForm({ ...dimensionForm, name: e.target.value })}
               />
@@ -1094,13 +1093,13 @@ export default function MetricsCenter({
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("k_75ae6a8a7d")}</label>
               <Input
-                placeholder="如: 地区"
+                placeholder={t('k_27c58bf1c9')}
                 value={dimensionForm.display_name}
                 onChange={(e) => setDimensionForm({ ...dimensionForm, display_name: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">列名 *</label>
+              <label className="text-sm font-medium">{t('k_da0bcc29c5')}</label>
               <Input
                 placeholder={t("k_2d172fa3a5")}
                 value={dimensionForm.column_name}
@@ -1146,7 +1145,7 @@ export default function MetricsCenter({
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确定要删除指标 <strong>{deleteTarget?.display_name}</strong> 吗？此操作不可恢复。
+            {t('k_a5e01dc275', { p0: deleteTarget?.display_name })}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

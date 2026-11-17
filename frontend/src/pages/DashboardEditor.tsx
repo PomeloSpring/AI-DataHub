@@ -35,6 +35,7 @@ import { applyChartComponent, applyScreenComponent, applyLayout, chartRect, char
   resolveChartDesign, resolveDashboardDesign, sanitizeStyle, sanitizePack, screenToCanvas, visualConfig, legacyCanvasFilters,
   clearChartVisualOverrides, libraryThemeFilters, themePackFor } from '@/lib/dashboardDesign';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 function ChangeGroup({ title, charts, onPick }: { title: string; charts: any[]; onPick: (chart: any) => void }) {
   if (!charts.length) return null;
@@ -51,7 +52,7 @@ function useUnsavedGuard(dirty: boolean, saving: boolean) {
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const savingRef = useRef(saving); savingRef.current = saving;
   useEffect(() => {
-    const confirm = () => !savingRef.current && (!dirtyRef.current || window.confirm('有未保存的更改，确定离开并放弃这些更改吗？'));
+    const confirm = () => !savingRef.current && (!dirtyRef.current || window.confirm(tr('k_484f2c0a74')));
     const push = navigator.push, replace = navigator.replace;
     navigator.push = (...args) => { if (confirm()) push.apply(navigator, args); };
     navigator.replace = (...args) => { if (confirm()) replace.apply(navigator, args); };
@@ -108,7 +109,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   // gaps 随 items 一起抬出来：间距是看板级设置，所有网格↔像素换算必须用同一份（不得逐处再取默认值）
   const pageLayout = useMemo(() => {
     try { return { items: draftDashboard ? resolvePageLayout(draftDashboard, breakpoint) : [], error: '', gaps: pageGapsOf(draftDashboard?.filters) as PageGaps | undefined }; }
-    catch (e) { return { items: [], error: e instanceof Error ? e.message : '页面布局无效', gaps: undefined as PageGaps | undefined }; }
+    catch (e) { return { items: [], error: e instanceof Error ? e.message : tr('k_6810868338'), gaps: undefined as PageGaps | undefined }; }
   }, [draftDashboard?.filters, allCharts, breakpoint]);
   const viewportSize = layoutMode === 'page' ? pageCanvasSize(pageLayout.items, breakpoint) : dimensions;
   const canvas = useCanvasInteraction({ allCharts, onDragEnd: charts.handleDragEnd, onResizeEnd: charts.handleResizeEnd,
@@ -125,7 +126,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const askConfirm = (title: string, description: string, actionLabel: string, run: () => void) =>
     setConfirmAction({ title, description, actionLabel, run });
   const resetPage = () => {
-    askConfirm('恢复自动适配', `将清除${PAGE_LABELS[breakpoint]}断点的手动布局，其他断点与大屏坐标不受影响。`, '恢复自动适配',
+    askConfirm(tr('k_c167ea7216'), tr('k_a2a79a878e', { p0: PAGE_LABELS[breakpoint] }), tr('k_c167ea7216'),
       () => charts.updatePageLayout(breakpoint));
   };
   const capturePage = () => {
@@ -147,8 +148,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     });
     setSourceSwitchOpen(false);
     toast.success(target
-      ? `已将 ${ids.length} 个图表的执行数据源钉选为「${target}」（保存后生效）`
-      : `已清除 ${ids.length} 个图表的数据源钉选，改回自动定源（保存后生效）`);
+      ? tr('k_aba90e51ff', { p0: ids.length, p1: target })
+      : tr('k_566755b66a', { p0: ids.length }));
   };
   const [layout, setLayout] = useState<VisComponent | null>(null);
   const [pack, setPack] = useState<VisComponent | null>(null);
@@ -257,7 +258,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
   const applyVis = (component: VisComponent) => {
     if (!draftDashboard || saving) return;
     if (component.category === 'layout_template') {
-      if (layoutMode === 'page') { toast.info('此模板用于大屏像素布局，请切换到大屏布局后应用'); return; }
+      if (layoutMode === 'page') { toast.info(tr('k_f3cbb67522')); return; }
       setLayout(component); return;
     }
     if (component.category === 'theme_pack') { setFollowTheme(false); setReplaceStyles(true); setPack(component); return; }
@@ -265,12 +266,12 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       (selectedChart && ['decoration_frame', 'color_theme'].includes(component.category))) {
       if (!selectedChart) {
         // 控件样式只能挂到已选中的参数控件上（拖入新建对样式类字模无意义）
-        toast.info(component.category === 'widget_style' ? '请先选中一个参数控件（输入框/下拉/搜索按钮等），再应用控件样式。'
-          : '请先选择兼容图表，或将字模拖入画布');
+        toast.info(component.category === 'widget_style' ? tr('k_e1853e862f')
+          : tr('k_b7e8676e2a'));
         return;
       }
       if (!compatible(component, selectedChart.chart_type)) {
-        toast.error(`「${component.name}」与「${selectedChart.name}」不兼容：图表样式只挂图表、控件样式只挂控件，未改变样式。`);
+        toast.error(tr('k_b26dc7c77d', { p0: component.name, p1: selectedChart.name }));
         return;
       }
       charts.updateLocalChart(selectedChart.id, { config: applyChartComponent(selectedChart.config, component, library.items) });
@@ -417,8 +418,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       positions[controls.length + i], { label: b.label }));
     setParamAssembly(null);
     toast(plan.addControls.length
-      ? `已按数据集入参补齐参数与控件${buttons.length ? `，并放置「${buttons.map(b => b.label).join('」「')}」` : ''}，拖动即可调整位置；保存前可撤销`
-      : `已补齐看板参数（这些入参由数据集正文使用，无需控件）`);
+      ? tr('k_3662ac4e70', { p0: buttons.length ? tr('k_87956547c6', { p0: buttons.map(b => b.label).join('」「') }) : '' })
+      : tr('k_9e21e2130a'));
   };
   /**
    * 遗留查询参数 → 看板参数 + 画布控件（当场做完，不再只能去列表页改）。
@@ -442,7 +443,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     if (param.options?.length) config.options = param.options.map(o => ({ label: o, value: o }));
     charts.handleAddFromPanel({ value: controlOfShape(shape), label: param.label || param.name,
       icon: 'Calendar', category: 'widget' }, pos, config);
-    toast(`已把「${param.label || param.name}」转为看板参数并放置控件，顶部不再重复出现输入口`);
+    toast(tr('k_0788d35cdb', { p0: param.label || param.name }));
   };
   const layoutPreview = draftDashboard && layoutResult ? { ...draftDashboard, filters: { ...draftDashboard.filters,
     design: { ...draftDashboard.filters.design, canvas: { ...dimensions, ...draftDashboard.filters.design?.canvas, height: layoutResult.height } } },
@@ -456,8 +457,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
     ? library.items.find(i => i.code === selectedChart?.config?.vis?.refs?.widgetStyle)?.name : undefined;
   const persistVis = async () => {
     if (!visName.trim() || !draftDashboard || visSaving) return;
-    if (visCategory === 'chart_style' && (!selectedChart || selectedChart.chart_type.startsWith('widget_'))) { toast.error('请选择图表'); return; }
-    if (visCategory === 'kpi_card' && (!selectedChart || !compatible({ category: 'kpi_card' } as VisComponent, selectedChart.chart_type))) { toast.error('请选择指标卡'); return; }
+    if (visCategory === 'chart_style' && (!selectedChart || selectedChart.chart_type.startsWith('widget_'))) { toast.error(tr('k_6d132f5a9f')); return; }
+    if (visCategory === 'kpi_card' && (!selectedChart || !compatible({ category: 'kpi_card' } as VisComponent, selectedChart.chart_type))) { toast.error(tr('k_8427c88b70')); return; }
     setVisSaving(true);
     try {
       const resolved = selectedChart ? resolveChartDesign(selectedChart.config, design, library.items, selectedChart.chart_type) : null;
@@ -472,10 +473,10 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       await createVisComponent({ name: visName.trim(), category: visCategory,
         chart_type: visCategory === 'chart_style' ? selectedChart?.chart_type : undefined,
         style_config: visCategory === 'theme_pack' ? sanitizePack(style) : sanitizeStyle(style) });
-      await library.refresh(); setSaveVis(false); toast.success('已保存为自定义字模');
-    } catch { toast.error('字模保存失败，请重试'); } finally { setVisSaving(false); }
+      await library.refresh(); setSaveVis(false); toast.success(tr('k_ddcb749860'));
+    } catch { toast.error(tr('k_7576edbd5a')); } finally { setVisSaving(false); }
   };
-  if (!current || !draftDashboard) return <div className="p-8">{store.loading ? '正在加载…' : '看板不存在'}<Button variant="link" onClick={() => navigate('/system/dashboards')}>{t("k_53505b1fcd")}</Button></div>;
+  if (!current || !draftDashboard) return <div className="p-8">{store.loading ? tr('k_37dc7bfce2') : tr('k_317aded866')}<Button variant="link" onClick={() => navigate('/system/dashboards')}>{t("k_53505b1fcd")}</Button></div>;
   // 可写性服务端裁决: 角色授予的可见权不含编辑权 —— 非属主/非 admin 直接拒入编辑器(fail-loud),
   // 后端写接口同样按 check_dashboard_editable 拦截, 双层都不放行
   if (current.editable === false) return (
@@ -508,7 +509,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       showRulers={showRulers} onToggleRulers={() => setShowRulers(v => !v)}
       interactionMode={charts.interactionMode} onInteractionMode={charts.setInteractionMode}
       snapEnabled={canvas.snapEnabled} onToggleSnap={() => canvas.setSnapEnabled(v => !v)}
-      onUseLibrary={() => { if (!themePackFor(theme, library.items)) { toast.error('主题包尚未加载，请在字模库重试'); return; } setPack(null); setReplaceStyles(true); setFollowTheme(true); }}
+      onUseLibrary={() => { if (!themePackFor(theme, library.items)) { toast.error(tr('k_94d3d2cc12')); return; } setPack(null); setReplaceStyles(true); setFollowTheme(true); }}
       onSaveVis={() => { setVisName(''); setVisCategory(selectedChart ? 'chart_style' : 'screen_background'); setSaveVis(true); }} />
     <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={onLibraryDragStart} onDragMove={onLibraryDragMove} onDragEnd={onLibraryDragEnd}
       onDragCancel={() => { dragData.current = null; setLibraryDrag(null); setDropGhost(null); setOverCanvas(false); }}>
@@ -524,9 +525,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         }} />
       {layoutMode === 'page' ? <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="px-4 py-2 text-xs text-muted-foreground border-b" role="status">
-          {!draftDashboard.filters?.design?.page ? '页面布局尚未保存，由大屏布局生成。' : pageLayout.items.some(item => item.automatic) ? `${PAGE_LABELS[breakpoint]}包含自动适配布局。` : `${PAGE_LABELS[breakpoint]}独立布局。`}
-          {' '}设计宽度 {PAGE_WIDTHS[breakpoint]}px · 编辑画布可等比例缩放与平移，草稿预览和阅读页仍按真实宽度展示。
-        </div>
+          {!draftDashboard.filters?.design?.page ? tr('k_891c392c30') : pageLayout.items.some(item => item.automatic) ? tr('k_9250ab6061', { p0: PAGE_LABELS[breakpoint] }) : tr('k_e04e2b74b7', { p0: PAGE_LABELS[breakpoint] })}
+          {' '}{tr('k_058241f4f7')}{' '}{PAGE_WIDTHS[breakpoint]}{tr('k_3acd2547ff')}</div>
         <PageLayoutEditor key={`${dashboardId}:${breakpoint}`} dashboard={draftDashboard} items={library.items} breakpoint={breakpoint} selectedIds={charts.selectedIds} canvas={canvas} showGrid={showGrid} panMode={panMode} interactive={interactive}
           entranceReplay={motionReplay}
           showRulers={showRulers} onInsertFromLibrary={openInsertGuide} onOpenTemplates={() => charts.setTemplatesOpen(true)}
@@ -586,8 +586,8 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           onNudge={(dx, dy) => { const r = chartRect(selectedChart); charts.handleResizeEnd(selectedChart.id, { ...r, w: r.w + dx, h: r.h + dy }); }} />}
         <CanvasRulers canvas={dimensions} scale={canvas.scale} pan={canvas.panOffset} active={activeRect} visible={showRulers} />
         <CanvasHint
-          text={activeRect ? `X ${Math.round(activeRect.x)} · Y ${Math.round(activeRect.y)} · W ${Math.round(activeRect.w)} · H ${Math.round(activeRect.h)}` : '滚轮缩放 · 空格拖动 / 中键平移 · 双击配置 · F 适应窗口'}
-          extra={canvas.snapEnabled ? `自动吸附 · 网格 ${dimensions.gridSize}px · Alt 临时关闭` : '自由移动 · 吸附已关闭'} />
+          text={activeRect ? `X ${Math.round(activeRect.x)} · Y ${Math.round(activeRect.y)} · W ${Math.round(activeRect.w)} · H ${Math.round(activeRect.h)}` : tr('k_a0def04e43')}
+          extra={canvas.snapEnabled ? tr('k_84ab309a76', { p0: dimensions.gridSize }) : tr('k_abc753e9d4')} />
       </div>}
       <PropertyPanel pageBreakpoint={layoutMode === 'page' ? breakpoint : undefined} pageRect={pageLayout.items.find(item => item.chart.id === selectedChart?.id)?.rect} pageGaps={pageLayout.gaps}
         onPageGapChange={gapValue => charts.updatePage({ gap: { ...pageLayout.gaps, [breakpoint]: gapValue } })}
@@ -636,7 +636,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       };
       // 创建模板看板会离开当前草稿：有未保存变更时先问，不默默丢弃
       if (hasUnsavedChanges) {
-        askConfirm('放弃未保存的更改？', '应用模板会新建一个看板并离开当前草稿，当前未保存的更改将丢失。', '放弃并应用模板', () => { void applyTemplate(); });
+        askConfirm(tr('k_9642b3104c'), tr('k_b6c43a6ac9'), tr('k_a548a3986e'), () => { void applyTemplate(); });
         return;
       }
       void applyTemplate();
@@ -647,7 +647,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         {layoutMode === 'page' && <select aria-label={t("k_4a577b96e0")} className="rounded border bg-background p-1" value={breakpoint} onChange={e => setBreakpoint(e.target.value as PageBreakpoint)}>{Object.entries(PAGE_LABELS).map(([bp, label]) => <option value={bp} key={bp}>{label} · {PAGE_WIDTHS[bp as PageBreakpoint]}px</option>)}</select>}
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">{layoutMode === 'page' ? <div className="mx-auto" style={{ width: PAGE_WIDTHS[breakpoint] }}><ResponsiveDashboardCanvas dashboard={draftDashboard} items={library.items} draft breakpoint={breakpoint} /></div> : <FittedDashboardCanvas dashboard={draftDashboard} items={library.items} draft />}</div></DialogContent></Dialog>
-    <Dialog open={!!pack || followTheme} onOpenChange={() => { setPack(null); setFollowTheme(false); }}><DialogContent><DialogHeader><DialogTitle>{pack ? `套用主题包：${pack.name}` : '全部使用 UI 字模库'}</DialogTitle><DialogDescription>背景、卡片、全部图表与控件使用整套字模。{followTheme ? '跟随用户选择的系统主题。' : ''}仅修改草稿，保存后生效；数据绑定和布局不变。</DialogDescription></DialogHeader>
+    <Dialog open={!!pack || followTheme} onOpenChange={() => { setPack(null); setFollowTheme(false); }}><DialogContent><DialogHeader><DialogTitle>{pack ? tr('k_1dbb485d58', { p0: pack.name }) : tr('k_910ab1f2c2')}</DialogTitle><DialogDescription>{tr('k_ab2f79f781')}{followTheme ? tr('k_986fbd8741') : ''}{tr('k_a327418ce0')}</DialogDescription></DialogHeader>
       {packPreview && <DashboardThumbnail dashboard={packPreview} items={library.items} />}
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={replaceStyles} onChange={e => setReplaceStyles(e.target.checked)} />{t("k_2ea0400e6c")}</label>
       <DialogFooter><Button variant="outline" onClick={() => { setPack(null); setFollowTheme(false); }}>{t("k_4d0b4688c7")}</Button><Button disabled={saving} onClick={() => {
@@ -657,7 +657,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         });
         setPack(null); setFollowTheme(false);
       }}>{t("k_1595f3f3da")}</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={!!layout} onOpenChange={() => setLayout(null)}><DialogContent><DialogHeader><DialogTitle>应用布局：{layout?.name}</DialogTitle><DialogDescription>{t("k_f735677f23")}</DialogDescription></DialogHeader>
+    <Dialog open={!!layout} onOpenChange={() => setLayout(null)}><DialogContent><DialogHeader><DialogTitle>{tr('k_f3ced0b601')}{layout?.name}</DialogTitle><DialogDescription>{t("k_f735677f23")}</DialogDescription></DialogHeader>
       {layoutPreview && <DashboardThumbnail dashboard={layoutPreview} items={library.items} />}
       <DialogFooter><Button variant="outline" onClick={() => setLayout(null)}>{t("k_4d0b4688c7")}</Button><Button onClick={() => {
         if (!layout || !layoutResult) return;
@@ -672,7 +672,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       <Input aria-label={t("k_7bfbf91d75")} placeholder={t("k_7bfbf91d75")} value={visName} onChange={e => setVisName(e.target.value)} />
       <select aria-label={t("k_2551e47168")} className="rounded border bg-background p-2" value={visCategory} onChange={e => setVisCategory(e.target.value as VisCategory)}>
         {VIS_CATEGORIES.filter(c => (selectedChart || !['chart_style', 'kpi_card'].includes(c.id))).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-      </select><DialogFooter><Button disabled={visSaving || !visName.trim()} onClick={persistVis}>{visSaving ? '保存中…' : '保存字模'}</Button></DialogFooter>
+      </select><DialogFooter><Button disabled={visSaving || !visName.trim()} onClick={persistVis}>{visSaving ? tr('k_6644f06197') : tr('k_a660caff99')}</Button></DialogFooter>
     </DialogContent></Dialog>
     <Dialog open={!!confirmAction} onOpenChange={open => { if (!open) setConfirmAction(null); }}>
       <DialogContent><DialogHeader><DialogTitle>{confirmAction?.title}</DialogTitle><DialogDescription>{confirmAction?.description}</DialogDescription></DialogHeader>
@@ -681,13 +681,13 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       </DialogContent></Dialog>
     {/* 变更清单：只一个 badge 无法知道改了什么，点开可逐项跳转选中 */}
     <Dialog open={changesOpen} onOpenChange={setChangesOpen}>
-      <DialogContent className="max-h-[80vh] w-[min(560px,95vw)]"><DialogHeader><DialogTitle>未保存的更改 ({charts.pendingCount})</DialogTitle>
+      <DialogContent className="max-h-[80vh] w-[min(560px,95vw)]"><DialogHeader><DialogTitle>{tr('k_82e83e33c7')}{charts.pendingCount})</DialogTitle>
         <DialogDescription>{t("k_fb811805e7")}</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-auto text-sm">
-          {charts.pendingNewCount > 0 && <ChangeGroup title={`新增 (${charts.pendingNewCount})`} charts={allCharts.filter(c => c.id < 0)} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
-          {charts.pendingChangeCount > 0 && <ChangeGroup title={`修改 (${charts.dirtyIds.length})`} charts={allCharts.filter(c => charts.dirtyIds.includes(c.id))} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
-          {charts.pendingDeleteCount > 0 && <p className="text-xs text-muted-foreground">待删除图表：{charts.pendingDeleteCount} 个（保存后不可恢复，只能从版本备份找回）</p>}
-          {Object.keys(charts.draftMetadataKeys || {}).length > 0 && <p className="text-xs text-muted-foreground">看板级变更：{(charts.draftMetadataKeys || []).join('、')}</p>}
+          {charts.pendingNewCount > 0 && <ChangeGroup title={tr('k_30a4745f83', { p0: charts.pendingNewCount })} charts={allCharts.filter(c => c.id < 0)} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
+          {charts.pendingChangeCount > 0 && <ChangeGroup title={tr('k_28b7aa01c3', { p0: charts.dirtyIds.length })} charts={allCharts.filter(c => charts.dirtyIds.includes(c.id))} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
+          {charts.pendingDeleteCount > 0 && <p className="text-xs text-muted-foreground">{tr('k_55c79e5bb2')}{charts.pendingDeleteCount} {tr('k_95b2c88355')}</p>}
+          {Object.keys(charts.draftMetadataKeys || {}).length > 0 && <p className="text-xs text-muted-foreground">{tr('k_1602c97150')}{(charts.draftMetadataKeys || []).join('、')}</p>}
           {!charts.pendingCount && <p className="text-xs text-muted-foreground">{t("k_f6492cadd1")}</p>}
         </div>
       </DialogContent></Dialog>

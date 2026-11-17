@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -152,10 +153,10 @@ function parseMaybeJson(value: unknown): Record<string, unknown> {
 }
 
 const CATEGORY_OPTIONS: AdapterFilterOption[] = [
-  { value: 'all', label: '全部分类' },
-  { value: 'permission_boundary', label: '权限边界' },
-  { value: 'dialect', label: '方言约束' },
-  { value: 'skill', label: '技能Prompt' },
+  { value: 'all', label: tr('k_a8e369c4b6') },
+  { value: 'permission_boundary', label: tr('k_488a5bccbf') },
+  { value: 'dialect', label: tr('k_8cc95fc975') },
+  { value: 'skill', label: tr('k_476dcfee99') },
 ];
 
 // 版本化 Prompt 页只治理"护栏 + NL2SQL 生成链"两类真消费点:
@@ -202,7 +203,7 @@ function mergeNl2sqlRules(rows: any[]): any[] {
       .filter(Boolean).join('\n\n');
     return {
       ...r,
-      prompt_name: (r.prompt_name || 'NL2SQL 系统提示词') + '（含生成规则）',
+      prompt_name: (r.prompt_name || tr('k_b017169c9b')) + tr('k_b83526dd48'),
       system_prompt: merged,
       _rules_id: rules.id,
     };
@@ -214,8 +215,8 @@ export function createPromptAdapter(): VersionedConfigAdapter {
     label: 'Prompt',
     textFieldKeys: ['system_prompt', 'user_prompt_template', 'description'],
     filters: [
-      { key: 'category', label: '分类', options: CATEGORY_OPTIONS },
-      { key: 'workspace_id', label: '作用域', dynamic: 'workspaces' },
+      { key: 'category', label: tr('k_435c5259e4'), options: CATEGORY_OPTIONS },
+      { key: 'workspace_id', label: tr('k_4705b88497'), dynamic: 'workspaces' },
     ],
     async listItems(filterValues) {
       const rawCategory = filterValues?.category || 'all';
@@ -244,12 +245,12 @@ export function createPromptAdapter(): VersionedConfigAdapter {
       const items: VersionedItem[] = [];
       for (const g of globals) {
         const ov = overrides.get(g.prompt_key);
-        if (ov) items.push(promptToItem(ov, { badge: '已覆盖' }));
-        else items.push(promptToItem(g, { inherited: true, workspaceId: ws, badge: '继承全局' }));
+        if (ov) items.push(promptToItem(ov, { badge: tr('k_22c87aaebb') }));
+        else items.push(promptToItem(g, { inherited: true, workspaceId: ws, badge: tr('k_50021fe86e') }));
       }
       for (const o of visible(wsRes.data) as any[]) {
         if (!globals.some((g: any) => g.prompt_key === o.prompt_key)) {
-          items.push(promptToItem(o, { badge: '已覆盖' }));
+          items.push(promptToItem(o, { badge: tr('k_22c87aaebb') }));
         }
       }
       return items;
@@ -279,7 +280,7 @@ export function createPromptAdapter(): VersionedConfigAdapter {
           user_prompt_template: content.user_prompt_template ?? '',
           description: content.description ?? '',
           workspace_id: item.workspaceId ?? 0,
-          change_log: changeLog || '创建工作空间覆盖',
+          change_log: changeLog || tr('k_d08b329250'),
         });
         return;
       }
@@ -393,7 +394,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         return list[0]?.id ?? null;
       });
     } catch (e) {
-      toast.error(`加载列表失败: ${(e as Error).message}`);
+      toast.error(t('k_318cd0757d', { p0: (e as Error).message }));
     } finally {
       setLoadingList(false);
     }
@@ -453,7 +454,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
       setVersions(vs);
     } catch (e) {
       setVersions([]);
-      toast.error(`加载版本历史失败: ${(e as Error).message}`);
+      toast.error(t('k_45232bf6d2', { p0: (e as Error).message }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, adapter, splitContent]);
@@ -485,7 +486,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         setFormValues(tf);
         setOtherFields(other);
       } catch {
-        toast.error('JSON 格式错误, 无法切换到表单模式');
+        toast.error(t('k_132be1b44e'));
         return;
       }
     }
@@ -500,7 +501,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
     try {
       const wasInherited = selectedItem.inherited;
       await adapter.saveItem(selectedItem, content, changeLog);
-      toast.success(wasInherited ? '已创建工作空间覆盖' : '已保存并生成新版本');
+      toast.success(wasInherited ? t('k_6be9810519') : t('k_a4c6b78e21'));
       setChangeLog('');
       await reloadList();
       if (!wasInherited) {
@@ -508,7 +509,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         setVersions(vs);
       }
     } catch (e) {
-      toast.error(`保存失败: ${(e as Error).message}`);
+      toast.error(t('k_c55464dc09', { p0: (e as Error).message }));
     } finally {
       setSaving(false);
     }
@@ -518,12 +519,12 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
     if (selectedId == null || selectedItem?.inherited) return;
     try {
       await adapter.rollbackItem(selectedId, v.version);
-      toast.success(`已回滚到 v${v.version}`);
+      toast.success(t('k_e671518b65', { p0: v.version }));
       await reloadList();
       const vs = await adapter.loadVersions(selectedId);
       setVersions(vs);
     } catch (e) {
-      toast.error(`回滚失败: ${(e as Error).message}`);
+      toast.error(t('k_7ada8ff4a9', { p0: (e as Error).message }));
     }
   }
 
@@ -544,8 +545,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         <div>
           <h1 className="text-2xl font-bold">{t("k_4802a49d8f")}</h1>
           <p className="text-sm text-muted-foreground">
-            治理护栏与 NL2SQL 生成链 Prompt（全局默认 + 工作空间覆盖），自动记录版本快照，支持历史 diff 与一键回滚。
-            角色风格在 AS-BOT 配置，分析类提示词在 Skills 管理，MCP 服务在 MCP 配置页管理，均不属本页职责。
+            {t('k_d6e0536cf2')}
           </p>
         </div>
         <div className="w-56">
@@ -618,7 +618,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         {/* Item list */}
         <div className="col-span-3 flex flex-col overflow-hidden rounded-lg border bg-card">
           <div className="flex items-center justify-between border-b px-3 py-2">
-            <span className="text-sm font-semibold">{adapter.label} 列表</span>
+            <span className="text-sm font-semibold">{t('k_84596fe537', { p0: adapter.label })}</span>
             <Button size="sm" variant="ghost" onClick={() => void reloadList()}>
               {loadingList ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
             </Button>
@@ -663,7 +663,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         <div className="col-span-5 flex flex-col overflow-hidden rounded-lg border bg-card">
           <div className="flex items-center justify-between border-b px-3 py-2">
             <span className="text-sm font-semibold">
-              配置内容{selectedItem ? ` · ${selectedItem.title}` : ''}
+              {t('k_4b0e86946c', { p0: selectedItem ? ` · ${selectedItem.title}` : '' })}
             </span>
             <div className="flex items-center gap-2">
               {adapter.textFieldKeys?.length ? (
@@ -682,7 +682,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                 <span className="text-xs text-destructive">{t("k_f285764449")}</span>
               ) : (
                 <span className="flex items-center gap-1 text-xs text-green-600">
-                  <Check className="h-3 w-3" /> JSON 有效
+                  <Check className="h-3 w-3" /> {t('k_7f19d12210')}
                 </span>
               ))}
             </div>
@@ -693,9 +693,9 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                 {adapter.textFieldKeys.map((fk) => (
                   <div key={fk}>
                     <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      {fk === 'system_prompt' ? '系统提示词（正常编辑，保存时自动转义）'
-                        : fk === 'user_prompt_template' ? '用户提示词模板'
-                        : fk === 'description' ? '说明'
+                      {fk === 'system_prompt' ? t('k_6c47406c83')
+                        : fk === 'user_prompt_template' ? t('k_2e607bef54')
+                        : fk === 'description' ? t('k_26670dda42')
                         : fk}
                     </label>
                     <textarea
@@ -708,7 +708,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                 ))}
                 {Object.keys(otherFields).length > 0 && (
                   <div className="rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
-                    元数据(只读): {JSON.stringify(otherFields)}
+                    {t('k_e6c593b19b', { p0: JSON.stringify(otherFields) })}
                   </div>
                 )}
               </div>
@@ -724,7 +724,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
           </div>
           <div className="flex items-center gap-2 border-t px-3 py-2">
             <Input
-              placeholder="变更说明 (change log)"
+              placeholder={t('k_41e3b933b5')}
               value={changeLog}
               onChange={(e) => setChangeLog(e.target.value)}
               className="flex-1"
@@ -734,7 +734,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
               disabled={!selectedItem || saving || (mode === 'json' && !!jsonError)}
             >
               {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
-              {selectedItem?.inherited ? '创建覆盖' : '保存'}
+              {selectedItem?.inherited ? t('k_4f4f045e47') : t('k_fadf24dbc5')}
             </Button>
           </div>
         </div>
@@ -766,7 +766,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                       variant="ghost"
                       onClick={() => void handleRollback(v)}
                       disabled={!!selectedItem?.inherited}
-                      title={selectedItem?.inherited ? '继承项不可回滚' : '回滚'}
+                      title={selectedItem?.inherited ? t('k_9c720d858e') : t('k_d00b485b26')}
                     >
                       <RotateCcw className="h-4 w-4" />
                     </Button>
@@ -786,7 +786,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
       <Dialog open={!!diffVersion} onOpenChange={(o) => !o && setDiffVersion(null)}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
-            <DialogTitle>版本对比 · v{diffVersion?.version} → 当前编辑内容</DialogTitle>
+            <DialogTitle>{t('k_395a0428b0', { p0: diffVersion?.version })}</DialogTitle>
             <DialogDescription>{t("k_b4930c5203")}</DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-auto rounded border font-mono text-xs">

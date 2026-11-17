@@ -18,7 +18,7 @@ export default function ModelCenter() {
             </TabsTrigger>
             <TabsTrigger value="model-config">
               <Cpu className="h-4 w-4 mr-2" />
-              模型配置
+              {t('k_73cbcf30cc')}
             </TabsTrigger>
           </TabsList>
         </div>

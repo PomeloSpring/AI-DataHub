@@ -30,22 +30,23 @@ import { yaml } from '@codemirror/lang-yaml';
 import { markdown } from '@codemirror/lang-markdown';
 import { ModelGraphTab, SyncBadges } from './ModelAssetTabs';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr } from '@/i18n/runtime';
 
 const KIND_LABEL: Record<string, string> = {
-  source: '源本体', business: '业务本体', system: '系统本体',
+  source: i18nTr('k_d848264863'), business: i18nTr('k_dbe8a8559c'), system: i18nTr('k_b41dfa6f3b'),
 };
 
 /** 知识库同步跳过原因 → 可读文案（不向用户直接回英文码） */
 const KB_SKIP_LABEL: Record<string, string> = {
-  model_not_found: '模型不存在',
-  no_kb_bound: '模型未绑定目标知识库',
-  no_kb_with_sync_ontology: '没有开启同步的目标知识库',
+  model_not_found: i18nTr('k_88ef9e602a'),
+  no_kb_bound: i18nTr('k_4899f0779a'),
+  no_kb_with_sync_ontology: i18nTr('k_3071c5e8db'),
   // 手动选库但目标库已被删/不可用（不静默换库，显式回错）
-  specified_kb_unavailable: '指定知识库不可用（已删除/非 qmind/未绑定 notebook）',
-  status_draft: '草案未激活，不推送知识库',
-  status_archived: '模型已归档，不推送知识库',
-  superseded_by_active_version: '同名已有生效版本，本版本不上云',
-  no_md_content: '无可渲染的语义内容',
+  specified_kb_unavailable: i18nTr('k_4d1ff7968b'),
+  status_draft: i18nTr('k_343a6fc70c'),
+  status_archived: i18nTr('k_e2abed3ee1'),
+  superseded_by_active_version: i18nTr('k_1e43830379'),
+  no_md_content: i18nTr('k_9b2a743eaf'),
 };
 
 /** SPARQL 结果单元格归一: 兼容 {value,type,datatype} 绑定对象与裸字符串。 */
@@ -154,7 +155,7 @@ export default function OntologyGraphView() {
       const { data } = await client.post('/graph/query', { query: sparqlQuery });
       setSparqlResult(data);
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || 'SPARQL 查询失败');
+      toast.error(e?.response?.data?.detail || t('k_9b2b07bcae'));
     } finally {
       setSparqlRunning(false);
     }
@@ -167,7 +168,7 @@ export default function OntologyGraphView() {
       const { data } = await client.get(`/ontology/${selected.id}/sparql-preview`);
       setSparqlPreview(data.turtle || data.sparql || '');
     } catch {
-      setSparqlPreview('# 无法生成 RDF 预览，请确认模型已激活');
+      setSparqlPreview(t('k_53c350c399'));
     } finally {
       setSparqlLoading(false);
     }
@@ -187,10 +188,10 @@ export default function OntologyGraphView() {
 
   const graphScopeLabel = useMemo(() => {
     if (!selected) return '';
-    if (selected.kind === 'system') return '系统图 ds:-1';
-    if (selected.kind === 'business') return '业务聚合图 ds:0';
-    if (selected.kind === 'source') return `源本体图 ds:${selected.datasource_id || 0}`;
-    return `命名图 ds:${selected.datasource_id || 0}`;
+    if (selected.kind === 'system') return t('k_d1eb9b5b59');
+    if (selected.kind === 'business') return t('k_bbee149234');
+    if (selected.kind === 'source') return t('k_6721362c7e', { p0: selected.datasource_id || 0 });
+    return t('k_d912de7356', { p0: selected.datasource_id || 0 });
   }, [selected]);
 
   const handleBuildGraph = async () => {
@@ -198,15 +199,15 @@ export default function OntologyGraphView() {
     setBuilding(true);
     try {
       const { data } = await client.post('/graph/sync', null, { params: graphScope });
-      if (data?.success === false) throw new Error(data?.message || '图谱生成未完成');
-      toast.success(data?.message || '图谱已重建');
+      if (data?.success === false) throw new Error(data?.message || t('k_46c6521935'));
+      toast.success(data?.message || t('k_a00040e6ac'));
       // 图、结构化投影、同步状态徽章全部重取（重建后滞后值会变）
       setGraphTick((t) => t + 1);
       setViewTick((t) => t + 1);
       setSyncTick((t) => t + 1);
     } catch (e: any) {
       // 409=同图正在生成、503=互斥锁不可用：服务端原文案透传，不当成功也不静默重试
-      toast.error(e?.response?.data?.detail || e?.message || '图谱生成失败，详见服务端日志');
+      toast.error(e?.response?.data?.detail || e?.message || t('k_75c414fe36'));
     } finally {
       setBuilding(false);
     }
@@ -226,13 +227,13 @@ export default function OntologyGraphView() {
       const { data } = await ontologyApi.syncKb(
         selected.id, selectedKbId !== '0' ? Number(selectedKbId) : null);
       const names = (data.targets || []).join(' / ');
-      if (data.removed) toast.success(`已从 ${data.removed} 个知识库下线旧文档${names ? `（${names}）` : ''}`);
-      else if (data.synced && data.error) toast.warning(`已同步 ${data.synced} 个知识库${names ? `（${names}）` : ''}，但部分目标失败：${data.error}`);
-      else if (data.synced) toast.success(`已同步到知识库：${names || data.synced}`);
-      else if (data.error) toast.error(`知识库同步失败：${data.error}`);
-      else toast.warning(data.skipped ? `未同步：${KB_SKIP_LABEL[data.skipped] || data.skipped}` : '本次未产生同步');
+      if (data.removed) toast.success(t('k_3d2270d690', { p0: data.removed, p1: names ? `（${names}）` : '' }));
+      else if (data.synced && data.error) toast.warning(t('k_730e1fa099', { p0: data.synced, p1: names ? `（${names}）` : '', p2: data.error }));
+      else if (data.synced) toast.success(t('k_55326b89f6', { p0: names || data.synced }));
+      else if (data.error) toast.error(t('k_c7afee6143', { p0: data.error }));
+      else toast.warning(data.skipped ? t('k_0b8625abe0', { p0: KB_SKIP_LABEL[data.skipped] || data.skipped }) : t('k_0844deea63'));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '知识库同步失败');
+      toast.error(e?.response?.data?.detail || t('k_feb50f1fda'));
     } finally {
       setSyncingKb(false);
       setSyncTick((t) => t + 1);
@@ -248,19 +249,19 @@ export default function OntologyGraphView() {
       + 'PREFIX owl: <http://www.w3.org/2002/07/owl#>\n'
       + 'PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n';
     return [
-      { label: '浏览全部三元组', desc: '查看本模型命名图内所有主-谓-宾，快速了解 RDF 结构',
+      { label: t('k_ec2bfeda49'), desc: t('k_1f55171967'),
         query: `${pre}SELECT ?s ?p ?o WHERE { GRAPH ${G} { ?s ?p ?o } } LIMIT 50` },
-      { label: '列出业务对象', desc: '所有 owl:Class 对象及其中文名(rdfs:label)与主表(adh:primaryTable)',
+      { label: t('k_aeba1b9334'), desc: t('k_8760c429ce'),
         query: `${pre}SELECT ?obj ?name ?table WHERE { GRAPH ${G} { ?obj a owl:Class ; rdfs:label ?name . OPTIONAL { ?obj adh:primaryTable ?table } } } LIMIT 100` },
-      { label: '对象关系（含 JOIN/基数）', desc: '实体化 adh:Link：来源→去向、关系名、基数与物理 JOIN 表达式',
+      { label: t('k_8355e02aff'), desc: t('k_1f7a032ae7'),
         query: `${pre}SELECT ?from ?to ?type ?card ?join WHERE { GRAPH ${G} { ?l a adh:Link ; adh:linkFrom ?from ; adh:linkTo ?to ; adh:linkType ?type . OPTIONAL { ?l adh:cardinality ?card } OPTIONAL { ?l adh:joinExpr ?join } } } LIMIT 100` },
-      { label: '关系多跳可达', desc: '用属性路径 adh:linkedTo+ 求对象间传递闭包（A 经若干步可达 B）',
+      { label: t('k_148456a1b3'), desc: t('k_003786a6fe'),
         query: `${pre}SELECT DISTINCT ?a ?b WHERE { GRAPH ${G} { ?a adh:linkedTo ?x . ?x adh:linkedTo+ ?b } } LIMIT 200` },
-      { label: '对象 → 指标 / 维度', desc: '字典权威经 bound_object_key 写入的归属边（adh:hasMetric / adh:hasDimension）',
+      { label: t('k_cc6dbedda5'), desc: t('k_09eeb3ee14'),
         query: `${pre}SELECT ?obj ?metric ?dim WHERE { GRAPH ${G} { ?obj a owl:Class . OPTIONAL { ?obj adh:hasMetric ?metric } OPTIONAL { ?obj adh:hasDimension ?dim } } } LIMIT 200` },
-      { label: '对象属性（数据类型）', desc: 'adh:hasProperty 展开的属性节点、中文名与 adh:dataType',
+      { label: t('k_b27d1b149c'), desc: t('k_ff152f8f0e'),
         query: `${pre}SELECT ?obj ?pname ?dtype WHERE { GRAPH ${G} { ?obj adh:hasProperty ?p . ?p rdfs:label ?pname . OPTIONAL { ?p adh:dataType ?dtype } } } LIMIT 200` },
-      { label: '按业务名/别名检索对象', desc: '用中文名(rdfs:label)或别名(skos:altLabel)定位对象',
+      { label: t('k_01327272b1'), desc: t('k_f4ff838b4f'),
         query: `${pre}SELECT DISTINCT ?obj ?name WHERE { GRAPH ${G} { { ?obj rdfs:label ?name } UNION { ?obj skos:altLabel ?name } FILTER(REGEX(STR(?name), "订单", "i")) } } LIMIT 50` },
     ];
   }, [selected?.datasource_id]);
@@ -273,8 +274,7 @@ export default function OntologyGraphView() {
           <h1 className="text-lg font-semibold">{t("k_2ea6798094")}</h1>
         </div>
         <span className="text-xs text-muted-foreground">
-          语义层关系视图（图谱 + 结构化投影）；图谱生成与同步知识库在本页，
-          canonical 编辑请到「数据建模」，指标/维度口径请到「指标与维度」
+          {t('k_3708a746a9')}
         </span>
       </div>
 
@@ -288,7 +288,7 @@ export default function OntologyGraphView() {
                 onValueChange={(v) => setSelectedId(Number(v))}
                 disabled={modelsLoading || !models.length}>
                 <SelectTrigger className="w-72 h-8 text-sm">
-                  <SelectValue placeholder={modelsLoading ? '加载中…' : '选择模型'} />
+                  <SelectValue placeholder={modelsLoading ? t('k_300ee3dee4') : t('k_f2d3731b92')} />
                 </SelectTrigger>
                 <SelectContent>
                   {models.map((m) => (
@@ -314,11 +314,11 @@ export default function OntologyGraphView() {
                 {/* 重建命名图是治理动作，按 graph:manage 裁决（无权限不给必 403 的按钮） */}
                 {hasPerm('graph:manage') && (
                   <Button size="sm" variant="outline" onClick={handleBuildGraph} disabled={building}
-                          title={`从元数据重建${graphScopeLabel}（只合并该域的 active 模型对象），表/字段/术语/指标/关系一并刷新`}>
+                          title={t('k_6633708f34', { p0: graphScopeLabel })}>
                     {building
                       ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
-                    图谱生成
+                    {t('k_800021e226')}
                   </Button>
                 )}
                 {/* 同步目标库选择：默认按模型 kind 路由（业务/系统→全局库、源本体不同步）；
@@ -340,18 +340,18 @@ export default function OntologyGraphView() {
                 <Button size="sm" variant="outline" onClick={handleSyncKb}
                         disabled={syncingKb || selected.status !== 'active'}
                         title={selected.status !== 'active'
-                          ? '仅生效模型可同步知识库'
+                          ? t('k_e0c202beb0')
                           : (selectedKbId !== '0'
-                              ? `手动把当前生效模型的脱敏文档定向同步到所选知识库「${syncTargetKbName || selectedKbId}」（一次性推送，含源本体手动例外）`
-                              : '手动同步到目标知识库（按模型归属默认路由：业务/系统→全局库，源本体不同步；可在左侧下拉指定库）')}>
+                              ? t('k_bb6f402308', { p0: syncTargetKbName || selectedKbId })
+                              : t('k_1c44d22877'))}>
                   {syncingKb
                     ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                     : <UploadCloud className="h-3.5 w-3.5 mr-1" />}
-                  同步知识库
+                  {t('k_010f64ab9b')}
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setViewTick((t) => t + 1)}
                         title={t("k_fb4e24d4ae")}>
-                  <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_38108eaa1d')}
                 </Button>
               </div>
             )}
@@ -396,7 +396,7 @@ export default function OntologyGraphView() {
                       className="border border-border rounded-md text-xs overflow-hidden"
                     />
                     <div className="text-xs text-muted-foreground mt-1">
-                      canonical JSON（唯一事实源）只读预览；编辑请在「数据建模」，指标/维度口径在「指标与维度」页维护。
+                      {t('k_103aa5a325')}
                     </div>
                   </TabsContent>
                   <TabsContent value="yaml" className="mt-2">
@@ -417,14 +417,13 @@ export default function OntologyGraphView() {
                       className="border border-border rounded-md text-xs overflow-hidden"
                     />
                     <div className="text-xs text-muted-foreground mt-1">
-                      内部 MD（含物理映射，不上云）；上云文档由本页「同步知识库」另行脱敏推送。
+                      {t('k_fbb6198619')}
                     </div>
                   </TabsContent>
                   <TabsContent value="sparql" className="mt-2 space-y-3">
                     <div className="text-xs text-muted-foreground space-y-1.5">
                       <div>
-                        对当前模型所在命名图（ds:{selected.datasource_id || 0}）执行 SPARQL；可编辑语句后点"执行查询"，或点下方示例载入。
-                      </div>
+                        {t('k_30fd7d23e6', { p0: selected.datasource_id || 0 })}</div>
                       <div className="flex flex-wrap gap-1.5">
                         {sparqlExamples.map((ex) => (
                           <button key={ex.label} type="button" title={ex.desc}
@@ -435,10 +434,10 @@ export default function OntologyGraphView() {
                         ))}
                       </div>
                       <div className="text-[11px] text-muted-foreground/90 leading-relaxed">
-                        示例说明：浏览全部三元组→概览命名图；列出业务对象→owl:Class 对象与中文名/主表；对象关系→实体化 adh:Link 的 JOIN/基数；关系多跳可达→adh:linkedTo+ 传递闭包；对象→指标/维度→字典权威归属边；对象属性→hasProperty 展开的数据类型；按业务名/别名检索→rdfs:label/skos:altLabel 定位对象。
+                        {t('k_a1e75f11c1')}
                       </div>
                       <div className="text-[11px] text-muted-foreground/90 leading-relaxed">
-                        词汇（与本体 RDF 投影同源）：对象节点 adh:obj:&#123;key&#125;（a owl:Class 兼 adh:Term，rdfs:label 中文名、skos:altLabel 别名、adh:primaryTable 主表）；对象间关系 adh:linkedTo / adh:mapsTo，及实体化 adh:Link（linkFrom/linkTo/linkType/cardinality/joinType/joinExpr）；属性 adh:hasProperty→adh:Property（dataType）；指标/维度归属 adh:hasMetric / adh:hasDimension（字典 bound_object_key 权威）；血缘 adh:boundTo→表；行为 adh:hasAction→adh:Action；规则 adh:Rule（governs/controls）；场景 adh:Scenario（usesObject/usesAction/usesRule）。命名图：源本体 ds:N、业务聚合图 ds:0、系统本体图 ds:-1。
+                        {t('k_4fdcc7597d')}
                       </div>
                     </div>
                     <CodeMirror
@@ -451,11 +450,11 @@ export default function OntologyGraphView() {
                     <div className="flex items-center gap-2">
                       <Button size="sm" onClick={handleRunSparql} disabled={sparqlRunning}>
                         {sparqlRunning ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-                        执行查询
+                        {t('k_4fb36a6129')}
                       </Button>
                       <Button size="sm" variant="outline" onClick={handleLoadSparqlPreview} disabled={sparqlLoading}>
                         {sparqlLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Code2 className="h-3.5 w-3.5 mr-1" />}
-                        查看静态 RDF/Turtle
+                        {t('k_f509520f3c')}
                       </Button>
                     </div>
                     {sparqlResult && (
@@ -487,7 +486,7 @@ export default function OntologyGraphView() {
                       </div>
                     )}
                     {sparqlResult && (
-                      <div className="text-xs text-muted-foreground">结果条数：{sparqlResult.count ?? 0}</div>
+                      <div className="text-xs text-muted-foreground">{t('k_bfe63997e6', { p0: sparqlResult.count ?? 0 })}</div>
                     )}
                     {sparqlPreview && (
                       <CodeMirror

@@ -34,20 +34,21 @@ import type { RailStats } from './home/ActionRail';
 import { stashQuestion } from './home/shared';
 import ThemeMenuItems from '@/components/ThemeMenuItems';
 import LanguageMenu from '@/components/LanguageMenu';
+import { t as tr } from '@/i18n/runtime';
 
 const ROLE_LABELS: Record<string, string> = {
-  admin: '管理员',
-  analyst: '分析师',
-  viewer: '查看者'};
+  admin: tr('k_b1dae9bc5c'),
+  analyst: tr('k_eff39d6862'),
+  viewer: tr('k_590ddb4376')};
 
 // 主题清单(与 WorkspaceLayout/SystemLayout 等保持同一套选项与文案)
 
 function greetingOf(): string {
   const h = new Date().getHours();
-  if (h < 5) return '夜深了';
-  if (h < 12) return '早上好';
-  if (h < 18) return '下午好';
-  return '晚上好';
+  if (h < 5) return tr('k_1609d6fb55');
+  if (h < 12) return tr('k_48f75a24bc');
+  if (h < 18) return tr('k_8c9bdf7d38');
+  return tr('k_6ab1f1775c');
 }
 
 // 全幅背景点缀(字模 screen_background·bg_home_ambient)：唯一保留的氛围件。
@@ -77,6 +78,8 @@ const DEFAULT_BG = {
  */
 export default function Home() {
   const { t } = useTranslation(['ui', 'menu']);
+  // 模块入口名与顶栏「模块切换」同源（menu 语言包），切语言即时生效
+  const { t: tMenu } = useTranslation('menu');
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const { brand, fetchBrand } = useBrandStore();
@@ -189,7 +192,7 @@ export default function Home() {
   const appName = brand.app_name || DEFAULT_APP_NAME;
   // 角色展示以服务端下发的可读名为准（自定义角色如「运营管理」不该露内部英文名）；
   // 登录瞬间 refreshUser 未回来前才用三档内置文案兜底
-  const roleLabel = user?.role_name || ROLE_LABELS[user?.role || ''] || user?.role || '未知角色';
+  const roleLabel = user?.role_name || ROLE_LABELS[user?.role || ''] || user?.role || tr('k_b3e53e4ee2');
   const dateText = new Date().toLocaleDateString('zh-CN', {
     year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'});
   const bgCfg = useVisConfig('bg_home_ambient', DEFAULT_BG);
@@ -245,20 +248,16 @@ export default function Home() {
               {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
               <DropdownMenuItem onClick={() => startGuide('welcome')}>
                 <Compass className="mr-2 h-4 w-4" />
-                新手引导
-              </DropdownMenuItem>
+                {tr('k_9a32c2ae4d')}</DropdownMenuItem>
               <DropdownMenuItem onClick={goProfile}>
                 <UserCircle className="mr-2 h-4 w-4" />
-                个人设置
-              </DropdownMenuItem>
+                {tr('k_6dd45781d5')}</DropdownMenuItem>
               <DropdownMenuItem onClick={goMemory}>
                 <Brain className="mr-2 h-4 w-4" />
-                我的记忆
-              </DropdownMenuItem>
+                {tr('k_ce2f3cc8d7')}</DropdownMenuItem>
               <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                 <LogOut className="mr-2 h-4 w-4" />
-                退出登录
-              </DropdownMenuItem>
+                {tr('k_44efd179aa')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -291,10 +290,10 @@ export default function Home() {
   const showData = menuAccess.ready && menuAccess.prefixAllowed('data:');
   const showContent = menuAccess.ready && menuAccess.prefixAllowed('content:');
   const mods: Array<{ key: string; icon: LucideIcon; title: string; desc: string; go: () => void }> = [
-    ...(showAsk ? [{ key: 'ws', icon: Folder, title: '工作空间', desc: '看板与智能问数', go: goWorkspace }] : []),
-    ...(showData ? [{ key: 'data', icon: Database, title: '数据中台', desc: '数据源 / 本体建模 / 安全', go: () => navigate('/data') }] : []),
-    ...(showContent ? [{ key: 'content', icon: Newspaper, title: '内容中心', desc: '创作 / 审核 / 发布', go: goContent }] : []),
-    ...(isAdmin ? [{ key: 'sys', icon: Settings, title: '系统配置', desc: '模型 / AS-BOT / 用户', go: () => navigate('/system') }] : []),
+    ...(showAsk ? [{ key: 'ws', icon: Folder, title: tMenu('switcher.workspace'), desc: tMenu('home.workspaceDesc'), go: goWorkspace }] : []),
+    ...(showData ? [{ key: 'data', icon: Database, title: tMenu('switcher.data'), desc: tMenu('home.dataDesc'), go: () => navigate('/data') }] : []),
+    ...(showContent ? [{ key: 'content', icon: Newspaper, title: tMenu('switcher.content'), desc: tMenu('home.contentDesc'), go: goContent }] : []),
+    ...(isAdmin ? [{ key: 'sys', icon: Settings, title: tMenu('switcher.system'), desc: tMenu('home.systemDesc'), go: () => navigate('/system') }] : []),
   ];
 
   return (
@@ -318,7 +317,7 @@ export default function Home() {
               <span>{t("ui:k_288bd8ca99")}</span>
             </div>
             <h1 className="mt-1.5 text-[22px] font-semibold leading-tight tracking-tight">
-              {greetingOf()}，{user?.username || '用户'}
+              {greetingOf()}，{user?.username || tr('k_9ba763ea34')}
               <Badge variant="secondary" className="ml-2.5 align-middle text-[11px] font-normal">{roleLabel}</Badge>
             </h1>
             <div className="mt-3.5 flex w-full max-w-[900px] items-center gap-2">
@@ -336,8 +335,7 @@ export default function Home() {
                 <kbd className="hidden flex-none rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">Enter</kbd>
               </div>
               <Button className="h-11 px-4" onClick={() => ask(draft)}>
-                <MessageSquare className="mr-1.5 h-4 w-4" />问数
-              </Button>
+                <MessageSquare className="mr-1.5 h-4 w-4" />{tr('k_9bea76571b')}</Button>
             </div>
             {!!questions.length && (
               <div className="mt-3 flex flex-wrap items-center gap-1.5">

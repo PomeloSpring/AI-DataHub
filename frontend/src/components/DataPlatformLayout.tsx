@@ -34,38 +34,42 @@ function toMenuKey(routeKey: string): string {
   return routeKey.replace('/data/', 'data:').replace(/^\//, '');
 }
 
+/**
+ * 侧栏菜单：`labelKey` / `section` 都是 menu 语言包的 key（渲染期解析，切语言即时重渲染）。
+ * key 与 adh_menu_registry.menu_key 逐字对应；显隐反查仍用 menu_key（权限码口径不动）。
+ */
 const DATA_PLATFORM_MENU_ITEMS = [
-  { section: '数据源' },
-  { key: '/data/datasources', icon: Database, label: '数据源管理' },
-  { key: '/data/tables', icon: FileText, label: '表 & 字段' },
-  { key: '/data/playground', icon: Terminal, label: 'SQL Playground' },
-  { section: '数据目录' },
-  { key: '/data/datasets', icon: Layers, label: '数据集' },
+  { section: 'section.dataSources' },
+  { key: '/data/datasources', icon: Database, labelKey: 'data.datasources' },
+  { key: '/data/tables', icon: FileText, labelKey: 'data.tables' },
+  { key: '/data/playground', icon: Terminal, labelKey: 'data.playground' },
+  { section: 'section.catalog' },
+  { key: '/data/datasets', icon: Layers, labelKey: 'data.datasets' },
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
-  { key: '/data/ontology', icon: Boxes, label: '本体建模' },
-  { key: '/data/asset-pool', icon: Inbox, label: '建模待办' },
+  { key: '/data/ontology', icon: Boxes, labelKey: 'data.ontology' },
+  { key: '/data/asset-pool', icon: Inbox, labelKey: 'data.assetPool' },
   /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：
      见 docker/mysql/sql_pairs_retire_migration.sql 与 App.tsx 的路由注释 */
   /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语义层语料, 归数据中台 */
-  { key: '/data/scenario', icon: Workflow, label: '分析场景' },
-  { key: '/data/metrics', icon: BarChart3, label: '指标与维度' },
-  { key: '/data/knowledge-graph', icon: Network, label: '关系图谱' },
+  { key: '/data/scenario', icon: Workflow, labelKey: 'data.scenario' },
+  { key: '/data/metrics', icon: BarChart3, labelKey: 'data.metrics' },
+  { key: '/data/knowledge-graph', icon: Network, labelKey: 'data.knowledgeGraph' },
   /* 决策建议（配置面）：条件引用指标/维度字典，本质是口径资产，与本段的
      「指标与维度」「本体建模」同族（不放系统配置——那是一级 AI 模板/凭据域）。
      菜单登记 data:decisions ↔ decision:manage，sort=10 排在本段最后。 */
-  { key: '/data/decisions', icon: Signpost, label: '决策建议' },
-  { section: '数据安全配置' },
-  { key: '/data/sensitive', icon: Shield, label: '敏感数据' },
-  { key: '/data/rls', icon: ShieldCheck, label: '安全策略' },
-  { section: '数据质量' },
-  { key: '/data/quality', icon: Activity, label: '质量概览' },
-  { key: '/data/quality/rules', icon: Settings, label: '质量规则' },
-  { key: '/data/lineage', icon: GitBranch, label: '数据血缘' },
-  { key: '/data/standards', icon: Ruler, label: '数据标准' },
-  { section: '数据同步' },
-  { key: '/data/sync', icon: RefreshCw, label: '同步任务' },
-  { key: '/data/sync/logs', icon: FileText, label: '执行日志' },
-  { key: '/data/udfs', icon: FunctionSquare, label: 'UDF 管理' },
+  { key: '/data/decisions', icon: Signpost, labelKey: 'data.decisions' },
+  { section: 'section.security' },
+  { key: '/data/sensitive', icon: Shield, labelKey: 'data.sensitive' },
+  { key: '/data/rls', icon: ShieldCheck, labelKey: 'data.rls' },
+  { section: 'section.quality' },
+  { key: '/data/quality', icon: Activity, labelKey: 'data.quality' },
+  { key: '/data/quality/rules', icon: Settings, labelKey: 'data.qualityRules' },
+  { key: '/data/lineage', icon: GitBranch, labelKey: 'data.lineage' },
+  { key: '/data/standards', icon: Ruler, labelKey: 'data.standards' },
+  { section: 'section.sync' },
+  { key: '/data/sync', icon: RefreshCw, labelKey: 'data.sync' },
+  { key: '/data/sync/logs', icon: FileText, labelKey: 'data.syncLogs' },
+  { key: '/data/udfs', icon: FunctionSquare, labelKey: 'data.udfs' },
 ];
 
 /** 骨架行数 = 菜单项总数（权限未就绪时的占位高度贴近真实菜单上限） */
@@ -73,6 +77,8 @@ const MENU_SKELETON_ROWS = DATA_PLATFORM_MENU_ITEMS.filter(item => 'key' in item
 
 export default function DataPlatformLayout() {
   const { t } = useTranslation('ui');
+  // 菜单 key 由常量数据驱动（动态 key），签名放宽以免逐处断言；重渲染订阅仍由 useTranslation 提供
+  const tMenu = useTranslation('menu').t as unknown as (key: string) => string;
   const [collapsed, setCollapsed] = useState(false);
   const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -117,7 +123,7 @@ export default function DataPlatformLayout() {
                   if (collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
                   return (
                     <div key={idx} className="px-3 pt-5 pb-1.5">
-                      <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section}</span>
+                      <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section ? tMenu(item.section) : ''}</span>
                     </div>
                   );
                 }
@@ -140,10 +146,10 @@ export default function DataPlatformLayout() {
                           } ${collapsed ? 'justify-center' : ''}`}
                       >
                         <Icon className="h-4 w-4 flex-shrink-0" />
-                        {!collapsed && <span className="truncate">{item.label}</span>}
+                        {!collapsed && <span className="truncate">{tMenu(item.labelKey)}</span>}
                       </button>
                     </TooltipTrigger>
-                    {collapsed && <TooltipContent side="right">{item.label}</TooltipContent>}
+                    {collapsed && <TooltipContent side="right">{tMenu(item.labelKey)}</TooltipContent>}
                   </Tooltip>
                 );
               })}
@@ -182,7 +188,7 @@ export default function DataPlatformLayout() {
                   if ('section' in item) {
                     return (
                       <div key={idx} className="px-4 pt-5 pb-1.5">
-                        <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section}</span>
+                        <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section ? tMenu(item.section) : ''}</span>
                       </div>
                     );
                   }
@@ -200,7 +206,7 @@ export default function DataPlatformLayout() {
                         }`}
                     >
                       <Icon className="h-5 w-5 flex-shrink-0" />
-                      <span>{item.label}</span>
+                      <span>{tMenu(item.labelKey)}</span>
                     </button>
                   );
                 })}
@@ -255,19 +261,19 @@ export default function DataPlatformLayout() {
                 {/* 手动重看入口: 不受 guide:all 静音影响, 永远可用 */}
                 <DropdownMenuItem onClick={() => startGuide('welcome')}>
                   <Compass className="h-4 w-4 mr-2" />
-                  新手引导
+                  {tMenu('userMenu.guide')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate('/data/profile')}>
                   <UserCircle className="h-4 w-4 mr-2" />
-                  个人设置
+                  {tMenu('userMenu.profile')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate('/data/memory')}>
                   <Brain className="h-4 w-4 mr-2" />
-                  我的记忆
+                  {tMenu('userMenu.memory')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  退出登录
+                  {tMenu('userMenu.logout')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

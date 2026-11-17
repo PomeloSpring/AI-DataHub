@@ -33,7 +33,7 @@ export default function ContentHome() {
     if (first) navigate(first.path, { replace: true });
   }, [menuAccess, navigate]);
 
-  if (!menuAccess.ready) return <LoadingRow text="正在确认你的内容权限" />;
+  if (!menuAccess.ready) return <LoadingRow text={t('k_2dc486222b')} />;
 
   const hasAny = ORDER.some(t => menuAccess.allowed(t.menu));
   if (hasAny) return null;   // 跳转中，不闪空态
@@ -41,7 +41,7 @@ export default function ContentHome() {
   return (
     <EmptyState
       title={t("k_2012a6d21f")}
-      hint="内容创作需要「编辑内容条目」权限，审核与发布各有独立权限。请联系管理员在「角色与菜单」中配置。"
+      hint={t('k_f8e7f0cb17')}
     />
   );
 }

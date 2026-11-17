@@ -24,12 +24,13 @@ import { Plus, Edit, Trash2, RefreshCw } from 'lucide-react';
 import { governanceApi, type DataStandard } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr , t as tr } from '@/i18n/runtime';
 
 const TYPE_MAP: Record<string, { label: string; color: string }> = {
-  naming: { label: '命名规范', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  encoding: { label: '编码规范', color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' },
-  measurement: { label: '度量规范', color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
-  format: { label: '格式规范', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  naming: { label: i18nTr('k_4d443c5242'), color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  encoding: { label: i18nTr('k_954c95280e'), color: 'bg-purple-500/10 text-purple-500 border-purple-500/20' },
+  measurement: { label: i18nTr('k_d6e94ede0c'), color: 'bg-orange-500/10 text-orange-500 border-orange-500/20' },
+  format: { label: i18nTr('k_b5720ccbe8'), color: 'bg-green-500/10 text-green-500 border-green-500/20' },
 };
 
 interface StandardForm {
@@ -68,7 +69,7 @@ export default function Standards() {
       setStandards(res.data.items || res.data || []);
       setTotal(res.data.total || 0);
     } catch {
-      toast.error('加载数据标准失败');
+      toast.error(t('k_0d165565bf'));
     } finally {
       setLoading(false);
     }
@@ -96,14 +97,14 @@ export default function Standards() {
   };
 
   const handleSave = async () => {
-    if (!form.name.trim()) { toast.error('请输入标准名称'); return; }
-    if (!form.standard_type) { toast.error('请选择标准类型'); return; }
+    if (!form.name.trim()) { toast.error(t('k_09ee176868')); return; }
+    if (!form.standard_type) { toast.error(t('k_e8d3750196')); return; }
     let parsedConfig: Record<string, any>;
     try {
       parsedConfig = JSON.parse(form.rule_config);
       setJsonError('');
     } catch {
-      setJsonError('规则配置 JSON 格式错误');
+      setJsonError(tr('k_c5a7652815'));
       return;
     }
     const payload = {
@@ -116,15 +117,15 @@ export default function Standards() {
     try {
       if (editStandard) {
         await governanceApi.updateStandard(editStandard.id, payload);
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await governanceApi.createStandard(payload);
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       loadStandards();
     } catch {
-      toast.error('保存失败');
+      toast.error(t('k_6de920b4e4'));
     }
   };
 
@@ -132,11 +133,11 @@ export default function Standards() {
     if (!deleteTarget) return;
     try {
       await governanceApi.deleteStandard(deleteTarget.id);
-      toast.success('已删除');
+      toast.success(t('k_5cc232620c'));
       setDeleteTarget(null);
       loadStandards();
     } catch {
-      toast.error('删除失败');
+      toast.error(t('k_acf0664a54'));
     }
   };
 
@@ -144,10 +145,10 @@ export default function Standards() {
     try {
       // Use update to toggle is_active
       await governanceApi.updateStandard(standard.id, { is_active: !standard.is_active });
-      toast.success(standard.is_active ? '已禁用' : '已启用');
+      toast.success(standard.is_active ? t('k_0fe5a98e9f') : t('k_53ace4305f'));
       loadStandards();
     } catch {
-      toast.error('操作失败');
+      toast.error(t('k_5fa802bef5'));
     }
   };
 
@@ -161,11 +162,11 @@ export default function Standards() {
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadStandards}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
           <Button size="sm" onClick={openCreate}>
             <Plus className="w-4 h-4 mr-1" />
-            新建标准
+            {t('k_555f2a12b8')}
           </Button>
         </div>
       </div>
@@ -187,13 +188,13 @@ export default function Standards() {
             {loading ? (
               <tr>
                 <td colSpan={6} className="p-8 text-center text-muted-foreground">
-                  加载中...
+                  {t('k_26b5bd4947')}
                 </td>
               </tr>
             ) : standards.length === 0 ? (
               <tr>
                 <td colSpan={6} className="p-8 text-center text-muted-foreground">
-                  暂无数据标准
+                  {t('k_42bc07f873')}
                 </td>
               </tr>
             ) : (
@@ -263,11 +264,11 @@ export default function Standards() {
           onInteractOutside={(e) => e.preventDefault()}
         >
           <DialogHeader>
-            <DialogTitle>{editStandard ? '编辑数据标准' : '新建数据标准'}</DialogTitle>
+            <DialogTitle>{editStandard ? t('k_832f332943') : t('k_d6f71ba848')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium">标准名称 *</label>
+              <label className="text-sm font-medium">{t('k_62f403bc0b')}</label>
               <Input
                 className="mt-1"
                 value={form.name}
@@ -276,7 +277,7 @@ export default function Standards() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium">标准类型 *</label>
+              <label className="text-sm font-medium">{t('k_8ef276b9cf')}</label>
               <Select
                 value={form.standard_type}
                 onValueChange={v => setForm(f => ({ ...f, standard_type: v }))}
@@ -302,7 +303,7 @@ export default function Standards() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium">规则配置 (JSON)</label>
+              <label className="text-sm font-medium">{t('k_f9ae4186e1')}</label>
               <textarea
                 className="mt-1 w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 value={form.rule_config}
@@ -316,7 +317,7 @@ export default function Standards() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave}>{editStandard ? '更新' : '创建'}</Button>
+            <Button onClick={handleSave}>{editStandard ? t('k_d9db02d07a') : t('k_fcbd093292')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -327,8 +328,7 @@ export default function Standards() {
           <DialogHeader>
             <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
-              确定要删除数据标准「{deleteTarget?.name}」吗？
-            </DialogDescription>
+              {t('k_790f88abab', { p0: deleteTarget?.name })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>

@@ -25,7 +25,7 @@ import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useThemeStore } from '@/stores/themeStore';
 import { applyScreenComponent, themePackExact } from '@/lib/dashboardDesign';
 import { useTranslation } from 'react-i18next';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 
 export default function Dashboard() {
   const { t } = useTranslation('ui');
@@ -67,7 +67,7 @@ export default function Dashboard() {
     if (lock.current) return;
     lock.current = true; setBusy(true);
     // 透出服务端错因(如「仅看板属主或管理员可修改」), 不把权限拒绝吞成笼统失败
-    try { await action(); } catch (e: any) { toast.error(e?.response?.data?.detail || e?.message || '操作失败，请重试'); }
+    try { await action(); } catch (e: any) { toast.error(e?.response?.data?.detail || e?.message || tr('k_915593a1d4')); }
     finally { lock.current = false; setBusy(false); }
   };
   // 可写性由服务端裁决(editable): 角色授予的可见权不含编辑权, 无编辑权不渲染写入口
@@ -112,14 +112,14 @@ export default function Dashboard() {
         {/* 标签筛选：独立下拉框（与状态框同规格、同处筛选栏）；选项 = 全部看板已用标签去重并集，单选命中即显示 */}
         <select aria-label={t("k_4c5844e33d")} className="h-10 rounded-md border bg-background px-3 text-sm" disabled={allTags.length === 0}
           value={selectedTags[0] || 'all'} onChange={e => setSelectedTags(e.target.value === 'all' ? [] : [e.target.value])}>
-          <option value="all">{allTags.length === 0 ? '全部标签（暂无）' : '全部标签'}</option>
+          <option value="all">{allTags.length === 0 ? tr('k_c0a19ca7ac') : tr('k_ffd92f5524')}</option>
           {allTags.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         {/* 选中态走 lib/toggleState 那一份口径：旧写法只把 variant 换成 secondary，而亮色主题下
             --secondary 近乎白底，落在卡片上看不出有没有选中。这里除底色/文字/字重/ring 外，
             再给 aria-pressed（语义）与实心星形（图标）两层线索，不靠单一色相传达状态。 */}
         <Button variant="ghost" aria-pressed={favoritesOnly} className={favoritesOnly ? TOGGLE_ACTIVE_CLASS : ''} onClick={() => setFavoritesOnly(v => !v)}><Star className={`mr-2 h-4 w-4 ${favoritesOnly ? 'fill-current' : ''}`} />{t("k_70a5ae0f89")}</Button>
-        <span className="ml-auto text-xs text-muted-foreground">{filtered.length} 个看板</span>
+        <span className="ml-auto text-xs text-muted-foreground">{filtered.length} {tr('k_2adc5b9af2')}</span>
       </div>
       {/* 仅此区滚动。relative 不是装饰：卡片内绝对定位后代若祖先链无定位元素，会以 ICB 为包含块
           越过裁剪把文档撑高，滚轮便把整个系统页面卷走；滚动口自身作包含块才会被裁在这里。 */}
@@ -127,17 +127,17 @@ export default function Dashboard() {
       {library.error && <div role="alert" className="text-sm text-muted-foreground">{t("k_d7507f81bc")}<Button variant="link" onClick={library.refresh}>{t("k_e2d53a6d3a")}</Button></div>}
       {store.error && <div role="alert">{store.error}<Button variant="link" onClick={() => store.loadDashboards()}>{t("k_e2d53a6d3a")}</Button></div>}
       {store.loading && !store.dashboards.length ? <p>{t("k_5ff053b763")}</p> : filtered.length === 0 ?
-        <div className="rounded-xl border border-dashed py-24 text-center"><LayoutDashboard className="mx-auto mb-4 h-10 w-10 text-muted-foreground" /><p className="font-medium">{store.dashboards.length ? '没有符合条件的看板' : '从第一个看板开始'}</p><p className="mt-2 text-sm text-muted-foreground">{t("k_f5c2fc20b1")}</p></div> :
+        <div className="rounded-xl border border-dashed py-24 text-center"><LayoutDashboard className="mx-auto mb-4 h-10 w-10 text-muted-foreground" /><p className="font-medium">{store.dashboards.length ? tr('k_72f9535253') : tr('k_38ab45c46b')}</p><p className="mt-2 text-sm text-muted-foreground">{t("k_f5c2fc20b1")}</p></div> :
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {filtered.map(db => <article key={db.id} className="group flex h-full flex-col overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
-            <button type="button" aria-label={`预览 ${db.name}`} className="block w-full border-b" onClick={() => navigate(`/system/dashboards/${db.id}`)}>
+            <button type="button" aria-label={tr('k_06447f54c9', { p0: db.name })} className="block w-full border-b" onClick={() => navigate(`/system/dashboards/${db.id}`)}>
               {/* 预览槽固定高度（与工作区数据看板同一口径）：长画布的看板不得把卡片撑高一屏 */}
               <DashboardThumbnailFrame dashboard={db}><DashboardThumbnail dashboard={db} items={library.items} /></DashboardThumbnailFrame>
             </button>
             <div className="flex flex-1 flex-col gap-1.5 px-3 py-2">
-              <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold" title={db.name}>{db.name}</h2><p className="mt-0.5 truncate text-xs text-muted-foreground">{db.description || '暂无描述'}</p></div>
-                <button aria-label={`${store.favorites.includes(db.id) ? '取消收藏' : '收藏'} ${db.name}`} className="p-1" onClick={() => store.toggleFavorite(db.id)}><Star className={`h-4 w-4 ${store.favorites.includes(db.id) ? 'fill-current' : 'text-muted-foreground'}`} /></button>
-                <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label={`${db.name} 更多操作`} size="icon" variant="ghost" className="h-6 w-6"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
+              <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold" title={db.name}>{db.name}</h2><p className="mt-0.5 truncate text-xs text-muted-foreground">{db.description || tr('k_8c3ec9dfd5')}</p></div>
+                <button aria-label={`${store.favorites.includes(db.id) ? tr('k_f22cec2866') : tr('k_ae336cd047')} ${db.name}`} className="p-1" onClick={() => store.toggleFavorite(db.id)}><Star className={`h-4 w-4 ${store.favorites.includes(db.id) ? 'fill-current' : 'text-muted-foreground'}`} /></button>
+                <DropdownMenu><DropdownMenuTrigger asChild><Button aria-label={tr('k_1aa146b002', { p0: db.name })} size="icon" variant="ghost" className="h-6 w-6"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
                   {canEdit(db) && <DropdownMenuItem disabled={busy} onClick={() => setNameDialog({ id: db.id, name: db.name })}><Edit className="mr-2 h-4 w-4" />{t("k_1cd80fd7a8")}</DropdownMenuItem>}
                   <DropdownMenuItem disabled={busy} onClick={() => run(() => store.copyDashboard(db.id))}><Copy className="mr-2 h-4 w-4" />{t("k_c818d130ef")}</DropdownMenuItem>
                   {canEdit(db) && <DropdownMenuItem disabled={busy} onClick={() => run(() => store.setDefault(db.id))}><Star className="mr-2 h-4 w-4" />{t("k_536a009a9b")}</DropdownMenuItem>}
@@ -148,7 +148,7 @@ export default function Dashboard() {
                   {canEdit(db) && <DropdownMenuItem disabled={busy || !themePackExact(theme, library.items)} onClick={() => run(async () => {
                     const packComp = themePackExact(theme, library.items);
                     if (packComp) await store.updateDashboard(db.id, { filters: applyScreenComponent(db.filters, packComp) } as any);
-                  })}><Star className="mr-2 h-4 w-4" />固化当前主题({theme})</DropdownMenuItem>}
+                  })}><Star className="mr-2 h-4 w-4" />{tr('k_9aee42d2ca')}{theme})</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => store.setCurrent(db.id)}>{t("k_c8b927550f")}</DropdownMenuItem>
                   {canEdit(db) && <DropdownMenuSeparator />}
                   {canEdit(db) && <DropdownMenuItem disabled={busy || store.dashboards[0]?.id === db.id} onClick={() => move(db.id, -1)}><ArrowUp className="mr-2 h-4 w-4" />{t("k_8a0c839791")}</DropdownMenuItem>}
@@ -158,11 +158,11 @@ export default function Dashboard() {
                 </DropdownMenuContent></DropdownMenu>
               </div>
               {/* 徽标与更新时间合成一行（与 DashboardCatalogCards 的 ROW_CLS 同口径）：卡片不再上下偏厚 */}
-              <div className="flex min-h-5 items-center gap-2 overflow-hidden text-xs"><Badge variant="secondary" className="shrink-0">{DASHBOARD_STATUS_MAP[db.status || 'designing']?.label || '设计中'}</Badge>{db.is_default && <Badge variant="outline" className="shrink-0">{t("k_c8d09cf955")}</Badge>}<span className="shrink-0 self-center text-muted-foreground">{db.charts.filter(c => !c.chart_type.startsWith('widget_')).length} 个图表</span><span aria-hidden className="shrink-0 text-muted-foreground/60">·</span><span className="min-w-0 truncate text-muted-foreground" title={`更新于 ${db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}`}>更新于 {db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}</span></div>
+              <div className="flex min-h-5 items-center gap-2 overflow-hidden text-xs"><Badge variant="secondary" className="shrink-0">{DASHBOARD_STATUS_MAP[db.status || 'designing']?.label || tr('k_27dd25e68c')}</Badge>{db.is_default && <Badge variant="outline" className="shrink-0">{t("k_c8d09cf955")}</Badge>}<span className="shrink-0 self-center text-muted-foreground">{db.charts.filter(c => !c.chart_type.startsWith('widget_')).length} {tr('k_00f3d03679')}</span><span aria-hidden className="shrink-0 text-muted-foreground/60">·</span><span className="min-w-0 truncate text-muted-foreground" title={tr('k_d8b63a4010', { p0: db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—' })}>{tr('k_3a6d9cd555')}{' '}{db.updated_at ? new Date(db.updated_at).toLocaleString('zh-CN') : '—'}</span></div>
               {/* 标签行（有标签才渲染）：同类看板靠标签一眼区分；最多展示 4 个，余下 +N */}
               {db.tags && db.tags.length > 0 && (
                 <div className="flex flex-wrap gap-1 text-[11px]">
-                  {db.tags.slice(0, 4).map(t => <span key={t} title={`标签：${t}`} className="max-w-[110px] truncate rounded bg-muted px-1.5 py-0.5 text-muted-foreground">#{t}</span>)}
+                  {db.tags.slice(0, 4).map(t => <span key={t} title={tr('k_967a7eee6f', { p0: t })} className="max-w-[110px] truncate rounded bg-muted px-1.5 py-0.5 text-muted-foreground">#{t}</span>)}
                   {db.tags.length > 4 && <span className="text-muted-foreground">+{db.tags.length - 4}</span>}
                 </div>
               )}
@@ -178,14 +178,14 @@ export default function Dashboard() {
           <DashboardGroupsAdmin />
         </TabsContent>
       </Tabs>
-    <Dialog open={!!nameDialog} onOpenChange={open => { if (!open && !busy) setNameDialog(null); }}><DialogContent><DialogHeader><DialogTitle>{nameDialog?.id ? '重命名看板' : '新建看板'}</DialogTitle><DialogDescription>新看板默认使用 1920 × 1080 画布。</DialogDescription></DialogHeader><Input autoFocus aria-label={t("k_2bfc55aef9")} placeholder={t("k_9bebfe670e")} value={nameDialog?.name || ''} onChange={e => setNameDialog(d => d && ({ ...d, name: e.target.value }))} /><DialogFooter><Button disabled={busy || !nameDialog?.name.trim()} onClick={() => run(async () => {
+    <Dialog open={!!nameDialog} onOpenChange={open => { if (!open && !busy) setNameDialog(null); }}><DialogContent><DialogHeader><DialogTitle>{nameDialog?.id ? tr('k_8cca6731d2') : tr('k_1f4018dc56')}</DialogTitle><DialogDescription>{tr('k_84b05a86cb')}</DialogDescription></DialogHeader><Input autoFocus aria-label={t("k_2bfc55aef9")} placeholder={t("k_9bebfe670e")} value={nameDialog?.name || ''} onChange={e => setNameDialog(d => d && ({ ...d, name: e.target.value }))} /><DialogFooter><Button disabled={busy || !nameDialog?.name.trim()} onClick={() => run(async () => {
       if (!nameDialog) return;
       if (nameDialog.id) { await store.updateDashboard(nameDialog.id, { name: nameDialog.name.trim() }); setNameDialog(null); }
       else { const id = await store.createDashboard(nameDialog.name.trim(), workspaceId ? Number(workspaceId) : undefined); setNameDialog(null); edit(id); }
-    })}>{busy ? '保存中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
+    })}>{busy ? tr('k_6644f06197') : tr('k_e83a256e4f')}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={deleteId !== null} onOpenChange={open => { if (!open && !busy) setDeleteId(null); }}><DialogContent><DialogHeader><DialogTitle>{t("k_346806cc8d")}</DialogTitle><DialogDescription>{t("k_5eba1e1f5a")}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={() => setDeleteId(null)}>{t("k_4d0b4688c7")}</Button><Button variant="destructive" disabled={busy} onClick={() => run(async () => { if (deleteId !== null) await store.deleteDashboard(deleteId); setDeleteId(null); })}>{t("k_3c06abe116")}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={!!settings} onOpenChange={open => { if (!open) setSettingsId(null); }}><DialogContent className="max-w-2xl max-h-[90vh] overflow-auto"><DialogHeader><DialogTitle>{t("k_274fe542c9")}</DialogTitle></DialogHeader>{settings && <DashboardSettings key={settings.id} dashboard={settings} onClose={() => setSettingsId(null)} />}</DialogContent></Dialog>
-    <Dialog open={visibleRolesId !== null} onOpenChange={open => { if (!open) setVisibleRolesId(null); }}><DialogContent className="max-w-lg max-h-[85vh] overflow-auto"><DialogHeader><DialogTitle>{t("k_292665dc6b")}</DialogTitle><DialogDescription>勾选可查看该看板的角色；未勾选任何角色 = 除 admin 外无人可见（fail-closed）。看板内图表数据仍按查看者实时治理。</DialogDescription></DialogHeader>{visibleRolesId !== null && <DashboardVisibleRoles key={visibleRolesId} dashboardId={visibleRolesId} onClose={() => setVisibleRolesId(null)} />}</DialogContent></Dialog>
+    <Dialog open={visibleRolesId !== null} onOpenChange={open => { if (!open) setVisibleRolesId(null); }}><DialogContent className="max-w-lg max-h-[85vh] overflow-auto"><DialogHeader><DialogTitle>{t("k_292665dc6b")}</DialogTitle><DialogDescription>{tr('k_93c3044e84')}</DialogDescription></DialogHeader>{visibleRolesId !== null && <DashboardVisibleRoles key={visibleRolesId} dashboardId={visibleRolesId} onClose={() => setVisibleRolesId(null)} />}</DialogContent></Dialog>
     <DashboardTemplates open={templates} onClose={() => setTemplates(false)} items={library.items} onApply={async template => { const id = await store.createFromTemplate(template); setTemplates(false); edit(id); }} />
   </div>;
 }
@@ -211,7 +211,7 @@ function DashboardVisibleRoles({ dashboardId, onClose }: { dashboardId: number; 
         setRoles(Array.isArray(roleData) ? roleData : []);
         setSelected(Array.isArray(visData) ? visData.map((r: any) => r.role_id) : []);
       } catch {
-        if (alive) toast.error('加载可见角色失败，请重试');
+        if (alive) toast.error(tr('k_d60d5409d5'));
       } finally {
         if (alive) setLoading(false);
       }
@@ -228,10 +228,10 @@ function DashboardVisibleRoles({ dashboardId, onClose }: { dashboardId: number; 
     lock.current = true; setSaving(true);
     try {
       await client.put(`/dashboard/${dashboardId}/visible-roles`, { role_ids: selected });
-      toast.success('可见角色已保存');
+      toast.success(tr('k_ed982e06f7'));
       onClose();
     } catch {
-      toast.error('保存失败');
+      toast.error(tr('k_6de920b4e4'));
     } finally {
       lock.current = false; setSaving(false);
     }
@@ -254,7 +254,7 @@ function DashboardVisibleRoles({ dashboardId, onClose }: { dashboardId: number; 
       </div>
     )}
     <p className="text-xs text-muted-foreground">{t("k_248306af24")}</p>
-    <Button disabled={loading || saving} onClick={save}>{saving ? '保存中…' : '保存'}</Button>
+    <Button disabled={loading || saving} onClick={save}>{saving ? tr('k_6644f06197') : tr('k_fadf24dbc5')}</Button>
   </div>;
 }
 
@@ -285,12 +285,12 @@ function DashboardSettings({ dashboard, onClose }: { dashboard: DashboardModel; 
   const save = async () => {
     if (lock.current) return;
     const valid = (items: { name: string }[]) => items.every(p => /^[A-Za-z_][\w]*$/.test(p.name)) && new Set(items.map(p => p.name)).size === items.length;
-    if (!valid(params) || !valid(pageParams)) { toast.error('参数名须为唯一的英文字母、数字或下划线，且不能以数字开头'); return; }
+    if (!valid(params) || !valid(pageParams)) { toast.error(tr('k_80aabfea3c')); return; }
     lock.current = true; setSaving(true);
     // 轮播间隔设置项随看板管理页的轮播入口一并移除：该值已无消费方（大屏页的间隔在播放菜单里即时选），
     // 留着就是“能填但不起作用”的死输入口；carousel_interval 字段本身仍在库/接口里，不写即保持原值。
-    try { await updateDashboard(dashboard.id, { status, params, page_params: pageParams, tags }); toast.success('设置已保存'); onClose(); }
-    catch { toast.error('保存失败，设置已保留'); } finally { lock.current = false; setSaving(false); }
+    try { await updateDashboard(dashboard.id, { status, params, page_params: pageParams, tags }); toast.success(tr('k_669e3a20e8')); onClose(); }
+    catch { toast.error(tr('k_15ce5a022b')); } finally { lock.current = false; setSaving(false); }
   };
   return <div className="space-y-5"><p className="text-xs text-muted-foreground">{t("k_5461571ecc")}</p>
     <div className="flex flex-wrap gap-2">{Object.entries(DASHBOARD_STATUS_MAP).map(([key, value]) => <Button key={key} variant={status === key ? 'default' : 'outline'} disabled={saving} onClick={() => setStatus(key as DashboardStatus)}>{value.label}</Button>)}</div>
@@ -311,7 +311,7 @@ function DashboardSettings({ dashboard, onClose }: { dashboard: DashboardModel; 
             const on = tags.includes(t);
             return (
               <button key={t} type="button" aria-pressed={on} disabled={saving} onClick={() => toggleTag(t)}
-                title={on ? `从本看板移除「${t}」` : `添加标签「${t}」`}
+                title={on ? tr('k_219986f46a', { p0: t }) : tr('k_d0156f3f67', { p0: t })}
                 className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${on ? TOGGLE_ACTIVE_CLASS : 'hover:bg-muted'}`}>
                 #{t}
               </button>
@@ -324,7 +324,7 @@ function DashboardSettings({ dashboard, onClose }: { dashboard: DashboardModel; 
           {tags.map(t => (
             <span key={t} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs">
               #{t}
-              <button type="button" aria-label={`移除标签 ${t}`} disabled={saving} className="text-muted-foreground hover:text-foreground" onClick={() => setTags(prev => prev.filter(x => x !== t))}>×</button>
+              <button type="button" aria-label={tr('k_b409ff9925', { p0: t })} disabled={saving} className="text-muted-foreground hover:text-foreground" onClick={() => setTags(prev => prev.filter(x => x !== t))}>×</button>
             </span>
           ))}
         </div>
@@ -332,6 +332,6 @@ function DashboardSettings({ dashboard, onClose }: { dashboard: DashboardModel; 
     </div>
     <DashboardParamsManager params={params} pageParams={pageParams} charts={dashboard.charts || []}
       onChange={next => { setParams(next.params); setPageParams(next.page_params); }} />
-    <Button disabled={saving} onClick={save}>{saving ? '保存中…' : '保存设置'}</Button>
+    <Button disabled={saving} onClick={save}>{saving ? tr('k_6644f06197') : tr('k_4323be7239')}</Button>
   </div>;
 }

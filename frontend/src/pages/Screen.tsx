@@ -19,6 +19,7 @@ import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
 import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // 大屏播放范围 = 仪表盘组(组内 ∩ 角色可见 enabled); group=0/缺省(管理域入口)=全部可见 enabled。
 // 兼容旧链接的 workspace_id 参数(语义迁移为组)。
@@ -96,7 +97,7 @@ function ScreenPlayer() {
         // 登记当前看板：参数栏、查询/导出控件与图表重查询都以 store 上下文为唯一通道
         useDashboardStore.getState().adoptDashboard(data);
       })
-      .catch(() => { if (!cancelled) setError('加载看板失败'); })
+      .catch(() => { if (!cancelled) setError(tr('k_0da4300f53')); })
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [currentMeta?.id]);
@@ -104,7 +105,7 @@ function ScreenPlayer() {
     let cancelled = false; setReady(false); setError('');
     fetchVisibleGroups()
       .then(gs => { if (!cancelled) { setGroups(gs); setReady(true); } })
-      .catch(() => { if (!cancelled) { setError('加载仪表盘组失败'); setReady(true); } });
+      .catch(() => { if (!cancelled) { setError(tr('k_4c205276c7')); setReady(true); } });
     return () => { cancelled = true; };
   }, [retry]);
   // 顶栏“刷新数据”：GET /dashboard/{id} 只回 data_cache（DB 缓存），必须逐图 POST
@@ -139,7 +140,7 @@ function ScreenPlayer() {
   useEffect(() => { showControls(); return () => clearTimeout(timer.current); }, []);
   // 无 board id 直接进大屏：从清单首块板起播（组内 = 管理端编排首位，与「数据看板」点组合卡同一口径）
   if (!dashboardId && ready && !error && enabled.length) return <Navigate to={`/screen/${enabled[0].id}${location.search}`} replace state={location.state} />;
-  if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? '正在加载…' : error || '该看板不存在、未启用或不在你的可见范围'}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>{t("k_e2d53a6d3a")}</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>{t("k_8d2906babb")}</Button></div>;
+  if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? tr('k_37dc7bfce2') : error || tr('k_e78bf30184')}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>{t("k_e2d53a6d3a")}</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>{t("k_8d2906babb")}</Button></div>;
   return <div ref={root} className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background" onMouseMove={showControls} onTouchStart={showControls}>
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
       <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">{t("k_4acd359b51")}</span></Button>
@@ -147,9 +148,9 @@ function ScreenPlayer() {
       <DashboardAutoRefresh key={detail.id} onRefresh={refreshCharts} loading={detailLoading} menuItems={<>
         <div className="space-y-2 p-2">
           <label className="block text-xs">{t("k_48293dd531")}<select aria-label={t("k_48293dd531")} className="mt-1 w-full rounded border bg-background p-2" value={detail.id} onChange={e => navigate(`/screen/${e.target.value}${location.search}`, { replace: true, state: location.state })}>{enabled.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
-          <label className="block text-xs">{t("k_629780a2f8")}<select aria-label={t("k_629780a2f8")} className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? `每 ${v} 秒` : '关闭轮播'}</option>)}</select></label>
+          <label className="block text-xs">{t("k_629780a2f8")}<select aria-label={t("k_629780a2f8")} className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? tr('k_551efa4fd5', { p0: v }) : tr('k_5ecd36af5a')}</option>)}</select></label>
         </div>
-        <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? '恢复轮播' : '暂停轮播'}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? tr('k_36f0bdaef1') : tr('k_8f1cce00c7')}</DropdownMenuItem>
         {enabled.length > 1 && <><DropdownMenuItem onClick={() => go(-1)}>{t("k_2215cee2a6")}</DropdownMenuItem><DropdownMenuItem onClick={() => go(1)}>{t("k_6dc0e11df5")}</DropdownMenuItem></>}
       </>} />
       {/* 入口存在与否 = 面板里真的能改东西（与 DashboardRuntimeParams 同判据）：
@@ -166,9 +167,7 @@ function ScreenPlayer() {
         字模与坐标轴标签跟着缩到不可读（用户反馈“大屏播放限制了页面的一半区域”）。
         断点不写死：由容器实际宽度分档（≥1920 落大屏 64 列，否则桌面/平板），拼接屏与笔记本预览各自适配。 */}
     {transitionClash && <p role="alert" className="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
-      切板转场 {motion.transition.durationMs}ms 不短于轮播间隔 {interval}s，转场会被下一块看板打断：
-      请在「编辑外观与数据 → 动效」缩短转场时长，或拉长轮播间隔。
-    </p>}
+      {tr('k_de2b6fd62b')}{' '}{motion.transition.durationMs}{tr('k_9cfcf18019')}{' '}{interval}{tr('k_acec9dd09c')}</p>}
     {/* key 挂在被动画的容器上：换一块板 = 该层重挂载一次，转场才会重播；
         数据刷新/参数变更不会重挂载，因此也不会重播（入场只属于"出现"这一刻） */}
     <div key={detail.id} className={cn('relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden', transition)} style={motionCss}>

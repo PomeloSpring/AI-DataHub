@@ -39,30 +39,33 @@ interface ContentMenuItem {
    */
   menu?: string;
   icon?: LucideIcon;
-  label?: string;
+  /** menu 语言包 key（渲染期解析，切语言即时重渲染） */
+  labelKey?: string;
 }
 
 // 内容中心只管 创作 → 审核 → 发布；资讯门户是独立模块（尚未开发），不在这里给入口。
 // 「审核发布」已于 2026-11-13 并入「内容管理」（审核与发布只是状态区别，都在行上发生）：
 // 菜单登记同步置为 is_active=0，待审角标改挂在内容管理上。
 const CONTENT_MENU_ITEMS: ContentMenuItem[] = [
-  { section: '我的工作台' },
-  { key: '/content/drafts', menu: 'content:drafts', icon: FileEdit, label: '我的草稿' },
-  { section: '内容生产' },
-  { key: '/content/manage', menu: 'content:manage', icon: Inbox, label: '内容管理' },
-  { section: '编排配置' },
-  { key: '/content/taxonomy', menu: 'content:taxonomy', icon: Tags, label: '栏目与标签' },
+  { section: 'section.contentWorkbench' },
+  { key: '/content/drafts', menu: 'content:drafts', icon: FileEdit, labelKey: 'content.drafts' },
+  { section: 'section.contentProduction' },
+  { key: '/content/manage', menu: 'content:manage', icon: Inbox, labelKey: 'content.manage' },
+  { section: 'section.contentConfig' },
+  { key: '/content/taxonomy', menu: 'content:taxonomy', icon: Tags, labelKey: 'content.taxonomy' },
   // 知识运营：知识库是一个目录，这里看/改目录里的文档（kbdoc:*）；
   // 知识库本身的管理（建库/绑 AS-BOT/配凭据）仍在系统配置，入口不搬。menu 行与
   // adh_menu_registry 的 content:kb-docs 逐字对应（section/sort 也同口径）。
-  { section: '知识运营' },
-  { key: '/content/kb-docs', menu: 'content:kb-docs', icon: FolderTree, label: '知识库文档' },
+  { section: 'section.contentKnowledge' },
+  { key: '/content/kb-docs', menu: 'content:kb-docs', icon: FolderTree, labelKey: 'content.kbDocs' },
 ];
 
 const MENU_SKELETON_ROWS = CONTENT_MENU_ITEMS.filter(item => 'key' in item).length;
 
 export default function ContentLayout() {
   const { t } = useTranslation('ui');
+  // 菜单 key 由常量数据驱动（动态 key），签名放宽以免逐处断言；重渲染订阅仍由 useTranslation 提供
+  const tMenu = useTranslation('menu').t as unknown as (key: string) => string;
   const [collapsed, setCollapsed] = useState(false);
   const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -106,7 +109,7 @@ export default function ContentLayout() {
       if (!mobile && collapsed) return <div key={idx} className="my-2 mx-2 border-t border-sidebar-border" />;
       return (
         <div key={idx} className={mobile ? 'px-4 pt-5 pb-1.5' : 'px-3 pt-5 pb-1.5'}>
-          <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section}</span>
+          <span className="text-sm font-medium uppercase tracking-[0.08em] text-sidebar-foreground/50">{item.section ? tMenu(item.section) : ''}</span>
         </div>
       );
     }
@@ -129,7 +132,7 @@ export default function ContentLayout() {
               } ${mobile ? 'px-4 py-3 min-h-[44px]' : 'px-3 py-2'} ${collapsed && !mobile ? 'justify-center' : ''}`}
           >
             <Icon className={`${mobile ? 'h-5 w-5' : 'h-4 w-4'} flex-shrink-0`} />
-            {!collapsed || mobile ? <span className="truncate flex-1 text-left">{item.label}</span> : null}
+            {!collapsed || mobile ? <span className="truncate flex-1 text-left">{item.labelKey ? tMenu(item.labelKey) : ''}</span> : null}
             {item.menu === 'content:manage' && pendingCount !== 0 && (
               <span className={`rounded-full px-1.5 text-[10px] leading-4 flex-shrink-0
                 ${isActive ? 'bg-primary-foreground/25 text-primary-foreground' : 'bg-destructive/15 text-destructive'}`}>
@@ -138,7 +141,7 @@ export default function ContentLayout() {
             )}
           </button>
         </TooltipTrigger>
-        {collapsed && !mobile && <TooltipContent side="right">{item.label}</TooltipContent>}
+        {collapsed && !mobile && <TooltipContent side="right">{item.labelKey ? tMenu(item.labelKey) : ''}</TooltipContent>}
       </Tooltip>
     );
   });
@@ -234,11 +237,11 @@ export default function ContentLayout() {
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => startGuide('welcome')}>
                   <Compass className="h-4 w-4 mr-2" />
-                  新手引导
+                  {tMenu('userMenu.guide')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>
                   <LogOut className="h-4 w-4 mr-2" />
-                  退出登录
+                  {tMenu('userMenu.logout')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

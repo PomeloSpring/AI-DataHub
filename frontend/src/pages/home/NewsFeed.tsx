@@ -4,16 +4,16 @@ import { ArrowRight, Flame, Layers, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { contentApi, contentError, type ContentArticle, type ContentCategory } from '@/api/content';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   CategoryBadge, ReadMeta, ReleaseChip, categoryOfArticle, kindHint, useReadState, ABOUT_CATEGORY,
 } from './shared';
 
 type Sort = 'latest' | 'hot' | 'rec';
 const SORTS: Array<{ key: Sort; label: string }> = [
-  { key: 'latest', label: '最新' },
-  { key: 'hot', label: '最热' },
-  { key: 'rec', label: '精选' },
+  { key: 'latest', label: tr('k_8818d4830d') },
+  { key: 'hot', label: tr('k_4d2d977697') },
+  { key: 'rec', label: tr('k_2d17cf301e') },
 ];
 
 /**
@@ -117,10 +117,11 @@ export default function NewsFeed({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 id="home-feed-title" className="flex items-center gap-2 text-[15px] font-semibold">
           <Layers className="h-4 w-4 text-primary" />
-          最新资讯
+          {tr('k_4a28e53bed')}
           {!loading && !error && (
             <span className="text-xs font-normal text-muted-foreground">
-              共 {total} 篇在线{filteredHard ? ` · 筛出 ${items.length} 篇` : ''}
+              {t('k_1eed4cefa8', { p0: total })}
+              {filteredHard ? ' ' + t('k_8b2493080b', { p0: items.length }) : ''}
             </span>
           )}
         </h2>
@@ -169,9 +170,9 @@ export default function NewsFeed({
 
       {filteredHard && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {category && <FilterChip label={`栏目：${catOf(category)?.label || category}`} onX={() => setCategory('')} />}
-          {tag && <FilterChip label={`标签：${tag}`} onX={() => onTag('')} />}
-          {q && <FilterChip label={`关键词：${q}`} onX={() => setQ('')} />}
+          {category && <FilterChip label={tr('k_32d5c50e37', { p0: catOf(category)?.label || category })} onX={() => setCategory('')} />}
+          {tag && <FilterChip label={tr('k_967a7eee6f', { p0: tag })} onX={() => onTag('')} />}
+          {q && <FilterChip label={tr('k_ff01e41fee', { p0: q })} onX={() => setQ('')} />}
           <button type="button" onClick={clearAll} className="hover:text-primary">{t("k_4f761bb4a4")}</button>
         </div>
       )}
@@ -191,8 +192,7 @@ export default function NewsFeed({
             <div className="flex-1">
               <p className="font-medium">{t("k_96eec71a72")}</p>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {error}。这里不把失败显示成「暂无内容」—— 两者需要你做的事完全不同。
-              </p>
+                {error}{tr('k_c2ee812156')}</p>
               <Button size="sm" variant="outline" className="mt-2.5" onClick={load}>{t("k_e2d53a6d3a")}</Button>
             </div>
           </div>
@@ -202,12 +202,12 @@ export default function NewsFeed({
       {!loading && !error && !items.length && (
         <div className="rounded-xl border border-dashed p-9 text-center">
           <p className="text-sm font-medium">
-            {filteredHard ? '当前筛选条件下没有内容' : '还没有已发布的内容'}
+            {filteredHard ? tr('k_42cfa52783') : tr('k_3058a8b0f1')}
           </p>
           <p className="mx-auto mt-1 max-w-[430px] text-xs leading-relaxed text-muted-foreground">
             {filteredHard
-              ? '换一个栏目、清掉标签或关键词试试。'
-              : '内容中心的稿件要经「提交审核 → 发布」才会出现在这里。'}
+              ? tr('k_e686a606ba')
+              : tr('k_dfe7622ffc')}
           </p>
           {filteredHard
             ? <Button size="sm" variant="outline" className="mt-3" onClick={clearAll}>{t("k_4f761bb4a4")}</Button>
@@ -237,8 +237,7 @@ export default function NewsFeed({
                   <CategoryBadge category={catOfArticle(featured)} />
                   {featured.pinned ? (
                     <span className="inline-flex items-center gap-1 rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-medium text-primary">
-                      <Flame className="h-3 w-3" />置顶
-                    </span>
+                      <Flame className="h-3 w-3" />{tr('k_7bcf18641f')}</span>
                   ) : (
                     <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t("k_fbf4902eeb")}</span>
                   )}
@@ -255,7 +254,7 @@ export default function NewsFeed({
                 <span className="mt-auto flex items-center gap-3">
                   <ReadMeta article={featured} unread={isUnread(featured.slug)} />
                   <span className="flex items-center gap-1 text-xs text-primary opacity-0 transition-opacity group-hover:opacity-100">
-                    阅读全文 <ArrowRight className="h-3.5 w-3.5" />
+                    {tr('k_e20829f294')}{' '}<ArrowRight className="h-3.5 w-3.5" />
                   </span>
                 </span>
               </span>
@@ -291,7 +290,7 @@ export default function NewsFeed({
           {!filteredHard && total > items.length && (
             <div className="mt-3.5 flex justify-center">
               <Button size="sm" variant="outline" onClick={() => setExpanded(v => !v)}>
-                {expanded ? '收起' : `查看全部 ${total} 篇`}
+                {expanded ? tr('k_5d5815647c') : tr('k_1dd24e1fd3', { p0: total })}
               </Button>
             </div>
           )}
@@ -325,7 +324,7 @@ function FilterChip({ label, onX }: { label: string; onX: () => void }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-primary">
       {label}
-      <button type="button" onClick={onX} aria-label={`移除筛选 ${label}`} className="flex hover:opacity-70">
+      <button type="button" onClick={onX} aria-label={tr('k_d1ffd813bc', { p0: label })} className="flex hover:opacity-70">
         <X className="h-3 w-3" />
       </button>
     </span>

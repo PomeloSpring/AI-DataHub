@@ -2,7 +2,23 @@
   "section": {
     "analytics": "数据分析",
     "cloud": "云空间",
-    "automation": "自动化"
+    "automation": "自动化",
+    "dataSources": "数据源",
+    "catalog": "数据目录",
+    "security": "数据安全配置",
+    "quality": "数据质量",
+    "sync": "数据同步",
+    "ai": "AI 配置",
+    "knowledge": "知识管理",
+    "visual": "可视化配置",
+    "integration": "集成配置",
+    "access": "安全与权限",
+    "ops": "运维管理",
+    "system": "系统",
+    "contentWorkbench": "我的工作台",
+    "contentProduction": "内容生产",
+    "contentConfig": "编排配置",
+    "contentKnowledge": "知识运营"
   },
   "workspace": {
     "dashboards": "数据看板",
@@ -10,6 +26,74 @@
     "reports": "报告中心",
     "assets": "资产清单",
     "scheduled": "任务调度"
+  },
+  "data": {
+    "datasources": "数据源管理",
+    "tables": "表 & 字段",
+    "playground": "SQL Playground",
+    "datasets": "数据集",
+    "ontology": "本体建模",
+    "assetPool": "建模待办",
+    "scenario": "分析场景",
+    "metrics": "指标与维度",
+    "knowledgeGraph": "关系图谱",
+    "decisions": "决策建议",
+    "sensitive": "敏感数据",
+    "rls": "安全策略",
+    "quality": "质量概览",
+    "qualityRules": "质量规则",
+    "lineage": "数据血缘",
+    "standards": "数据标准",
+    "sync": "同步任务",
+    "syncLogs": "执行日志",
+    "udfs": "UDF 管理"
+  },
+  "system": {
+    "models": "模型中心",
+    "mcp": "MCP 服务",
+    "asBots": "AS-BOT 配置",
+    "skills": "技能配置",
+    "promptConfig": "Prompt配置",
+    "knowledgeBase": "知识库",
+    "dashboards": "看板管理",
+    "visLibrary": "UI 字模库",
+    "reportTemplates": "模板中心",
+    "notificationChannels": "通知渠道",
+    "users": "用户管理",
+    "workspaces": "工作空间管理",
+    "roles": "角色权限",
+    "audit": "审计日志",
+    "monitoring": "系统监控",
+    "taskMonitor": "任务监控",
+    "sandbox": "沙箱管理",
+    "observability": "LLM 可观测",
+    "eval": "评测中心",
+    "evolution": "进化中心",
+    "releaseNotes": "版本公告",
+    "settings": "系统设置"
+  },
+  "content": {
+    "drafts": "我的草稿",
+    "manage": "内容管理",
+    "taxonomy": "栏目与标签",
+    "kbDocs": "知识库文档"
+  },
+  "userMenu": {
+    "guide": "新手引导",
+    "profile": "个人设置",
+    "memory": "我的记忆",
+    "logout": "退出登录"
+  },
+  "theme": {
+    "dark": { "label": "暗色", "desc": "深色背景，适合长时间使用" },
+    "light": { "label": "亮色", "desc": "浅色背景，清晰明亮" },
+    "datafoundry": { "label": "DataFoundry", "desc": "克制优雅，近黑主色 + 宝石色调" },
+    "tech": { "label": "科技风", "desc": "深蓝底色，霓虹高亮" },
+    "finance": { "label": "金融风", "desc": "深色海军蓝，金色主调" },
+    "bento": { "label": "Bento Grid", "desc": "柔和圆角卡片，彩色区块布局" },
+    "glass": { "label": "玻璃拟态", "desc": "深色半透明毛玻璃质感" },
+    "ainative": { "label": "AI-Native", "desc": "深空神经网络，动态光效边框" },
+    "medical": { "label": "医疗平台", "desc": "清爽蓝绿，专业可信" }
   },
   "switcher": {
     "trigger": "切换模块",
@@ -19,6 +103,12 @@
     "data": "数据中台",
     "content": "内容中心",
     "system": "系统配置"
+  },
+  "home": {
+    "workspaceDesc": "看板与智能问数",
+    "dataDesc": "数据源 / 本体建模 / 安全",
+    "contentDesc": "创作 / 审核 / 发布",
+    "systemDesc": "模型 / AS-BOT / 用户"
   },
   "releaseNotes": {
     "trigger": "版本更新公告",

@@ -7,6 +7,7 @@ import {
 } from '@/api/releaseNotes';
 import { guideAccessOf, pageGuideIdForPath } from '@/lib/onboarding/guides';
 import { prefixAllowedOf } from '@/hooks/useMenuAccess';
+import { t } from '@/i18n/runtime';
 import { useAuthStore } from './authStore';
 import { usePermissionStore } from './permissionStore';
 import { toast } from '@/lib/toast';
@@ -124,7 +125,7 @@ export const useGuideStore = create<GuideState>((set, get) => ({
     } catch (e: any) {
       const detail = e?.response?.data?.detail || e?.message || '未知错误';
       set({ error: String(detail) });
-      toast.error(`操作未保存，下次仍会提示（${detail}）`, { duration: 5000 });
+      toast.error(t('tour.saveFailed', { ns: 'onboarding', detail }), { duration: 5000 });
       return false;
     }
   },
@@ -139,7 +140,7 @@ export const useGuideStore = create<GuideState>((set, get) => ({
     if (!id || id === 'welcome') {
       // 手动入口与自动弹同一口径: 本页没有可引导内容就不弹空壳，而是显式告知去哪看
       if (!currentPageGuideId()) {
-        toast.info('当前页面没有可引导的内容，请到首页 / 工作空间 / 数据中台 / 系统配置页面再打开新手引导');
+        toast.info(t('tour.noGuideHere', { ns: 'onboarding' }));
         return;
       }
       set({ welcomeOpen: true });

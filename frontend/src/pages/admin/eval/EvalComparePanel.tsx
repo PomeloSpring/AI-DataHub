@@ -17,6 +17,7 @@ import { GitCompare } from 'lucide-react';
 import client from '@/api/client';
 import { SUITE_LABEL, pct, type CompareResult, type EvalRun } from './shared';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface Props {
   runs: EvalRun[];
@@ -40,7 +41,7 @@ export default function EvalComparePanel({ runs }: Props) {
       setCmp(data);
       setTarget(run);
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '版本对比失败');
+      toast.error(e.response?.data?.detail || t('k_e68c2700e5'));
     } finally {
       setBusy(false);
     }
@@ -50,7 +51,7 @@ export default function EvalComparePanel({ runs }: Props) {
     <div className="border rounded-md p-3 space-y-3">
       <div className="flex items-center gap-2">
         <GitCompare className="h-4 w-4" />
-        <b className="text-sm">版本对比（按 case_key 对齐）</b>
+        <b className="text-sm">{t('k_d5fd0c0184')}</b>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <Label className="text-xs">{t("k_cbe8264081")}</Label>
@@ -68,7 +69,7 @@ export default function EvalComparePanel({ runs }: Props) {
           </SelectContent>
         </Select>
         <span className="text-[11px] text-muted-foreground">
-          对比对象从下方「运行」按钮选；只比确定性 passed，不看 LLM 评分
+          {t('k_34685b9633')}
         </span>
       </div>
 
@@ -87,9 +88,9 @@ export default function EvalComparePanel({ runs }: Props) {
             {cmp.verdict}
           </div>
           <div className="text-xs text-muted-foreground">
-            {target ? `${SUITE_LABEL[target.suite] || target.suite} #${target.id}` : `运行 #${cmp.run_id}`}
-            {' ← '}基线 #{cmp.baseline_run_id ?? '无'}
-            {'　'}正确率 {pct(cmp.baseline_accuracy)} → {pct(cmp.current_accuracy)}
+            {target ? `${SUITE_LABEL[target.suite] || target.suite} #${target.id}` : t('k_2fc8740c66', { p0: cmp.run_id })}
+            {' ← '}{tr('k_b2951c566f')}{cmp.baseline_run_id ?? t('k_72077749f7')}
+            {'　'}{tr('k_8dc159502e')}{' '}{pct(cmp.baseline_accuracy)} → {pct(cmp.current_accuracy)}
           </div>
           {Object.keys(cmp.regression || {}).length > 0 && (
             <div className="text-xs">
@@ -103,22 +104,21 @@ export default function EvalComparePanel({ runs }: Props) {
           )}
           {cmp.coverage_loss?.length > 0 && (
             <div className="text-xs text-amber-600">
-              覆盖度流失（基线通过、现在用例已删）：{cmp.coverage_loss.join('、')}
+              {tr('k_611a6fc84c')}{cmp.coverage_loss.join('、')}
               <div className="text-[10px] text-muted-foreground">
-                这类条目会掉出门禁分母。若确实该退役，请到用例里标 retired 并写明原因，
-                而不是删除 —— 删除会让"少了哪些保护"变得无法追溯。
+                {t('k_36e3055709')}
               </div>
             </div>
           )}
           {cmp.fixed?.length > 0 && (
-            <div className="text-xs text-green-600">修好：{cmp.fixed.join('、')}</div>
+            <div className="text-xs text-green-600">{t('k_19953cd520', { p0: cmp.fixed.join('、') })}</div>
           )}
           {cmp.new?.length > 0 && (
-            <div className="text-xs text-muted-foreground">新增：{cmp.new.join('、')}</div>
+            <div className="text-xs text-muted-foreground">{t('k_8357130b63', { p0: cmp.new.join('、') })}</div>
           )}
           {cmp.removed?.length ? (
             <div className="text-xs text-muted-foreground">
-              基线有、本次无：{cmp.removed.join('、')}
+              {tr('k_7a8a61ab9d')}{cmp.removed.join('、')}
               <Badge variant="outline" className="ml-1 text-[9px]">{t("k_bac41fb627")}</Badge>
             </div>
           ) : null}

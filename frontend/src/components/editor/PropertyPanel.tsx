@@ -346,13 +346,13 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
             placeholder={t("k_eabd27384f")}
           />
           {/* 双语：说明卡的 English 输入位；留空 = 英文界面回落中文（后端 localize_display 记 fallback） */}
-          <Label className="text-xs text-muted-foreground">{t("k_371a95ba93")}</Label>
+          <Label className="text-xs text-muted-foreground">{t('k_5dc39da8cf')}</Label>
           <textarea
             className="w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 min-h-[60px] resize-y"
             value={String(chart.i18n?.config?.['en-US']?.content || '')}
             onChange={e => onWidgetI18nChange?.(chart.id, 'content', e.target.value)}
             placeholder="Note body shown on the English UI (optional)"
-            aria-label={t("k_35d6c36c05")}
+            aria-label={t('k_5dc39da8cf')}
             data-testid="note-content-en"
           />
         </div>

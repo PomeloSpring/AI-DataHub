@@ -5,7 +5,7 @@ import { useTaxonomy } from '@/pages/content/shared';
 import { TOUR } from '@/lib/onboarding/guides';
 import NewsFeed from './NewsFeed';
 import ActionRail, { type RailStats } from './ActionRail';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 
 /**
  * 首页双栏主体（资讯流 + 行动栏）与它的取数容器。
@@ -38,12 +38,9 @@ export default function WorkbenchPane({
     return (
       <section className="mt-4 rounded-2xl border border-dashed bg-card/40 p-8">
         <h2 className="flex items-center gap-2 text-sm font-medium">
-          <Newspaper className="h-4 w-4 text-primary" />资讯区对当前角色未开放
-        </h2>
+          <Newspaper className="h-4 w-4 text-primary" />{tr('k_11070e6455')}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-          首页资讯区的可见范围由角色权限里的「首页资讯区」（权限码 <code>article:read</code>）决定，
-          管理员可在「角色权限 → 菜单与功能」按角色勾选或收回。这里不拿空列表假装"今天没有内容"。
-        </p>
+          {tr('k_5119040bfa')}{' '}<code>article:read</code>{tr('k_665ba9bbdb')}</p>
       </section>
     );
   }
@@ -86,7 +83,7 @@ function PaneInner({
         {/* 栏目/标签清单拉不到时资讯流会退化成"没有栏目"，必须说出来而不是静默少两块 */}
         {!!error && (
           <p className="mt-3 flex flex-wrap items-center gap-2 text-xs text-destructive">
-            栏目与标签清单读取失败：{error}
+            {tr('k_a6adb91a38')}{error}
             <button type="button" onClick={reload} className="underline underline-offset-2">{t("k_e2d53a6d3a")}</button>
           </p>
         )}

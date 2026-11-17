@@ -19,6 +19,7 @@ import { Switch } from '@/components/ui/switch';
 import ASTTreeView from '../components/ASTTreeView';
 import client from '../api/client';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /** 数据集列表项（服务端不返 SQL 正文，载入时按 id 取详情） */
 interface DatasetBrief {
@@ -114,11 +115,11 @@ function SqlDiff({ base, secured, diff }: { base: string; secured: string; diff:
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <div className="text-xs font-semibold mb-1 text-muted-foreground">baseSql (改写前)</div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">{tr('k_a245feef11')}</div>
           <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{base}</pre>
         </div>
         <div>
-          <div className="text-xs font-semibold mb-1 text-muted-foreground">securedSql (改写后 · 所见即所执行)</div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">{tr('k_e6f1898a46')}</div>
           <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{secured}</pre>
         </div>
       </div>
@@ -150,10 +151,10 @@ function ProvenanceCard({ data }: { data: any }) {
   const g = b.guardrail || {};
   const a = b.access || {};
   const rows: [string, React.ReactNode][] = [
-    ['对象 (object)', b.object_key],
-    ['物理表 (catalog.db.table)', b.catalog_ref || `${b.catalog_name || ''}.${b.db_name || ''}.${b.physical_table || ''}`],
+    [tr('k_c1ca53ae0e'), b.object_key],
+    [tr('k_512d256293'), b.catalog_ref || `${b.catalog_name || ''}.${b.db_name || ''}.${b.physical_table || ''}`],
     ['datasource_id', b.datasource_id],
-    ['绑定来源', b.source],
+    [tr('k_bc98f631b3'), b.source],
     ['sync_state', <Badge key="s" variant={b.sync_state === 'bound' ? 'secondary' : 'destructive'} className="text-xs font-normal">{b.sync_state}</Badge>],
     ['query_mode', g.query_mode],
     ['size_class', g.size_class],
@@ -174,7 +175,7 @@ function ProvenanceCard({ data }: { data: any }) {
       </div>
       {data?.plan?.sql && (
         <div>
-          <div className="text-xs font-semibold mb-1 text-muted-foreground">编译 baseSql (dry-run)</div>
+          <div className="text-xs font-semibold mb-1 text-muted-foreground">{tr('k_20f722ee3e')}</div>
           <pre className="text-xs font-mono whitespace-pre-wrap p-2 rounded bg-muted border">{data.plan.sql}</pre>
         </div>
       )}
@@ -237,14 +238,14 @@ export default function Playground() {
         if (!cancelled) setDatasets(res.data?.items || []);
       })
       .catch((e: any) => {
-        if (!cancelled) setDsError(e?.message || '数据集列表加载失败，请在数据集页检查配置');
+        if (!cancelled) setDsError(e?.message || tr('k_80d50b0ff1'));
       });
     return () => { cancelled = true; };
   }, []);
 
   const loadDatasetSql = async (d: DatasetBrief) => {
     if (d.source_type && d.source_type !== 'sql' && !d.sql_query) {
-      toast.info('该数据集只绑定语义对象，无预制 SQL；请直接执行语义查询');
+      toast.info(tr('k_d5d6027e07'));
       return;
     }
     setDsLoadingId(d.id);
@@ -252,12 +253,12 @@ export default function Playground() {
       const { data } = await client.get<DatasetBrief>(`/datasets/${d.id}`);
       if (typeof data?.sql_query === 'string' && data.sql_query) {
         setSql(data.sql_query);
-        toast.success(`已载入数据集「${data.name || d.name}」的查询语句`);
+        toast.success(tr('k_6c5e7a542b', { p0: data.name || d.name }));
       } else {
-        toast.info('该数据集没有执行 SQL（只绑定语义对象）');
+        toast.info(tr('k_da0fdd9d3d'));
       }
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '载入数据集 SQL 失败');
+      toast.error(e?.response?.data?.detail || tr('k_6002474108'));
     } finally {
       setDsLoadingId(null);
     }
@@ -265,11 +266,11 @@ export default function Playground() {
 
 
   const ANALYSIS_TABS: { key: ResultTab; label: string; icon: any }[] = [
-    { key: 'result', label: '执行结果', icon: Play },
+    { key: 'result', label: tr('k_adaf94c06b'), icon: Play },
     { key: 'ast', label: 'AST', icon: Braces },
-    { key: 'lineage', label: '血缘', icon: GitBranch },
-    { key: 'rls', label: 'RLS 改写', icon: ShieldCheck },
-    { key: 'provenance', label: '溯源', icon: Crosshair },
+    { key: 'lineage', label: tr('k_c3fcb314b4'), icon: GitBranch },
+    { key: 'rls', label: tr('k_318420a101'), icon: ShieldCheck },
+    { key: 'provenance', label: tr('k_eb15279454'), icon: Crosshair },
   ];
 
   const analyzePath: Record<string, string> = {
@@ -279,8 +280,8 @@ export default function Playground() {
 
   // 受治理执行: body 只传 sql + datasource_id; 身份由后端从 JWT 解析, 不传 user_id
   const executeSql = async () => {
-    if (!sql.trim()) { toast.error('请输入 SQL'); return; }
-    if (!selectedDs) { toast.error('请先选择数据源'); return; }
+    if (!sql.trim()) { toast.error(tr('k_5247e599ce')); return; }
+    if (!selectedDs) { toast.error(tr('k_192dc9f17f')); return; }
     setExecuting(true);
     setResultTab('result');
     try {
@@ -289,10 +290,10 @@ export default function Playground() {
       });
       setExecResult(data);
       if (data.error) toast.error(data.error);
-      else toast.success(`查询成功，返回 ${data.row_count ?? data.rows?.length ?? 0} 行`);
+      else toast.success(tr('k_2bc548d009', { p0: data.row_count ?? data.rows?.length ?? 0 }));
     } catch (e: any) {
       const detail = e.response?.data?.detail;
-      const msg = typeof detail === 'string' ? detail : (detail?.error || detail || '执行失败');
+      const msg = typeof detail === 'string' ? detail : (detail?.error || detail || tr('k_1c83d79715'));
       setExecResult({ error: msg });
       toast.error(msg);
     } finally {
@@ -301,8 +302,8 @@ export default function Playground() {
   };
 
   const runAnalyze = async (kind: 'ast' | 'lineage' | 'rls') => {
-    if (!sql.trim()) { toast.error('请输入 SQL'); return; }
-    if (kind === 'rls' && !selectedDs) { toast.error('请先选择数据源'); return; }
+    if (!sql.trim()) { toast.error(tr('k_5247e599ce')); return; }
+    if (kind === 'rls' && !selectedDs) { toast.error(tr('k_192dc9f17f')); return; }
     setAnalyzing(kind);
     setResultTab(kind);
     try {
@@ -312,7 +313,7 @@ export default function Playground() {
       setAnalysis((a) => ({ ...a, [kind]: data }));
     } catch (e: any) {
       const detail = e.response?.data?.detail;
-      setAnalysis((a) => ({ ...a, [kind]: { error: typeof detail === 'string' ? detail : (detail?.error || detail || '分析失败') } }));
+      setAnalysis((a) => ({ ...a, [kind]: { error: typeof detail === 'string' ? detail : (detail?.error || detail || tr('k_6aee2d39c9')) } }));
       if (typeof detail === 'string') toast.error(detail);
     } finally {
       setAnalyzing(null);
@@ -320,7 +321,7 @@ export default function Playground() {
   };
 
   const runProvenance = async () => {
-    if (!provObject.trim()) { toast.error('请输入本体对象名'); return; }
+    if (!provObject.trim()) { toast.error(tr('k_65a84e650e')); return; }
     setAnalyzing('provenance');
     setResultTab('provenance');
     try {
@@ -328,7 +329,7 @@ export default function Playground() {
       setAnalysis((a) => ({ ...a, provenance: data }));
     } catch (e: any) {
       const detail = e.response?.data?.detail;
-      setAnalysis((a) => ({ ...a, provenance: { error: typeof detail === 'string' ? detail : (detail?.error || '溯源失败') } }));
+      setAnalysis((a) => ({ ...a, provenance: { error: typeof detail === 'string' ? detail : (detail?.error || tr('k_52751b6c6e')) } }));
     } finally {
       setAnalyzing(null);
     }
@@ -383,30 +384,30 @@ export default function Playground() {
         sql_query: sql,
         is_dataset: isDataset ? 1 : 0,
       });
-      toast.success('保存成功');
+      toast.success(tr('k_3b108349b9'));
       setSaveModalOpen(false);
       setSaveName('');
       setSaveDesc('');
       setIsDataset(false);
       loadSavedQueries();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || tr('k_6de920b4e4'));
     }
   };
 
   const deleteQuery = async (id: number) => {
     try {
       await client.delete(`/playground/queries/${id}`);
-      toast.success('已删除');
+      toast.success(tr('k_5cc232620c'));
       loadSavedQueries();
     } catch {
-      toast.error('删除失败');
+      toast.error(tr('k_acf0664a54'));
     }
   };
 
   const copySql = () => {
     navigator.clipboard.writeText(sql);
-    toast.success('已复制到剪贴板');
+    toast.success(tr('k_4fb42e6eb1'));
   };
 
   const insertTableName = (tableName: string) => {
@@ -458,16 +459,13 @@ export default function Playground() {
           </Select>
           <Button onClick={executeSql} disabled={executing || !selectedDs}>
             {executing ? <Spinner size={12} className="mr-2" /> : <Play className="h-4 w-4 mr-2" />}
-            执行 (Ctrl+Enter)
-          </Button>
+            {tr('k_ef6dce68ce')}</Button>
           <Button variant="outline" onClick={copySql}>
             <Copy className="h-4 w-4 mr-2" />
-            复制
-          </Button>
+            {tr('k_79d3abe929')}</Button>
           <Button variant="outline" onClick={() => setSaveModalOpen(true)}>
             <Save className="h-4 w-4 mr-2" />
-            保存
-          </Button>
+            {tr('k_fadf24dbc5')}</Button>
         </div>
       </div>
 
@@ -556,7 +554,7 @@ export default function Playground() {
                   <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm truncate">{q.name}</div>
-                    <div className="text-xs text-muted-foreground">{q.is_dataset ? '数据集' : '查询'}</div>
+                    <div className="text-xs text-muted-foreground">{q.is_dataset ? tr('k_fc2b4735c3') : tr('k_711363c424')}</div>
                   </div>
                   <Button
                     size="sm"
@@ -584,8 +582,7 @@ export default function Playground() {
                 <p className="px-2 py-1.5 text-xs text-destructive" role="alert">{dsError}</p>
               ) : datasets.length === 0 ? (
                 <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                  暂无数据集（可在聊天 SQL 卡片「存为数据集」沉淀，或去数据中台→数据集新建）
-                </p>
+                  {tr('k_732fcf5cbb')}</p>
               ) : datasets.map(d => (
                 <div
                   key={d.id}
@@ -597,7 +594,7 @@ export default function Playground() {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm truncate">{d.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {dsLoadingId === d.id ? '载入中…' : `${d.source_type === 'sql' ? 'SQL' : '语义对象'} · 点击载入查询语句`}
+                      {dsLoadingId === d.id ? tr('k_768bbcdb64') : tr('k_1d643fbe5a', { p0: d.source_type === 'sql' ? 'SQL' : tr('k_668cea6a49') })}
                     </div>
                   </div>
                 </div>
@@ -620,7 +617,7 @@ export default function Playground() {
                   executeSql();
                 }
               }}
-              placeholder={'输入 SQL 查询... (Ctrl+Enter 执行; 结果按当前用户角色权限施加敏感列屏蔽/脱敏 + 行级 RLS)'}
+              placeholder={tr('k_d5f39cbb75')}
               className="h-full resize-none font-mono text-sm rounded-none border-0"
             />
           </div>
@@ -655,7 +652,7 @@ export default function Playground() {
                   {execResult && !execResult.error && (execResult.columns?.length > 0) && (
                     <div className="px-3 py-1.5 text-xs text-muted-foreground border-b flex gap-4 shrink-0">
                       <span>{t("k_11d0241540")} <span className="font-medium text-foreground">{execResult.row_count ?? execResult.rows?.length ?? 0}</span> {t("k_2a2b777ae4")}</span>
-                      {execResult.elapsed_ms != null && <span>耗时 {execResult.elapsed_ms}ms</span>}
+                      {execResult.elapsed_ms != null && <span>{tr('k_a9704e1997')}{' '}{execResult.elapsed_ms}ms</span>}
                       <span className="text-amber-600">{t("k_bce7b02fd4")}</span>
                     </div>
                   )}
@@ -663,7 +660,7 @@ export default function Playground() {
                     {executing ? (
                       <div className="p-4"><Spinner size={16} /></div>
                     ) : !execResult ? (
-                      <p className="p-4 text-sm text-muted-foreground">点击「执行」运行 SQL；结果按当前用户的角色权限（敏感列屏蔽/脱敏 + 行级 RLS）返回。</p>
+                      <p className="p-4 text-sm text-muted-foreground">{tr('k_88da0fa337')}</p>
                     ) : execResult.error ? (
                       <div className="p-4 text-sm text-destructive">{String(execResult.error)}</div>
                     ) : (execResult.columns?.length ? (
@@ -704,12 +701,12 @@ export default function Playground() {
                     ) : (
                       <div className="space-y-2">
                         <div className="text-xs text-muted-foreground">
-                          引用表: <span className="font-mono">{analysis.ast.tables?.join(', ') || '—'}</span>
+                          {tr('k_35032ddf05')}{' '}<span className="font-mono">{analysis.ast.tables?.join(', ') || '—'}</span>
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted-foreground">{t("k_d4297c3860")}</span>
                           <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setAstRaw((v) => !v)}>
-                            {astRaw ? '树视图' : '查看原始 JSON'}
+                            {astRaw ? tr('k_e6ebe938df') : tr('k_cf6a4cebcd')}
                           </Button>
                         </div>
                         {astRaw ? <JsonBlock value={analysis.ast.ast} /> : <ASTTreeView dump={analysis.ast.ast} />}
@@ -744,12 +741,12 @@ export default function Playground() {
                 <ScrollArea className="h-full">
                   <div className="p-4">
                     {analyzing === 'rls' ? <Spinner size={16} /> : !analysis.rls ? (
-                      <p className="text-sm text-muted-foreground">点击「RLS 改写」按钮查看当前用户下 baseSql→securedSql 的行级+列级改写。</p>
+                      <p className="text-sm text-muted-foreground">{tr('k_496a137f22')}</p>
                     ) : (
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <Badge variant="secondary" className="font-normal">生效策略: {(analysis.rls.rlsPolicies || []).join(', ') || '无'}</Badge>
-                          <Badge variant="outline" className="font-normal">改写表: {(analysis.rls.appliedRls || []).join(', ') || '无'}</Badge>
+                          <Badge variant="secondary" className="font-normal">{tr('k_f9e104bf5a')}{' '}{(analysis.rls.rlsPolicies || []).join(', ') || tr('k_72077749f7')}</Badge>
+                          <Badge variant="outline" className="font-normal">{tr('k_37cd8c0889')}{' '}{(analysis.rls.appliedRls || []).join(', ') || tr('k_72077749f7')}</Badge>
                           {!analysis.rls.changed && <span className="text-muted-foreground">{t("k_bd3f1f8d47")}</span>}
                           {analysis.rls.error && <span className="text-destructive">{String(analysis.rls.error)}</span>}
                         </div>
@@ -760,11 +757,11 @@ export default function Playground() {
                               <div key={tbl} className="flex flex-wrap items-center gap-2 text-xs">
                                 <span className="font-mono text-foreground/80">{tbl}</span>
                                 {(spec?.hidden || []).length > 0 && (
-                                  <Badge variant="destructive" className="font-normal">隐藏列: {spec.hidden.join(', ')}</Badge>
+                                  <Badge variant="destructive" className="font-normal">{tr('k_a3b53ae21c')}{' '}{spec.hidden.join(', ')}</Badge>
                                 )}
                                 {Object.keys(spec?.masked || {}).length > 0 && (
                                   <Badge variant="outline" className="font-normal border-amber-400 text-amber-600">
-                                    掩码列: {Object.entries(spec.masked as Record<string, string>).map(([c, m]) => `${c}(${m})`).join(', ')}
+                                    {tr('k_bb804e1c2c')}{' '}{Object.entries(spec.masked as Record<string, string>).map(([c, m]) => `${c}(${m})`).join(', ')}
                                   </Badge>
                                 )}
                               </div>
@@ -784,18 +781,17 @@ export default function Playground() {
                     <Input
                       value={provObject}
                       onChange={(e) => setProvObject(e.target.value)}
-                      placeholder="本体对象名 (如 user / Patient / obj:Order)"
+                      placeholder={tr('k_7836413da9')}
                       className="h-7 w-[280px]"
                       onKeyDown={(e) => { if (e.key === 'Enter') runProvenance(); }}
                     />
                     <Button size="sm" className="h-7" onClick={runProvenance} disabled={analyzing === 'provenance'}>
                       {analyzing === 'provenance' ? <Spinner size={12} className="mr-2" /> : <Crosshair className="h-3.5 w-3.5 mr-1" />}
-                      溯源
-                    </Button>
+                      {tr('k_eb15279454')}</Button>
                   </div>
                   <div className="flex-1 overflow-auto p-4">
                     {analyzing === 'provenance' ? <Spinner size={16} /> : !analysis.provenance ? (
-                      <p className="text-sm text-muted-foreground">输入本体对象名, 查看其 binding / query_mode / size_class 溯源。</p>
+                      <p className="text-sm text-muted-foreground">{tr('k_679318fa72')}</p>
                     ) : analysis.provenance.error ? (
                       <p className="text-sm text-destructive">{String(analysis.provenance.error)}</p>
                     ) : (
@@ -817,7 +813,7 @@ export default function Playground() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>名称 *</Label>
+              <Label>{tr('k_456f3ac6b4')}</Label>
               <Input
                 value={saveName}
                 onChange={(e) => setSaveName(e.target.value)}

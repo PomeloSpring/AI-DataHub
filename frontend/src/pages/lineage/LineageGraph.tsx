@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   ReactFlow,
   Background,
@@ -323,7 +323,7 @@ function NodeDetailPanel({
               <Separator />
               <div className="space-y-2">
                 <h5 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  字段映射 ({columnMappings.length})
+                  {tr('k_a553e34485')}{columnMappings.length})
                 </h5>
                 {columnMappings.length > 0 ? (
                   <div className="space-y-1">
@@ -680,8 +680,7 @@ function LineageGraphInner() {
         {/* Column-level lineage toggle */}
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer whitespace-nowrap">
           <Switch checked={showColumns} onCheckedChange={setShowColumns} />
-          字段级血缘
-        </label>
+          {tr('k_6c29fa6e43')}</label>
 
         <div className="flex-1" />
 

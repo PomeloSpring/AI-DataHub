@@ -18,6 +18,7 @@ import {
   MiddlewareResult, MiddlewareItem,
 } from '../../api/monitoring';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const AUTO_REFRESH_INTERVAL = 30000;
 
@@ -78,28 +79,28 @@ function NodePanel({ node }: { node: NodeMetrics }) {
             <Server className="h-4 w-4 text-primary" />
             {node.hostname}
             <span className="text-xs font-normal text-muted-foreground">
-              采集自 {node.source_service} @ {node.source_host}
+              {t('k_1fca9eae0e', { p0: node.source_service, p1: node.source_host })}
             </span>
           </h2>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            {node.uptime_seconds !== null && <span>运行 {formatDuration(node.uptime_seconds)}</span>}
-            {node.process_count !== null && <span>{node.process_count} 个进程</span>}
+            {node.uptime_seconds !== null && <span>{t('k_8bfad9eb6c', { p0: formatDuration(node.uptime_seconds) })}</span>}
+            {node.process_count !== null && <span>{t('k_158b016470', { p0: node.process_count })}</span>}
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <MetricBlock
             icon={Cpu} title="CPU" percent={cpu.percent}
             detail={cpu.load
-              ? `${cpu.cores ?? '-'} 核 · 负载 ${cpu.load.load1} / ${cpu.load.load5} / ${cpu.load.load15}`
-              : `${cpu.cores ?? '-'} 核`}
+              ? t('k_4daa2cf565', { p0: cpu.cores ?? '-', p1: cpu.load.load1, p2: cpu.load.load5, p3: cpu.load.load15 })
+              : t('k_220ae86fd1', { p0: cpu.cores ?? '-' })}
           />
           <MetricBlock
             icon={MemoryStick} title={t("k_d014ab7703")} percent={memory?.percent ?? null}
-            detail={memory ? `已用 ${formatBytes(memory.used)} / 共 ${formatBytes(memory.total)}` : '-'}
+            detail={memory ? t('k_83d7fc3d08', { p0: formatBytes(memory.used), p1: formatBytes(memory.total) }) : '-'}
           />
           <MetricBlock
-            icon={HardDrive} title={`磁盘 (${disk?.path ?? '/'})`} percent={disk?.percent ?? null}
-            detail={disk ? `已用 ${formatBytes(disk.used)} / 共 ${formatBytes(disk.total)}` : '-'}
+            icon={HardDrive} title={t('k_ca7779f0d2', { p0: disk?.path ?? '/' })} percent={disk?.percent ?? null}
+            detail={disk ? t('k_83d7fc3d08', { p0: formatBytes(disk.used), p1: formatBytes(disk.total) }) : '-'}
           />
         </div>
       </CardContent>
@@ -115,7 +116,7 @@ function SystemPanel({ metrics }: { metrics: SystemMetrics | null }) {
       <div className="flex items-center gap-2">
         <Cpu className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold">{t("k_407ebd3d26")}</h2>
-        <span className="text-xs text-muted-foreground">共 {metrics.node_count} 个节点</span>
+        <span className="text-xs text-muted-foreground">{t('k_5c4d70e5ce', { p0: metrics.node_count })}</span>
       </div>
       {metrics.nodes.map(node => <NodePanel key={node.hostname} node={node} />)}
     </section>
@@ -123,6 +124,7 @@ function SystemPanel({ metrics }: { metrics: SystemMetrics | null }) {
 }
 
 function ServiceCard({ svc }: { svc: MonitoredService }) {
+  const { t } = useTranslation('ui');
   const healthy = svc.status === 'healthy';
   return (
     <Card className={healthy ? '' : 'border-destructive/50'}>
@@ -136,12 +138,12 @@ function ServiceCard({ svc }: { svc: MonitoredService }) {
           </div>
           <Badge variant={healthy ? 'default' : 'destructive'}
             className={healthy ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-100' : ''}>
-            {healthy ? '运行中' : '已停止'}
+            {healthy ? t('k_5942497005') : t('k_75dddf524e')}
           </Badge>
         </div>
         <p className="text-xs text-muted-foreground mb-3">{svc.desc}</p>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span>端口 {svc.port}</span>
+          <span>{t('k_99fd906982', { p0: svc.port })}</span>
           {svc.host && svc.host !== '127.0.0.1' && <span>{svc.host}</span>}
           {healthy && svc.latency_ms !== null && (
             <span className="flex items-center gap-1">
@@ -166,7 +168,7 @@ function MiddlewareCard({ mw }: { mw: MiddlewareItem }) {
   const skipped = mw.status === 'skipped';
   const statusIcon = healthy ? CheckCircle2 : skipped ? MinusCircle : XCircle;
   const StatusIcon = statusIcon;
-  const label = healthy ? '正常' : skipped ? '未配置' : (mw.required ? '故障' : '不可用');
+  const label = healthy ? tr('k_fd6e80f1e0') : skipped ? tr('k_63595e95b7') : (mw.required ? tr('k_4af58f243b') : tr('k_beff4a1cd1'));
   return (
     <Card className={!healthy && !skipped ? 'border-destructive/50' : skipped ? 'opacity-70' : ''}>
       <CardContent className="p-4">
@@ -206,9 +208,8 @@ function MiddlewarePanel({ mw }: { mw: MiddlewareResult | null }) {
         <Database className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold">{t("k_e467636591")}</h2>
         <span className="text-xs text-muted-foreground">
-          {mw.summary.healthy}/{mw.summary.total - mw.summary.skipped} 正常
-          {mw.summary.required_down > 0 && <span className="text-destructive"> · {mw.summary.required_down} 个必需项故障</span>}
-          {mw.summary.skipped > 0 && <span> · {mw.summary.skipped} 未配置</span>}
+          {mw.summary.healthy}/{mw.summary.total - mw.summary.skipped} {tr('k_fd6e80f1e0')}{' '}{mw.summary.required_down > 0 && <span className="text-destructive"> {t('k_377496b4e8', { p0: mw.summary.required_down })}</span>}
+          {mw.summary.skipped > 0 && <span> {t('k_af72ffccf3', { p0: mw.summary.skipped })}</span>}
         </span>
       </div>
       {categories.map(cat => (
@@ -224,6 +225,7 @@ function MiddlewarePanel({ mw }: { mw: MiddlewareResult | null }) {
 }
 
 function SectionError({ label, msg, onRetry }: { label: string; msg?: string; onRetry: () => void }) {
+  const { t } = useTranslation('ui');
   return (
     <section className="space-y-2">
       <h2 className="text-sm font-semibold">{label}</h2>
@@ -231,10 +233,10 @@ function SectionError({ label, msg, onRetry }: { label: string; msg?: string; on
         <CardContent className="p-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-destructive min-w-0">
             <XCircle className="h-4 w-4 flex-shrink-0" />
-            <span className="truncate">{label}获取失败{msg ? `：${msg}` : ''}</span>
+            <span className="truncate">{t('k_21ccf1299c', { p0: label, p1: msg ? `：${msg}` : '' })}</span>
           </div>
           <Button variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw className="h-4 w-4 mr-1.5" />重试
+            <RefreshCw className="h-4 w-4 mr-1.5" />{t('k_e2d53a6d3a')}
           </Button>
         </CardContent>
       </Card>
@@ -264,7 +266,7 @@ export default function Monitoring() {
     if (r2.status === 'fulfilled') setMetrics(r2.value); else next.system = r2.reason?.message || String(r2.reason);
     if (r3.status === 'fulfilled') setMiddleware(r3.value); else next.middleware = r3.reason?.message || String(r3.reason);
     setErr(next);
-    if (!silent && Object.keys(next).length === 3) toast.error('获取监控数据失败');
+    if (!silent && Object.keys(next).length === 3) toast.error(t('k_c8f0855778'));
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -298,21 +300,20 @@ export default function Monitoring() {
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
             <Activity className="h-5 w-5 text-primary" />
-            系统监控
+            {t('k_c8462788bf')}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            服务器性能与服务健康状态监控
-            {data?.checked_at && <span className="ml-2">· 上次检查 {data.checked_at}</span>}
+            {tr('k_4844a0e7b3')}{' '}{data?.checked_at && <span className="ml-2">{t('k_436f315273', { p0: data.checked_at })}</span>}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
             <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
-            自动刷新 (30s)
+            {t('k_a20f3da377')}
           </label>
           <Button variant="outline" size="sm" onClick={() => load()} disabled={refreshing}>
             <RefreshCw className={`h-4 w-4 mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />
-            刷新
+            {t('k_38108eaa1d')}
           </Button>
         </div>
       </div>
@@ -320,10 +321,8 @@ export default function Monitoring() {
       {/* 部分分区刷新失败提示（有数据时不整体清空，仅标注哪几项失败） */}
       {(err.system || err.middleware || err.services) && (metrics || middleware || data) && (
         <p className="text-xs text-amber-600">
-          部分监控项本次刷新失败：
-          {[err.system && '服务器性能', err.middleware && '中间件', err.services && '服务健康'].filter(Boolean).join('、')}
-          （已保留上次数据，可点右上角刷新重试）
-        </p>
+          {tr('k_df42d776c0')}{' '}{[err.system && tr('k_407ebd3d26'), err.middleware && tr('k_3cbfec3369'), err.services && tr('k_c3d8f76c5d')].filter(Boolean).join('、')}
+          {tr('k_d81cef0f6a')}{' '}</p>
       )}
 
       {/* Server performance */}
@@ -356,8 +355,8 @@ export default function Monitoring() {
                 <span className="text-xs text-muted-foreground">{layer.desc}</span>
                 <Badge variant="outline" className="ml-auto">
                   {layer.down > 0
-                    ? `${layer.healthy}/${layer.total} 正常`
-                    : `${layer.total} 全部正常`}
+                    ? t('k_9fe06c8c54', { p0: layer.healthy, p1: layer.total })
+                    : t('k_1231ca5e0c', { p0: layer.total })}
                 </Badge>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">

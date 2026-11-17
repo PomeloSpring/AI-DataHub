@@ -12,15 +12,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { listAuditLogs, AuditLogItem } from '../../api/audit';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { useTranslation } from 'react-i18next';
+import { t as i18nTr } from '@/i18n/runtime';
 
 const MODULE_OPTIONS = [
-  { value: '', label: '全部模块' },
-  { value: 'datasource', label: '数据源' },
-  { value: 'metadata', label: '元数据' },
-  { value: 'model', label: '模型' },
-  { value: 'workspace', label: '工作空间' },
-  { value: 'scheduled_task', label: '定时任务' },
-  { value: 'system', label: '系统' },
+  { value: '', label: i18nTr('k_ecbfa7c3f2') },
+  { value: 'datasource', label: i18nTr('k_a3ccf702c5') },
+  { value: 'metadata', label: i18nTr('k_34681d7fd5') },
+  { value: 'model', label: i18nTr('k_98fd0cbd9c') },
+  { value: 'workspace', label: i18nTr('k_1bf3defde7') },
+  { value: 'scheduled_task', label: i18nTr('k_c97ffbda2e') },
+  { value: 'system', label: i18nTr('k_1a1f6dff78') },
 ];
 
 const MODULE_COLORS: Record<string, string> = {
@@ -33,69 +34,69 @@ const MODULE_COLORS: Record<string, string> = {
 };
 
 const ACTION_LABELS: Record<string, string> = {
-  login: '登录',
-  logout: '登出',
-  create_user: '创建用户',
-  update_user: '更新用户',
-  delete_user: '删除用户',
-  reset_password: '重置密码',
-  change_password: '修改密码',
-  update_user_status: '更新用户状态',
-  create_datasource: '创建数据源',
-  update_datasource: '更新数据源',
-  delete_datasource: '删除数据源',
-  execute_sql: '执行SQL',
-  sync_metadata: '同步元数据',
-  create_metadata: '创建字段元数据',
-  update_metadata: '更新字段元数据',
-  delete_metadata: '删除字段元数据',
-  create_table_info: '创建表信息',
-  update_table_info: '更新表信息',
-  delete_table_info: '删除表信息',
-  clear_metadata_by_datasource: '清理数据源元数据',
-  clear_metadata_by_table: '清理表元数据',
-  create_template: '创建SQL模板',
-  update_template: '更新SQL模板',
-  delete_template: '删除SQL模板',
-  create_term: '创建业务术语',
-  update_term: '更新业务术语',
-  delete_term: '删除业务术语',
-  create_relation: '创建关联关系',
-  update_relation: '更新关联关系',
-  delete_relation: '删除关联关系',
-  sync_relations: '同步表关联',
-  update_brand_settings: '更新品牌设置',
-  create_llm_model: '创建LLM模型',
-  update_llm_model: '更新LLM模型',
-  delete_llm_model: '删除LLM模型',
-  set_default_model: '设置默认模型',
-  update_system_config: '更新系统配置',
-  create_workspace: '创建工作空间',
-  update_workspace: '更新工作空间',
-  delete_workspace: '删除工作空间',
-  create_scheduled_task: '创建定时任务',
-  update_scheduled_task: '更新定时任务',
-  delete_scheduled_task: '删除定时任务',
-  toggle_scheduled_task: '切换定时任务状态',
-  create_notification_channel: '创建通知渠道',
-  update_notification_channel: '更新通知渠道',
-  delete_notification_channel: '删除通知渠道',
-  create_report_template: '创建报告模板',
-  update_report_template: '更新报告模板',
-  delete_report_template: '删除报告模板',
-  create_workflow: '创建工作流',
-  update_workflow: '更新工作流',
-  delete_workflow: '删除工作流',
-  create_prompt: '创建Prompt',
-  update_prompt: '更新Prompt',
-  install_mcp: '安装MCP服务',
-  account_locked: '账号锁定',
+  login: i18nTr('k_402d19e50f'),
+  logout: i18nTr('k_75c856b174'),
+  create_user: i18nTr('k_ac5b586ced'),
+  update_user: i18nTr('k_1ce6da36d5'),
+  delete_user: i18nTr('k_10991ce420'),
+  reset_password: i18nTr('k_7e422146dd'),
+  change_password: i18nTr('k_7fc88aeeda'),
+  update_user_status: i18nTr('k_e4d2d6e467'),
+  create_datasource: i18nTr('k_a90be9ee5c'),
+  update_datasource: i18nTr('k_b9b06aa197'),
+  delete_datasource: i18nTr('k_cd72cca961'),
+  execute_sql: i18nTr('k_b579d4bc20'),
+  sync_metadata: i18nTr('k_9d6343628f'),
+  create_metadata: i18nTr('k_31490ce602'),
+  update_metadata: i18nTr('k_42f81889de'),
+  delete_metadata: i18nTr('k_e9106c1a33'),
+  create_table_info: i18nTr('k_13b2712f05'),
+  update_table_info: i18nTr('k_775f318b7a'),
+  delete_table_info: i18nTr('k_e967e3cafc'),
+  clear_metadata_by_datasource: i18nTr('k_488e38783f'),
+  clear_metadata_by_table: i18nTr('k_2f93cdcc2d'),
+  create_template: i18nTr('k_74825dceed'),
+  update_template: i18nTr('k_5e21f842aa'),
+  delete_template: i18nTr('k_5a523ed208'),
+  create_term: i18nTr('k_d7ea31cec0'),
+  update_term: i18nTr('k_453db005ed'),
+  delete_term: i18nTr('k_6ddc731855'),
+  create_relation: i18nTr('k_9195e5d3a7'),
+  update_relation: i18nTr('k_59d895f54c'),
+  delete_relation: i18nTr('k_9fd824a171'),
+  sync_relations: i18nTr('k_5dcf5ea82f'),
+  update_brand_settings: i18nTr('k_3ab158a813'),
+  create_llm_model: i18nTr('k_78d40a78a9'),
+  update_llm_model: i18nTr('k_025c648eff'),
+  delete_llm_model: i18nTr('k_7e10102d78'),
+  set_default_model: i18nTr('k_9a6647daa6'),
+  update_system_config: i18nTr('k_6e96fe555e'),
+  create_workspace: i18nTr('k_c51d81a943'),
+  update_workspace: i18nTr('k_fb26e45339'),
+  delete_workspace: i18nTr('k_0717b53396'),
+  create_scheduled_task: i18nTr('k_230a57d496'),
+  update_scheduled_task: i18nTr('k_f961a3d235'),
+  delete_scheduled_task: i18nTr('k_0b198eb3d3'),
+  toggle_scheduled_task: i18nTr('k_53fea40bf1'),
+  create_notification_channel: i18nTr('k_137cfae568'),
+  update_notification_channel: i18nTr('k_12bdcb0bf3'),
+  delete_notification_channel: i18nTr('k_a4450b243c'),
+  create_report_template: i18nTr('k_f4bfaf6ab9'),
+  update_report_template: i18nTr('k_5f87cce732'),
+  delete_report_template: i18nTr('k_bd75bde838'),
+  create_workflow: i18nTr('k_7a73b5e429'),
+  update_workflow: i18nTr('k_2078b9e581'),
+  delete_workflow: i18nTr('k_2b1e7d283a'),
+  create_prompt: i18nTr('k_39824d441b'),
+  update_prompt: i18nTr('k_053ffa1c88'),
+  install_mcp: i18nTr('k_2bc4b71572'),
+  account_locked: i18nTr('k_25210d5405'),
 };
 
 // 配置变更审计的 action 是**运行时从路径推导**的（如 update_as_bot / create_eval_case），
 // 静态表盖不全，这里把动词前缀拆出来译一下，剩下的当作资源名展示。
 const VERB_LABELS: Record<string, string> = {
-  create: '创建', update: '更新', delete: '删除', patch: '更新', post: '新增',
+  create: i18nTr('k_fcbd093292'), update: i18nTr('k_d9db02d07a'), delete: i18nTr('k_3755f56f2f'), patch: i18nTr('k_d9db02d07a'), post: i18nTr('k_2cd9e6ce81'),
 };
 
 function formatAction(action: string): string {
@@ -162,10 +163,10 @@ export default function AuditLog() {
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">{t("k_7666cd4323")}</h2>
-          <Badge variant="secondary" className="ml-2">{total} 条记录</Badge>
+          <Badge variant="secondary" className="ml-2">{t('k_cb30354a0e', { p0: total })}</Badge>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()}>
-          <RefreshCw className="h-4 w-4 mr-1" /> 刷新
+          <RefreshCw className="h-4 w-4 mr-1" /> {t('k_38108eaa1d')}
         </Button>
       </div>
 
@@ -185,7 +186,7 @@ export default function AuditLog() {
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="搜索操作详情..."
+            placeholder={t('k_0ba822eac2')}
             value={filterKeyword}
             onChange={(e) => setFilterKeyword(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -199,7 +200,7 @@ export default function AuditLog() {
       <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="flex items-center justify-center py-12">
-          <Spinner className="h-6 w-6 mr-2" /> 加载中...
+          <Spinner className="h-6 w-6 mr-2" /> {t('k_26b5bd4947')}
         </div>
       ) : logs.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">

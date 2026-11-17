@@ -21,16 +21,17 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const STATUS_MAP: Record<string, { label: string; className: string; dot: string }> = {
-  queued: { label: '排队中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dot: 'bg-blue-500' },
-  running: { label: '运行中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dot: 'bg-blue-500 animate-pulse' },
-  success: { label: '成功', className: 'bg-green-500/10 text-green-500 border-green-500/20', dot: 'bg-green-500' },
-  failed: { label: '失败', className: 'bg-red-500/10 text-red-500 border-red-500/20', dot: 'bg-red-500' },
-  partial: { label: '部分成功', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20', dot: 'bg-yellow-500' },
-  skipped: { label: '跳过', className: 'bg-gray-500/10 text-gray-500 border-gray-500/20', dot: 'bg-gray-400' },
-  timeout: { label: '超时', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20', dot: 'bg-yellow-500' },
-  cancelled: { label: '已取消', className: 'bg-gray-500/10 text-gray-500 border-gray-500/20', dot: 'bg-gray-400' },
+  queued: { label: tr('k_e5ac1d2029'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dot: 'bg-blue-500' },
+  running: { label: tr('k_5942497005'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dot: 'bg-blue-500 animate-pulse' },
+  success: { label: tr('k_51991a5d11'), className: 'bg-green-500/10 text-green-500 border-green-500/20', dot: 'bg-green-500' },
+  failed: { label: tr('k_3e3c8068bb'), className: 'bg-red-500/10 text-red-500 border-red-500/20', dot: 'bg-red-500' },
+  partial: { label: tr('k_2f2b7e05e3'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20', dot: 'bg-yellow-500' },
+  skipped: { label: tr('k_92636e8c8f'), className: 'bg-gray-500/10 text-gray-500 border-gray-500/20', dot: 'bg-gray-400' },
+  timeout: { label: tr('k_ff06c243d7'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20', dot: 'bg-yellow-500' },
+  cancelled: { label: tr('k_a5ffdc95ee'), className: 'bg-gray-500/10 text-gray-500 border-gray-500/20', dot: 'bg-gray-400' },
 };
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -51,7 +52,7 @@ function RunNode({ data }: { data: any }) {
         <span className="font-medium text-sm truncate">{data.label}</span>
       </div>
       <div className="px-3 py-1.5 text-xs text-muted-foreground">
-        {data.statusLabel}{data.attempt > 1 ? ` · 第 ${data.attempt} 次` : ''}
+        {data.statusLabel}{data.attempt > 1 ? tr('k_c174f06ed5', { p0: data.attempt }) : ''}
       </div>
       <Handle type="source" position={Position.Right} className="!w-2 !h-2" />
     </div>
@@ -80,7 +81,7 @@ export default function DagRunDetail() {
       setGraph(wf.data.graph_json || { nodes: [], edges: [] });
       if (!['queued', 'running'].includes(data.run.status)) setAutoRefresh(false);
     } catch {
-      toast.error('运行详情加载失败');
+      toast.error(tr('k_33ca15579d'));
     }
   };
 
@@ -135,7 +136,7 @@ export default function DagRunDetail() {
           data: {
             label: n.name || n.key,
             statusDot: conf.dot,
-            statusLabel: nr ? conf.label : '待运行',
+            statusLabel: nr ? conf.label : tr('k_dcebd71155'),
             attempt: nr?.attempt || 1,
           },
         });
@@ -156,40 +157,36 @@ export default function DagRunDetail() {
         <div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => navigate('/data/sync/dag')}>
-              <ArrowLeft className="w-4 h-4 mr-1" />返回
-            </Button>
+              <ArrowLeft className="w-4 h-4 mr-1" />{tr('k_11d0241540')}</Button>
             <h1 className="text-xl font-bold">{t("k_a939e999ca")}</h1>
             {run && <StatusBadge status={run.status} />}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            {run?.workflow_name || ''} · 触发方式 {run?.trigger_type || '—'} · 开始 {fmtTime(run?.started_at)}
+            {run?.workflow_name || ''} {tr('k_64b778ac54')}{' '}{run?.trigger_type || '—'} {tr('k_214fc2da49')}{' '}{fmtTime(run?.started_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-xs text-muted-foreground">
             <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
-            自动刷新 (5s)
-          </label>
+            {tr('k_5f518347ba')}</label>
           <Button variant="outline" size="sm" onClick={load}><RefreshCw className="w-4 h-4 mr-1" />{t("k_38108eaa1d")}</Button>
           {run && ['queued', 'running'].includes(run.status) && (
             <Button variant="outline" size="sm" onClick={async () => {
-              await dagApi.stopRun(run.id); toast.success('已请求停止'); load();
+              await dagApi.stopRun(run.id); toast.success(tr('k_2530fb3f66')); load();
             }}>
-              <Square className="w-4 h-4 mr-1" />停止
-            </Button>
+              <Square className="w-4 h-4 mr-1" />{tr('k_095e938e2a')}</Button>
           )}
           {run && !['queued', 'running'].includes(run.status) && (
             <Button variant="outline" size="sm" onClick={async () => {
               try {
                 const { data } = await dagApi.retryRun(run.id);
-                toast.success('已重新进入队列');
+                toast.success(tr('k_0eea91ef85'));
                 navigate(`/data/sync/dag-runs/${data.run_id}`);
               } catch (error: any) {
-                toast.error(error?.response?.data?.detail || '重跑失败');
+                toast.error(error?.response?.data?.detail || tr('k_c17c7b13e3'));
               }
             }}>
-              <RotateCcw className="w-4 h-4 mr-1" />重跑
-            </Button>
+              <RotateCcw className="w-4 h-4 mr-1" />{tr('k_73aa205577')}</Button>
           )}
         </div>
       </div>
@@ -197,11 +194,11 @@ export default function DagRunDetail() {
       {/* 统计卡 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {[
-          ['节点', `${stats.nodes_success ?? 0}/${stats.nodes_total ?? graph.nodes.length} 成功`],
-          ['失败', String(stats.nodes_failed ?? 0)],
-          ['跳过', String(stats.nodes_skipped ?? 0)],
-          ['读取行数', String(stats.rows_read ?? 0)],
-          ['写入行数', String(stats.rows_written ?? 0)],
+          [tr('k_e840cd6f1e'), tr('k_17a35523f8', { p0: stats.nodes_success ?? 0, p1: stats.nodes_total ?? graph.nodes.length })],
+          [tr('k_3e3c8068bb'), String(stats.nodes_failed ?? 0)],
+          [tr('k_92636e8c8f'), String(stats.nodes_skipped ?? 0)],
+          [tr('k_3634f29fb1'), String(stats.rows_read ?? 0)],
+          [tr('k_44b75fa528'), String(stats.rows_written ?? 0)],
         ].map(([label, value]) => (
           <div key={label} className="border rounded-lg p-3">
             <p className="text-xs text-muted-foreground">{label}</p>
@@ -273,11 +270,11 @@ export default function DagRunDetail() {
 
       <Dialog open={!!errorDetail} onOpenChange={() => setErrorDetail(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>节点错误 — {errorDetail?.node_key}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{tr('k_8f182b117d')}{' '}{errorDetail?.node_key}</DialogTitle></DialogHeader>
           <div className="space-y-2 text-sm">
             <div className="flex gap-2 items-center">
               <Badge variant="outline">{errorDetail?.error_code || 'ERROR'}</Badge>
-              <span className="text-xs text-muted-foreground">第 {errorDetail?.attempt} 次尝试</span>
+              <span className="text-xs text-muted-foreground">{tr('k_32575a9cd0', { p0: errorDetail?.attempt })}</span>
             </div>
             <p className="text-muted-foreground whitespace-pre-wrap">{errorDetail?.error_message}</p>
             <p className="text-xs text-muted-foreground">{t("k_4253c252a3")}</p>

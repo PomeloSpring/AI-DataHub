@@ -14,7 +14,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -29,6 +28,8 @@ import {
   CASE_STATUS_LABEL, SUITE_LABEL, templateFor,
   type CapabilityMeta, type CaseStatus, EvalCase, type SuiteMeta,
 } from './shared';
+import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 interface Props {
   suites: SuiteMeta[];
@@ -55,6 +56,7 @@ export default function EvalCasesPanel({
   suites, capabilities, cases, loading, error, suiteFilter,
   onSuiteFilter, preset, onChanged,
 }: Props) {
+  const { t } = useTranslation('ui');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [PAGE_SIZE, setPageSize] = useState(PAGE_SIZE_DEFAULT);
@@ -92,7 +94,7 @@ export default function EvalCasesPanel({
   const grouped = useMemo(() => {
     const m = new Map<string, EvalCase[]>();
     for (const c of filtered) {
-      const k = c.capability || '未登记';
+      const k = c.capability || tr('k_3c69de319c');
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(c);
     }
@@ -144,9 +146,9 @@ export default function EvalCasesPanel({
   const saveCase = async () => {
     let payload: unknown, expected: unknown;
     try { payload = JSON.parse(form.payload || '{}'); }
-    catch { toast.error('payload 不是合法 JSON'); return; }
+    catch { toast.error(t('k_eccbea3a6d')); return; }
     try { expected = JSON.parse(form.expected || '{}'); }
-    catch { toast.error('expected 不是合法 JSON'); return; }
+    catch { toast.error(t('k_4c59fb400b')); return; }
 
     const body = {
       case_key: form.case_key.trim(), suite: form.suite, question: form.question,
@@ -156,11 +158,11 @@ export default function EvalCasesPanel({
       payload, expected, note: form.note, sort: Number(form.sort) || 0,
       is_active: editing?.is_active ?? 1,
     };
-    if (!body.case_key) { toast.error('用例标识不能为空'); return; }
-    if (!body.question) { toast.error('问题不能为空'); return; }
-    if (!body.capability) { toast.error('必须选择能力契约组（覆盖矩阵据此判缺口，不容空值混过）'); return; }
+    if (!body.case_key) { toast.error(t('k_ae1a426649')); return; }
+    if (!body.question) { toast.error(t('k_417c962557')); return; }
+    if (!body.capability) { toast.error(t('k_aa562fe5f9')); return; }
     if (body.case_status !== 'active' && !body.status_note) {
-      toast.error('标为退役/已知缺陷必须写原因，否则等于把失败扫到地毯下');
+      toast.error(t('k_d692215b0d'));
       return;
     }
 
@@ -168,12 +170,12 @@ export default function EvalCasesPanel({
     try {
       if (editing) await client.put(`/eval/cases/${editing.id}`, body);
       else await client.post('/eval/cases', body);
-      toast.success(editing ? '用例已更新' : '用例已创建');
+      toast.success(editing ? t('k_455e9e3a53') : t('k_ebae97ed7b'));
       setFormOpen(false);
       onChanged();
     } catch (e: any) {
       // 后端会明确回"用例不合法/标识已存在"，原样透出，不做静默降级
-      toast.error(e.response?.data?.detail || '保存失败');
+      toast.error(e.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -182,10 +184,10 @@ export default function EvalCasesPanel({
   const remove = async (c: EvalCase) => {
     try {
       await client.delete(`/eval/cases/${c.id}`);
-      toast.success('用例已删除（历史运行结果仍按 case_key 保留）');
+      toast.success(t('k_4e1e395f5c'));
       onChanged();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '删除失败');
+      toast.error(e.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -194,7 +196,7 @@ export default function EvalCasesPanel({
       await client.post(`/eval/cases/${c.id}/active`, null, { params: { active: !c.is_active } });
       onChanged();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '操作失败');
+      toast.error(e.response?.data?.detail || t('k_5fa802bef5'));
     }
   };
 
@@ -215,7 +217,7 @@ export default function EvalCasesPanel({
       <td className="p-2">
         <div className="flex flex-col gap-0.5">
           <Badge variant={c.is_active ? 'default' : 'outline'} className="text-[9px]">
-            {c.is_active ? '启用' : '停用'}
+            {c.is_active ? t('k_d4e9ca3dd4') : t('k_5c56a88945')}
           </Badge>
           {c.case_status !== 'active' && (
             <Badge variant="destructive" className="text-[9px]" title={c.status_note}>
@@ -228,10 +230,10 @@ export default function EvalCasesPanel({
         <div className="flex gap-1">
           <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={() => openEdit(c)}>{t("k_a7f814c0a4")}</Button>
           <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={() => toggleActive(c)}>
-            {c.is_active ? '停用' : '启用'}
+            {c.is_active ? t('k_5c56a88945') : t('k_d4e9ca3dd4')}
           </Button>
           <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-destructive" onClick={() => remove(c)}>
-            删除
+            {t('k_3755f56f2f')}
           </Button>
         </div>
       </td>
@@ -255,8 +257,7 @@ export default function EvalCasesPanel({
           placeholder={t("k_6f79f0520c")}
         />
         <Badge variant="outline" className="text-[10px]">
-          {filtered.length} / {cases.length} 条
-        </Badge>
+          {filtered.length} / {cases.length} {tr('k_cc1bacb511')}{' '}</Badge>
         <div className="flex-1" />
         <Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5 mr-1" />{t("k_bd0f17d872")}</Button>
       </div>
@@ -264,7 +265,7 @@ export default function EvalCasesPanel({
       {loading && <div className="text-xs text-muted-foreground p-4">{t("k_300ee3dee4")}</div>}
       {!loading && error && (
         <div className="text-xs text-destructive p-4 border border-destructive/40 rounded">
-          加载失败：{error}
+          {t('k_fc3f31a5be', { p0: error })}
         </div>
       )}
       {!loading && !error && filtered.length === 0 && (
@@ -286,7 +287,7 @@ export default function EvalCasesPanel({
               <span className="font-mono text-[10px] text-muted-foreground">{cap}</span>
               <Badge variant="outline" className="text-[10px]">{list.length}</Badge>
               {failed > 0 && (
-                <Badge variant="destructive" className="text-[10px]">已知缺陷 {failed}</Badge>
+                <Badge variant="destructive" className="text-[10px]">{t('k_fbb1124ef2', { p0: failed })}</Badge>
               )}
             </button>
             {!isCollapsed && (
@@ -322,7 +323,7 @@ export default function EvalCasesPanel({
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-2xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑用例 — ${editing.case_key}` : '新增评测用例'}</DialogTitle>
+            <DialogTitle>{editing ? t('k_d9e9624b63', { p0: editing.case_key }) : t('k_ceb1b112dc')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
@@ -330,7 +331,7 @@ export default function EvalCasesPanel({
                 <Label className="mb-1 block" htmlFor="f-case-key">{t("k_a4c5678ffd")}</Label>
                 <Input id="f-case-key" value={form.case_key} disabled={!!editing}
                   onChange={e => setForm({ ...form, case_key: e.target.value })}
-                  placeholder="如 sem_gov_mask_applies_to_admin" />
+                  placeholder={t('k_8b59a05fc3')} />
               </div>
               <div>
                 <Label className="mb-1 block" htmlFor="f-question">{t("k_6b8161bae7")}</Label>
@@ -379,21 +380,21 @@ export default function EvalCasesPanel({
               <div>
                 <Label className="mb-1 block" htmlFor="f-tags">{t("k_cc22c8c7e5")}</Label>
                 <Input id="f-tags" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })}
-                  placeholder="如 governance,sensitive_block" />
+                  placeholder={t('k_a5a5c099a6')} />
               </div>
             </div>
 
             {form.case_status !== 'active' && (
               <div>
                 <Label className="mb-1 block" htmlFor="f-status-note">
-                  {form.case_status === 'retired' ? '退役原因（必填）' : '缺陷描述（必填）'}
+                  {form.case_status === 'retired' ? t('k_917a39b0fb') : t('k_42c9d5959a')}
                 </Label>
                 <Textarea id="f-status-note" rows={2} value={form.status_note}
                   onChange={e => setForm({ ...form, status_note: e.target.value })}
                   placeholder={t("k_3f8d74f329")} />
                 {form.case_status === 'retired' && (
                   <p className="mt-1 text-[10px] text-amber-600">
-                    退役后不再跑、不计入门禁分母；条数与原因会在发布前检查里常驻展示。
+                    {t('k_3956d61743')}
                   </p>
                 )}
               </div>
@@ -404,12 +405,12 @@ export default function EvalCasesPanel({
               <div className="flex items-center gap-2">
                 <b className="text-xs">{t("k_462eca3f03")}</b>
                 <Badge variant="outline" className="text-[10px]">
-                  {templateFor(form.suite, form.capability) ? '已按层+契约预填模板' : '该组合暂无模板，请手写'}
+                  {templateFor(form.suite, form.capability) ? t('k_a8818d290e') : t('k_d595ba3821')}
                 </Badge>
                 <div className="flex-1" />
                 <Button variant="ghost" size="sm" className="h-6 text-[11px]"
                   onClick={() => setAdvanced(a => !a)}>
-                  {advanced ? '收起 JSON' : '编辑 JSON'}
+                  {advanced ? t('k_f284116163') : t('k_aebfd25c62')}
                 </Button>
               </div>
               {!advanced && templateFor(form.suite, form.capability) && (
@@ -427,8 +428,7 @@ export default function EvalCasesPanel({
                   </div>
                   <div>
                     <Label className="mb-1 block" htmlFor="f-expected">
-                      expected（确定性断言 JSON）— 可用键：
-                      <code className="ml-1 text-[10px] text-muted-foreground">
+                      {tr('k_1c65ce549c')}{' '}<code className="ml-1 text-[10px] text-muted-foreground">
                         {(suites.find(s => s.suite === form.suite)?.expected_keys || []).join(' / ')}
                       </code>
                     </Label>
@@ -445,13 +445,12 @@ export default function EvalCasesPanel({
               <Input id="f-note" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} />
             </div>
             <p id="f-no-self-proof" className="text-[10px] text-muted-foreground">
-              期望键必须属于所选层，写错会被后端拒绝保存（不静默忽略）；
-              期望值需人工判定，页面不代生成 —— 评测是评价 AI 的标尺，不能由工具自证。
+              {t('k_23dcffc5f5')}
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={saveCase} disabled={saving}>{saving ? '保存中…' : '保存'}</Button>
+            <Button onClick={saveCase} disabled={saving}>{saving ? t('k_6644f06197') : t('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

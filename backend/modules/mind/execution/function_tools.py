@@ -134,17 +134,21 @@ def _list_dashboards(args):
 
 
 def _list_scheduled_tasks(args):
-    """调度任务清单：只回名称/周期/状态。不含 Webhook 密钥、任务配置、上次错误原文。"""
+    """调度任务清单：只回自己创建的任务名称/周期/状态。不含 Webhook 密钥、任务配置、上次错误原文。
+
+    任务调度跟随创建者（用户），不按角色/工作空间共享：同角色的两个人在同一工作空间里
+    也不得经 AI 通道拿到对方的任务（与 REST 列表、报表清单同一口径）。
+    """
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
     rows = _select(
         "SELECT id, name, description, task_type, cron_expression, trigger_type, timezone, "
         "       is_active, last_run_at, last_status, run_count, created_at "
-        "FROM adh_scheduled_tasks WHERE workspace_id = %s ORDER BY created_at DESC LIMIT %s",
-        (int(ident.get("workspace_id") or 0), _limit(args)))
+        "FROM adh_scheduled_tasks WHERE owner_id = %s ORDER BY created_at DESC LIMIT %s",
+        (int(ident["user_id"]), _limit(args)))
     return _text({"tasks": [_iso(r, "last_run_at", "created_at") for r in rows],
-                  "note": "Webhook 密钥与上次错误原文不在 AI 可见范围内"})
+                  "note": "仅含本人创建的调度任务；Webhook 密钥与上次错误原文不在 AI 可见范围内"})
 
 
 def _list_quality_rules(args):
@@ -999,8 +1003,8 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
     "scheduled_task.list": {
         "tool_name": "list_scheduled_tasks",
         "label": "查看调度任务",
-        "description": "列出当前工作空间的调度任务（名称/执行周期/状态）。"
-                       "不返回 Webhook 密钥与上次错误原文。",
+        "description": "列出本人创建的调度任务（名称/执行周期/状态）。"
+                       "任务跟随创建者，不含他人任务；不返回 Webhook 密钥与上次错误原文。",
         "perm_code": "scheduled:read", "object_key": "scheduled_task", "read_only": True,
         "schema": {"type": "object", "properties": {
             "limit": {"type": "integer", "description": "返回条数上限，默认 50，最大 200"}},

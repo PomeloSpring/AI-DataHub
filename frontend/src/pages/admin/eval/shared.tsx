@@ -6,6 +6,7 @@
  */
 import { Badge } from '@/components/ui/badge';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 export type Suite = 'compile' | 'semantic' | 'retrieval' | 'llm';
 export type CaseStatus = 'active' | 'known_defect' | 'retired';
@@ -139,21 +140,21 @@ export interface CompareResult {
 }
 
 export const SUITE_LABEL: Record<string, string> = {
-  compile: 'L1 编译规则（mock）',
-  semantic: 'L2 真实语义',
-  retrieval: 'L3 真实检索',
-  llm: 'L4 端到端行为',
-  all: '全部',
+  compile: tr('k_5d77a89984'),
+  semantic: tr('k_1cc9c0c911'),
+  retrieval: tr('k_84ab44bf9a'),
+  llm: tr('k_7a043aa209'),
+  all: tr('k_778fc8f994'),
 };
 
 export const CASE_STATUS_LABEL: Record<CaseStatus, string> = {
-  active: '启用计分',
-  known_defect: '已知缺陷（仍计分母）',
-  retired: '退役（不计分母）',
+  active: tr('k_dea7a979eb'),
+  known_defect: tr('k_dd80e673b5'),
+  retired: tr('k_e1c5f05585'),
 };
 
 export const TRIGGER_LABEL: Record<string, string> = {
-  manual: '手动', celery: '定时/Celery', ci: 'CI',
+  manual: tr('k_2a3e7f5c38'), celery: tr('k_fcbda54a71'), ci: 'CI',
 };
 
 /** 确定性层同步跑（零 LLM、不触达数据源）；真实检索/端到端走 Celery。 */
@@ -261,8 +262,8 @@ export function templateFor(suite: string, capability: string): Template | null 
 export function expectList(payload: any, what: string): any[] {
   if (!payload || !Array.isArray(payload.items)) {
     throw new Error(
-      `接口返回结构异常（期望 items 数组，实际 ${typeof payload}）：${what}。`
-      + '多半是 /api/eval 或 /api/evolution 代理未配置，请求被 SPA 兜底成页面 HTML。',
+      tr('k_aa12013cc0', { p0: typeof payload, p1: what })
+      + tr('k_b29f7e110c'),
     );
   }
   return payload.items;
@@ -282,7 +283,7 @@ export function GateBadge({ v }: { v: PrecheckSuite }) {
   }
   return (
     <Badge variant="destructive" className="text-[9px]">
-      {v.floor_ok ? '相对回退' : '低于下限'}
+      {v.floor_ok ? t('k_0896e8c5ba') : t('k_984e123c38')}
     </Badge>
   );
 }
@@ -290,6 +291,6 @@ export function GateBadge({ v }: { v: PrecheckSuite }) {
 /** 失败原因归一成分桶键：让"10 条同一原因"一眼看成一类问题，而不是 10 个问题。 */
 export function clusterKey(reason: string): string {
   const r = (reason || '').trim();
-  if (!r) return '（无原因）';
-  return r.split(/[:：（(]/)[0].slice(0, 42) || '（无法归类）';
+  if (!r) return tr('k_91a514a782');
+  return r.split(/[:：（(]/)[0].slice(0, 42) || tr('k_5596cbd9e7');
 }

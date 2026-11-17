@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -20,7 +20,7 @@ export function useDatasources() {
 }
 
 export function DatasourceSelect({
-  value, onChange, allowEmpty = false, placeholder = '选择数据源',
+  value, onChange, allowEmpty = false, placeholder = tr('k_422b9e314a'),
 }: {
   value?: string; onChange: (v: string) => void;
   allowEmpty?: boolean; placeholder?: string;

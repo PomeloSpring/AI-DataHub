@@ -3,13 +3,13 @@ import { useLocation } from 'react-router-dom';
 import { Compass, Home as HomeIcon, Folder, Database, Settings, Sparkles } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { t } from '@/i18n/runtime';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { GUIDE_ALL_KEY, GUIDE_WELCOME_KEY, noteKey, type ReleaseNote } from '@/api/releaseNotes';
-import { GUIDES, guideAccessOf, pageGuideIdForPath } from '@/lib/onboarding/guides';
+import { GUIDES, asTranslate, guideAccessOf, pageGuideIdForPath } from '@/lib/onboarding/guides';
 import { useGuideStore } from '@/stores/guideStore';
 import { useMenuAccess } from '@/hooks/useMenuAccess';
 import { useAuthStore } from '@/stores/authStore';
@@ -26,13 +26,16 @@ import { useAuthStore } from '@/stores/authStore';
  *   开始引导   → 播放当前模块的分步引导
  *   稍后再说   → 本次不再弹（写 guide:welcome=skipped），下次登录仍按状态判定
  *   跳过全部引导 → 写 guide:all=skipped，之后任何引导都不再自动弹出，只剩手动入口
+ *
+ * 文案全部走 onboarding 命名空间（`guide.*` 步骤定义同源，见 lib/onboarding/guides.ts）：
+ * 引导名/步骤标题不在代码里存字面量，切语言即时生效。
  */
 
-const MODULE_META: Record<string, { icon: LucideIcon; label: string }> = {
-  home: { icon: HomeIcon, label: '首页总览' },
-  workspace: { icon: Folder, label: '工作空间' },
-  data: { icon: Database, label: '数据中台' },
-  system: { icon: Settings, label: '系统配置' },
+const MODULE_META: Record<string, { icon: LucideIcon }> = {
+  home: { icon: HomeIcon },
+  workspace: { icon: Folder },
+  data: { icon: Database },
+  system: { icon: Settings },
 };
 
 export default function WelcomeDialog({
@@ -43,6 +46,8 @@ export default function WelcomeDialog({
   upgradeNotes: ReleaseNote[];
   onClose: () => void;
 }) {
+  // 引导名 key 来自 GUIDES 数据（动态 key），走 asTranslate 适配
+  const t = asTranslate(useTranslation('onboarding').t);
   const location = useLocation();
   const menuAccess = useMenuAccess();
   const user = useAuthStore(s => s.user);
@@ -55,6 +60,7 @@ export default function WelcomeDialog({
     [location.pathname, menuAccess, user],
   );
   const hereGuide = here ? GUIDES[here] : undefined;
+  const hereGuideLabel = hereGuide ? t(hereGuide.labelKey) : '';
 
   const readUpgradeKeys = () => upgradeNotes.map(n => noteKey(n.version));
 
@@ -92,12 +98,10 @@ export default function WelcomeDialog({
   const meta = here ? MODULE_META[here] : undefined;
   const Icon = meta?.icon || Compass;
   const desc = upgradeNotes.length
-    ? (hereGuide
-      ? '下面是本次版本的新增与优化；可以只看公告，也可以用引导逐项带你走一遍。'
-      : '下面是本次版本的新增与优化。')
+    ? (hereGuide ? t('welcome.descUpgradeWithGuide') : t('welcome.descUpgrade'))
     : (hereGuide
-      ? `用一分钟了解当前页面怎么用：「${hereGuide.label}」共 ${hereGuide.steps.length} 步，逐项带你走一遍本页入口。`
-      : '用一分钟了解这个平台怎么用。');
+      ? t('welcome.descGuide', { label: hereGuideLabel, count: hereGuide.steps.length })
+      : t('welcome.descFirst'));
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) void dismiss(); }}>
@@ -105,7 +109,7 @@ export default function WelcomeDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
-            {upgradeNotes.length ? '系统已更新，这些变化值得关注' : '欢迎使用 AI-DataHub'}
+            {upgradeNotes.length ? t('welcome.titleUpgrade') : t('welcome.titleFirst')}
           </DialogTitle>
           <DialogDescription>{desc}</DialogDescription>
         </DialogHeader>
@@ -123,7 +127,7 @@ export default function WelcomeDialog({
                       variant="link" size="sm" className="h-auto p-0 text-xs"
                       onClick={() => play(n.guide_key)}
                     >
-                      查看新功能引导
+                      {t('welcome.viewNewFeatureGuide')}
                     </Button>
                   )}
                 </div>
@@ -139,7 +143,7 @@ export default function WelcomeDialog({
 
         {hereGuide && (
           <div className="space-y-1.5">
-            <div className="text-xs font-medium text-muted-foreground">{t("k_8d20e7a7b3")}</div>
+            <div className="text-xs font-medium text-muted-foreground">{t('welcome.currentPageGuide')}</div>
             <button
               type="button" onClick={() => play(here)}
               className="flex w-full items-start gap-3 rounded-lg border border-border/70 p-3 text-left transition-colors hover:bg-accent/60"
@@ -148,8 +152,10 @@ export default function WelcomeDialog({
                 <Icon className="h-4 w-4" />
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-sm font-medium">{hereGuide.label}</span>
-                <span className="block text-xs text-muted-foreground">{hereGuide.steps.length} 步 · 约 {hereGuide.steps.length * 5} 秒</span>
+                <span className="block truncate text-sm font-medium">{hereGuideLabel}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {t('welcome.stepsMeta', { count: hereGuide.steps.length, seconds: hereGuide.steps.length * 5 })}
+                </span>
               </span>
             </button>
           </div>
@@ -159,14 +165,14 @@ export default function WelcomeDialog({
           <button
             type="button" onClick={skipAll}
             className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            title={t("k_6ecf309bdb")}
+            title={t('welcome.skipAllTitle')}
           >
-            跳过全部引导（之后不再自动弹出，可手动重看）
+            {t('welcome.skipAll')}
           </button>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={dismiss}>{t("k_52b7c8fada")}</Button>
+            <Button variant="outline" size="sm" onClick={dismiss}>{t('welcome.later')}</Button>
             <Button size="sm" onClick={begin} disabled={!hereGuide}>
-              <Compass className="mr-1.5 h-4 w-4" />开始引导
+              <Compass className="mr-1.5 h-4 w-4" />{t('welcome.start')}
             </Button>
           </div>
         </DialogFooter>

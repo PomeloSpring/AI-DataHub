@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Dialog,
   DialogContent,
@@ -93,25 +93,28 @@ interface MenuPermGroup {
  * 未登记的模块排最后但不丢。
  */
 const MODULE_ORDER = ['system', 'data', 'workspace', 'content'];
-const MODULE_LABEL_FALLBACK: Record<string, string> = {
-  system: '系统配置', data: '数据中台', workspace: '工作空间', content: '内容中心',
+/** 模块分组显示名回退：与顶栏模块切换同一份菜单文案（切语言即时生效） */
+const MODULE_LABEL_KEY: Record<string, string> = {
+  system: 'switcher.system', data: 'switcher.data', workspace: 'switcher.workspace', content: 'switcher.content',
 };
 
 const AI_LEVEL_LABEL: Record<string, string> = {
-  none: '不开放给 AI',
-  read: '只读可见',
-  write: '可读可写',
+  none: t('k_292a251e16'),
+  read: t('k_7a33d9210f'),
+  write: t('k_079280e097'),
 };
 
 /** 接入通道徽标文案 —— 与后端 perm_link.ai_channel 三值一一对应 */
 const AI_CHANNEL_LABEL: Record<string, string> = {
-  function_action: 'AI 工具',
-  perm_gate: '权限码把关',
-  none: '未接入',
+  function_action: t('k_7a3c4d37bf'),
+  perm_gate: t('k_fd392e283d'),
+  none: t('k_8f5c4bfd26'),
 };
 
 export default function RoleManagement() {
   const { t } = useTranslation('ui');
+  // 模块分组显示名走 menu 语言包（动态 key，签名放宽）
+  const tMenu = useTranslation('menu').t as unknown as (key: string) => string;
   const navigate = useNavigate();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(false);
@@ -156,7 +159,8 @@ export default function RoleManagement() {
     const seen = new Map<string, string>();
     for (const g of permGroups) {
       const key = g.module || 'other';
-      if (!seen.has(key)) seen.set(key, g.module_label || MODULE_LABEL_FALLBACK[key] || key);
+      const labelKey = MODULE_LABEL_KEY[key];
+      if (!seen.has(key)) seen.set(key, g.module_label || (labelKey ? tMenu(labelKey) : key));
     }
     const rank = (m: string) => {
       const i = MODULE_ORDER.indexOf(m);
@@ -165,7 +169,7 @@ export default function RoleManagement() {
     return [...seen.entries()]
       .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
       .map(([value, label]) => ({ value, label }));
-  }, [permGroups]);
+  }, [permGroups, tMenu]);
   const toggleGroupCollapse = (key: string) => {
     setCollapsedGroups(prev => {
       const next = new Set(prev);
@@ -189,7 +193,7 @@ export default function RoleManagement() {
       const { data } = await client.get('/roles/');
       setRoles(Array.isArray(data) ? data : []);
     } catch {
-      toast.error('加载角色失败');
+      toast.error(t('k_a32f3b2a85'));
     } finally {
       setLoading(false);
     }
@@ -212,23 +216,23 @@ export default function RoleManagement() {
   };
 
   const handleSave = async () => {
-    if (!formName || !formDisplayName) { toast.error('请填写标识和名称'); return; }
+    if (!formName || !formDisplayName) { toast.error(t('k_8f7d256f87')); return; }
     setSaving(true);
     try {
       if (editRole) {
         await client.put(`/roles/${editRole.id}`, { display_name: formDisplayName, description: formDesc });
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await client.post('/roles/', { name: formName, display_name: formDisplayName, description: formDesc });
-        toast.success(`角色已创建，已同步创建「${formDisplayName || formName}」的 AS-BOT，可前往 AS-BOT 配置页编辑`, {
+        toast.success(t('k_b53fcc07c7', { p0: formDisplayName || formName }), {
           action: {
-            label: '去编辑',
+            label: t('k_eee0335136'),
             onClick: () => navigate('/system/as-bots'),
           },
         });
       }
       setFormOpen(false); loadRoles();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '保存失败'); }
+    } catch (e: any) { toast.error(e.response?.data?.detail || t('k_6de920b4e4')); }
     finally { setSaving(false); }
   };
 
@@ -236,8 +240,8 @@ export default function RoleManagement() {
     if (!deleteTarget) return;
     try {
       await client.delete(`/roles/${deleteTarget.id}`);
-      toast.success('已删除'); setDeleteTarget(null); loadRoles();
-    } catch (e: any) { toast.error(e.response?.data?.detail || '删除失败'); }
+      toast.success(t('k_5cc232620c')); setDeleteTarget(null); loadRoles();
+    } catch (e: any) { toast.error(e.response?.data?.detail || t('k_acf0664a54')); }
   };
 
   // ── Permission Config ────────────────────────────────────────────
@@ -252,36 +256,36 @@ export default function RoleManagement() {
     await load(async () => {
       const { data } = await client.get('/datasources/');
       setAllDatasources(Array.isArray(data) ? data : []);
-    }, '加载数据源列表失败');
+    }, tr('k_c5ef0f3bfd'));
     await load(async () => {
       const { data } = await client.get(`/roles/${role.id}/datasources`);
       setDsAccess(data || []);
-    }, '加载数据源权限失败');
+    }, tr('k_d398d22d01'));
     await load(async () => {
       const data = await listRLSPolicies(0, undefined, undefined, 1, 100);
       setRlsPolicies(data.items || []);
       const { data: bound } = await client.get(`/roles/${role.id}/rls-policies`);
       setRoleRlsPolicies(new Set(bound.policy_ids || []));
-    }, '加载数据安全策略失败');
+    }, tr('k_b0eb2d2dc9'));
     await load(async () => {
       const { data } = await client.get('/roles/dashboard-catalog');
       setDashboardCatalog(Array.isArray(data) ? data : []);
       const { data: grants } = await client.get(`/roles/${role.id}/dashboards`);
       setRoleDashboards((grants || []).map((r: any) => r.dashboard_id));
-    }, '加载看板可见范围失败');
+    }, tr('k_5757e3e6c8'));
     await load(async () => {
       const { data } = await client.get('/roles/dataset-catalog');
       setDatasetCatalog(Array.isArray(data) ? data : []);
       const { data: grants } = await client.get(`/roles/${role.id}/datasets`);
       setRoleDatasets((grants || []).map((r: any) => r.dataset_id));
-    }, '加载数据集权限失败');
+    }, tr('k_657e38a431'));
     await load(async () => {
       const { data: reg } = await client.get('/roles/perm-registry');
       setPermGroups(reg.menu_groups || []);
       setStandalonePerms(reg.standalone || []);
       const { data: permData } = await client.get(`/roles/${role.id}/permissions`);
       setRolePerms(new Set(permData.permissions || []));
-    }, '加载功能权限失败');
+    }, tr('k_5e489875f5'));
   };
 
   const saveDatasourceAccess = async (dsIds: number[]) => {
@@ -292,8 +296,8 @@ export default function RoleManagement() {
         const ds = allDatasources.find((d: any) => d.id === id);
         return { datasource_id: id, datasource_name: ds?.name || '', db_type: ds?.db_type || '' };
       }));
-      toast.success('数据源权限已保存');
-    } catch { toast.error('保存失败'); }
+      toast.success(t('k_d8befd9e8c'));
+    } catch { toast.error(t('k_6de920b4e4')); }
   };
 
   const toggleDsAccess = (dsId: number) => {
@@ -311,8 +315,8 @@ export default function RoleManagement() {
       ? [...roleRlsPolicies].filter(id => id !== policyId)
       : [...roleRlsPolicies, policyId];
     client.put(`/roles/${permTarget.id}/rls-policies`, { policy_ids: next })
-      .then(() => { setRoleRlsPolicies(new Set(next)); toast.success('数据安全策略绑定已保存'); })
-      .catch(() => toast.error('保存失败'));
+      .then(() => { setRoleRlsPolicies(new Set(next)); toast.success(t('k_2f86df5c33')); })
+      .catch(() => toast.error(t('k_6de920b4e4')));
   };
 
   // ── Dashboard Visibility ──────────────────────────────────────
@@ -323,8 +327,8 @@ export default function RoleManagement() {
       ? roleDashboards.filter(id => id !== dashId)
       : [...roleDashboards, dashId];
     client.put(`/roles/${permTarget.id}/dashboards`, { dashboard_ids: next })
-      .then(() => { setRoleDashboards(next); toast.success('看板可见范围已保存'); })
-      .catch(() => toast.error('保存失败'));
+      .then(() => { setRoleDashboards(next); toast.success(t('k_afe877a5e7')); })
+      .catch(() => toast.error(t('k_6de920b4e4')));
   };
 
   // ── Dataset Access ──────────────────────────────────────
@@ -335,8 +339,8 @@ export default function RoleManagement() {
       ? roleDatasets.filter(id => id !== dsId)
       : [...roleDatasets, dsId];
     client.put(`/roles/${permTarget.id}/datasets`, { dataset_ids: next })
-      .then(() => { setRoleDatasets(next); toast.success('数据集权限已保存'); })
-      .catch(() => toast.error('保存失败'));
+      .then(() => { setRoleDatasets(next); toast.success(t('k_7163377e5a')); })
+      .catch(() => toast.error(t('k_6de920b4e4')));
   };
 
   // ── Menu & Function Permissions (权限码) ────────────────────
@@ -387,7 +391,7 @@ export default function RoleManagement() {
       })));
       setStandalonePerms(prev => prev.map(p => (p.perm_code === code ? patch(p, data) : p)));
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || '设置 AI 可调用级别失败');
+      toast.error(e.response?.data?.detail || t('k_0b0e9bde50'));
     }
   };
 
@@ -395,8 +399,8 @@ export default function RoleManagement() {
     if (!permTarget) return;
     try {
       await client.put(`/roles/${permTarget.id}/permissions`, { permissions: [...rolePerms] });
-      toast.success('功能权限已保存');
-    } catch { toast.error('保存失败'); }
+      toast.success(t('k_6bc122782a'));
+    } catch { toast.error(t('k_6de920b4e4')); }
   };
 
   // ── User Assignment ──────────────────────────────────────────────
@@ -415,20 +419,20 @@ export default function RoleManagement() {
     if (!userTarget) return;
     try {
       await client.post(`/roles/${userTarget.id}/users`, { user_id: userId, workspace_id: 0 });
-      toast.success('已分配');
+      toast.success(t('k_fbfa6c18bf'));
       const { data } = await client.get(`/roles/${userTarget.id}`);
       setRoleUsers(data.users || []);
-    } catch { toast.error('分配失败'); }
+    } catch { toast.error(t('k_b05fa6dc7e')); }
   };
 
   const handleRemoveUser = async (userId: number) => {
     if (!userTarget) return;
     try {
       await client.delete(`/roles/${userTarget.id}/users/${userId}`, { params: { workspace_id: 0 } });
-      toast.success('已移除');
+      toast.success(t('k_16edb1665d'));
       const { data } = await client.get(`/roles/${userTarget.id}`);
       setRoleUsers(data.users || []);
-    } catch { toast.error('移除失败'); }
+    } catch { toast.error(t('k_6a6b0524c7')); }
   };
 
   // ── Render ───────────────────────────────────────────────────────
@@ -437,16 +441,16 @@ export default function RoleManagement() {
     <div className="h-full overflow-auto">
       <h1 className="text-2xl font-bold mb-6 flex items-center gap-2">
         <Shield className="h-6 w-6" />
-        角色权限
+        {t('k_86a1be00f6')}
       </h1>
 
       <div className="flex justify-between items-center mb-4">
-        <p className="text-sm text-muted-foreground">共 {roles.length} 个角色 · 系统角色不可删除</p>
+        <p className="text-sm text-muted-foreground">{t('k_59102a8c0f', { p0: roles.length })}</p>
         <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_7a0524c3a7")}</Button>
       </div>
 
       {loading ? (
-        <div className="text-center py-8 text-muted-foreground">加载中...</div>
+        <div className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</div>
       ) : roles.length === 0 ? (
         <div className="text-center py-8 text-muted-foreground">{t("k_6103376362")}</div>
       ) : (
@@ -489,7 +493,7 @@ export default function RoleManagement() {
       <Dialog open={!!permTarget} onOpenChange={() => setPermTarget(null)}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-auto">
           <DialogHeader>
-            <DialogTitle>权限配置 — {permTarget?.display_name}</DialogTitle>
+            <DialogTitle>{t('k_247fd8f28a', { p0: permTarget?.display_name })}</DialogTitle>
             <DialogDescription>{t("k_4eeea0280e")}</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
@@ -503,7 +507,7 @@ export default function RoleManagement() {
 
             {/* Datasource Access */}
             <TabsContent value="datasources" className="space-y-3">
-              <p className="text-sm text-muted-foreground">勾选该角色可访问的数据源（不勾选=不限制）</p>
+              <p className="text-sm text-muted-foreground">{t('k_6b7cc53a33')}</p>
               {allDatasources.map((ds: any) => (
                 <div key={ds.id} className="flex items-center justify-between border rounded px-3 py-2">
                   <div className="flex items-center gap-2">
@@ -522,7 +526,7 @@ export default function RoleManagement() {
 
             {/* Dataset Access */}
             <TabsContent value="datasets" className="space-y-3">
-              <p className="text-sm text-muted-foreground">勾选该角色可查看的数据集。未勾选任何数据集 = 不可见（fail-closed，admin 不受限）</p>
+              <p className="text-sm text-muted-foreground">{t('k_4a44b46b78')}</p>
               {datasetCatalog.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_c46e035dbe")}</p>
               ) : (
@@ -557,12 +561,12 @@ export default function RoleManagement() {
                           <Lock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                           <span className="text-sm font-medium truncate">{p.name}</span>
                           <Badge variant="outline" className="text-xs flex-shrink-0">
-                            {p.policy_type === 'row' ? '行策略' : p.policy_type === 'column' ? '列策略' : p.policy_type === 'table' ? '表策略' : '行/列(遗留)'}
+                            {p.policy_type === 'row' ? t('k_aff627e54b') : p.policy_type === 'column' ? t('k_a8b880d21f') : p.policy_type === 'table' ? t('k_90fa0ea225') : t('k_8f64c985d2')}
                           </Badge>
                           {!p.is_active && <Badge variant="secondary" className="text-xs flex-shrink-0">{t("k_6c7dcbb73a")}</Badge>}
                         </div>
                         <div className="pl-6 text-xs text-muted-foreground truncate">
-                          表 <code>{p.table_name}</code>
+                          {tr('k_6a954390e3')}{' '}<code>{p.table_name}</code>
                           {p.filter_expr && <> · <code>{p.filter_expr}</code></>}
                         </div>
                       </div>
@@ -578,7 +582,7 @@ export default function RoleManagement() {
 
             {/* Dashboard Visibility */}
             <TabsContent value="dashboards" className="space-y-3">
-              <p className="text-sm text-muted-foreground">勾选该角色可查看的看板。未勾选任何看板 = 除 admin 外不可见（fail-closed）</p>
+              <p className="text-sm text-muted-foreground">{t('k_9d000fb4e3')}</p>
               {dashboardCatalog.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_49734c90cc")}</p>
               ) : (
@@ -602,15 +606,13 @@ export default function RoleManagement() {
 
             {/* 菜单与功能（权限码，菜单→功能分组，接口只读） */}
             <TabsContent value="functions" className="space-y-3">
-              <p className="text-sm text-muted-foreground">按「菜单 → 功能」分组配置该角色可用的功能权限；展开功能可查看其绑定的接口（只读，由权限注册表维护）。未配置任何功能 = 该角色不可用（fail-closed），admin 不受限。</p>
+              <p className="text-sm text-muted-foreground">{t('k_763aa11abf')}</p>
               {/* 两个控件的归属必须说清（历史陷阱：级别下拉长在角色页里，写的却是全局注册表，
                   改 A 角色会连带改变 B 角色的 AI 能力）。徽标只回答“这个级别有没有消费方”：
                   AI 工具=已登记功能工具，权限码把关=执行期按码直执行，两者级别均真实生效；
                   未接入=无消费方，配了不生效（已在行内显式提示）。 */}
               <p className="text-xs text-muted-foreground">
-                角标【勾选框】是本角色的开关：收回权限码后，该码下的 AI 功能工具与写动作均带原因不可用。
-                右侧【AI 可调用级别】写的是全局权限注册表（对所有角色生效，非本角色专属）；
-                徽标「AI 工具 / 权限码把关 / 未接入」表示该级别到底有没有消费方。
+                {t('k_9ff6fa85e4')}
               </p>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>{t("k_66c98ab6d8")}</Button>
@@ -653,7 +655,7 @@ export default function RoleManagement() {
                         <span>{t("k_dd8bb81826")}</span>
                         <Button
                           variant="ghost" size="sm" className="h-6 w-6 p-0"
-                          aria-label={collapsedGroups.has('__standalone__') ? '展开 通用功能' : '收起 通用功能'}
+                          aria-label={collapsedGroups.has('__standalone__') ? t('k_a823b50769') : t('k_2bc6a1121d')}
                           onClick={() => toggleGroupCollapse('__standalone__')}
                         >
                           {collapsedGroups.has('__standalone__') ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
@@ -691,16 +693,16 @@ export default function RoleManagement() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editRole ? '编辑角色' : '新建角色'}</DialogTitle>
+            <DialogTitle>{editRole ? t('k_ac775e9a51') : t('k_7a0524c3a7')}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div><Label>角色标识 *</Label><Input value={formName} onChange={e => setFormName(e.target.value)} placeholder="如 sales_cn" disabled={!!editRole} /></div>
-            <div><Label>显示名称 *</Label><Input value={formDisplayName} onChange={e => setFormDisplayName(e.target.value)} placeholder={t("k_47ebb1f096")} /></div>
+            <div><Label>{t('k_939050e252')}</Label><Input value={formName} onChange={e => setFormName(e.target.value)} placeholder={t('k_cb86f05180')} disabled={!!editRole} /></div>
+            <div><Label>{t('k_f75459f6f0')}</Label><Input value={formDisplayName} onChange={e => setFormDisplayName(e.target.value)} placeholder={t("k_47ebb1f096")} /></div>
             <div><Label>{t("k_412f54dc38")}</Label><Textarea value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -709,11 +711,11 @@ export default function RoleManagement() {
       <Dialog open={!!userTarget} onOpenChange={() => setUserTarget(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>用户分配 — {userTarget?.display_name}</DialogTitle>
+            <DialogTitle>{t('k_2f59ad94d2', { p0: userTarget?.display_name })}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label className="mb-2 block">已分配用户 ({roleUsers.length})</Label>
+              <Label className="mb-2 block">{t('k_7842852c84', { p0: roleUsers.length })}</Label>
               {roleUsers.length === 0 ? <p className="text-sm text-muted-foreground py-2">{t("k_3d268bdd39")}</p> : (
                 <div className="space-y-1 max-h-[200px] overflow-auto">
                   {roleUsers.map(u => (
@@ -745,7 +747,7 @@ export default function RoleManagement() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>{t("k_3c06abe116")}</DialogTitle></DialogHeader>
-          <p>确定要删除角色 "{deleteTarget?.display_name}" 吗？</p>
+          <p>{t('k_0633eb1bd4', { p0: deleteTarget?.display_name })}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
@@ -765,6 +767,7 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
   onToggleApi: () => void;
   onAiAccess: (code: string, level: 'none' | 'read' | 'write') => void;
 }) {
+  const { t } = useTranslation('ui');
   const patterns = (perm.api_pattern || '').split(',').map(s => s.trim()).filter(Boolean);
   const effective = perm.ai_effective || perm.ai_access || 'none';
   const configured = perm.ai_access || 'none';
@@ -774,10 +777,10 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
   // 旧后端未回该字段时按同一口径回推，不静默当“已接入”。
   const channel = perm.ai_channel || (perm.ai_action_key ? 'function_action' : 'none');
   const channelTitle = channel === 'function_action'
-    ? `已登记 LLM 功能工具：${perm.ai_action_key}；级别配置直接决定工具是否注册`
+    ? tr('k_8413c7714a', { p0: perm.ai_action_key })
     : channel === 'perm_gate'
-      ? '能力挂在系统工具组的工具上，执行期按本权限码直执行把关（不登记功能工具属正常）；级别配置真实生效'
-      : '该功能尚无 AI 通道：未登记功能工具，也无执行期权限码把关。级别配置暂无消费方';
+      ? tr('k_40b3f56d06')
+      : tr('k_790df09ab0');
   return (
     <div className="border rounded px-2 py-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -795,8 +798,8 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
             <SelectTrigger
               className="h-6 w-[110px] text-[10px]"
               title={perm.ai_locked
-                ? `该功能涉敏，AI 级别已锁死为「${AI_LEVEL_LABEL[effective]}」。${perm.ai_note || ''}`
-                : `AI 可调用级别：${AI_LEVEL_LABEL[effective]}`}
+                ? t('k_8e7919f2f0', { p0: AI_LEVEL_LABEL[effective], p1: perm.ai_note || '' })
+                : t('k_020d85e451', { p0: AI_LEVEL_LABEL[effective] })}
             >
               <SelectValue placeholder={t("k_deb7157586")} />
             </SelectTrigger>
@@ -815,7 +818,7 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
           </Badge>
           {patterns.length > 0 && (
             <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px] flex-shrink-0" onClick={onToggleApi}>
-              {expanded ? '收起接口' : `接口(${patterns.length})`}
+              {expanded ? t('k_4ca113a4f6') : t('k_eecd0676ec', { p0: patterns.length })}
             </Button>
           )}
         </div>
@@ -823,7 +826,7 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
       {perm.description && <p className="text-[10px] text-muted-foreground pl-6">{perm.description}</p>}
       {(capped || perm.ai_note) && (
         <p className={`text-[10px] pl-6 ${capped ? 'text-amber-600' : 'text-muted-foreground'}`}>
-          {capped && <>已按涉密边界收窄：「{AI_LEVEL_LABEL[configured]}」→「{AI_LEVEL_LABEL[effective]}」。{perm.ai_note}</>}
+          {capped && <>{t('k_2c2d65c4b4', { p0: AI_LEVEL_LABEL[configured], p1: AI_LEVEL_LABEL[effective], p2: perm.ai_note })}</>}
           {!capped && perm.ai_note}
         </p>
       )}
@@ -831,9 +834,7 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
           角色级开关是左侧勾选框（收回权限码 = 该码下所有 AI 动作带原因不可用）。 */}
       {channel === 'none' && (
         <p className="text-[10px] pl-6 text-amber-600">
-          {`尚未接入 AI：「${AI_LEVEL_LABEL[effective]}」当前仅在 UI 上标记，不会开通任何接口能力。`}
-          要开放给 AI 需先在功能动作登记处补安全投影（function_tools.FUNCTION_ACTION_SPECS）。
-        </p>
+          {t('k_ee3147d034', { p0: tr('k_f1eafb83c8', { p0: AI_LEVEL_LABEL[effective] }) })}</p>
       )}
       {expanded && patterns.length > 0 && (
         <div className="mt-1 ml-6 space-y-0.5">
@@ -861,6 +862,7 @@ function PermGroupCard({ group, checked, expanded, collapsed, onToggleGroup, onT
   onToggleCollapse: () => void;
   onAiAccess: (code: string, level: 'none' | 'read' | 'write') => void;
 }) {
+  const { t } = useTranslation('ui');
   const codes = group.permissions.map(p => p.perm_code);
   const checkedCount = codes.filter(c => checked.has(c)).length;
   const all = codes.length > 0 && checkedCount === codes.length;
@@ -883,7 +885,7 @@ function PermGroupCard({ group, checked, expanded, collapsed, onToggleGroup, onT
           <span className="text-[10px] text-muted-foreground">{group.section}</span>
           <Button
             variant="ghost" size="sm" className="h-6 w-6 p-0"
-            aria-label={collapsed ? `展开 ${group.label}` : `收起 ${group.label}`}
+            aria-label={collapsed ? t('k_791821ac8d', { p0: group.label }) : t('k_422a0b52e4', { p0: group.label })}
             onClick={onToggleCollapse}
           >
             {collapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}

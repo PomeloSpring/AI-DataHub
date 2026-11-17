@@ -15,9 +15,10 @@ import {
 } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { releaseNotesApi, type ReleaseNote } from '@/api/releaseNotes';
-import { GUIDE_OPTIONS } from '@/lib/onboarding/guides';
+import { asTranslate, guideOptions } from '@/lib/onboarding/guides';
 import { toast } from '@/lib/toast';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /**
  * 版本公告管理（系统配置 → 版本公告）。
@@ -31,9 +32,9 @@ import { useTranslation } from 'react-i18next';
  */
 
 const SECTION_META = [
-  { kind: 'feature', label: '新增', hint: '每行一条，写用户能感知的能力' },
-  { kind: 'improvement', label: '优化', hint: '每行一条，已有功能改进了什么' },
-  { kind: 'fix', label: '修复', hint: '每行一条，修掉了什么问题' },
+  { kind: 'feature', label: tr('k_2cd9e6ce81'), hint: tr('k_c3a80cbde4') },
+  { kind: 'improvement', label: tr('k_aa84ec947f'), hint: tr('k_69af4c631e') },
+  { kind: 'fix', label: tr('k_f82661e8e7'), hint: tr('k_ac557d32a2') },
 ] as const;
 
 type SectionKind = typeof SECTION_META[number]['kind'];
@@ -73,6 +74,9 @@ const splitLines = (note: ReleaseNote, kind: SectionKind) =>
 
 export default function ReleaseNotesManager() {
   const { t } = useTranslation('ui');
+  // 引导业务名随语言解析（与弹窗/侧栏同一份 onboarding 语言包）
+  const { t: tGuide } = useTranslation('onboarding');
+  const GUIDE_OPTIONS = guideOptions(asTranslate(tGuide));
   const [notes, setNotes] = useState<ReleaseNote[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -89,7 +93,7 @@ export default function ReleaseNotesManager() {
       setNotes(data.items || []);
     } catch (e: any) {
       // 加载失败显式报错并可重试，不静默渲成空清单（no-silent-degradation）
-      setError(e?.response?.data?.detail || '公告清单加载失败');
+      setError(e?.response?.data?.detail || t('k_b22f91e961'));
     } finally {
       setLoading(false);
     }
@@ -120,12 +124,12 @@ export default function ReleaseNotesManager() {
     if (!form) return;
     const version = form.version.trim();
     const title = form.title.trim();
-    if (!version || !title) { toast.error('版本号与标题都不能为空'); return; }
+    if (!version || !title) { toast.error(t('k_6f283a8b2f')); return; }
     if (!/^\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.]+)?$/.test(version)) {
-      toast.error('版本号格式不正确，示例：1.2.0');
+      toast.error(t('k_892b4838c6'));
       return;
     }
-    if (!sections.length) { toast.error('至少填写一条更新项（新增/优化/修复任一分组）'); return; }
+    if (!sections.length) { toast.error(t('k_f84fd780aa')); return; }
     const payload = {
       version,
       title,
@@ -139,11 +143,11 @@ export default function ReleaseNotesManager() {
     try {
       if (form.id) await releaseNotesApi.adminUpdate(form.id, payload);
       else await releaseNotesApi.adminCreate(payload);
-      toast.success(form.id ? `已更新公告 v${version}` : `已保存公告 v${version}`);
+      toast.success(form.id ? t('k_35f6cca786', { p0: version }) : t('k_7df52a0353', { p0: version }));
       setForm(null);
       await load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -154,11 +158,11 @@ export default function ReleaseNotesManager() {
     setDeleting(true);
     try {
       await releaseNotesApi.adminRemove(deleteTarget.id);
-      toast.success(`已删除公告 v${deleteTarget.version}`);
+      toast.success(t('k_586416d3a7', { p0: deleteTarget.version }));
       setDeleteTarget(null);
       await load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '删除失败');
+      toast.error(e?.response?.data?.detail || t('k_acf0664a54'));
     } finally {
       setDeleting(false);
     }
@@ -169,16 +173,16 @@ export default function ReleaseNotesManager() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="flex items-center gap-2 text-lg font-semibold">
-            <Megaphone className="h-5 w-5 text-primary" />版本公告
+            <Megaphone className="h-5 w-5 text-primary" />{t('k_3f46d9ffbc')}
           </h3>
           <p className="text-sm text-muted-foreground">
-            顶栏「版本更新公告」的数据源。勾选「重大版本」后发布会向全体用户提示一次升级亮点。
+            {t('k_dc762d7189')}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>{t("k_38108eaa1d")}</Button>
           <Button size="sm" onClick={openCreate}>
-            <Plus className="mr-1.5 h-4 w-4" />新增公告
+            <Plus className="mr-1.5 h-4 w-4" />{t('k_c289553d92')}
           </Button>
         </div>
       </div>
@@ -225,7 +229,7 @@ export default function ReleaseNotesManager() {
                     }).filter(Boolean).join(' · ') || '—'}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {GUIDE_OPTIONS.find(o => o.id === n.guide_key)?.label || '未关联'}
+                    {GUIDE_OPTIONS.find(o => o.id === n.guide_key)?.label || t('k_92610e5f23')}
                   </TableCell>
                   <TableCell>
                     {n.is_published
@@ -254,24 +258,24 @@ export default function ReleaseNotesManager() {
       <Dialog open={!!form} onOpenChange={v => { if (!v) setForm(null); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{form?.id ? '编辑公告' : '新增公告'}</DialogTitle>
+            <DialogTitle>{form?.id ? t('k_1419599c7d') : t('k_c289553d92')}</DialogTitle>
             <DialogDescription>
-              只填有内容的分组，空分组不会展示给用户。「重大版本」会向全体用户提示一次，请谨慎勾选。
+              {t('k_568b6af4d1')}
             </DialogDescription>
           </DialogHeader>
           {form && (
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-[160px_1fr]">
                 <div className="space-y-2">
-                  <Label htmlFor="rn-version">版本号 *</Label>
+                  <Label htmlFor="rn-version">{t('k_e8ef4946aa')}</Label>
                   <Input
                     id="rn-version" value={form.version}
                     onChange={e => setForm({ ...form, version: e.target.value })}
-                    placeholder="如：1.2.0"
+                    placeholder={t('k_0aedccf889')}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="rn-title">标题 *</Label>
+                  <Label htmlFor="rn-title">{t('k_b247fe10b8')}</Label>
                   <Input
                     id="rn-title" value={form.title}
                     onChange={e => setForm({ ...form, title: e.target.value })}
@@ -305,7 +309,7 @@ export default function ReleaseNotesManager() {
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    选一个前端已提供的引导，公告面板会给用户「查看新功能引导」按钮。
+                    {t('k_fab81851b3')}
                   </p>
                 </div>
                 <div className="space-y-3 pt-0.5">
@@ -329,7 +333,7 @@ export default function ReleaseNotesManager() {
               <div className="space-y-3">
                 {SECTION_META.map(({ kind, label, hint }) => (
                   <div key={kind} className="space-y-1.5">
-                    <Label htmlFor={`rn-${kind}`}>{label}项</Label>
+                    <Label htmlFor={`rn-${kind}`}>{t('k_397dbb2060', { p0: label })}</Label>
                     <Textarea
                       id={`rn-${kind}`} rows={2} value={form.groups[kind]}
                       onChange={e => setForm({ ...form, groups: { ...form.groups, [kind]: e.target.value } })}
@@ -344,7 +348,7 @@ export default function ReleaseNotesManager() {
             <Button variant="outline" onClick={() => setForm(null)} disabled={saving}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving || !form}>
               {saving && <Spinner size={14} className="mr-2" />}
-              {form?.id ? '保存修改' : '创建公告'}
+              {form?.id ? t('k_c5575b3f60') : t('k_67b04d58eb')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -354,17 +358,16 @@ export default function ReleaseNotesManager() {
       <Dialog open={!!deleteTarget} onOpenChange={v => { if (!v) setDeleteTarget(null); }}>
         <DialogContent className="max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>删除公告 v{deleteTarget?.version}？</DialogTitle>
+            <DialogTitle>{t('k_c7faf5f98f', { p0: deleteTarget?.version })}</DialogTitle>
             <DialogDescription>
-              删除后用户顶栏公告面板里不再显示这一版；已读状态留在各用户身上，不影响其它版本。此操作不可撤销。
+              {t('k_a715336552')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting && <Spinner size={14} className="mr-2" />}
-              确认删除
-            </Button>
+              {tr('k_3c06abe116')}{' '}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

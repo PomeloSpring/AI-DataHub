@@ -1,6 +1,11 @@
 """Scheduled Task API — CRUD for tasks, execution logs, notification channels, and reports.
 
-All endpoints are workspace-scoped for multi-tenant isolation.
+隔离口径（2026-11-17 用户拍板）：
+- 定时任务**跟随创建者（用户）**，不按角色/工作空间共享——同一角色的两个人也互不可见、
+  不可改删（历史缺陷：admin 旁路 + 大批新用户绑同一 admin 角色，导致同角色看到相同任务）；
+  全局运维处置走系统「任务监控」页（task_monitor_service，独立 admin 门禁）。
+- 通知渠道是系统配置页资源（config 含 webhook/口令），仍是「非 admin 只看自建」。
+- 报表跟随属主（report_service.list_reports 已硬绑 owner_id，无 admin 旁路）。
 """
 
 import logging
@@ -48,7 +53,9 @@ async def _scheduled_access(request: Request):
         if resource.get("is_system") and request.method == "GET":
             return
         authorize_resource_scope(user, resource.get("workspace_id"))
-        if ("task_id" in params or "log_id" in params) and user.get("role") != "admin":
+        # 任务/日志按创建者硬隔离（对 admin 同样生效）：任务调度跟随用户，不跟随角色。
+        # 管理员需要停/删他人任务时走系统「任务监控」页（task_monitor_service）。
+        if "task_id" in params or "log_id" in params:
             if int(resource.get("owner_id") or 0) != int(user["user_id"]):
                 raise HTTPException(status_code=404, detail="资源不存在或无权访问")
     else:
@@ -64,8 +71,8 @@ async def _scheduled_access(request: Request):
         elif request.method in ("POST", "PUT"):
             # 写操作必须明确工作空间（非 admin ws=0 拒绝）
             authorize_workspace(user, 0)
-        # GET 无 ws：放行——列表端点按身份圈范围（tasks 按 owner、reports 按 user、
-        # channels/templates 按 owner+内置），非 admin 不得看全量；
+        # GET 无 ws：放行——列表端点按身份圈范围（tasks 恒按创建者、reports 按属主、
+        # channels 按 owner+内置），任何人（含 admin）都不得读全量任务；
         # 此处不再 authorize_workspace(user, 0)（非 admin 恒 403，曾致任务调度页打不开）
     if "/logs/cleanup" in request.url.path and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可执行全局清理")
@@ -149,9 +156,13 @@ def list_scheduled_tasks(
     size: int = Query(20, ge=1, le=100),
     user: dict = Depends(get_current_user),
 ):
-    """List scheduled tasks with pagination, scoped by workspace."""
+    """List scheduled tasks with pagination, scoped by creator (never by role).
+
+    可见集恒为「本人创建的任务」，admin 也不例外——任务调度跟随用户；
+    workspace_id 仅在 >0 时用于收窄（前端该页跨工作空间展示本人的任务）。
+    """
     return scheduled_task_service.list_tasks(workspace_id=workspace_id, page=page, size=size,
-        owner_id=None if user.get("role") == "admin" else user["user_id"])
+        owner_id=user["user_id"])
 
 
 @router.get("/tasks/{task_id}")

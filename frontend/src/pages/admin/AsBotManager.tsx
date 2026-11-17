@@ -15,63 +15,64 @@ import { Pencil, Bot, Lock, Eye, ChevronDown, ChevronRight } from 'lucide-react'
 import client from '@/api/client';
 import { useAuthStore } from '../../stores/authStore';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 // ── 常量:与后端 sdk_tools 工具组 / tool_catalog 标准工具 / 图表类型对齐 ──
 // 工具权限采用"逐个工具"粒度:每个进程内 MCP server 的工具可单独勾选。
 const MCP_TOOL_GROUPS: { group: string; label: string; desc: string; tools: { name: string; label: string }[] }[] = [
   {
-    group: 'catalog', label: '元数据检索', desc: '数据目录类工具(物理表/列/数据源,对 LLM 相对敏感)',
+    group: 'catalog', label: tr('k_4c288b61f7'), desc: tr('k_4f9f9225bf'),
     tools: [
-      { name: 'search_metadata', label: '元数据搜索' },
-      { name: 'get_table_schema', label: '表结构' },
-      { name: 'list_datasources', label: '数据源列表' },
+      { name: 'search_metadata', label: tr('k_a5c1dac8c3') },
+      { name: 'get_table_schema', label: tr('k_03a0d22485') },
+      { name: 'list_datasources', label: tr('k_9df8b7a905') },
     ],
   },
   {
-    group: 'semantic', label: '业务语义', desc: '统一语义层主路(发现对象/指标/知识 + 声明式查询)',
+    group: 'semantic', label: tr('k_08aea3cd16'), desc: tr('k_f5b96116a7'),
     tools: [
-      { name: 'knowledge_search', label: '知识检索' },
-      { name: 'get_metrics', label: '指标' },
-      { name: 'get_glossary', label: '术语' },
-      { name: 'query_by_tags', label: '标签查询' },
-      { name: 'run_semantic_query', label: '语义查询' },
-      { name: 'get_business_semantics', label: '业务语义' },
-      { name: 'search_business_knowledge', label: '业务知识检索' },
+      { name: 'knowledge_search', label: tr('k_49626be887') },
+      { name: 'get_metrics', label: tr('k_1dfc810a7b') },
+      { name: 'get_glossary', label: tr('k_f4f39962ca') },
+      { name: 'query_by_tags', label: tr('k_ddb558cc28') },
+      { name: 'run_semantic_query', label: tr('k_c8c6211192') },
+      { name: 'get_business_semantics', label: tr('k_08aea3cd16') },
+      { name: 'search_business_knowledge', label: tr('k_a7d59dd0c2') },
     ],
   },
   {
-    group: 'query', label: 'SQL 执行', desc: 'nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)',
-    tools: [{ name: 'check_sql', label: 'SQL 校验' }, { name: 'execute_sql', label: '执行 SQL' }],
+    group: 'query', label: tr('k_86a50f1253'), desc: tr('k_3780e310b0'),
+    tools: [{ name: 'check_sql', label: tr('k_bd59c7eebb') }, { name: 'execute_sql', label: tr('k_a8c191126e') }],
   },
   {
-    group: 'ontology', label: '本体模型', desc: '本体建模与元数据管理工具(AS-BOT 专用)',
+    group: 'ontology', label: tr('k_85eb6d1ab7'), desc: tr('k_fe556348c9'),
     tools: [
-      { name: 'search_ontology', label: '搜索本体' },
-      { name: 'get_ontology_model', label: '模型详情' },
-      { name: 'list_ontology_models', label: '模型列表' },
-      { name: 'get_metadata_summary', label: '元数据摘要' },
-      { name: 'generate_ontology_draft', label: '生成草案*' },
-      { name: 'save_ontology_model', label: '保存模型*' },
-      { name: 'activate_ontology_model', label: '激活模型*' },
-      { name: 'import_ontology_yaml', label: '导入YAML*' },
+      { name: 'search_ontology', label: tr('k_6a22ed2882') },
+      { name: 'get_ontology_model', label: tr('k_3388316fef') },
+      { name: 'list_ontology_models', label: tr('k_851f3dfff6') },
+      { name: 'get_metadata_summary', label: tr('k_9047b4c3dc') },
+      { name: 'generate_ontology_draft', label: tr('k_a42485b4d8') },
+      { name: 'save_ontology_model', label: tr('k_4d74bb8f08') },
+      { name: 'activate_ontology_model', label: tr('k_9b2a87c17c') },
+      { name: 'import_ontology_yaml', label: tr('k_aab69d9372') },
     ],
   },
   {
-    group: 'screen', label: '可视化大屏', desc: '生成/管理数据大屏 + 字模库取用(取数走语义意图 + 治理护城河)',
+    group: 'screen', label: tr('k_f3e5c2d8d7'), desc: tr('k_51f5a847cb'),
     tools: [
-      { name: 'create_data_screen', label: '创建大屏*' },
-      { name: 'get_data_screen', label: '查看大屏' },
-      { name: 'update_data_screen_chart', label: '更新图表*' },
-      { name: 'list_vis_components', label: '字模列表' },
-      { name: 'get_vis_component', label: '字模详情' },
-      { name: 'save_vis_component', label: '存为字模*' },
+      { name: 'create_data_screen', label: tr('k_b86b4fdb7f') },
+      { name: 'get_data_screen', label: tr('k_d35feb9b8e') },
+      { name: 'update_data_screen_chart', label: tr('k_03403d5292') },
+      { name: 'list_vis_components', label: tr('k_64fadd975d') },
+      { name: 'get_vis_component', label: tr('k_c6a035db89') },
+      { name: 'save_vis_component', label: tr('k_e00d2beb95') },
     ],
   },
 ];
 const STANDARD_TOOLS = [
-  { name: 'read', label: '读取' }, { name: 'write', label: '写入' }, { name: 'edit', label: '编辑' },
-  { name: 'glob', label: '文件检索' }, { name: 'grep', label: '内容搜索' }, { name: 'bash', label: '命令执行' },
-  { name: 'webfetch', label: '网页抓取' }, { name: 'task', label: '子任务' },
+  { name: 'read', label: tr('k_b6b97ac60d') }, { name: 'write', label: tr('k_9e93bdccb2') }, { name: 'edit', label: tr('k_a7f814c0a4') },
+  { name: 'glob', label: tr('k_e31b4e29fb') }, { name: 'grep', label: tr('k_0a48125861') }, { name: 'bash', label: tr('k_4d9de9c399') },
+  { name: 'webfetch', label: tr('k_4a74dc687c') }, { name: 'task', label: tr('k_070fc86282') },
 ];
 const CATEGORIES = ['nl2sql', 'analysis', 'chart', 'report', 'custom'];
 
@@ -155,7 +156,7 @@ export default function AsBotManager() {
       ]);
       // 工具目录是渲染主数据，契约不符必须 fail-loud（勿把 undefined 传进状态致渲染崩溃）
       const groups = catalogRes.data?.groups;
-      if (!Array.isArray(groups)) throw new Error('工具目录响应不符合契约');
+      if (!Array.isArray(groups)) throw new Error(tr('k_cb0720e346'));
       setToolGroups(groups);
       setStandardTools(Array.isArray(catalogRes.data?.standard) ? catalogRes.data.standard : []);
       setFunctionActions(catalogRes.data?.functions?.items || []);
@@ -164,7 +165,7 @@ export default function AsBotManager() {
       setKnowledgeBases(Array.isArray(kbRes.data) ? kbRes.data.filter((k: any) => k.status === 'active') : []);
       setSkillOptions(Array.isArray(skillRes.data) ? skillRes.data : []);
     } catch {
-      toast.error('加载失败');
+      toast.error(t('k_866b795eae'));
     } finally {
       setLoading(false);
     }
@@ -199,7 +200,7 @@ export default function AsBotManager() {
     // 内置服务用业务可读 label（如「Elasticsearch 检索服务」），不是内部 name；
     // 已下架时给可读标注而不光裸 id（id 仅作为排查线索留在括号里）。
     const srv = mcpServers.find((s) => s.id === id);
-    return srv ? (srv.label || srv.name) : `MCP 服务已下架（#${id}）`;
+    return srv ? (srv.label || srv.name) : tr('k_a728b202b8', { p0: id });
   };
   const kbName = (id: number) => knowledgeBases.find((k) => k.id === id)?.name || `#${id}`;
   // 展示用中文标签(目录里缺标签时回退原始 key, 不丢信息; key 放 title 供排查)
@@ -226,7 +227,7 @@ export default function AsBotManager() {
   };
 
   const handleSave = async () => {
-    if (!form.name.trim() && !form.as_bot_key.trim()) { toast.error('请填写名称或标识'); return; }
+    if (!form.name.trim() && !form.as_bot_key.trim()) { toast.error(t('k_1b3acf6993')); return; }
     const key = (form.as_bot_key || form.name).trim();
     // 从 mcp 逐工具勾选反向派生 groups(有≥一个工具的组),保持向后兼容与列表展示
     const mcpSel = form.tools?.mcp || {};
@@ -244,15 +245,15 @@ export default function AsBotManager() {
     try {
       if (editing) {
         await client.put(`/admin/as-bots/${editing.id}`, payload);
-        toast.success('已更新');
+        toast.success(t('k_1b92092d63'));
       } else {
         await client.post('/admin/as-bots/', payload);
-        toast.success('已创建');
+        toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     }
   };
 
@@ -268,7 +269,7 @@ export default function AsBotManager() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Bot className="h-6 w-6 text-primary" />{t("k_6446c15db1")}</h1>
-          <p className="text-muted-foreground text-sm mt-1">角色化智能体的配置编辑(角色创建时自动创建同名 AS-BOT)</p>
+          <p className="text-muted-foreground text-sm mt-1">{t('k_0a5c6e7d59')}</p>
         </div>
       </div>
 
@@ -307,12 +308,11 @@ export default function AsBotManager() {
                         aria-expanded={expanded}
                       >
                         {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                        能力详情（{capabilityCount} 项）
-                      </button>
+                        {tr('k_7ae5790d48')}{capabilityCount} {tr('k_a667e2db51')}{' '}</button>
                     </div>
                     <div className="flex gap-1 flex-shrink-0">
                       {(w.is_builtin && !isAdmin) ? (
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(w)} title="查看配置(不可编辑)"><Eye className="h-4 w-4" /></Button>
+                        <Button size="sm" variant="ghost" onClick={() => openEdit(w)} title={t('k_144b972c2f')}><Eye className="h-4 w-4" /></Button>
                       ) : (
                         <Button size="sm" variant="ghost" onClick={() => openEdit(w)}><Pencil className="h-4 w-4" /></Button>
                       )}
@@ -332,10 +332,10 @@ export default function AsBotManager() {
                         <span key={`m${id}`} className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">MCP: {mcpName(id)}</span>
                       ))}
                       {w.knowledge_base_ids?.map((id) => (
-                        <span key={`k${id}`} className="text-xs bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">知识库: {kbName(id)}</span>
+                        <span key={`k${id}`} className="text-xs bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{t('k_9e2924f64f', { p0: kbName(id) })}</span>
                       ))}
                       {(w.skills || []).map((sk) => (
-                        <span key={`s${sk}`} className="text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">技能: {sk}</span>
+                        <span key={`s${sk}`} className="text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">{t('k_60529dd5f9', { p0: sk })}</span>
                       ))}
                       {capabilityCount === 0 && (
                         <span className="text-xs text-muted-foreground">{t("k_28fc8a5ff0")}</span>
@@ -357,15 +357,15 @@ export default function AsBotManager() {
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {isReadOnly ? '查看 AS-BOT 配置' : '编辑 AS-BOT'}
+              {isReadOnly ? t('k_8eb3971fb9') : t('k_e24ff8a278')}
               {isReadOnly && <Badge variant="secondary" className="text-xs"><Lock className="h-3 w-3 mr-1" />{t("k_f2ed07bc58")}</Badge>}
             </DialogTitle>
-            <DialogDescription>{isReadOnly ? '该 AS-BOT 为系统内置配置，仅支持查看' : '定义角色化智能体的人格、工具、技能与资源引用'}</DialogDescription>
+            <DialogDescription>{isReadOnly ? t('k_8c55e5fa67') : t('k_6103b137e4')}</DialogDescription>
           </DialogHeader>
 
           <div className={`space-y-4 ${isReadOnly ? 'pointer-events-none opacity-90' : ''}`}>
             <div className="grid grid-cols-2 gap-4">
-              <Field label="标识 (as_bot_key)">
+              <Field label={t('k_d463525dcd')}>
                 <Input value={form.as_bot_key} disabled={!!editing} onChange={(e) => setForm({ ...form, as_bot_key: e.target.value })} placeholder="data_analyst" />
               </Field>
               <Field label={t("k_1be7ae4fc2")}>
@@ -386,8 +386,8 @@ export default function AsBotManager() {
               <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={t("k_47822cc724")} />
             </Field>
 
-            <Field label="系统提示词 (角色设定)">
-              <Textarea rows={3} value={form.system_prompt} onChange={(e) => setForm({ ...form, system_prompt: e.target.value })} placeholder="你是..." />
+            <Field label={t('k_2d521f6d0a')}>
+              <Textarea rows={3} value={form.system_prompt} onChange={(e) => setForm({ ...form, system_prompt: e.target.value })} placeholder={t('k_d5a9dae327')} />
             </Field>
 
             <div className="grid grid-cols-3 gap-4">
@@ -396,8 +396,8 @@ export default function AsBotManager() {
               <Field label={t("k_b90609d07d")}><Textarea rows={2} value={form.persona?.boundary || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, boundary: e.target.value } })} /></Field>
             </div>
 
-            <Field label="工具权限 (逐工具粒度 — 未勾选的工具不会注册，LLM 无从调用)">
-              <p className="text-sm text-muted-foreground">空配置＝无工具权限。实际可用能力还需通过工作空间、Harness 与用户权限校验。</p>
+            <Field label={t('k_59ab6c4880')}>
+              <p className="text-sm text-muted-foreground">{t('k_9a34d7c03d')}</p>
               <p className="text-xs text-destructive">{t("k_8ee6487a9b")}</p>
               
               <div className="space-y-3">
@@ -435,11 +435,9 @@ export default function AsBotManager() {
               </div>
             </Field>
 
-            <Field label="功能能力 (继承自角色权限)">
+            <Field label={t('k_e63f418b22')}>
               <p className="text-xs text-muted-foreground">
-                这些是平台功能动作（报告/看板/调度/质量…），从用户角色权限码自动继承，
-                与上方的数据工具是两个独立维度。这里只能关闭（减法）不能开启——
-                能不能用由角色权限与功能的 AI 级别决定，改级别请到「角色权限 → 菜单与功能」。
+                {t('k_7f1355024a')}
               </p>
               {functionActions.length === 0 ? (
                 <p className="text-xs text-muted-foreground py-1">{t("k_51f23243a9")}</p>
@@ -468,10 +466,10 @@ export default function AsBotManager() {
                               onChange={toggleDisabled} />
                             <span className="text-xs font-medium truncate">{a.label}</span>
                             <Badge variant="outline" className="text-[9px] flex-shrink-0">
-                              {a.read_only ? '只读' : '可写'}
+                              {a.read_only ? t('k_85541bd9f7') : t('k_a5230ad612')}
                             </Badge>
                             <code className="text-[10px] text-muted-foreground flex-shrink-0"
-                              title={`权限码 ${a.perm_code}｜本体对象 ${a.object_key}`}>
+                              title={t('k_e8e39d22e9', { p0: a.perm_code, p1: a.object_key })}>
                               {a.name}
                             </code>
                           </label>
@@ -490,7 +488,7 @@ export default function AsBotManager() {
               )}
             </Field>
 
-            <Field label="标准工具白名单 (当前会话沙箱)">
+            <Field label={t('k_e95cb5fc1a')}>
               <p className="text-xs text-muted-foreground">{t("k_ba82234b4d")}</p>
               <div className="flex flex-wrap gap-2">
                 {standardTools.map((t) => {
@@ -527,7 +525,7 @@ export default function AsBotManager() {
                   const tools = Array.isArray(discovered) ? discovered : (discovered?.tools || []);
                   const selected = form.tools.external?.[String(id)] || [];
                   return <div key={id} className="mt-2 border rounded p-2 text-xs">
-                    <p>{mcpName(id)}：逐工具授权</p>
+                    <p>{t('k_b3c6aa7584', { p0: mcpName(id) })}</p>
                     {srv?.builtin || srv?.transport === 'builtin' ? (
                       // 内置服务在会话进程内直接执行（带真实身份与出站守卫），
                       // 不得套用远程 MCP 的“当前禁止执行”文案误导管理员。
@@ -545,7 +543,7 @@ export default function AsBotManager() {
                 })}
               </Field>
               <Field label={t("k_8625efdd21")}>
-                <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 AS-BOT 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。已绑定多个库时服务端会并行检索全部库并跨源归并，不靠绑定顺序选库。</p>
+                <p className="mb-2 text-xs text-muted-foreground">{t('k_00298db84d')}</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {knowledgeBases.map((kb) => {
                     const active = (form.knowledge_base_ids || []).includes(kb.id);
@@ -556,9 +554,9 @@ export default function AsBotManager() {
                     return (
                       <Badge key={kb.id} variant={active ? 'default' : 'outline'}
                         className={blocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
-                        title={blocked ? (kb.retrieval.reason || '该库的检索通道本批未接入') : kb.description}
+                        title={blocked ? (kb.retrieval.reason || t('k_c48dda7ab6')) : kb.description}
                         onClick={() => !blocked && setForm({ ...form, knowledge_base_ids: toggleArr(form.knowledge_base_ids || [], kb.id) as number[] })}>
-                        {kb.name}{blocked ? '（不可检索）' : ''}
+                        {kb.name}{blocked ? t('k_597b7ca28b') : ''}
                       </Badge>
                     );
                   })}
@@ -568,25 +566,25 @@ export default function AsBotManager() {
             </div>
 
             {/* 技能勾选绑定 */}
-            <Field label="引用技能 (Skills)">
+            <Field label={t('k_9f2c4d9438')}>
               <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                 {skillOptions.map((sk) => {
                   const active = (form.skills || []).includes(sk.name);
                   return (
                     <Badge key={sk.name} variant={active ? 'default' : 'outline'} className="cursor-pointer"
-                      title={`${sk.description || ''}${sk.is_builtin ? '（内置）' : ''}`}
+                      title={`${sk.description || ''}${sk.is_builtin ? tr('k_0c058f4e87') : ''}`}
                       onClick={() => setForm({ ...form, skills: toggleArr(form.skills || [], sk.name) as string[] })}>
-                      {sk.display_name || sk.name}{sk.is_builtin ? ' ·内置' : ''}
+                      {sk.display_name || sk.name}{sk.is_builtin ? t('k_a3a8a97115') : ''}
                     </Badge>
                   );
                 })}
-                {skillOptions.length === 0 && <span className="text-xs text-muted-foreground">无可用技能，请先在“技能配置”中创建</span>}
+                {skillOptions.length === 0 && <span className="text-xs text-muted-foreground">{t('k_58dc0a3572')}</span>}
               </div>
             </Field>
 
             {/* 执行层：不选=跟随工作空间默认层；选了就用那条层。
                 选项显示业务可读名（display_name），value 用 id；已停用给可读标注而不是裸 id。 */}
-            <Field label="Harness (不选=使用工作空间默认 Harness；模型通道、能力上限与计费口径按所选 Harness 生效)">
+            <Field label={t('k_15154b6ac9')}>
               <Select value={String(form.execution_layer_id || 0)}
                 onValueChange={(v) => {
                   const id = Number(v) || 0;
@@ -600,21 +598,20 @@ export default function AsBotManager() {
                   <SelectItem value="0">{t("k_eda5dce5f9")}</SelectItem>
                   {cliLayers.map((l: any) => (
                     <SelectItem key={l.id} value={String(l.id)}>
-                      {l.display_name || l.name}{l.status !== 'active' ? ' ·已停用' : ''}
+                      {l.display_name || l.name}{l.status !== 'active' ? t('k_f918805cd2') : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {!!form.execution_layer_id && !cliLayers.some((l: any) => l.id === form.execution_layer_id) && (
                 <p className="mt-1 text-xs text-destructive">
-                  已绑定的 Harness 不在可用清单里（可能已删除或不是 CLI 层），请重新选择；
-                  保持不动的话问答会因“Harness 不可用”直接报错，不会静默换一条 Harness 跑。
+                  {t('k_742d05ba93')}
                 </p>
               )}
             </Field>
 
             {/* 可用模型（Chat 端可切换；仅一个/留空时不展示选择框） */}
-            <Field label="可用模型 (Chat 对话页可在其中切换；留空=用默认模型，按 Harness 配置 → 模型中心「设为默认」逐级取；仅选 1 个时不展示下拉)">
+            <Field label={t('k_5be6fae06c')}>
               <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                 {(() => {
                   const opts = Array.from(new Set([...modelOptions, ...(form.models || [])]));
@@ -647,7 +644,7 @@ export default function AsBotManager() {
           </div>
 
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setFormOpen(false)}>{isReadOnly ? '关闭' : '取消'}</Button>
+            <Button variant="ghost" onClick={() => setFormOpen(false)}>{isReadOnly ? t('k_6c14bd7f6f') : t('k_4d0b4688c7')}</Button>
             {!isReadOnly && <Button onClick={handleSave}>{t("k_fadf24dbc5")}</Button>}
           </DialogFooter>
         </DialogContent>

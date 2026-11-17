@@ -35,6 +35,7 @@ import {
   saveReportTemplate, type ReportTemplateLayout, type ReportTemplateRow,
 } from '@/api/report';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 const FORMAT_MAP: Record<string, { label: string; color: string }> = {
   markdown: { label: 'Markdown', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
@@ -75,11 +76,11 @@ function layoutSummary(r: ReportTemplateRow): { text: string; warn: boolean } {
   const charts = (r.charts || []).length;
   if (!headings && !charts) {
     // 既没登记版式、正文也抽不出结构：任务里选得到它，但生成时约束不了任何东西
-    return { text: r.content ? '旧模板：版式从正文抽取' : '未登记版式（不会起作用）', warn: !r.content };
+    return { text: r.content ? tr('k_78831923e7') : tr('k_4c072956e2'), warn: !r.content };
   }
-  const parts = [headings ? `${headings} 个章节` : '', charts ? `${charts} 个图表` : ''].filter(Boolean);
+  const parts = [headings ? tr('k_b2ee70fd2d', { p0: headings }) : '', charts ? tr('k_288e89c181', { p0: charts }) : ''].filter(Boolean);
   // 只有旧正文可抽（没显式登记）时也标出来：它随时可能因为正文改动而变样
-  return { text: parts.join(' · ') + (r.layout_registered ? '' : '（从正文抽取）'), warn: false };
+  return { text: parts.join(' · ') + (r.layout_registered ? '' : tr('k_5430d11c7b')), warn: false };
 }
 
 export default function ReportTemplatePanel() {
@@ -116,7 +117,7 @@ export default function ReportTemplatePanel() {
     try {
       setRows(await listReportTemplateRows(includeInactive));
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '加载模板失败');
+      toast.error(e?.response?.data?.detail || t('k_801541205a'));
     } finally {
       setLoading(false);
     }
@@ -181,7 +182,7 @@ export default function ReportTemplatePanel() {
 
   /** 从正文抽版式（服务端同一抽取口径，前端不解析 markdown） */
   const extractFromBody = async () => {
-    if (!content.trim()) { toast.error('先在「模板正文」里写好结构（章节标题与 ```chart 图表块）'); return; }
+    if (!content.trim()) { toast.error(t('k_bb528feed1')); return; }
     setAnalyzing(true);
     try {
       const out = await analyzeReportTemplateLayout({ content, format });
@@ -194,10 +195,10 @@ export default function ReportTemplatePanel() {
       setLayoutEdited(true);
       setPreview({ skeleton: out.skeleton, hasLayout: out.has_layout });
       if (!out.has_layout) {
-        toast.error('正文里没有可沿用的结构：至少要有章节标题或带 chart_type + columns 的 ```chart 块');
+        toast.error(t('k_ca25e5a397'));
       }
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '抽取版式失败，请检查正文格式');
+      toast.error(e?.response?.data?.detail || t('k_ec02cf0a45'));
     } finally {
       setAnalyzing(false);
     }
@@ -215,18 +216,18 @@ export default function ReportTemplatePanel() {
       });
       setPreview({ skeleton: out.skeleton, hasLayout: out.has_layout });
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '预览生成失败');
+      toast.error(e?.response?.data?.detail || t('k_46652cdc4d'));
     } finally {
       setAnalyzing(false);
     }
   };
 
   const handleSave = async () => {
-    if (!name.trim()) { toast.error('请输入模板名称'); return; }
+    if (!name.trim()) { toast.error(t('k_8f21b9868f')); return; }
     const built = buildLayout();
     if (built.dropped) {
       // 半成品图表规格会被服务端清洗掉 = 配了但生成时不起作用，这里直接挡住而不是静默丢
-      toast.error(`有 ${built.dropped} 个图表规格不完整（缺图表类型或列名），补齐或删掉再保存`);
+      toast.error(t('k_2668296dc1', { p0: built.dropped }));
       return;
     }
     let finalLayout = built.layout;
@@ -235,12 +236,12 @@ export default function ReportTemplatePanel() {
       try {
         finalLayout = (await analyzeReportTemplateLayout({ content, format })).layout;
       } catch (e: any) {
-        toast.error(e?.response?.data?.detail || '抽取版式失败，模板未保存');
+        toast.error(e?.response?.data?.detail || t('k_78dcd659f2'));
         return;
       }
     }
     if (!finalLayout.headings.length && !finalLayout.charts.length) {
-      toast.error('这份模板没有约束任何东西：至少登记一个章节标题或图表规格（或写出带结构的正文）');
+      toast.error(t('k_ae255c9cf6'));
       return;
     }
 
@@ -255,12 +256,12 @@ export default function ReportTemplatePanel() {
         description: description.trim(),
         is_builtin: !!editRow?.is_builtin,
       }, editRow?.id);
-      toast.success(editRow ? '模板已更新，引用它的定时任务下次执行即生效'
-        : '模板已创建：可在任务表单与报告中心「套用模板」里选到它');
+      toast.success(editRow ? t('k_baf8439559')
+        : t('k_b365ab8dba'));
       setFormOpen(false);
       load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || '保存失败');
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
     } finally {
       setSaving(false);
     }
@@ -270,12 +271,12 @@ export default function ReportTemplatePanel() {
     if (!deleteTarget) return;
     try {
       await deleteReportTemplate(deleteTarget.id);
-      toast.success('已下架');
+      toast.success(t('k_b07628f2f1'));
       setDeleteTarget(null);
       load();
     } catch (e: any) {
       // 被任务引用时服务端回数量与处置办法：这段必须原样给用户，不能笼统报"删除失败"
-      toast.error(e?.response?.data?.detail || '删除失败');
+      toast.error(e?.response?.data?.detail || t('k_acf0664a54'));
     }
   };
 
@@ -283,16 +284,15 @@ export default function ReportTemplatePanel() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          报告模板登记的是一份版式：章节骨架 + 图表规格 + 主题包。定时任务、报告「套用模板」与「用最新数据重新生成」共用这一份口径；
-          模板只存结构与主题，<b>{t("k_4fd4923ba0")}</b>。
+          {tr('k_924792ca8b')}<b>{t("k_4fd4923ba0")}</b>。
         </p>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <Switch checked={includeInactive} onCheckedChange={setIncludeInactive} />
-            显示已下架
+            {t('k_8d09c1dddc')}
           </label>
           <Button variant="outline" size="sm" onClick={load}>
-            <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
+            <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />{t('k_38108eaa1d')}
           </Button>
           <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />{t("k_a38a511b8c")}</Button>
         </div>
@@ -313,11 +313,11 @@ export default function ReportTemplatePanel() {
         </TableHeader>
         <TableBody>
           {loading ? (
-            <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">加载中...</TableCell></TableRow>
+            <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">{t('k_26b5bd4947')}</TableCell></TableRow>
           ) : rows.length === 0 ? (
             <TableRow>
               <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                暂无模板：点右上「新建模板」，或在报告中心把好报告「另存为模板」
+                {t('k_980bbba31e')}
               </TableCell>
             </TableRow>
           ) : rows.map(r => {
@@ -342,7 +342,7 @@ export default function ReportTemplatePanel() {
                   </Badge>
                   {r.headings?.length > 0 && (
                     <div className="text-[11px] text-muted-foreground mt-1 max-w-[360px]" title={r.headings.join(' / ')}>
-                      {r.headings.slice(0, 4).join(' / ')}{r.headings.length > 4 ? ` 等 ${r.headings.length} 节` : ''}
+                      {r.headings.slice(0, 4).join(' / ')}{r.headings.length > 4 ? t('k_a5be3db3a3', { p0: r.headings.length }) : ''}
                     </div>
                   )}
                 </TableCell>
@@ -353,12 +353,12 @@ export default function ReportTemplatePanel() {
                 </TableCell>
                 <TableCell className="text-right">
                   {r.used_by_tasks
-                    ? <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">{r.used_by_tasks} 个任务</Badge>
+                    ? <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">{t('k_c1cea3344e', { p0: r.used_by_tasks })}</Badge>
                     : <span className="text-muted-foreground text-xs">{t("k_2c6270bcce")}</span>}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className={Number(r.is_active) ? 'text-green-500' : 'text-gray-500'}>
-                    {Number(r.is_active) ? '启用' : '已下架'}
+                    {Number(r.is_active) ? t('k_d4e9ca3dd4') : t('k_b07628f2f1')}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
@@ -367,7 +367,7 @@ export default function ReportTemplatePanel() {
                 <TableCell>
                   <div className="flex items-center justify-end gap-1">
                     <Button variant="ghost" size="sm" disabled={!canEdit(r)} onClick={() => openEdit(r)}>
-                      <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(r) ? '编辑' : '只读'}
+                      <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(r) ? t('k_a7f814c0a4') : t('k_85541bd9f7')}
                     </Button>
                     <Button variant="ghost" size="sm" disabled={!canEdit(r)} onClick={() => setDeleteTarget(r)}
                       className="text-destructive" aria-label={t("k_a2698bcf9e")}>
@@ -382,17 +382,15 @@ export default function ReportTemplatePanel() {
       </Table>
 
       <p className="text-xs text-muted-foreground">
-        模板在哪被用：① 任务调度新建/编辑任务时选「报告模板」，每次执行按版式出报告；
-        ② 报告「用最新数据重新生成」沿用上一版版式，好报告可「另存为模板」沉淀回这里；
-        ③ 智能问数出报告按同一份版式契约渲染。被任务引用的模板下架会被服务端挡住并给出任务数。
+        {t('k_66fb00e956')}
       </p>
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-w-4xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editRow ? '编辑模板' : '新建模板'}</DialogTitle>
+            <DialogTitle>{editRow ? t('k_c6aa350404') : t('k_a38a511b8c')}</DialogTitle>
             <DialogDescription>
-              版式（章节 + 图表规格）决定生成出来的报告长什么样；正文用于抽版式与旧模板兼容。
+              {t('k_9242ff502a')}
             </DialogDescription>
           </DialogHeader>
 
@@ -406,7 +404,7 @@ export default function ReportTemplatePanel() {
               <Select value={format} onValueChange={v => setFormat(v as 'markdown' | 'html')}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="markdown">Markdown（章节 + ```chart 图表）</SelectItem>
+                  <SelectItem value="markdown">{t('k_bc18fbe21d')}</SelectItem>
                   <SelectItem value="html">{t("k_27988b22a6")}</SelectItem>
                 </SelectContent>
               </Select>
@@ -424,7 +422,7 @@ export default function ReportTemplatePanel() {
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                锁定后 HTML 报告生成时按该主题令牌内联配色；Markdown/看板渲染仍跟随查看者主题。
+                {t('k_a76dbdf3a6')}
               </p>
             </div>
             <div className="space-y-1.5">
@@ -447,12 +445,11 @@ export default function ReportTemplatePanel() {
             <TabsContent value="layout" className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
-                  这份模板要求生成出来的报告保留下列章节与图表（数值一律取本轮查询结果）。
+                  {t('k_cb97f6f97a')}
                 </p>
                 <Button variant="outline" size="sm" className="h-8 text-xs" onClick={extractFromBody} disabled={analyzing}>
                   {analyzing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Wand2 className="h-3.5 w-3.5 mr-1" />}
-                  从正文抽版式
-                </Button>
+                  {tr('k_138bf0b80d')}{' '}</Button>
               </div>
 
               <div className="space-y-2 border rounded-lg p-3">
@@ -460,7 +457,7 @@ export default function ReportTemplatePanel() {
                   <Label className="text-xs">{t("k_7455c6711c")}</Label>
                   <Button variant="ghost" size="sm" className="h-7 text-xs"
                     onClick={() => { setLayoutEdited(true); setLayout(p => ({ ...p, headings: [...p.headings, ''] })); }}>
-                    <Plus className="h-3.5 w-3.5 mr-1" />加章节
+                    <Plus className="h-3.5 w-3.5 mr-1" />{t('k_aa941e6a2e')}
                   </Button>
                 </div>
                 {!layout.headings.length && <p className="text-xs text-muted-foreground">{t("k_bd73d88da9")}</p>}
@@ -482,13 +479,13 @@ export default function ReportTemplatePanel() {
 
               <div className="space-y-2 border rounded-lg p-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">图表规格（类型 + 列名不得改，只换数据）</Label>
+                  <Label className="text-xs">{t('k_e5a937bf17')}</Label>
                   <Button variant="ghost" size="sm" className="h-7 text-xs"
                     onClick={() => {
                       setLayoutEdited(true);
                       setLayout(p => ({ ...p, charts: [...p.charts, { title: '', chart_type: '', columns: '' }] }));
                     }}>
-                    <Plus className="h-3.5 w-3.5 mr-1" />加图表
+                    <Plus className="h-3.5 w-3.5 mr-1" />{t('k_8b9d4aaf57')}
                   </Button>
                 </div>
                 {!layout.charts.length && <p className="text-xs text-muted-foreground">{t("k_47b5f6eb48")}</p>}
@@ -514,7 +511,7 @@ export default function ReportTemplatePanel() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                    <Input className="h-8 text-xs" value={ch.columns} placeholder="列名，逗号分隔，如：省份, PV"
+                    <Input className="h-8 text-xs" value={ch.columns} placeholder={t('k_67ca32ab64')}
                       onChange={e => {
                         setLayoutEdited(true);
                         setLayout(p => ({ ...p, charts: p.charts.map((x, j) => (j === i ? { ...x, columns: e.target.value } : x)) }));
@@ -526,33 +523,30 @@ export default function ReportTemplatePanel() {
 
             <TabsContent value="body" className="space-y-2">
               <p className="text-xs text-muted-foreground">
-                正文写结构（章节标题 + ```chart 块）后点「从正文抽版式」。历史模板的 Jinja2 正文同样会被抽成版式骨架，无需重写。
+                {t('k_ec59c2644d')}
               </p>
               <Textarea value={content} onChange={e => setContent(e.target.value)}
                 className="font-mono text-sm min-h-[360px]"
-                placeholder={format === 'html' ? '<h2>{t("k_023329e7f4")}</h2><p>…</p>' : '# 报告标题\n\n## 核心结论\n…'} />
+                placeholder={format === 'html' ? '<h2>{t("k_023329e7f4")}</h2><p>…</p>' : t('k_1298eafe89')} />
             </TabsContent>
 
             <TabsContent value="preview" className="space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-muted-foreground">
-                  预览与报告中心同一渲染管线，样式按「{themeName(theme === THEME_NONE ? currentTheme : theme)}」主题实渲（字模库）；
-                  图里的「示例甲/乙/丙」只为看样式，模板不保存数值。
-                </p>
+                  {t('k_147277c45d', { p0: themeName(theme === THEME_NONE ? currentTheme : theme) })}</p>
                 <div className="flex items-center gap-2 shrink-0">
                   {theme !== THEME_NONE && isPreviewableTheme(theme) && currentTheme !== theme && (
                     <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setCurrentTheme(theme)}>
-                      <Palette className="h-3.5 w-3.5 mr-1" />按「{themeName(theme)}」预览
-                    </Button>
+                      <Palette className="h-3.5 w-3.5 mr-1" />{tr('k_9a2d295807')}{themeName(theme)}{tr('k_55590fadcc')}{' '}</Button>
                   )}
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={showPreview} disabled={analyzing}>
-                    <RefreshCw className={`h-3.5 w-3.5 mr-1 ${analyzing ? 'animate-spin' : ''}`} />重算预览
+                    <RefreshCw className={`h-3.5 w-3.5 mr-1 ${analyzing ? 'animate-spin' : ''}`} />{t('k_f73706d9a0')}
                   </Button>
                 </div>
               </div>
               {preview && !preview.hasLayout && (
                 <p role="alert" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                  这份版式约束不了任何东西：没有章节也没有图表规格。这样保存的模板在任务里看得见却不生效，请先补齐。
+                  {t('k_3c7745a3d4')}
                 </p>
               )}
               {/* HTML 预览是整份 iframe（自带 78vh 高度与内部滚动）：外层再套 max-h 就变成双重裁切，
@@ -570,7 +564,7 @@ export default function ReportTemplatePanel() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{t("k_6644f06197")}</> : editRow ? '更新' : '创建'}
+              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{t("k_6644f06197")}</> : editRow ? t('k_d9db02d07a') : t('k_fcbd093292')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -578,10 +572,10 @@ export default function ReportTemplatePanel() {
 
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>下架模板?</DialogTitle><DialogDescription>
-            下架后任务表单与报告中心不再能选到它；已引用它的任务下次执行会显式失败（不静默换成通用版式）。
+          <DialogHeader><DialogTitle>{t('k_84825607a7')}</DialogTitle><DialogDescription>
+            {t('k_fa0c4031c7')}
           </DialogDescription></DialogHeader>
-          <p className="text-sm text-muted-foreground">将「{deleteTarget?.name}」下架（软删除）。</p>
+          <p className="text-sm text-muted-foreground">{t('k_68ffae4350', { p0: deleteTarget?.name })}</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete}>{t("k_02d4dbab69")}</Button>

@@ -217,12 +217,12 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   onChange={e => updateConfig('title', e.target.value)}
                 />
                 {/* 双语：English 输入位；留空 = 英文界面回落到中文标题（后端 localize_display 记 fallback） */}
-                <Label className="text-xs text-muted-foreground">{t("k_57b3889daf")}</Label>
+                <Label className="text-xs text-muted-foreground">{t('k_65ecec1953')}</Label>
                 <Input
                   placeholder="Chart title in English (optional)"
                   value={i18nTitleEn}
                   onChange={e => setI18nTitleEn(e.target.value)}
-                  aria-label={t("k_57b3889daf")}
+                  aria-label={t('k_65ecec1953')}
                   data-testid="chart-title-en"
                 />
                 {!i18nTitleEn && (

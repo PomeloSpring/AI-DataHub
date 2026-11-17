@@ -3,8 +3,12 @@ import { initReactI18next } from 'react-i18next';
 import './types';
 import zhCommon from './locales/zh-CN/common.json';
 import zhMenu from './locales/zh-CN/menu.json';
+import zhUi from './locales/zh-CN/ui.json';
+import zhOnboarding from './locales/zh-CN/onboarding.json';
 import enCommon from './locales/en-US/common.json';
 import enMenu from './locales/en-US/menu.json';
+import enUi from './locales/en-US/ui.json';
+import enOnboarding from './locales/en-US/onboarding.json';
 
 /**
  * 多语言唯一初始化处（zh-CN / en-US）。
@@ -12,9 +16,12 @@ import enMenu from './locales/en-US/menu.json';
  * 口径（架构设计拍板）：
  * - 默认 zh-CN，不自动跟随浏览器语言（保存量用户零感知）；
  *   语言选择优先级：localStorage(adh_locale) > zh-CN。
- * - common + menu 随主包同步加载（壳层首屏必需）；页面命名空间
+ * - common + menu + ui + onboarding 随主包同步加载（壳层必需）；页面命名空间
  *   （chat/workspace/dashboard/report）经下方内置 backend 按 import() 懒加载，
  *   Vite 自动 code-split，不引 i18next-http-backend。
+ *   **ui / onboarding 必须随包**：它们的消费方大量走模块级 `runtime.t()`（没有
+ *   `useTranslation` 订阅），懒加载会让组件在命名空间未就绪时把 key 原样渲染出来
+ *   （历史缺陷：新手引导弹窗直接显示 `k_8d20e7a7b3`），且加载完成后没有重渲染触发点。
  * - 缺失 key 不静默：dev 控制台显式告警，生产收集上报（旁路，不影响主链路）；
  *   zh/en key 一致性靠语言包同批维护（原 i18n-check 门禁脚本经用户决策于 2026-11-14 移除），fallback 只是运行时兜底。
  * - 业务数据/品牌名/后端错误文案不进语言包（见架构设计 §一 边界）。
@@ -69,12 +76,12 @@ void i18n
     lng: getStoredLocale(),
     fallbackLng: DEFAULT_LOCALE,
     supportedLngs: LOCALES as unknown as string[],
-    ns: ['common', 'menu'],
+    ns: ['common', 'menu', 'ui', 'onboarding'],
     defaultNS: 'common',
     partialBundledLanguages: true,
     resources: {
-      'zh-CN': { common: zhCommon, menu: zhMenu },
-      'en-US': { common: enCommon, menu: enMenu },
+      'zh-CN': { common: zhCommon, menu: zhMenu, ui: zhUi, onboarding: zhOnboarding },
+      'en-US': { common: enCommon, menu: enMenu, ui: enUi, onboarding: enOnboarding },
     },
     interpolation: { escapeValue: false }, // React 已转义
     react: { useSuspense: false }, // 懒加载包未就绪时不挂起整页，避免闪白

@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Empty } from '@/components/ui/empty';
 import DecisionTreeEditor from '@/components/decision/DecisionTreeEditor';
 import DecisionTreeGraph from '@/components/decision/DecisionTreeGraph';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   decisionsApi, errorText, TREE_STATUS_LABELS,
   type AdviceSeverity, type DecisionAdviceRow, type DecisionTreeDocInput, type DecisionTreeRow, type TreeStatus,
@@ -109,7 +109,7 @@ export default function DecisionTreeConfig() {
     try {
       const { data } = await decisionsApi.validate(form.tree_doc);
       setIssues({ errors: data.errors || [], warnings: data.warnings || [] });
-      if (data.valid) toast.success('校验通过：口径引用都能对上字典');
+      if (data.valid) toast.success(tr('k_749f7547de'));
     } catch (err: any) {
       toast.error(errorText(err));
     } finally {
@@ -125,7 +125,7 @@ export default function DecisionTreeConfig() {
         ? await decisionsApi.createTree(payload)
         : await decisionsApi.updateTree(form.tree_key, payload);
       setIssues({ errors: data?.validation_errors || [], warnings: data?.validation_warnings || [] });
-      toast.success('已保存为草案（发布后才参与评估）');
+      toast.success(tr('k_63a9e5a53b'));
       setIsNew(false);
       await load();
     } catch (err: any) {
@@ -136,7 +136,7 @@ export default function DecisionTreeConfig() {
   };
 
   const act = async (kind: 'publish' | 'retire' | 'restore' | 'delete') => {
-    if (!form.tree_key) { toast.error('请先保存草案'); return; }
+    if (!form.tree_key) { toast.error(tr('k_c0df9fa72c')); return; }
     setBusy(kind);
     try {
       if (kind === 'publish') await decisionsApi.publish(form.tree_key);
@@ -144,8 +144,8 @@ export default function DecisionTreeConfig() {
       else if (kind === 'restore') await decisionsApi.restore(form.tree_key);
       else await decisionsApi.deleteTree(form.tree_key);
       toast.success({
-        publish: '已发布，该树开始参与评估', retire: '已下架，不再参与评估',
-        restore: '已恢复启用', delete: '已删除（历史评估记录保留）',
+        publish: tr('k_ea9161cae7'), retire: tr('k_defe8d0b82'),
+        restore: tr('k_df559acf33'), delete: tr('k_868c53280d'),
       }[kind]);
       if (kind === 'delete') { setForm(blankForm()); setIsNew(true); }
       await load();
@@ -174,8 +174,7 @@ export default function DecisionTreeConfig() {
         <div>
           <h1 className="text-lg font-semibold">{t("k_0effa92d4e")}</h1>
           <p className="text-sm text-muted-foreground">
-            决策树是业务判断口径资产：条件只能引用指标/维度字典的业务名，判定由确定性引擎完成
-          </p>
+            {tr('k_a2b74b1f6e')}</p>
         </div>
         <div className="ml-auto flex gap-2">
           <Button size="sm" variant={tab === 'trees' ? 'default' : 'outline'} onClick={() => setTab('trees')}>{t("k_642df3fd9d")}</Button>
@@ -225,7 +224,7 @@ export default function DecisionTreeConfig() {
                     onChange={e => setForm({ ...form, description: e.target.value })}
                     placeholder={t("k_ac83736a09")} className="h-8 text-sm" />
                 </Field>
-                <Field label="适用站点（空=按角色授权站点派生）">
+                <Field label={tr('k_291847aa1f')}>
                   <div className="flex flex-wrap gap-2 pt-1">
                     {sites.length === 0 && <span className="text-xs text-muted-foreground">{t("k_c3e54b616f")}</span>}
                     {sites.map(s => (
@@ -237,7 +236,7 @@ export default function DecisionTreeConfig() {
                     ))}
                   </div>
                 </Field>
-                <Field label="定时评估 Cron（留空=不定时）">
+                <Field label={tr('k_50925ef860')}>
                   <Input aria-label={t("k_b1ad2c42da")} value={form.schedule_cron}
                     onChange={e => setForm({ ...form, schedule_cron: e.target.value })}
                     placeholder="0 8 * * *" className="h-8 text-sm" />
@@ -277,12 +276,11 @@ export default function DecisionTreeConfig() {
                   <span className="ml-1">{t("k_82c7038b77")}</span>
                 </Button>
                 <Button size="sm" onClick={save} disabled={busy === 'save'}>{t("k_23ba959a54")}</Button>
-                <span title={canPublish ? '' : `缺少权限码 ${PUBLISH_PERM}`}>
+                <span title={canPublish ? '' : tr('k_5a179235bc', { p0: PUBLISH_PERM })}>
                   <Button size="sm" variant="secondary" disabled={!canPublish || !form.tree_key}
                     onClick={() => act('publish')}>
                     {!canPublish && <ShieldAlert className="mr-1 h-4 w-4" />}
-                    发布
-                  </Button>
+                    {tr('k_83611abd5f')}</Button>
                 </span>
                 {current?.status === 'active' && (
                   <Button size="sm" variant="ghost" onClick={() => act('retire')}>{t("k_a2698bcf9e")}</Button>
@@ -295,9 +293,7 @@ export default function DecisionTreeConfig() {
                 )}
                 {!canPublish && (
                   <span className="text-xs text-amber-700 dark:text-amber-400">
-                    发布需要权限码 <code>{PUBLISH_PERM}</code>，当前角色未勾选，请在「系统配置 → 角色权限」的
-                    「决策建议」菜单下勾「发布决策树」。
-                  </span>
+                    {tr('k_eede2e8fb5')}{' '}<code>{PUBLISH_PERM}</code>{tr('k_28c2af522d')}</span>
                 )}
               </div>
 
@@ -308,12 +304,12 @@ export default function DecisionTreeConfig() {
                   )}
                   {issues.errors.map((e, i) => (
                     <p key={`e${i}`} className="text-red-700 dark:text-red-400">
-                      【阻断】{e.where}：{e.message}
+                      {tr('k_8072626450')}{e.where}：{e.message}
                     </p>
                   ))}
                   {issues.warnings.map((w, i) => (
                     <p key={`w${i}`} className="text-amber-700 dark:text-amber-400">
-                      【告警】{w.where}：{w.message}
+                      {tr('k_67f9e6c3e9')}{w.where}：{w.message}
                     </p>
                   ))}
                 </div>
@@ -351,7 +347,7 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
       };
       if (isNew) await decisionsApi.createAdvice(payload);
       else await decisionsApi.updateAdvice(form.advice_key, payload);
-      toast.success('建议文案已保存');
+      toast.success(tr('k_5e3759d964'));
       setForm({ advice_key: '', action: '', rationale: '', severity: 'medium', kb_refs: '', is_active: true });
       setIsNew(true);
       onChanged();
@@ -396,7 +392,7 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
             {!rows.length && (
               <tr><td colSpan={4}>
                 <Empty title={t("k_7ad3348774")}
-                  description="叶子只存 advice_key 引用，文案在这里登记一次，多棵树共用（同一概念只登记一处）。" />
+                  description={tr('k_d9b2eb0dde')} />
               </td></tr>
             )}
           </tbody>
@@ -404,7 +400,7 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
       </div>
 
       <aside className="space-y-3 rounded-xl border border-border p-3">
-        <h2 className="text-sm font-medium">{isNew ? '新增建议文案' : `编辑 ${form.advice_key}`}</h2>
+        <h2 className="text-sm font-medium">{isNew ? tr('k_936b32358f') : tr('k_b6f728c315', { p0: form.advice_key })}</h2>
         <Field label={t("k_10c3ff4d10")}>
           <Input aria-label={t("k_0b7d3956a9")} value={form.advice_key} disabled={!isNew}
             onChange={e => setForm({ ...form, advice_key: e.target.value })}

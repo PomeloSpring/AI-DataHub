@@ -7,6 +7,7 @@ import {
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useTranslation } from 'react-i18next';
+import { t as tr } from '@/i18n/runtime';
 
 /**
  * 批量修改数据集的数据源配置：默认数据源（执行源）与可用数据源范围。
@@ -44,7 +45,7 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
   const groups = useMemo(() => {
     const map = new Map<string, DsOption[]>();
     datasources.forEach(d => {
-      const key = d.site_code || '未分组';
+      const key = d.site_code || tr('k_6bf48c97f0');
       map.set(key, [...(map.get(key) || []), d]);
     });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
@@ -69,9 +70,7 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
         <DialogHeader>
           <DialogTitle>{t("k_7383277086")}</DialogTitle>
           <DialogDescription>
-            对已选中的 <b>{count}</b> 个数据集生效。只想改一项就把另一项保持「不修改」；
-            ES 型数据集不挂在数据源上，会在结果里逐条回报「本次不处理」，不会被静默改动。
-          </DialogDescription>
+            {tr('k_9d04a074a3')}{' '}<b>{count}</b> {tr('k_8d1925dcb3')}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -107,8 +106,7 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
             {availMode === 'set' && (
               <div className="space-y-2">
                 <p className="text-[11px] text-muted-foreground">
-                  勾选后这些数据集即可在所选的额外数据源上执行（执行源本身隐式可用，无需重复勾选）。不勾任何项 = 只允许执行源单源运行。
-                </p>
+                  {tr('k_d06a74920b')}</p>
                 <div className="max-h-48 overflow-y-auto border rounded p-2 space-y-1">
                   {groups.map(([site, opts]) => (
                     <div key={site} className="space-y-1">
@@ -138,7 +136,7 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
-          <Button onClick={submit} disabled={busy || nothingToChange}>{busy ? '处理中…' : `应用到 ${count} 个数据集`}</Button>
+          <Button onClick={submit} disabled={busy || nothingToChange}>{busy ? tr('k_cf978c0252') : tr('k_13b1ddbf0f', { p0: count })}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
-import { t } from '@/i18n/runtime';
+import { t , t as tr } from '@/i18n/runtime';
 import {
   Activity, RefreshCw, Play, Square, Trash2, Pause, ListChecks, Timer,
   AlertTriangle, XCircle, Clock, Database, Search,
@@ -38,22 +38,23 @@ import { dagApi, type DagRun } from '@/api/dag';
 import { useTranslation } from 'react-i18next';
 
 const STATUS_MAP: Record<string, { label: string; className: string }> = {
-  queued: { label: '排队中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  running: { label: '运行中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
-  success: { label: '成功', className: 'bg-green-500/10 text-green-500 border-green-500/20' },
-  partial: { label: '部分成功', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  failed: { label: '失败', className: 'bg-red-500/10 text-red-500 border-red-500/20' },
-  timeout: { label: '超时', className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
-  cancelled: { label: '已取消', className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
-  paused: { label: '已暂停', className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+  queued: { label: t('k_e5ac1d2029'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  running: { label: t('k_5942497005'), className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+  success: { label: t('k_51991a5d11'), className: 'bg-green-500/10 text-green-500 border-green-500/20' },
+  partial: { label: t('k_2f2b7e05e3'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  failed: { label: t('k_3e3c8068bb'), className: 'bg-red-500/10 text-red-500 border-red-500/20' },
+  timeout: { label: t('k_ff06c243d7'), className: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' },
+  cancelled: { label: t('k_a5ffdc95ee'), className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
+  paused: { label: t('k_a2d930fd03'), className: 'bg-gray-500/10 text-gray-500 border-gray-500/20' },
 };
 
 const RUN_KIND_LABEL: Record<string, string> = {
-  scheduled: '定时执行', report: '报告生成', sync: '同步执行',
+  scheduled: t('k_225dd64c40'), report: t('k_8be9be9eb2'), sync: t('k_6579270bad'),
 };
 
 function StatusBadge({ status }: { status: string | null }) {
-  const conf = STATUS_MAP[status || ''] || { label: status || '未知', className: 'bg-muted text-muted-foreground' };
+  const { t } = useTranslation('ui');
+  const conf = STATUS_MAP[status || ''] || { label: status || t('k_1622dc9b6b'), className: 'bg-muted text-muted-foreground' };
   return <Badge variant="outline" className={conf.className}>{conf.label}</Badge>;
 }
 
@@ -69,12 +70,12 @@ function fmtElapsed(run: QueuedRun): string {
 function runProgress(run: QueuedRun): string {
   if (run.kind === 'scheduled') {
     const done = (run.done_count ?? 0) + (run.fail_count ?? 0);
-    return run.total_count ? `${done}/${run.total_count} 项` : '—';
+    return run.total_count ? tr('k_2d0c716605', { p0: done, p1: run.total_count }) : '—';
   }
   if (run.kind === 'report') {
-    return run.raw_status === 'queued' ? '排队中' : run.raw_status === 'running' ? '生成中' : '—';
+    return run.raw_status === 'queued' ? tr('k_e5ac1d2029') : run.raw_status === 'running' ? tr('k_1ae3a9842b') : '—';
   }
-  return `读 ${run.rows_read ?? 0} 行 / 写 ${run.rows_written ?? 0} 行`;
+  return tr('k_a112f7aa24', { p0: run.rows_read ?? 0, p1: run.rows_written ?? 0 });
 }
 
 function StatCard({ icon: Icon, label, value, accent, warn }: {
@@ -99,6 +100,7 @@ function StatCard({ icon: Icon, label, value, accent, warn }: {
 function RunHistoryTable({ runs, loading, onOpenRun }: {
   runs: QueuedRun[]; loading: boolean; onOpenRun: (run: QueuedRun) => void;
 }) {
+  const { t } = useTranslation('ui');
   return (
     <div className="border rounded-lg overflow-hidden">
       <table className="w-full text-sm">
@@ -113,7 +115,7 @@ function RunHistoryTable({ runs, loading, onOpenRun }: {
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">加载中...</td></tr>
+            <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">{t('k_26b5bd4947')}</td></tr>
           ) : runs.length === 0 ? (
             <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">{t("k_71ad137eca")}</td></tr>
           ) : runs.map(run => (
@@ -194,7 +196,7 @@ export default function TaskMonitor() {
         .then(({ data }) => setDagRuns(data.items || []))
         .catch(() => setDagRuns([]));
     } catch (error: any) {
-      toast.error(`任务监控加载失败：${error?.response?.data?.detail || error?.message || '请稍后重试'}`);
+      toast.error(tr('k_957b81d9b8', { p0: error?.response?.data?.detail || error?.message || tr('k_10821483f0') }));
     } finally {
       setLoading(false);
     }
@@ -218,7 +220,7 @@ export default function TaskMonitor() {
     setTaskRunsLoading(true);
     listQueuedRuns({ kind: 'scheduled', task_id: Number(task.task_id), page: 1, size: 5 })
       .then(res => setTaskRuns(res.items))
-      .catch((error: any) => toast.error(`执行历史加载失败：${error?.response?.data?.detail || error?.message || '请稍后重试'}`))
+      .catch((error: any) => toast.error(tr('k_6e59714ddf', { p0: error?.response?.data?.detail || error?.message || tr('k_10821483f0') })))
       .finally(() => setTaskRunsLoading(false));
   };
 
@@ -229,7 +231,7 @@ export default function TaskMonitor() {
     setTaskRunsLoading(true);
     listQueuedRuns({ kind: 'sync', task_id: task.id, page: 1, size: 5 })
       .then(res => setTaskRuns(res.items))
-      .catch((error: any) => toast.error(`执行历史加载失败：${error?.response?.data?.detail || error?.message || '请稍后重试'}`))
+      .catch((error: any) => toast.error(tr('k_6e59714ddf', { p0: error?.response?.data?.detail || error?.message || tr('k_10821483f0') })))
       .finally(() => setTaskRunsLoading(false));
   };
 
@@ -238,30 +240,30 @@ export default function TaskMonitor() {
   const handlePauseJob = async (task: MonitoredTask, paused: boolean) => {
     try {
       await pauseSystemJob(String(task.task_id), paused);
-      toast.success(paused ? '内置任务已暂停' : '内置任务已恢复');
+      toast.success(paused ? t('k_598817edea') : t('k_b14b435a51'));
       load();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '操作失败');
+      toast.error(error?.response?.data?.detail || t('k_5fa802bef5'));
     }
   };
 
   const handleStopTask = async (task: MonitoredTask) => {
     try {
       const res = await stopMonitoredTask(Number(task.task_id));
-      toast.success(`任务已停止，取消运行中实例 ${res.cancelled_runs} 个`);
+      toast.success(t('k_8f5669bdac', { p0: res.cancelled_runs }));
       load();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '停止失败');
+      toast.error(error?.response?.data?.detail || t('k_fd59df83b0'));
     }
   };
 
   const handleStopRun = async (run: QueuedRun) => {
     try {
       await stopQueuedRun(run.kind, run.run_id);
-      toast.success('已停止该执行实例');
+      toast.success(t('k_82e116a001'));
       load();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '停止失败');
+      toast.error(error?.response?.data?.detail || t('k_fd59df83b0'));
     }
   };
 
@@ -269,10 +271,10 @@ export default function TaskMonitor() {
     try {
       const res = await cleanupStaleRuns();
       const total = (res.scheduled_runs || 0) + (res.report_runs || 0) + (res.sync_runs || 0);
-      toast.success(total > 0 ? `已清理 ${total} 个卡住的执行实例` : '没有需要清理的卡住任务');
+      toast.success(total > 0 ? t('k_765ef66697', { p0: total }) : t('k_5bdf569289'));
       load();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '清理失败');
+      toast.error(error?.response?.data?.detail || t('k_c0dfb37b8c'));
     }
   };
 
@@ -284,11 +286,11 @@ export default function TaskMonitor() {
       } else {
         await removeMonitoredSyncTask((removeTarget as SyncTaskRow).id);
       }
-      toast.success('已移除');
+      toast.success(t('k_16edb1665d'));
       setRemoveTarget(null);
       load();
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || '移除失败');
+      toast.error(error?.response?.data?.detail || t('k_6a6b0524c7'));
     }
   };
 
@@ -304,22 +306,22 @@ export default function TaskMonitor() {
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
             <ListChecks className="h-5 w-5 text-primary" />
-            任务监控
+            {t('k_b3bfcc8ee9')}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            定时任务与队列任务的统一监控：查看进度与结果、停止/移除任务，避免异常任务卡住系统运行
+            {t('k_5b176033b7')}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
             <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
-            自动刷新 (30s)
+            {t('k_a20f3da377')}
           </label>
           <Button variant="outline" size="sm" onClick={handleCleanupStale}>
-            <AlertTriangle className="h-4 w-4 mr-1.5" />清理卡住任务
+            <AlertTriangle className="h-4 w-4 mr-1.5" />{t('k_a35a532ceb')}
           </Button>
           <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />刷新
+            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />{t('k_38108eaa1d')}
           </Button>
         </div>
       </div>
@@ -376,7 +378,7 @@ export default function TaskMonitor() {
               </thead>
               <tbody>
                 {loading && visibleTasks.length === 0 ? (
-                  <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+                  <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">{t('k_26b5bd4947')}</td></tr>
                 ) : visibleTasks.length === 0 ? (
                   <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">{t("k_15652e6de7")}</td></tr>
                 ) : visibleTasks.map(task => (
@@ -386,8 +388,8 @@ export default function TaskMonitor() {
                     <td className="p-3 max-w-[260px]">
                       <div className="font-medium truncate" title={task.description}>{task.name}</div>
                       <div className="text-xs text-muted-foreground truncate">
-                        {task.task_type === 'system' ? '系统任务' : task.task_type === 'agent' ? 'Agent 分析' : '查询任务'}
-                        {task.ownership === 'unclaimed' && ' · 待认领'}
+                        {task.task_type === 'system' ? t('k_dcc1aa5622') : task.task_type === 'agent' ? t('k_b96475af63') : t('k_d44ea70a73')}
+                        {task.ownership === 'unclaimed' && t('k_0d4dbe306d')}
                       </div>
                     </td>
                     <td className="p-3">
@@ -402,8 +404,7 @@ export default function TaskMonitor() {
                         : <StatusBadge status={task.enabled ? 'running' : 'cancelled'} />}
                       {task.stuck_runs > 0 && (
                         <Badge variant="outline" className="ml-1 bg-red-500/10 text-red-500 border-red-500/20">
-                          {task.stuck_runs} 个卡住
-                        </Badge>
+                          {t('k_e6b843f63f', { p0: task.stuck_runs })}</Badge>
                       )}
                     </td>
                     <td className="p-3">
@@ -423,7 +424,7 @@ export default function TaskMonitor() {
                       <div className="flex items-center justify-end gap-1">
                         {task.kind === 'system_job' ? (
                           <>
-                            <Button variant="ghost" size="sm" title={task.enabled ? '暂停内置任务' : '恢复内置任务'}
+                            <Button variant="ghost" size="sm" title={task.enabled ? t('k_7da47ee794') : t('k_b88b276e2a')}
                                     onClick={() => handlePauseJob(task, task.enabled)}>
                               {task.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                             </Button>
@@ -478,7 +479,7 @@ export default function TaskMonitor() {
                 <SelectItem value="cancelled">{t("k_a5ffdc95ee")}</SelectItem>
               </SelectContent>
             </Select>
-            <span className="text-sm text-muted-foreground">共 {runsTotal} 条</span>
+            <span className="text-sm text-muted-foreground">{t('k_1d961ef9b0', { p0: runsTotal })}</span>
           </div>
 
           <div className="border rounded-lg overflow-hidden">
@@ -498,7 +499,7 @@ export default function TaskMonitor() {
               </thead>
               <tbody>
                 {loading && runs.length === 0 ? (
-                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">{t('k_26b5bd4947')}</td></tr>
                 ) : runs.length === 0 ? (
                   <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">{t("k_4bbc49b9ea")}</td></tr>
                 ) : runs.map(run => (
@@ -506,8 +507,8 @@ export default function TaskMonitor() {
                       className={`border-t hover:bg-muted/30 cursor-pointer ${run.stuck ? 'bg-red-500/5' : ''}`}
                       onClick={() => setDetailRun(run)}>
                     <td className="p-3 max-w-[220px]">
-                      <div className="font-medium truncate">{run.task_name || '未命名任务'}</div>
-                      <div className="text-xs text-muted-foreground">触发：{run.trigger_type || '—'}</div>
+                      <div className="font-medium truncate">{run.task_name || t('k_e417f2d167')}</div>
+                      <div className="text-xs text-muted-foreground">{t('k_054d0f784f', { p0: run.trigger_type || '—' })}</div>
                     </td>
                     <td className="p-3 text-muted-foreground">{RUN_KIND_LABEL[run.kind] || run.kind}</td>
                     <td className="p-3">
@@ -556,7 +557,7 @@ export default function TaskMonitor() {
         <TabsContent value="sync" className="space-y-6">
           <section className="space-y-2">
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Database className="h-4 w-4" />数据同步任务
+              <Database className="h-4 w-4" />{t('k_6dd36a4c12')}
             </h2>
             <div className="border rounded-lg overflow-hidden">
               <table className="w-full text-sm">
@@ -584,17 +585,17 @@ export default function TaskMonitor() {
                         </div>
                       </td>
                       <td className="p-3 text-muted-foreground">{task.sync_mode || '—'}</td>
-                      <td className="p-3 text-muted-foreground">{task.schedule_cron || '手动'}</td>
+                      <td className="p-3 text-muted-foreground">{task.schedule_cron || t('k_2a3e7f5c38')}</td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
                           <Switch checked={!!task.is_active}
                                   onCheckedChange={async v => {
                                     try {
                                       await toggleMonitoredSyncTask(task.id, v);
-                                      toast.success(v ? '已启用' : '已停用');
+                                      toast.success(v ? t('k_53ace4305f') : t('k_6c7dcbb73a'));
                                       load();
                                     } catch (error: any) {
-                                      toast.error(error?.response?.data?.detail || '操作失败');
+                                      toast.error(error?.response?.data?.detail || t('k_5fa802bef5'));
                                     }
                                   }} />
                           {task.last_status && <StatusBadge status={task.last_status} />}
@@ -609,10 +610,10 @@ export default function TaskMonitor() {
                                   onClick={async () => {
                                     try {
                                       const res = await stopMonitoredSyncTask(task.id);
-                                      toast.success(`已停止，取消实例 ${res.cancelled_runs} 个`);
+                                      toast.success(t('k_8a4c64bd8f', { p0: res.cancelled_runs }));
                                       load();
                                     } catch (error: any) {
-                                      toast.error(error?.response?.data?.detail || '停止失败');
+                                      toast.error(error?.response?.data?.detail || t('k_fd59df83b0'));
                                     }
                                   }}>
                             <Square className="h-4 w-4" />
@@ -632,9 +633,9 @@ export default function TaskMonitor() {
 
           <section className="space-y-2">
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Activity className="h-4 w-4" />DAG 工作流运行（近 10 条）
+              <Activity className="h-4 w-4" />{t('k_a478de7690')}
               <Button variant="ghost" size="sm" className="ml-auto" onClick={() => navigate('/data/sync/dag')}>
-                工作流管理
+                {t('k_4abb51c38e')}
               </Button>
             </h2>
             <div className="border rounded-lg overflow-hidden">
@@ -655,15 +656,15 @@ export default function TaskMonitor() {
                     <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_e4186ac887")}</td></tr>
                   ) : dagRuns.map(run => (
                     <tr key={run.id} className="border-t hover:bg-muted/30">
-                      <td className="p-3 font-medium">{run.workflow_name || `工作流 ${run.workflow_id}`}</td>
+                      <td className="p-3 font-medium">{run.workflow_name || t('k_0bf6901124', { p0: run.workflow_id })}</td>
                       <td className="p-3 text-muted-foreground">{run.trigger_type}</td>
                       <td className="p-3"><StatusBadge status={run.status} /></td>
-                      <td className="p-3 text-muted-foreground">{run.node_count ?? '—'} 个</td>
+                      <td className="p-3 text-muted-foreground">{t('k_7b0507b1df', { p0: run.node_count ?? '—' })}</td>
                       <td className="p-3">{fmtTime(run.started_at)}</td>
                       <td className="p-3">{fmtTime(run.finished_at)}</td>
                       <td className="p-3 text-right">
                         <Button variant="ghost" size="sm" onClick={() => navigate(`/data/sync/dag-runs/${run.id}`)}>
-                          详情
+                          {t('k_4f55ee1e68')}
                         </Button>
                       </td>
                     </tr>
@@ -675,9 +676,8 @@ export default function TaskMonitor() {
 
           <section className="space-y-2">
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Clock className="h-4 w-4" />本体知识库同步水位
-              <span className="text-xs font-normal text-muted-foreground">
-                由系统内置任务「知识库同步对账」维护，可暂停该任务以停止自动重推
+              <Clock className="h-4 w-4" />{tr('k_416a2d258b')}{' '}<span className="text-xs font-normal text-muted-foreground">
+                {t('k_cd6b0ea232')}
               </span>
             </h2>
             <div className="border rounded-lg overflow-hidden">
@@ -718,7 +718,7 @@ export default function TaskMonitor() {
           <DialogHeader>
             <DialogTitle>{detailTask?.name}</DialogTitle>
             <DialogDescription>
-              {detailTask?.source === 'system' ? '系统内置任务' : '用户创建的定时任务'}
+              {detailTask?.source === 'system' ? t('k_286b4866f7') : t('k_a960a3b080')}
               {detailTask?.description ? ` · ${detailTask.description}` : ''}
             </DialogDescription>
           </DialogHeader>
@@ -726,23 +726,23 @@ export default function TaskMonitor() {
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-2 gap-3">
                 <div><span className="text-muted-foreground">{t("k_40c038ae23")}</span>
-                  {detailTask.task_type === 'system' ? '系统任务' : detailTask.task_type === 'agent' ? 'Agent 分析' : '查询任务'}
+                  {detailTask.task_type === 'system' ? t('k_dcc1aa5622') : detailTask.task_type === 'agent' ? t('k_b96475af63') : t('k_d44ea70a73')}
                 </div>
                 <div><span className="text-muted-foreground">{t("k_baa09a2f5d")}</span>
                   {detailTask.schedule || '—'}
                   {detailTask.timezone ? `（${detailTask.timezone}）` : ''}
                 </div>
                 <div><span className="text-muted-foreground">{t("k_ee1a71ad74")}</span>
-                  {detailTask.owner_name}{detailTask.ownership === 'unclaimed' ? '（待认领）' : ''}
+                  {detailTask.owner_name}{detailTask.ownership === 'unclaimed' ? t('k_0552c05c26') : ''}
                 </div>
                 <div><span className="text-muted-foreground">{t("k_882c4b8269")}</span>
-                  {detailTask.enabled ? '启用中' : detailTask.kind === 'system_job' ? '已暂停' : '已停用'}
+                  {detailTask.enabled ? t('k_c16e2ef8ba') : detailTask.kind === 'system_job' ? t('k_a2d930fd03') : t('k_6c7dcbb73a')}
                 </div>
                 <div><span className="text-muted-foreground">{t("k_ec6be5e49e")}</span>
                   {fmtTime(detailTask.last_run_at)}
                   {detailTask.last_status && <span className="ml-1.5"><StatusBadge status={detailTask.last_status} /></span>}
                 </div>
-                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailTask.run_count} 次</div>
+                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailTask.run_count} {tr('k_7229ecc631')}</div>
                 <div><span className="text-muted-foreground">{t("k_6b8aa6fecb")}</span>{detailTask.active_runs}</div>
                 <div><span className="text-muted-foreground">{t("k_fc6a3587c6")}</span>
                   <span className={detailTask.stuck_runs > 0 ? 'text-destructive font-medium' : ''}>
@@ -757,10 +757,9 @@ export default function TaskMonitor() {
                 ) : (
                   <>
                     <div><span className="text-muted-foreground">{t("k_ed72d00d99")}</span>
-                      {detailTask.questions_total ?? '—'} 项
-                    </div>
+                      {detailTask.questions_total ?? '—'} {tr('k_29645b5090')}{' '}</div>
                     <div><span className="text-muted-foreground">{t("k_0f50091697")}</span>
-                      {detailTask.timeout_seconds ? `${detailTask.timeout_seconds} 秒` : '—'}
+                      {detailTask.timeout_seconds ? t('k_ed6e7d9cbc', { p0: detailTask.timeout_seconds }) : '—'}
                     </div>
                   </>
                 )}
@@ -770,7 +769,7 @@ export default function TaskMonitor() {
                 <div>
                   <div className="text-muted-foreground mb-1">{t("k_f1b432750f")}</div>
                   <div className="p-2 rounded bg-muted/50 whitespace-pre-wrap">
-                    {detailTask.last_result || '尚未运行'}
+                    {detailTask.last_result || t('k_5648b52763')}
                   </div>
                 </div>
               ) : (
@@ -786,17 +785,17 @@ export default function TaskMonitor() {
             {detailTask && detailTask.kind === 'system_job' ? (
               <Button variant="outline" onClick={() => { handlePauseJob(detailTask, detailTask.enabled); setDetailTask(null); }}>
                 {detailTask.enabled ? <Pause className="h-4 w-4 mr-1.5" /> : <Play className="h-4 w-4 mr-1.5" />}
-                {detailTask.enabled ? '暂停' : '恢复'}
+                {detailTask.enabled ? t('k_8d63ef388e') : t('k_c7db6d4f1a')}
               </Button>
             ) : detailTask && (
               <>
                 <Button variant="outline" onClick={() => { handleStopTask(detailTask); setDetailTask(null); }}>
-                  <Square className="h-4 w-4 mr-1.5" />停止
+                  <Square className="h-4 w-4 mr-1.5" />{t('k_095e938e2a')}
                 </Button>
                 <Button variant="destructive" onClick={() => {
                   setRemoveKind('task'); setRemoveTarget(detailTask); setDetailTask(null);
                 }}>
-                  <Trash2 className="h-4 w-4 mr-1.5" />移除
+                  <Trash2 className="h-4 w-4 mr-1.5" />{t('k_86048b4fea')}
                 </Button>
               </>
             )}
@@ -810,7 +809,7 @@ export default function TaskMonitor() {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>{detailSync?.name}</DialogTitle>
-            <DialogDescription>{detailSync?.description || '数据同步任务'}</DialogDescription>
+            <DialogDescription>{detailSync?.description || t('k_6dd36a4c12')}</DialogDescription>
           </DialogHeader>
           {detailSync && (
             <div className="space-y-4 text-sm">
@@ -819,13 +818,13 @@ export default function TaskMonitor() {
                 <div><span className="text-muted-foreground">{t("k_56441cdbc8")}</span>
                   {detailSync.source_type || '—'} → {detailSync.target_type || '—'}
                 </div>
-                <div><span className="text-muted-foreground">{t("k_baa09a2f5d")}</span>{detailSync.schedule_cron || '手动触发'}</div>
-                <div><span className="text-muted-foreground">{t("k_882c4b8269")}</span>{detailSync.is_active ? '启用中' : '已停用'}</div>
+                <div><span className="text-muted-foreground">{t("k_baa09a2f5d")}</span>{detailSync.schedule_cron || t('k_0cc990ba99')}</div>
+                <div><span className="text-muted-foreground">{t("k_882c4b8269")}</span>{detailSync.is_active ? t('k_c16e2ef8ba') : t('k_6c7dcbb73a')}</div>
                 <div><span className="text-muted-foreground">{t("k_ec6be5e49e")}</span>
                   {fmtTime(detailSync.last_run_at)}
                   {detailSync.last_status && <span className="ml-1.5"><StatusBadge status={detailSync.last_status} /></span>}
                 </div>
-                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailSync.run_count} 次</div>
+                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailSync.run_count} {tr('k_7229ecc631')}</div>
                 <div><span className="text-muted-foreground">{t("k_6b8aa6fecb")}</span>{detailSync.active_runs}</div>
               </div>
               <div className="space-y-2">
@@ -841,19 +840,19 @@ export default function TaskMonitor() {
                 <Button variant="outline" onClick={async () => {
                   try {
                     const res = await stopMonitoredSyncTask(detailSync.id);
-                    toast.success(`已停止，取消实例 ${res.cancelled_runs} 个`);
+                    toast.success(t('k_8a4c64bd8f', { p0: res.cancelled_runs }));
                     setDetailSync(null);
                     load();
                   } catch (error: any) {
-                    toast.error(error?.response?.data?.detail || '停止失败');
+                    toast.error(error?.response?.data?.detail || t('k_fd59df83b0'));
                   }
                 }}>
-                  <Square className="h-4 w-4 mr-1.5" />停止
+                  <Square className="h-4 w-4 mr-1.5" />{t('k_095e938e2a')}
                 </Button>
                 <Button variant="destructive" onClick={() => {
                   setRemoveKind('sync'); setRemoveTarget(detailSync); setDetailSync(null);
                 }}>
-                  <Trash2 className="h-4 w-4 mr-1.5" />移除
+                  <Trash2 className="h-4 w-4 mr-1.5" />{t('k_86048b4fea')}
                 </Button>
               </>
             )}
@@ -868,7 +867,7 @@ export default function TaskMonitor() {
           <DialogHeader>
             <DialogTitle>{t("k_7ece65d16c")}</DialogTitle>
             <DialogDescription>
-              {detailRun ? `${detailRun.task_name || '未命名任务'} · ${RUN_KIND_LABEL[detailRun.kind] || detailRun.kind}` : ''}
+              {detailRun ? `${detailRun.task_name || tr('k_e417f2d167')} · ${RUN_KIND_LABEL[detailRun.kind] || detailRun.kind}` : ''}
             </DialogDescription>
           </DialogHeader>
           {detailRun && (
@@ -900,7 +899,7 @@ export default function TaskMonitor() {
               {detailRun.stuck && (
                 <div className="flex items-center gap-2 text-destructive">
                   <AlertTriangle className="h-4 w-4" />
-                  该实例已超出执行租约仍未结束，可用「清理卡住任务」或「停止」释放。
+                  {t('k_b7031bc1ad')}
                 </div>
               )}
             </div>
@@ -908,7 +907,7 @@ export default function TaskMonitor() {
           <DialogFooter>
             {detailRun && (detailRun.raw_status === 'queued' || detailRun.raw_status === 'running') && (
               <Button variant="outline" onClick={() => { handleStopRun(detailRun); setDetailRun(null); }}>
-                <Square className="h-4 w-4 mr-1.5" />停止
+                <Square className="h-4 w-4 mr-1.5" />{t('k_095e938e2a')}
               </Button>
             )}
             <Button variant="outline" onClick={() => setDetailRun(null)}>{t("k_6c14bd7f6f")}</Button>
@@ -922,13 +921,12 @@ export default function TaskMonitor() {
           <DialogHeader>
             <DialogTitle>{t("k_f852f6235c")}</DialogTitle>
             <DialogDescription>
-              将移除「{removeTarget?.name}」及其执行记录，此操作不可恢复。运行中的实例会先被停止。
-            </DialogDescription>
+              {t('k_29381f5ce1', { p0: removeTarget?.name })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRemoveTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={confirmRemove}>
-              <Trash2 className="h-4 w-4 mr-1.5" />移除
+              <Trash2 className="h-4 w-4 mr-1.5" />{t('k_86048b4fea')}
             </Button>
           </DialogFooter>
         </DialogContent>

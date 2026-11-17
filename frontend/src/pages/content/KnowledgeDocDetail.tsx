@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { t } from '@/i18n/runtime';
 import {
   ArrowLeft, ChevronRight, FileText, FolderClosed, FolderOpen, Plus, RefreshCw,
   Save, ShieldAlert,
@@ -105,7 +104,7 @@ export default function KnowledgeDocDetail() {
       setDoc(d => (d ? { ...d, source_id: out.source_id, content_sha256: out.content_sha256 ?? '', content: draft } : d));
       if (selectedId) setSelectedId(prev => (prev === out.previous_source_id ? out.source_id : prev));
       setNotice(out.message + (out.warning ? `｜${out.warning}` : '')
-        + ((out.warnings?.length ?? 0) ? `｜提醒：${out.warnings!.join('；')}` : ''));
+        + ((out.warnings?.length ?? 0) ? t('k_63110cd074', { p0: out.warnings!.join('；') }) : ''));
       loadTree();
     } catch (err) {
       setDocError(kbDocError(err));
@@ -142,7 +141,7 @@ export default function KnowledgeDocDetail() {
 
   if (!baseName) {
     return (
-      <ErrorBanner message="知识库名称缺失，请回到清单重新进入。" />
+      <ErrorBanner message={t('k_d617149917')} />
     );
   }
 
@@ -150,7 +149,7 @@ export default function KnowledgeDocDetail() {
     <div className="space-y-4">
       <header className="space-y-2">
         <Button size="sm" variant="ghost" className="-ml-2 text-xs" onClick={() => navigate('/content/kb-docs')}>
-          <ArrowLeft className="mr-1 h-3.5 w-3.5" />返回知识库清单
+          <ArrowLeft className="mr-1 h-3.5 w-3.5" />{t('k_cf989ec1b6')}
         </Button>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-semibold">{tree?.base.name || baseName}</h1>
@@ -163,7 +162,7 @@ export default function KnowledgeDocDetail() {
                 ${tree.base.status === 'active'
                   ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
                   : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'}`}>
-                {tree.base.status === 'active' ? '已启用' : `未启用（${tree.base.status || '未知'}）`}
+                {tree.base.status === 'active' ? t('k_53ace4305f') : t('k_a376b96a3b', { p0: tree.base.status || t('k_1622dc9b6b') })}
               </span>
             </>
           )}
@@ -175,15 +174,15 @@ export default function KnowledgeDocDetail() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => loadTree()} disabled={treeLoading}>
-          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${treeLoading ? 'animate-spin' : ''}`} />刷新目录
+          <RefreshCw className={`mr-1 h-3.5 w-3.5 ${treeLoading ? 'animate-spin' : ''}`} />{t('k_90b5a467c1')}
         </Button>
         {canWrite && (
           <>
             <Button size="sm" variant="outline" onClick={() => setCreating({ kind: 'doc', parentId: '' })}>
-              <Plus className="mr-1 h-3.5 w-3.5" />根下新建文档
+              <Plus className="mr-1 h-3.5 w-3.5" />{t('k_ebdff5c4a3')}
             </Button>
             <Button size="sm" variant="outline" onClick={() => setCreating({ kind: 'folder', parentId: '' })}>
-              <Plus className="mr-1 h-3.5 w-3.5" />新建目录
+              <Plus className="mr-1 h-3.5 w-3.5" />{t('k_547ee197e5')}
             </Button>
           </>
         )}
@@ -195,13 +194,13 @@ export default function KnowledgeDocDetail() {
         <aside className="space-y-2 rounded-xl border bg-card p-3">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>{t("k_0d791f13ed")}</span>
-            {tree && <span>{tree.doc_count} 篇 / {tree.folder_count} 个目录{flatTree ? ' · 扁平库' : ''}</span>}
+            {tree && <span>{t('k_1b906869f8', { p0: tree.doc_count, p1: tree.folder_count, p2: flatTree ? t('k_1f8600a2b2') : '' })}</span>}
           </div>
-          {treeLoading && <LoadingRow text="正在读取云端目录" />}
+          {treeLoading && <LoadingRow text={t('k_9da1de4207')} />}
           <ErrorBanner message={treeError} onRetry={() => loadTree()} />
           {!treeLoading && !treeError && tree && tree.nodes.length === 0 && (
             <p className="py-6 text-center text-xs text-muted-foreground">
-              这个知识库还没有文档（云端目录为空）。可在上方新建一篇，或先到系统配置确认绑定的 notebook 是否正确。
+              {t('k_08b9b0e9b1')}
             </p>
           )}
           {!treeLoading && tree && (
@@ -217,22 +216,21 @@ export default function KnowledgeDocDetail() {
         <section className="space-y-3">
           {creating && (
             <div className="space-y-2 rounded-xl border bg-card p-3">
-              <Label htmlFor="kbd-new">{creating.kind === 'doc' ? '新建文档名（.md 会自动补）' : '新建目录名'}</Label>
+              <Label htmlFor="kbd-new">{creating.kind === 'doc' ? t('k_2d130a1b93') : t('k_f0fa905a23')}</Label>
               <div className="flex items-center gap-2">
                 <Input id="kbd-new" value={newTitle} onChange={e => setNewTitle(e.target.value)}
-                  placeholder={creating.kind === 'doc' ? '如 常见问答-装机口径.md' : '如 合规与标准'} className="flex-1" />
+                  placeholder={creating.kind === 'doc' ? t('k_a2031fbe42') : t('k_3ea0c09eb0')} className="flex-1" />
                 <Button size="sm" onClick={create} disabled={saving || !newTitle.trim()}>{t("k_f526c89937")}</Button>
                 <Button size="sm" variant="ghost" onClick={() => { setCreating(null); setNewTitle(''); }}>{t("k_4d0b4688c7")}</Button>
               </div>
               {creating.parentId && (
                 <p className="text-[11px] text-muted-foreground">
-                  将创建在目录「{findNode(tree?.nodes ?? [], creating.parentId)?.title ?? creating.parentId}」下。
-                </p>
+                  {t('k_cb603e8714', { p0: findNode(tree?.nodes ?? [], creating.parentId)?.title ?? creating.parentId })}</p>
               )}
             </div>
           )}
 
-          {docLoading && <LoadingRow text="正在读取文档正文" />}
+          {docLoading && <LoadingRow text={t('k_217694cd8f')} />}
           <ErrorBanner message={docError} onRetry={doc ? reloadDoc : undefined} />
 
           {!docLoading && !doc && !docError && (
@@ -252,7 +250,7 @@ export default function KnowledgeDocDetail() {
                     {kbStatusHint(doc.status)}
                   </span>
                 )}
-                <span className="ml-auto text-[11px] text-muted-foreground">云端更新 {doc.updated_at || '—'}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">{t('k_69f398b01a', { p0: doc.updated_at || '—' })}</span>
               </div>
 
               {doc.derived && (
@@ -263,7 +261,7 @@ export default function KnowledgeDocDetail() {
               )}
               {!canWrite && (
                 <p className="text-xs text-muted-foreground">
-                  你现在只有查看权（kbdoc:read）：正文可以读，保存按钮不给。编辑云端语料需要「编辑知识库文档」权限。
+                  {t('k_bb6e97883c')}
                 </p>
               )}
 
@@ -275,7 +273,7 @@ export default function KnowledgeDocDetail() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button onClick={save} disabled={!canWrite || !dirty || saving || doc.derived}>
-                  <Save className="mr-1.5 h-4 w-4" />{saving ? '提交中' : '只提交这一篇'}
+                  <Save className="mr-1.5 h-4 w-4" />{saving ? t('k_7ef44a7d1d') : t('k_81c2b5ccda')}
                 </Button>
                 {dirty && (
                   <Button size="sm" variant="ghost" onClick={() => setDraft(doc.content)} disabled={saving}>{t("k_cf1fe2f1b4")}</Button>
@@ -307,6 +305,7 @@ function TreeNode({ node, depth, openIds, selectedId, onNode, canWrite, onCreate
   node: KbTreeNode; depth: number; openIds: Set<string>; selectedId: string;
   onNode: (n: KbTreeNode) => void; canWrite: boolean; onCreateIn: (id: string) => void;
 }) {
+  const { t } = useTranslation('ui');
   const open = openIds.has(node.source_id);
   const selected = node.source_id === selectedId;
   const hint = node.is_dir ? '' : node.status !== 'ready' ? node.status : '';
@@ -318,7 +317,7 @@ function TreeNode({ node, depth, openIds, selectedId, onNode, canWrite, onCreate
         <button
           type="button"
           onClick={() => onNode(node)}
-          aria-label={`${node.is_dir ? (open ? '折叠' : '展开') : '打开'} ${node.title}`}
+          aria-label={t('k_d864da428e', { p0: node.is_dir ? (open ? t('k_e082621c93') : t('k_e2edde5adb')) : t('k_d7098f5050'), p1: node.title })}
           className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left text-sm"
         >
           {node.is_dir
@@ -334,7 +333,7 @@ function TreeNode({ node, depth, openIds, selectedId, onNode, canWrite, onCreate
         </button>
         {node.is_dir && canWrite && (
           <button type="button" onClick={() => onCreateIn(node.source_id)}
-            aria-label={`在 ${node.title} 下新建文档`}
+            aria-label={t('k_c1198e65bc', { p0: node.title })}
             className="shrink-0 rounded p-1 opacity-60 hover:opacity-100">
             <Plus className="h-3 w-3" />
           </button>
