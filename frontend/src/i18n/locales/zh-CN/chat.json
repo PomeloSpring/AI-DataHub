@@ -95,6 +95,7 @@
     "result": "返回结果",
     "omitted": "工具返回明细不持久化（仅保留摘要），完整产物见会话工作区文件。",
     "truncated": "工具返回明细过长，仅保存开头部分。",
+    "previewScreen": "预览大屏",
     "header": "工具调用 · {{count}} 步"
   },
   "artifact": {
@@ -684,13 +685,17 @@
     "untitledDoc": "未命名文档"
   },
   "designCard": {
-    "unavailable": "设计卡片不可用（可能已被删除或无权限）",
-    "loading": "设计卡片加载中…",
-    "title": "仪表盘设计 · {{name}}",
-    "statusVersion": "{{status}} · 版本 {{version}}",
-    "selection": "业务域：{{name}}",
-    "selectionEmpty": "请先选择目标仪表盘、业务范围和知识库",
-    "openPanel": "打开设计面板"
+    "unavailable": "看板入口加载失败（设计可能已删除或无权限），点此重试",
+    "preview": "预览看板"
+  },
+  "dashboardPreview": {
+    "title": "看板详情",
+    "meta": "{{count}} 个图表",
+    "loading": "加载看板信息…",
+    "unavailable": "看板不可用（可能已被删除或无权限）",
+    "open": "在新窗口打开",
+    "refresh": "刷新数据",
+    "retry": "重试"
   },
   "designStatus": {
     "awaiting_selection": "待选择业务范围",

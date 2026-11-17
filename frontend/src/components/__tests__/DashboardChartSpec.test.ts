@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { buildG2Spec, estimateTextWidth, resolveXAxisLabelLayout, truncateToWidth } from '../DashboardChart';
+import { describe, expect, it, beforeEach } from 'vitest';
+import {
+  buildG2Spec, estimateTextWidth, formatAxisNumber, resolveLegendBandHeight,
+  resolveXAxisLabelLayout, resolveYAxisLabelLayout, truncateToWidth,
+} from '../DashboardChart';
+import i18n from '@/i18n';
 import { resolveChartDesign, resolveDashboardDesign, sanitizePack } from '@/lib/dashboardDesign';
 import { DEFAULT_MOTION, applyG2Animate, g2Animate } from '@/lib/motion';
 import type { VisComponent } from '@/api/visLibrary';
@@ -671,5 +675,156 @@ describe('buildG2Spec 多系列时间类目轴域钉死', () => {
       [{ ym: '2026-02', opens: 5 }, { ym: '2026-01', opens: 3 }],
       { xCol: 'ym', yCol: 'opens' }, false, 800, 400);
     expect(spec.scale.x).toBeUndefined();
+  });
+});
+
+// Y 轴大数刻度（截图：「Y 轴的数字重叠」）：历史缺陷——左侧留白固定 24px，千万级数字宽约 55px，
+// 标签从轴边向画布左缘伸出后被整条裁掉，只剩末位一两格贴轴叠成一列。
+// 修法必须成对：压缩数字（formatAxisNumber）+ 按同一压缩口径回推 padding[3]（resolveYAxisLabelLayout）。
+describe('buildG2Spec Y 轴刻度压缩与左侧留白', () => {
+  // 语言决定压缩单位（万/亿 vs K/M/B），锁 zh-CN 才有确定性断言
+  beforeEach(async () => { await i18n.changeLanguage('zh-CN'); });
+  const bigCols = ['日期', '数量'];
+  const bigRows = [
+    { 日期: '2026-10-12', 数量: 40000000 },
+    { 日期: '2026-10-13', 数量: 105000000 },
+  ];
+  const build = (extra: Record<string, any> = {}, type = 'area', w = 520) =>
+    buildG2Spec(type, bigCols, bigRows, { xCol: '日期', yCol: '数量', ...extra }, false, w, 320) as any;
+
+  it('大数折成万/亿，且刻度渲染器与留白估算用同一个函数', () => {
+    expect(formatAxisNumber(40000000)).toBe('4000万');
+    expect(formatAxisNumber(105000000)).toBe('1.1亿');
+    const spec = build();
+    expect(spec.axis.y.labelFormatter(40000000)).toBe('4000万');
+    expect(spec.axis.y.labelFormatter(105000000)).toBe('1.1亿');
+  });
+
+  it('左侧留白按压缩后最宽刻度回推（不再固定 24px），且夹在图宽 32% 以内', () => {
+    const spec = build();
+    expect(spec.padding[3]).toBeGreaterThan(24);
+    // 留白与格式化同源：换一套刻度就得同步变宽，否则标签仍会越界被裁
+    expect(spec.padding[3]).toBe(
+      resolveYAxisLabelLayout([40000000, 105000000, 0], { width: 520, fontSize: 11 }).leftPadding,
+    );
+    // 极端长标签（万亿级）也不许把绘图区挤没
+    const huge = resolveYAxisLabelLayout([1e18], { width: 400, fontSize: 11 }).leftPadding;
+    expect(huge).toBeGreaterThan(24);
+    expect(huge).toBeLessThanOrEqual(Math.round(400 * 0.32));
+  });
+
+  it('小数字不压缩：999.6 / 0.5 原样（折成 1K / 0 就是错数）', () => {
+    expect(formatAxisNumber(0)).toBe('0');
+    expect(formatAxisNumber(0.5)).toBe('0.5');
+    expect(formatAxisNumber(999)).toBe('999');
+    expect(formatAxisNumber(999.6)).toBe('999.6');
+    expect(formatAxisNumber(null)).toBe('0');
+    expect(formatAxisNumber(undefined)).toBe('');
+    expect(formatAxisNumber('abc')).toBe('abc');
+    const small = buildG2Spec('bar', bigCols, [{ 日期: 'a', 数量: 1 }, { 日期: 'b', 数量: 2 }],
+      { xCol: '日期', yCol: '数量' }, false, 520, 320) as any;
+    expect(small.axis.y.labelFormatter(2)).toBe('2');
+  });
+
+  it('关掉 y 轴：不留白也不挂格式化器（版式回归 24px）', () => {
+    const spec = build({ showYAxis: false });
+    expect(spec.axis.y).toBe(false);
+    expect(spec.padding[3]).toBe(24);
+  });
+
+  it('无 y 刻度的图型（饼图）左侧留白不变', () => {
+    const pie: any = buildG2Spec('pie', bigCols, bigRows, { xCol: '日期', yCol: '数量' }, false, 520, 320);
+    expect(pie.padding[3]).toBe(24);
+  });
+
+  it('时序族按 valCol 判宽（xCol 指向短标签列时不误读）', () => {
+    const c = ['日期', '页面', 'PV'];
+    const r = [
+      { 日期: '2026-10-01', 页面: '/a', PV: 40000000 },
+      { 日期: '2026-10-02', 页面: '/b', PV: 1000 },
+    ];
+    const spec: any = buildG2Spec('timeseries_area', c, r, { xCol: '日期', valCol: 'PV' }, false, 520, 320);
+    expect(spec.padding[3]).toBeGreaterThan(24);
+    expect(spec.axis.y.labelFormatter(40000000)).toBe(formatAxisNumber(40000000));
+  });
+});
+
+// 饼图横排图例（主题包 pie.legend='bottom'，见 as_style_theme_migration.sql）：
+// 历史缺陷——图例住在 padding 轴带里，带高不足时多出的行被画到画布外（截图左下角
+// 只剩粗体 "name" 与被裁的半截 URL 类目）。"name" 本身也不是业务名，是 color 编码的中转字段。
+describe('饼图横排图例：轴带高度与图例标题', () => {
+  const longCols = ['页面', 'PV'];
+  const longRows = [
+    '/cases/caseDetail/patients/caseDetail',
+    '/cases/caseList',
+    '/home',
+    '/about',
+    '/en/contact',
+    '/en/news-list/',
+    '/en/request-partner',
+  ].map((p, i) => ({ 页面: p, PV: 1000 - i * 50 }));
+  const build = (config: Record<string, any>) =>
+    buildG2Spec('pie', longCols, longRows, { xCol: '页面', yCol: 'PV', ...config }, false, 420, 460) as any;
+
+  it('bottom：图例不出中转字段标题，size 与 padding 同源（只改一处仍会被裁）', () => {
+    const spec = build({ legend: 'bottom' });
+    expect(spec.legend.color.title).toBe(false);
+    expect(spec.legend.color.position).toBe('bottom');
+    const band = resolveLegendBandHeight(longRows.map(d => d.页面), { width: 420, fontSize: 11 });
+    expect(spec.legend.color.size).toBe(band);
+    // 轴带 = 图例内容高 + legendCategory 的 crossPadding，这样图例才不会滑出画布下沿
+    expect(spec.padding[2]).toBe(band + 12);
+    expect(spec.padding[2]).toBeGreaterThan(40);
+  });
+
+  it('类目多行时轴带随行数长高（一行高度不够就换行，不是缩小字号）', () => {
+    const many = ['/a', '/b', '/c', '/d', '/e', '/f'].map(p => ({ 页面: p, PV: 10 }));
+    const oneRow = buildG2Spec('pie', longCols, many, { xCol: '页面', yCol: 'PV', legend: 'bottom' }, false, 480, 460) as any;
+    const spec = build({ legend: 'bottom' });
+    expect(spec.padding[2]).toBeGreaterThan(oneRow.padding[2]);
+    expect(spec.padding[2]).toBeGreaterThanOrEqual(40);
+  });
+
+  it('类目极多时不吃光图高（超出部分交给 G2 分页箭头，不把饼挤没）', () => {
+    const tons = Array.from({ length: 60 }, (_, i) => ({ 页面: `/some/long/path/segment-${i}`, PV: 100 - i }));
+    const spec = buildG2Spec('pie', longCols, tons, { xCol: '页面', yCol: 'PV', legend: 'bottom' }, false, 420, 460) as any;
+    expect(spec.padding[2]).toBeLessThanOrEqual(Math.round(460 * 0.4));
+    // padding 与 size 仍同源，G2 才知道图例箱体只有这么高
+    expect(spec.legend.color.size).toBe(spec.padding[2] - 12);
+  });
+
+  it('right：竖排图例不占上下轴带，padding 维持 40 且不写 size', () => {
+    const spec = build({ legend: 'right' });
+    expect(spec.padding[2]).toBe(40);
+    expect(spec.legend.color.size).toBeUndefined();
+    expect(spec.legend.color.title).toBe(false);
+  });
+
+  it('legend 关掉/写 true 都规范化（true 不再原样写进 position）', () => {
+    expect(build({ legend: false }).legend).toBe(false);
+    expect(build({ legend: true }).legend.color.position).toBe('right');
+    expect(build({}).legend.color.position).toBe('right');
+  });
+});
+
+// line + areaFill 是两个 mark（area 铺底 + line 描边）：两个都挂默认 tooltip 时，
+// 悬浮框里每个系列会出现两行同值（截图「users 9509」重复两行）。
+describe('line + areaFill 的 tooltip 去重', () => {
+  const build = () => buildG2Spec('line', cols, rows,
+    { xCol: '日期', yCol: '数量', areaFill: true }, false, 800, 400) as any;
+
+  it('面积 mark 只铺底不出 tooltip，值由 line mark 出', () => {
+    const spec = build();
+    expect(spec.type).toBe('view');
+    const area = spec.children.find((c: any) => c.type === 'area');
+    const line = spec.children.find((c: any) => c.type === 'line');
+    expect(area.tooltip).toBe(false);
+    expect(line.tooltip).not.toBe(false);
+  });
+
+  it('未开 areaFill 的纯线图仍只一个 mark、tooltip 不受影响', () => {
+    const spec: any = buildG2Spec('line', cols, rows, { xCol: '日期', yCol: '数量' }, false, 800, 400);
+    expect(spec.type).toBe('line');
+    expect('tooltip' in spec).toBe(false);
   });
 });

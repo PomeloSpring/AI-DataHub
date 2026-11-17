@@ -1804,6 +1804,10 @@ def save_draft_only(model_id: int, json_content: str, name: str = None,
     与 save_draft 的区别：save_draft 对 active 模型会就地改内容并立即级联（重展开 objects /
     重建图谱 / 同步知识库）；本函数只写 draft_json_content，生效口径保持不变，
     等 publish_draft 才落地。AS-BOT 通道一律走这里。
+
+    草案里若带顶层 `_declared_removals`（建模页删属性的显式声明）要**原样暂存**：
+    护栏在 publish_draft → save_draft 那一步生效，声明必须活到发布时才能区分
+    “人点名要删”与“顺手抹掉”；save_draft 会在写入前剥除，不污染 canonical 正文。
     """
     model = get_model(model_id)
     if not model:
@@ -2145,13 +2149,50 @@ def _prop_identity_names(obj: dict) -> set:
     return out
 
 
-def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
+# 建模页「删除属性」的显式删除声明键（doc 顶层，写入前剥离，不进 canonical 正文）。
+# 为什么需要它：`_reject_destructive_overwrite` 按“属性名消失”硬阻断，页面删属性因此
+# 永远发不出去（提示“请在建模页操作”，而建模页没有这条路 = 假引导）。声明机制把
+# **人明确点名要删的** 属性与“整份覆盖顺手抹掉”的意外丢失区分开：只有声明里的名字
+# 允许消失，其余照旧阻断（宁阻断勿损毁不打折）。
+_REMOVALS_KEY = "_declared_removals"
+
+
+def _normalize_declared_removals(raw) -> dict:
+    """{对象 key: [属性名…]} → {归一对象身份: {属性名小写}}；非法形态一律当“未声明”。
+
+    值接受 list/tuple/set：`pop_declared_removals` 产出的是 set，save_draft 会把它的
+    结果直接回传给护栏（重归一）——只认 list 会让归一后的声明被当成“未声明”丢弃。
+    """
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if not isinstance(v, (list, tuple, set, frozenset)):
+            continue
+        names = {str(x).strip().lower() for x in v if str(x or "").strip()}
+        if names:
+            out[object_identity_key(str(k))] = names
+    return out
+
+
+def pop_declared_removals(doc: dict) -> dict:
+    """取出并剥离 doc 顶层的显式删除声明（绝不进 canonical 正文/派生视图）。"""
+    if not isinstance(doc, dict):
+        return {}
+    return _normalize_declared_removals(doc.pop(_REMOVALS_KEY, None))
+
+
+def _reject_destructive_overwrite(model: dict, json_content: str,
+                                  declared_removals: dict | None = None) -> None:
     """整份覆盖前校验：不得无损丢失已有对象的属性/关系定义（fail-loud）。
 
     历史风险：读接口（get_ontology_model）出于脱敏只回对象**摘要**（properties 为空数组），
     而写接口（save_draft/save_ontology_model）要求提交完整 JSON 并整份覆盖。
     调用方（含 AS-BOT）若凭摘要重建一份提交，会把已有对象的属性、枚举、关系定义**整份抹掉**——
     这不是“挂错对象”，而是破坏性写入。宁阻断勿损毁。
+
+    `declared_removals`（建模页显式删除声明）：只放行**被点名**且确实消失的属性名，
+    未声明的消失照旧阻断；关系收缩仍一律阻断（页面没有删关系入口）。
     """
     try:
         current = json.loads(model.get("json_content") or "{}")
@@ -2164,7 +2205,9 @@ def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
     if not cur_objs:
         return
     new_objs = {object_identity_key(o.get("key") or ""): o for o in (incoming.get("objects") or [])}
+    declared = _normalize_declared_removals(declared_removals)
     lost_detail: list[str] = []
+    removed_detail: list[str] = []
     for key, old in cur_objs.items():
         new = new_objs.get(key)
         if new is None:
@@ -2184,20 +2227,31 @@ def _reject_destructive_overwrite(model: dict, json_content: str) -> None:
             kept = _prop_identity_names(new) | {
                 n for n in (_metric_name(m) for m in (new.get("metrics") or [])) if n}
             vanished = old_names - kept
+            allowed = declared.get(key) or set()
             if vanished:
-                lost_detail.append(
-                    f"{key}(属性 {old_p}→{new_p}，丢失属性名: "
-                    + ", ".join(sorted(vanished)[:8])
-                    + (" …" if len(vanished) > 8 else "") + ")")
+                undeclared = {n for n in vanished if str(n).strip().lower() not in allowed}
+                if undeclared:
+                    lost_detail.append(
+                        f"{key}(属性 {old_p}→{new_p}，丢失属性名: "
+                        + ", ".join(sorted(undeclared)[:8])
+                        + (" …" if len(undeclared) > 8 else "") + ")")
+                else:
+                    # 声明的删除是**人的明确动作**：不阻断，但必须留痕（谁删了哪些名字）
+                    removed_detail.append(
+                        f"{key}: " + ", ".join(sorted(vanished)[:20]))
         if new_l < old_l:
             lost_detail.append(f"{key}(关系 {old_l}→{new_l})")
+    if removed_detail:
+        logger.warning("[ontology] 按显式删除声明移除属性（建模页手动删除）: %s",
+                       "；".join(removed_detail))
     if lost_detail:
         raise ValueError(
             "本次提交会造成已有定义丢失，已阻断（宁阻断勿损毁）："
             + "；".join(lost_detail[:10])
             + "。若确需删减，请在「本体建模页」操作，或提交与现有定义等量/更完整的 JSON。"
               "注意读接口出于脱敏只回对象摘要（properties 为空），不能拿摘要重建整份 JSON；"
-              "指标口径归并进对象 metrics[] 名字引用（指向指标字典）不计为属性丢失")
+              "指标口径归并进对象 metrics[] 名字引用（指向指标字典）不计为属性丢失；"
+              "仅「建模页 · 编辑对象 · 删除属性」会用顶层 _declared_removals 声明点名删除")
 
 
 def save_draft(model_id: int, json_content: str, name: str = None,
@@ -2220,17 +2274,25 @@ def save_draft(model_id: int, json_content: str, name: str = None,
         raise ValueError("模型不存在")
     if model["status"] == "archived":
         raise ValueError("已归档模型不可编辑；如需修改请在「版本管理」中回滚激活该版本")
+    # 先解析（护栏需要声明清单），声明键**永不出现在 canonical 正文**里：
+    # 它在写入前被剥离，只用来区分“人点名要删”与“整份覆盖顺手抹掉”。
+    try:
+        doc = json.loads(json_content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON 解析失败: {e}")
+    if not isinstance(doc, dict):
+        raise ValueError("JSON 解析失败: 顶层必须是对象")
+    declared = pop_declared_removals(doc)
+    if declared:
+        logger.info("[ontology] 模型 %s 提交含显式删除声明（建模页删除属性）: %s",
+                    model_id, {k: sorted(v) for k, v in declared.items()})
     if allow_full_regenerate:
         # 不静默：谁跳了护栏、为什么跳，必须留在日志里可查
         logger.warning(
             "[ontology] 模型 %s(%s) 跳过破坏性覆盖护栏：调用方声明为全量重算的派生模型", model_id, name or "")
     else:
-        _reject_destructive_overwrite(model, json_content)
+        _reject_destructive_overwrite(model, json_content, declared)
 
-    try:
-        doc = json.loads(json_content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"JSON 解析失败: {e}")
     if not isinstance(doc.get("objects"), list) or not doc["objects"]:
         raise ValueError("JSON 必须包含非空 objects 数组")
 

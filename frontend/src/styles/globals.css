@@ -2475,6 +2475,18 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 /* 导出/打印时剪掉交互控件条（与 lib/reportExport 的 [data-export-strip] 同一约定）：
    屏幕上是页签和下拉，落到纸面/文件里就是几行没有上下文的操作残句。
    打印与 HTML 导出必须同口径，否则"屏幕上看到的"和"发出去的两份东西"两样。 */
+/* 图可视化缩放分级（LOD）：千级节点图缩远时叶子标签会互相压叠成一片小字，
+   缩到 zoom < 0.9 时由容器 class 隐藏叶子标签（hub 名称胶囊保留，作为簇的锚点）。
+   hub 名称反向缩放：--kg-inv-zoom = 1/zoom，让对象名无论缩多远都是 11px 屏幕字号
+   （商用图谱同做法：全景状态下也要能读到业务对象名，而不是一排色点）。
+   实现见 components/graph/KnowledgeGraph.tsx 的 lodFar / handleViewportMove。 */
+.kg-leaf-label { transition: opacity 120ms ease; }
+.kg-lod-far .kg-leaf-label { opacity: 0; }
+.kg-hub-label {
+  transform: scale(var(--kg-inv-zoom, 1));
+  transform-origin: top center;
+}
+
 @media print {
   html.printing-report [data-export-strip] { display: none !important; }
 }

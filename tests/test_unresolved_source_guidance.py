@@ -144,23 +144,22 @@ def test_semantic_query_business_guard_without_system_capability(monkeypatch):
 # ── 2. 大屏/图表生成入口同一条链路 ────────────────────────────────
 
 
-def test_screen_intent_unresolved_source_not_reported_as_unbound(monkeypatch):
+def test_screen_source_unresolved_asks_for_site_not_reported_as_unbound(monkeypatch):
     from backend.modules.mind.execution.sdk_tools import screen_tools as st
-    from backend.semantics import binding_resolver
 
-    fake, _calls = _binding_stub({0: None})
-    monkeypatch.setattr(binding_resolver, "resolve_binding", fake)
+    # 大屏直建通道：会话没有单一源（未选源/聚合态）→ 要求用 site/datasource 定源，
+    # 不得被报成“对象未绑定”（那会把模型引向“该站暂无数据”）。
     with pytest.raises(st.ScreenIntentError) as ei:
-        asyncio.run(st._resolve_intent({"object": "rum_event", "metrics": ["pv"]},
-                                      _ctx(site_code="global")))
+        st.resolve_screen_source({"object": "rum_event"}, _ctx(site_code="global"), "rum_event")
     payload = json.loads(ei.value.response["content"][0]["text"])
     assert "site" in payload["error"]
     assert "未绑定" not in payload["error"]
 
 
-def test_screen_intent_unbound_message_says_unbound_is_not_no_data(monkeypatch):
+def test_screen_widget_unbound_message_says_unbound_is_not_no_data(monkeypatch):
     """真·未绑定（已定源）也必须带"未绑定≠无数据"的口径，不得诱导模型下"该站无数据"。"""
     from backend.modules.mind.execution.sdk_tools import screen_tools as st
+    from backend.modules.mind.execution import resource_guard
     from backend.semantics import binding_resolver
 
     def fake(object_ref, datasource_id=0, model_id=None, datasource_name=""):
@@ -169,10 +168,13 @@ def test_screen_intent_unbound_message_says_unbound_is_not_no_data(monkeypatch):
         return None, ["no binding found"]
 
     monkeypatch.setattr(binding_resolver, "resolve_binding", fake)
+    monkeypatch.setattr(resource_guard, "validate_binding", lambda *a, **k: None)
+    widget = {"title": "t", "chart_type": "bar",
+              "query": {"object": "rum_event", "metrics": ["pv"]}}
     with pytest.raises(st.ScreenIntentError) as ei:
-        asyncio.run(st._resolve_intent(
-            {"object": "rum_event", "metrics": ["pv"], "datasource_id": ADMIN_DS[0]},
-            _ctx(site_code="cn", datasource_id=ADMIN_DS[0])))
+        asyncio.run(st._prepare_widget(widget, 0, {}, _ctx(site_code="cn", datasource_id=ADMIN_DS[0]),
+                                       {"user_id": 1, "username": "admin", "role": "admin",
+                                        "workspace_id": 1}, "S", None))
     payload = json.loads(ei.value.response["content"][0]["text"])
     assert "未绑定" in payload["error"] and "未绑定 ≠ 无数据" in payload["hint"]
 

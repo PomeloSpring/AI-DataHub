@@ -531,6 +531,77 @@ def test_screen_guard_rejects_other_workspace_and_nonowner_write(monkeypatch):
         resource_guard.validate_tool_resources(ctx, "mcp__datahub_screen__update_data_screen_chart", {"dashboard_id": 8})
 
 
+def _screen_ctx(datasource_id=0, site_code=""):
+    policy = policies.compile_policy({"as_bot_key": "test"})
+    return ExecutionContext(user_id=1, user_role="analyst", workspace_id=3,
+                            datasource_id=datasource_id,
+                            extra={"secure_runtime": SimpleNamespace(policy=policy),
+                                   "site_code": site_code})
+
+
+def test_screen_build_survives_multi_source_without_session_source(monkeypatch):
+    """多源且会话未选定单一源时，建屏不得在闸门被一刀切拦死（历史缺陷 2026-11-17）。
+
+    analyst 角色授权 2 个源、会话无站点 → ctx.datasource_id=0 且非聚合态，
+    旧实现先于 handler 退回“请先在会话中选择”，Chat 里建屏永远做不成，
+    而错误文案看着像权限问题。现在交 handler 逐图用 site/datasource 业务名定源。
+    """
+    from backend.modules.mind.execution import resource_guard
+    ctx = _screen_ctx()
+    monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: {7, 8})
+    seen = []
+    monkeypatch.setattr(resource_guard, "_resolve_authorized_source",
+                        lambda name, avail: seen.append(name) or 7)
+    args = {"name": "S", "datasource": "prd-cn",
+            "widgets": [{"title": "t", "chart_type": "bar", "query": {"object": "case"}}]}
+    out = resource_guard.validate_tool_resources(
+        ctx, "mcp__datahub_screen__create_data_screen", args)
+    assert out["name"] == "S" and seen == ["prd-cn"]   # 显式源已在授权集内预演解析
+
+
+def test_screen_build_fails_closed_on_unauthorized_widget_site(monkeypatch):
+    """widget 级站点/源同样先过闸门：越权即拒（错因含候选名），不放宽。"""
+    from backend.modules.mind.execution import resource_guard
+    ctx = _screen_ctx()
+    monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: {7, 8})
+
+    def boom(ref, available, model_id=0):
+        raise resource_guard.ResourceScopeError(
+            f"当前身份没有「{ref}」对应的已授权数据源；当前可查站点：中国站点。")
+
+    monkeypatch.setattr(resource_guard, "_resolve_site_arg", boom)
+    args = {"name": "S", "widgets": [{"title": "t", "chart_type": "bar",
+                                      "site": "欧洲站点", "query": {"object": "case"}}]}
+    with pytest.raises(resource_guard.ResourceScopeError, match="欧洲站点"):
+        resource_guard.validate_tool_resources(ctx, "mcp__datahub_screen__create_data_screen", args)
+
+
+def test_screen_visual_update_does_not_require_session_source(monkeypatch):
+    """只改标题/样式（不重落数据集）不因“会话未选源”被拒；看板归属仍照样把关。"""
+    from backend.modules.mind.execution import resource_guard
+    ctx = _screen_ctx()
+    monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: {7, 8})
+
+    def fake_query(sql, params=None, fetchone=False):
+        if "FROM adh_dashboards" in sql:
+            return {"owner_id": 1, "workspace_id": 3, "is_public": 0}
+        return []
+
+    monkeypatch.setattr(resource_guard, "execute_query", fake_query)
+    out = resource_guard.validate_tool_resources(
+        ctx, "mcp__datahub_screen__update_data_screen_chart",
+        {"dashboard_id": 9, "chart_id": 5, "title": "新标题"})
+    assert out["title"] == "新标题"
+
+    # 越权改他人看板仍拒绝（归属判定不得因放行取数源而失效）
+    monkeypatch.setattr(resource_guard, "execute_query",
+                        lambda *a, **k: {"owner_id": 2, "workspace_id": 3, "is_public": 1})
+    with pytest.raises(PermissionError, match="修改"):
+        resource_guard.validate_tool_resources(
+            ctx, "mcp__datahub_screen__update_data_screen_chart",
+            {"dashboard_id": 9, "chart_id": 5, "title": "新标题"})
+
+
 def test_live_upper_limits_and_binding_revocation(monkeypatch):
     """执行层全局生效(不按工作空间绑定): 工具上限取执行层配置, 与绑定无关; 停用仍立即拒绝。"""
     from backend.modules.mind.execution import service
@@ -1211,6 +1282,49 @@ def test_tool_error_branches_all_pass_outbound_guard():
             offenders.append(node.lineno)
     assert not offenders, (
         f"compat.guarded 第 {offenders} 行把动态错误文本未经 assert_no_sensitive 下发，会泄露物理结构")
+
+
+def test_vis_component_projection_strips_credential_keys():
+    """字模下发视图必须剥掉凭据键（地图瓦片字模的 apiKey 曾让整条结果被出站守卫拒发）。
+
+    历史缺陷（2026-11-17）：list_vis_components 全量把 style_config 原样下发，map_tile
+    字模带 `apiKey` 配置位 → outbound_guard 命中 sensitive_field 拒**整条**结果（带
+    category 过滤却通过），AI 侧表现为"字模列表时好时坏"。守卫黑名单不为此放水
+    （security-guardrails §7），在投影处剥离。
+    """
+    import json
+
+    from backend.modules.mind.execution.outbound_guard import find_sensitive_hits
+    from backend.modules.mind.execution.sdk_tools.screen_tools import (
+        _public_vis_component, _public_vis_value)
+
+    raw = {"style_config": {"tileUrl": "https://t/{z}", "apiKey": "", "nested": [{"token": "x"}]}}
+    # 先证明这条用例真能抓到原缺陷（否则下面的断言可能只是空过）
+    assert find_sensitive_hits(json.dumps(raw, ensure_ascii=False)) == ["sensitive_field"]
+    cleaned = _public_vis_value(raw)
+    assert "apiKey" not in json.dumps(cleaned) and "token" not in json.dumps(cleaned)
+    # 视觉配置照常下发（剥的是凭据键，不是把字模配置清空）
+    assert cleaned["style_config"]["tileUrl"] == "https://t/{z}"
+    assert find_sensitive_hits(json.dumps(cleaned, ensure_ascii=False)) == []
+    assert "apiKey" not in json.dumps(_public_vis_component({"id": 95, **raw}), ensure_ascii=False)
+
+
+def test_list_vis_components_result_passes_outbound_guard():
+    """真实字模库全量结果必须能过出站守卫（含地图瓦片等所有在用字模）。"""
+    import asyncio
+
+    from backend.modules.mind.execution.outbound_guard import find_sensitive_hits
+    from backend.modules.mind.execution.sdk_tools.screen_tools import list_vis_components
+
+    try:
+        res = asyncio.run(list_vis_components({}))
+    except Exception as exc:  # noqa: BLE001 — 元数据库不可达（CI 无库）时跳过
+        pytest.skip(f"字模库不可达: {exc}")
+    txt = "".join(b.get("text", "") for b in res.get("content") or [])
+    assert find_sensitive_hits(txt) == [], "字模全量下发含凭据/内部标识键，会被出站守卫整条拒发"
+    # 凭据**键**不得出现：天地图的 tileUrl 模板里保留 `{apiKey}` 占位符（无值，不是凭据），
+    # 用于告诉调用方该瓦片需要额外配置，不应被当成泄露
+    assert '"apiKey"' not in txt
 
 
 def test_as_bot_can_write_sql_detection():

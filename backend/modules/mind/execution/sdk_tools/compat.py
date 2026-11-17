@@ -226,7 +226,13 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
                 {"isError": True, "content": [{"type": "text", "text": str(exc)}]}, qualified_name)
         except Exception:
             logger.exception("AS-BOT 工具被拒绝或执行失败: %s", qualified_name)
-            return {"isError": True, "content": [{"type": "text", "text": "工具执行未完成：权限、资源或执行环境不满足要求，请查看会话能力或联系管理员。"}]}
+            # 权限/资源/设计类拒绝已在上面各自的分支透传真因，能坠到这里的都是**未归因的内部异常**
+            # （历史缺陷 2026-11-17：建大屏时 `adh_charts.query_source` 枚举缺 `dataset` 报 1265，
+            # 被这条兜底说成“权限、资源或执行环境不满足”，用户以为 chat 被权限卡住）。
+            # 所以这里不得再以“权限”为首因描述，也不能编造一个具体原因（no-silent-degradation）。
+            return {"isError": True, "content": [{"type": "text", "text": (
+                "工具执行未完成：服务端内部异常（不是权限/授权拒绝）。真实错误已记录在服务端日志，"
+                "请勿向用户猜测原因，也不要让用户去改权限，先让管理员按日志核对处理。")}]}
         finally:
             if runtime is not None:
                 runtime.tool_tasks.discard(current)

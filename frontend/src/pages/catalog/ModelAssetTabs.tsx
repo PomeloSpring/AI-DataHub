@@ -11,7 +11,7 @@ import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { ontologyApi, type ObjectColumnOption, type PropertyDriftEntry } from '@/api/ontology';
 import { useGraphStore } from '@/stores/graphStore';
-import KnowledgeGraphView from '@/components/graph/KnowledgeGraph';
+import KnowledgeGraphView, { NODE_CONFIG } from '@/components/graph/KnowledgeGraph';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -341,7 +341,10 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
   const isBusiness = kind === 'business';
   // 业务聚合图多模型共存：默认只加载当前选中模型（选谁看谁）；开关打开=看全业务合并图。
   const [showAllBusiness, setShowAllBusiness] = useState(false);
-  const [showProps, setShowProps] = useState(false);
+  // 属性默认**打开**：本体关系图的内容主体就是「对象 → 指标/维度/属性」，
+  // 默认关掉的结果是用户以为本体没录属性（历史反馈两次「对象属性还是没有显示」）。
+  // 关掉只是降噪选项（只留主语义对象/指标/维度）。
+  const [showProps, setShowProps] = useState(true);
   const [loading, setLoading] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [selected, setSelected] = useState<any | null>(null);
@@ -354,12 +357,17 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
       // 系统域走 ds:-1(system_scope), 否则按当前模型数据源取图; 统一大图取跨源聚合图
       // 业务域默认按选中模型聚焦（model_id）；「看全业务图」或非业务域不传 model_id=全图。
       const scopedModelId = isBusiness && !showAllBusiness && modelId ? modelId : undefined;
+      // 统一大图与本体总览都支持平铺属性（对象直连的语义明细）：
+      // 默认 400 只放主语义（对象+指标+维度），打开开关才抬到 1200 让属性全量入图。
+      const propsCapable = unified || view === 'ontology-overview';
       await fetchGraphData({
         graphType: view,
         datasourceId: graphDatasourceId,
         systemScope,
-        limit: unified ? 400 : 200,
-        includeProperties: unified ? showProps : undefined,
+        // 打开「显示属性」时提高预算：属性是对象直连的语义展开（本模型可达数百条），
+        // 沿用 400 会被对象+指标+维度吃满、属性几乎看不到（历史反馈「属性怎么没有展示」）。
+        limit: propsCapable ? (showProps ? 1200 : 400) : 200,
+        includeProperties: propsCapable ? showProps : undefined,
         modelId: scopedModelId,
       });
     } finally {
@@ -371,6 +379,35 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
 
   const stale = graphData && (graphData.nodes.length === 0) && !loading;
 
+  // 节点详情：把选中节点的一跳邻居按类型分组（对象 → 属性/指标/维度/关联对象）。
+  // 旧实现把 node.data 原样 Object.entries 平铺，用户看到的是 iri/object_key/binding 之类内部键，
+  // 「这个对象到底有哪些属性」根本看不出来（ui-resource-display：展示业务名，不展示内部标识）。
+  const detailSections = useMemo(() => {
+    if (!selected || !graphData) return [] as { type: string; items: { id: string; label: string }[] }[];
+    const byId = new Map<string, any>(graphData.nodes.map((n: any) => [n.id, n]));
+    const groups = new Map<string, { id: string; label: string }[]>();
+    for (const e of graphData.edges) {
+      const otherId = e.source === selected.id ? e.target : e.target === selected.id ? e.source : null;
+      if (!otherId) continue;
+      const n = byId.get(otherId);
+      if (!n) continue;
+      const type = String(n.label || n.type || '');
+      const label = n.properties?.label || n.properties?.name || n.id;
+      if (!groups.has(type)) groups.set(type, []);
+      groups.get(type)!.push({ id: n.id, label });
+    }
+    // 属性排最前：这是用户点开对象最想看的东西
+    const order = ['Property', 'Metric', 'Dimension', 'Action', 'Rule', 'Scenario',
+      'Term', 'Object', 'Table', 'Column', 'DataSource', 'ETLTask'];
+    const rank = (type: string) => {
+      const i = order.indexOf(type);
+      return i < 0 ? 99 : i;
+    };
+    return [...groups.entries()]
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .map(([type, items]) => ({ type, items: items.sort((x, y) => x.label.localeCompare(y.label)) }));
+  }, [selected, graphData]);
+
   return (
     <div className={fullscreen
       ? 'fixed inset-0 z-50 bg-background p-4 flex flex-col'
@@ -381,7 +418,7 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
         ) : (
           <span className="text-xs font-medium text-muted-foreground px-1">{t("k_2bebeeaab5")}</span>
         )}
-        {unified && (
+        {(unified || view === 'ontology-overview') && (
           <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none">
             <Switch checked={showProps} onCheckedChange={setShowProps} />
             {t('k_7566a7315d')}
@@ -427,9 +464,12 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
         />
         {/* 节点详情面板 */}
         {selected && (
-          <div className="absolute right-2 top-2 bottom-2 z-20 w-72 bg-card/95 backdrop-blur border rounded-lg shadow-xl flex flex-col">
+          <div className="absolute right-2 top-2 bottom-2 z-20 w-80 bg-card/95 backdrop-blur border rounded-lg shadow-xl flex flex-col">
             <div className="flex items-center gap-2 px-3 py-2 border-b shrink-0">
-              <Badge variant="outline" className="text-[10px]">{selected.label}</Badge>
+              <Badge variant="outline" className="text-[10px] shrink-0"
+                style={{ color: NODE_CONFIG[selected.label]?.color, borderColor: NODE_CONFIG[selected.label]?.color }}>
+                {NODE_CONFIG[selected.label]?.label || selected.label}
+              </Badge>
               <span className="text-sm font-medium truncate">
                 {selected.properties?.label || selected.properties?.name || selected.id}
               </span>
@@ -438,14 +478,39 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
               </button>
             </div>
             <ScrollArea className="flex-1">
-              <div className="p-3 space-y-2 text-xs">
-                {Object.entries(selected.properties || {}).map(([k, v]) => (
-                  <div key={k} className="flex gap-2 border-b border-dashed pb-1.5 last:border-0">
-                    <span className="text-muted-foreground w-28 shrink-0">{k}</span>
-                    <span className="font-mono break-all">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+              <div className="p-3 space-y-3 text-xs">
+                {(selected.properties?.comment || selected.properties?.description) && (
+                  <p className="text-muted-foreground leading-relaxed">
+                    {String(selected.properties?.comment || selected.properties?.description)}
+                  </p>
+                )}
+                {detailSections.map((sec) => (
+                  <div key={sec.type}>
+                    <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span className="h-2 w-2 rounded-full"
+                        style={{ background: NODE_CONFIG[sec.type]?.color || '#94a3b8' }} />
+                      {NODE_CONFIG[sec.type]?.label || sec.type}
+                      <span className="text-muted-foreground/70">{sec.items.length}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {sec.items.map((it) => (
+                        <span key={it.id} title={it.id}
+                          className="rounded bg-muted px-1.5 py-0.5 text-[11px] leading-tight">
+                          {it.label}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 ))}
-                <div className="text-[10px] text-muted-foreground pt-1">ID: {selected.id}</div>
+                {detailSections.length === 0 && (
+                  <div className="text-muted-foreground">该节点暂无关联明细</div>
+                )}
+                {/* 显式提示：属性明细未加载时不能装作“这个对象没有属性” */}
+                {selected.label === 'Object' && !showProps && (
+                  <div className="text-[11px] text-amber-600">
+                    属性明细未加载：打开上方「显示属性」后刷新，即可看到该对象的全部属性。
+                  </div>
+                )}
               </div>
             </ScrollArea>
           </div>
@@ -1369,21 +1434,56 @@ const KEEP_COLUMN_PREFIX = '__keep__::';
  *  属性定义与业务名保留，只是不再声称绑到某个物理列（column_map 少一项，解析时回抛候选）。 */
 const NONE_COLUMN_VALUE = '__none__::';
 
-/** 属性列映射编辑器（「编辑对象」弹窗内）。
+/** 属性行草稿（弹窗内可新增/删除/改名/改列，提交时整体写回 doc.properties）。
+ *  origIndex 指向 doc 里的原属性行：有它才谈得上「删除」，且原行的额外字段
+ *  （is_key/description/enum 等）原样保留；新增行没有它，类型按列元数据带出。 */
+export type PropRow = {
+  rid: string;
+  name: string;
+  column: string;
+  type?: string;
+  origIndex?: number;
+};
+
+/** 原属性的身份名（与后端 `_prop_identity_names` 同口径：name > display_name > column）。
+ *  删除声明必须用这个身份名，否则服务端护栏认不出“这是被点名的删除”而照旧阻断。 */
+export function propIdentityName(p: any): string {
+  for (const k of ['name', 'display_name', 'column']) {
+    const v = String(p?.[k] ?? '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+let _propRowSeed = 0;
+
+/** doc.properties → 弹窗行草稿（新增/删除/改名都在这一层做，提交时回写）。 */
+export function toPropRows(properties: any[]): PropRow[] {
+  return (properties || []).map((p, i) => ({
+    rid: `p${++_propRowSeed}`,
+    name: String(p?.name ?? p?.display_name ?? ''),
+    column: String(p?.column ?? ''),
+    type: String(p?.type ?? p?.data_type ?? ''),
+    origIndex: i,
+  }));
+}
+
+/** 属性清单编辑器（「编辑对象」弹窗内）：新增 / 删除 / 改业务名 / 改物理列。
  *
- *  为什么必须存在：换库/改表后服务端会判出「列不存在」并让对象亮「列待修」徽标，
- *  而此前页面上没有任何一处能改属性的物理列（草案 JSON 视图只读，属性行不可编），
- *  等于告警把人引向一个不存在的操作（no-silent-degradation）。候选来自列元数据
- *  （与漂移判定同源），选择用选择框而非手输列名（ui-resource-display）。 */
-function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, edits, onEdit }: {
+ *  为什么必须可增删：换库/改表后服务端会判出「列不存在」并亮「列待修」徽标，
+ *  而此前页面只把**已有**属性行的列重选一遍 —— 新表多出来的列登记不进来，
+ *  没意义的属性也删不掉（只能改草案 JSON，而草案 JSON 视图只读）。
+ *  删除走 doc 顶层 `_declared_removals` 显式声明：后端护栏只放行被点名删除的属性，
+ *  其余“属性无故消失”照旧阻断（宁阻断勿损毁不打折）。
+ *  候选来自列元数据（与漂移判定同源），选择用选择框而非手输列名（ui-resource-display）。 */
+function PropertyColumnEditor({ modelId, objectKey, table, rows, drift, onRowsChange }: {
   modelId: number;
   objectKey: string;
   /** 弹窗内当前表名覆盖值；空 = 由服务端按生效部署绑定行 → doc primary_table 解析 */
   table: string;
-  properties: any[];
+  rows: PropRow[];
   drift: PropertyDriftEntry[];
-  edits: Record<number, string>;
-  onEdit: (index: number, column: string | null) => void;
+  onRowsChange: (rows: PropRow[]) => void;
 }) {
   const { t } = useTranslation('ui');
   const [cols, setCols] = useState<ObjectColumnOption[]>([]);
@@ -1428,18 +1528,20 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
     }
     return s;
   };
-  const driftOfProp = (p: any) => {
-    const col = String(p?.column || '');
-    const label = String(p?.name || col);
-    return drift.find((d) => (d.column && d.column === col)
-      || (d.property && d.property === label));
+  const driftOfRow = (row: PropRow) => drift.find((d) =>
+    (d.column && d.column === row.column) || (d.property && d.property === row.name));
+
+  const patchRow = (rid: string, patch: Partial<PropRow>) => {
+    onRowsChange(rows.map((r) => (r.rid === rid ? { ...r, ...patch } : r)));
   };
+  const removeRow = (rid: string) => onRowsChange(rows.filter((r) => r.rid !== rid));
+  const addRow = () => onRowsChange([...rows, { rid: `p${++_propRowSeed}`, name: '', column: '' }]);
 
   return (
     <div className="rounded-md border p-2">
       <div className="flex items-center gap-1.5 text-xs font-medium mb-1">
-        {t('k_ddd8060872', { p0: properties.length })}
-        <span className="text-[11px] font-normal text-muted-foreground">{t("k_827281b669")}</span>
+        {t('k_ddd8060872', { p0: rows.length })}
+        <span className="text-[11px] font-normal text-muted-foreground">{t('k_827281b669')}</span>
       </div>
       {drift.length > 0 && (
         <div className="mb-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700">
@@ -1466,36 +1568,46 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
           {note}
         </div>
       )}
-      <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
-        {!loading && properties.map((p, i) => {
-          const raw = String(p?.column || '');
-          if (!raw && !p?.name) return null;
+      <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+        {!loading && rows.length === 0 && (
+          <div className="text-[11px] text-muted-foreground py-1">{t('k_2f6d8a1c40')}</div>
+        )}
+        {!loading && rows.map((row) => {
+          const raw = row.column;
           const cur = normCurrent(raw);
           const useSelect = !loading && !error && names.length > 0;
-          const edited = edits[i];
-          const bad = !!driftOfProp(p);
-          const selected = edited !== undefined
-            ? (edited === '' ? NONE_COLUMN_VALUE : edited)
-            : (useSelect ? (names.includes(cur) ? cur : `${KEEP_COLUMN_PREFIX}${raw}`) : raw);
+          const bad = !!driftOfRow(row);
+          const selected = useSelect
+            ? (raw === '' ? NONE_COLUMN_VALUE
+              : (names.includes(cur) ? cur : `${KEEP_COLUMN_PREFIX}${raw}`))
+            : raw;
+          const label = row.name.trim() || t('k_9c3a7e5d12');
           return (
-            <div key={`${raw || i}`} className="flex items-center gap-2">
-              <span className="w-24 shrink-0 truncate text-[12px]" title={String(p?.name || raw)}>
-                {String(p?.name || raw)}
-              </span>
+            <div key={row.rid} className="flex items-center gap-1.5">
+              <Input value={row.name} aria-label={row.name.trim()
+                ? `${row.name.trim()} ${t('k_9c3a7e5d12')}` : t('k_9c3a7e5d12')}
+                placeholder={t('k_9c3a7e5d12')}
+                onChange={(e) => patchRow(row.rid, { name: e.target.value })}
+                className="h-7 w-28 shrink-0 text-[11px]" />
               {useSelect ? (
-                <Select value={selected} onValueChange={(v) => onEdit(i, v.startsWith(KEEP_COLUMN_PREFIX)
-                  ? null : (v === NONE_COLUMN_VALUE ? '' : v))}>
-                  <SelectTrigger aria-label={t('k_66c5f8bce2', { p0: String(p?.name || raw) })}
-                    className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`}>
+                <Select value={selected} onValueChange={(v) => {
+                  // 「不修改」= 保持原列名不写回（漂移列不在候选里时唯一诚实的选项）
+                  if (v.startsWith(KEEP_COLUMN_PREFIX)) return;
+                  if (v === NONE_COLUMN_VALUE) { patchRow(row.rid, { column: '' }); return; }
+                  const col = cols.find((c) => c.name === v);
+                  patchRow(row.rid, { column: v, ...(col?.type ? { type: col.type } : {}) });
+                }}>
+                  <SelectTrigger aria-label={t('k_66c5f8bce2', { p0: label })}
+                    className={`h-7 flex-1 text-[11px] font-mono ${bad ? 'border-red-400 text-red-600' : ''}`}>
                     <SelectValue placeholder={t("k_62a91b82a0")} />
                   </SelectTrigger>
                   <SelectContent>
-                    {!names.includes(cur) && (
+                    {raw !== '' && !names.includes(cur) && (
                       <SelectItem value={`${KEEP_COLUMN_PREFIX}${raw}`} className="text-[11px]">
                         <span className="text-red-500">{t('k_a5d914a4c5', { p0: raw || t('k_0e223ebb16') })}</span>
                       </SelectItem>
                     )}
-                    {bad && (
+                    {(bad || raw === '') && (
                       <SelectItem value={NONE_COLUMN_VALUE} className="text-[11px]">
                         <span className="text-amber-600">{t("k_bde30433cd")}</span>
                       </SelectItem>
@@ -1511,21 +1623,34 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
                 </Select>
               ) : (
                 // 无候选可枚举（接口失败 / 元数据未同步 / 走数据集）：回退为手填并在上方说明原因
-                <Input value={edited ?? raw} onChange={(e) => onEdit(i, e.target.value)}
-                  aria-label={t('k_66c5f8bce2', { p0: String(p?.name || raw) })}
-                  className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`} />
+                <Input value={raw} onChange={(e) => patchRow(row.rid, { column: e.target.value })}
+                  aria-label={t('k_66c5f8bce2', { p0: label })}
+                  className={`h-7 flex-1 text-[11px] font-mono ${bad ? 'border-red-400 text-red-600' : ''}`} />
               )}
               {bad && (
                 <Badge variant="outline" className="text-[10px] px-1 h-4 shrink-0 text-red-500 border-red-500/40"
-                  title={driftOfProp(p)?.verdict === 'unverified'
+                  title={driftOfRow(row)?.verdict === 'unverified'
                     ? t('k_b60cf7abdb', { p0: raw })
-                    : t('k_6f0901b493', { p0: raw, p1: driftOfProp(p)?.table || resolvedTable || t('k_9b93c54366') })}>
-                  {driftOfProp(p)?.verdict === 'unverified' ? t('k_a9a5e3e6f1') : t('k_79d66eb6b3')}
+                    : t('k_6f0901b493', { p0: raw, p1: driftOfRow(row)?.table || resolvedTable || t('k_9b93c54366') })}>
+                  {driftOfRow(row)?.verdict === 'unverified' ? t('k_a9a5e3e6f1') : t('k_79d66eb6b3')}
                 </Badge>
               )}
+              <Button type="button" variant="ghost" size="sm"
+                aria-label={t('k_8b2f6d4c01', { p0: label })}
+                title={t('k_8b2f6d4c01', { p0: label })}
+                className="h-7 w-7 p-0 shrink-0 text-muted-foreground hover:text-red-600"
+                onClick={() => removeRow(row.rid)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
             </div>
           );
         })}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2">
+        <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={addRow}>
+          <Plus className="h-3.5 w-3.5 mr-1" />{t('k_7a1e5c3b90')}
+        </Button>
+        <span className="text-[10px] text-muted-foreground">{t('k_5e9c0d3a21')}</span>
       </div>
     </div>
   );
@@ -1673,8 +1798,8 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     aliases: (target.aliases || []).join(', '),
     primary_table: target.primary_table || boundTable || '',
   }));
-  // 属性列草稿（下标 → 新列名）：只存本地，点「保存为草案」才写回 doc
-  const [colEdits, setColEdits] = useState<Record<number, string>>({});
+  // 属性清单草稿（新增/删除/改名/改列）：只存本地，点「保存为草案」才写回 doc
+  const [propRows, setPropRows] = useState<PropRow[]>(() => toPropRows(target.properties || []));
   const initRoute = (): RouteValue => ({
     mode: target.route?.mode === 'source' ? 'source' : 'object_filter',
     source_ontology: target.route?.source_ontology || '',
@@ -1694,8 +1819,9 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
   // （服务端 find_business_route_issues 已退役），存量直绑物理表的业务对象若被强制补路由，
   // 等于给「编辑」新加门槛 → 一个也改不动。未声明 route 的对象按物理表编辑。
   const editRoute = isBusiness && !!target.route;
-  // 属性列映射：非路由对象且有属性才给编（路由对象物理列在源本体上）；需 modelId 才能拉列候选
-  const showColumnMap = !!modelId && !editRoute && (target.properties || []).length > 0;
+  // 属性清单：非路由对象都可编（含 0 属性的新对象——旧口径要求“已有属性”才渲染，
+  // 结果是新对象永远补不进属性）；路由对象物理列在源本体上。需 modelId 才能拉列候选
+  const showColumnMap = !!modelId && !editRoute;
 
   // 切换对象（详情面板选中变了）/部署绑定加载完成时重置表单为当前对象值
   useEffect(() => {
@@ -1706,7 +1832,7 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
       primary_table: target.primary_table || boundTable || '',
     });
     setRoute(initRoute());
-    setColEdits({});
+    setPropRows(toPropRows(target.properties || []));
   }, [target.key, boundTable]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = () => {
@@ -1728,13 +1854,41 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     writeObjectField(next, 'display_name', form.display_name.trim() || key);
     next.description = form.description.trim();
     next.aliases = form.aliases.split(',').map((s) => s.trim()).filter(Boolean);
-    // 属性列映射写回：展示行与 doc.properties 同序（normalizeDocObjects 不动属性）。
-    // 改过的行才写（包含写成空值）：空值就是「该表没有这个概念」的显式表达，
-    // 比留着不存在的列名好（那会被编译进 SQL 导致取数报错）；其余字段原值保留。
-    if (Object.keys(colEdits).length && Array.isArray(next.properties)) {
-      next.properties = next.properties.map((p: any, i: number) => (
-        colEdits[i] !== undefined && colEdits[i] !== p?.column ? { ...p, column: colEdits[i] } : p));
-    }
+    // 属性清单写回：新增/删除/改名/改列都在这里落地。
+    // 原行（origIndex）的额外字段（is_key/description/enum/别名）原样保留，只覆盖改过的
+    // name/column；新行按列元数据带出 type。空行（无业务名无物理列）不落库。
+    const origProps: any[] = Array.isArray(doc.objects[idx].properties)
+      ? doc.objects[idx].properties : [];
+    const keptIdx = new Set(propRows.map((r) => r.origIndex)
+      .filter((i): i is number => typeof i === 'number'));
+    const nextProps = propRows.map((r) => {
+      const name = r.name.trim();
+      if (r.origIndex !== undefined && origProps[r.origIndex]) {
+        const base = { ...origProps[r.origIndex] };
+        // 存量 doc 里两种属性形状（name / display_name、column / key）都要跟原形状写，
+        // 否则改一个名字就多出一份矛盾字段（_prop_identity_names 会优先看 name）。
+        if (name) {
+          if ('display_name' in base && !('name' in base)) base.display_name = name;
+          else base.name = name;
+        }
+        if (r.column !== String(base.column ?? '')) base.column = r.column;
+        if (r.type && !base.type && !base.data_type) base.type = r.type;
+        return base;
+      }
+      return { column: r.column, name, ...(r.type ? { type: r.type } : {}) };
+    }).filter((p) => String(p.name || p.column || '').trim());
+    next.properties = nextProps;
+    // 被删掉的原属性名必须**显式声明**（后端护栏按“属性名消失”阻断，未声明一律拒）：
+    // 声明只放行点名删除，其他“整份覆盖顺手抹掉”照旧拦截（宁阻断勿损毁不打折）。
+    const removed = origProps
+      .map((p, i) => (keptIdx.has(i) ? '' : propIdentityName(p)))
+      .filter((n) => !!n);
+    const decl = { ...((doc as any)._declared_removals || {}) };
+    const declKey = String(next.key || target.key);
+    if (removed.length) decl[declKey] = removed;
+    else delete decl[declKey];
+    if (Object.keys(decl).length) (doc as any)._declared_removals = decl;
+    else delete (doc as any)._declared_removals;
     if (!editRoute) {
       if (form.primary_table.trim()) next.primary_table = form.primary_table.trim();
       else delete next.primary_table;
@@ -1794,13 +1948,8 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
               <PropertyColumnEditor modelId={Number(modelId)} objectKey={target.key}
                 // 候选永远跟着弹窗里看到的表名走（所见即所校）；留空则服务端按部署绑定行 → doc 解析
                 table={form.primary_table.trim()}
-                properties={target.properties || []} drift={drift || []}
-                edits={colEdits}
-                onEdit={(i, col) => setColEdits((prev) => {
-                  const next2 = { ...prev };
-                  if (col === null) delete next2[i]; else next2[i] = col;
-                  return next2;
-                })} />
+                rows={propRows} drift={drift || []}
+                onRowsChange={setPropRows} />
             )}
           </div>
           <DialogFooter>

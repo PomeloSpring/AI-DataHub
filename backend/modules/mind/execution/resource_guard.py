@@ -186,6 +186,20 @@ def validate_tool_resources(ctx, qualified_name, args):
     if system_scope:
         if name in ("system_usage", "system_overview") and ctx.user_role != "admin":
             raise PermissionError("系统工具仅允许管理员")
+    # 直建大屏逐图定源（`site`/`datasource` 业务名，只在角色授权集内解析，越权即拒）。
+    # 会话没有单一源（授权集含多个源且未选定站点、或站点内多源）时不得一刀切拦死：
+    # 否则 Chat 里建屏永远卡在“请先在会话中选择”，而文案看着像权限问题
+    # （历史缺陷 2026-11-17：analyst 角色授权 2 个源 → 建屏 100% 被本闸门退回）。
+    # 放行不放宽：上面已把每个显式引用预演解析一次（越权/无名即拒、文案含候选名），
+    # handler 的 `resolve_screen_source` 无显式源时 **fail-loud** 要求指定，绝不猜源。
+    screen_self_resolved = False
+    if name in ("create_data_screen", "update_data_screen_chart"):
+        for kind, ref in _screen_explicit_refs(args):
+            if kind == "site":
+                _resolve_site_arg(ref, available_sources, ctx.model_id)
+            else:
+                _resolve_authorized_source(ref, available_sources)
+        screen_self_resolved = True
     if not system_scope and name in ("get_metrics", "knowledge_search", "run_semantic_query", "create_data_screen", "update_data_screen_chart",
                   "execute_sql", "check_sql"):
         if not ctx.datasource_id:
@@ -205,8 +219,14 @@ def validate_tool_resources(ctx, qualified_name, args):
             if batch_self_resolved:
                 # 扇出调用的每个源名已在授权集内预演解析（见上），不要求会话先选定单一源。
                 pass
+            elif screen_self_resolved:
+                # 大屏工具逐图定源：显式引用已在上方预演解析（无显式源时 handler 自己报可操作错误）。
+                pass
             elif aggregate and name in ("run_semantic_query", "get_metrics", "knowledge_search",
-                                      "list_datasets", "query_dataset"):
+                                      "list_datasets", "query_dataset",
+                                      # 直建大屏：逐图用 site/datasource 业务名定源（授权集内解析，
+                                      # 越权即拒），聚合态下不要求会话先选定单一源
+                                      "create_data_screen", "update_data_screen_chart"):
                 pass
             else:
                 hint = ""
@@ -214,18 +234,6 @@ def validate_tool_resources(ctx, qualified_name, args):
                     hint = ("，或在工具中用 site/datasource 指定站点" if aggregate
                             else "，或在工具中用 datasource 指定其一")
                 raise ResourceScopeError(f"当前范围内有多个已授权数据源，请先在会话中选择{hint}")
-    design_tools = {"request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
-                    "get_business_semantics", "search_business_knowledge"}
-    if name in design_tools:
-        from backend.modules.viz.services import dashboard_design_service as designs
-        designs.reject_private(args)
-        if name != "request_dashboard_design":
-            designs.load(args.get("design_id"), {"user_id": ctx.user_id}, int(ctx.extra.get("conversation_id") or 0))
-    if name in ("create_data_screen", "update_data_screen_chart") and system_scope:
-        from backend.modules.viz.services.dashboard_design_service import reject_private
-        reject_private(args)
-        # 旧入口仅提出设计，不读取业务图表或写正式对象。
-        return dict(args)
     if name in ("get_data_screen", "update_data_screen_chart"):
         dashboard = execute_query("SELECT owner_id,workspace_id,is_public FROM adh_dashboards WHERE id=%s",
                                   (int(args.get("dashboard_id") or 0),), fetchone=True)
@@ -233,9 +241,15 @@ def validate_tool_resources(ctx, qualified_name, args):
             raise PermissionError("大屏不存在或不属于当前工作空间")
         if dashboard["owner_id"] != ctx.user_id and (name == "update_data_screen_chart" or not dashboard.get("is_public")):
             raise PermissionError("未授权访问或修改该大屏")
-        charts = execute_query("SELECT source_id,semantic_query FROM adh_charts WHERE dashboard_id=%s",
-                               (int(args["dashboard_id"]),))
+        # 数据集图（source_type='dataset'）的 source_id 是**数据集 id**，不是数据源 id：
+        # 拿它与会话源比对只会误判“未授权数据源”。其取数口径由 assert_chart_data_source
+        # （角色数据集清单）与 dataset_service.query_dataset（可用范围∩授权集）裁决。
+        charts = execute_query(
+            "SELECT source_id,semantic_query,source_type FROM adh_charts WHERE dashboard_id=%s",
+            (int(args["dashboard_id"]),))
         for chart in charts:
+            if str(chart.get("source_type") or "") == "dataset":
+                continue
             if not chart.get("source_id"):
                 continue
             if int(chart["source_id"]) == int(ctx.datasource_id or 0):
@@ -321,6 +335,35 @@ def _check_source(value, allowed_sources):
     elif isinstance(value, list):
         for v in value:
             _check_source(v, allowed_sources)
+
+
+def _screen_explicit_refs(args: dict) -> list:
+    """收集直建大屏入参里的 site/datasource **业务名**（顶层 + 每个 widget）。
+
+    只用于在授权集内预演解析（越权即拒）；不消费任何数值 id（§7 黑盒）。
+    widgets 可能是数组或 JSON 字符串（模型常见写法），两种都归一。
+    """
+    refs: list = []
+
+    def add(site, datasource):
+        if isinstance(site, str) and site.strip():
+            refs.append(("site", site.strip()))
+        if isinstance(datasource, str) and datasource.strip():
+            refs.append(("datasource", datasource.strip()))
+
+    add(args.get("site"), args.get("datasource"))
+    widgets = args.get("widgets")
+    if isinstance(widgets, str):
+        try:
+            widgets = json.loads(widgets)
+        except ValueError:
+            widgets = None
+    if isinstance(widgets, dict):
+        widgets = [widgets]
+    for widget in (widgets or []):
+        if isinstance(widget, dict):
+            add(widget.get("site"), widget.get("datasource"))
+    return refs
 
 
 def _norm_name_list(value) -> list:

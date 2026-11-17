@@ -62,7 +62,6 @@ GROUP_LABELS = {
     "catalog": "数据目录与元数据检索",
     "ontology": "业务本体建模与指标/维度字典维护",
     "screen": "数据大屏创建与维护",
-    "design": "仪表盘设计",
     "system": "系统运营与元数据概览",
     "assets": "数据集与数据产品",
     "memory": "个人记忆（偏好/口径）",

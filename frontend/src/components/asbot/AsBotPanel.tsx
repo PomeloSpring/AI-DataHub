@@ -245,7 +245,6 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
               msg={msg}
               conversationId={conversationId}
               isStreaming={(loading || currentTaskRunning) && idx === messages.length - 1}
-              onDesignContinue={text => void sendMessage(text)}
               onDeepAnalysis={() => {
                 // 重发本轮对应的原始输入（不折返改写的文本），并显式绕过漏斗
                 const q = messages.slice(0, idx).filter(m => m.role === 'user').pop()?.content
@@ -309,12 +308,11 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
 // ── Message Bubble ────────────────────────────────────────────────
 
 function MessageBubble({
-  msg, isStreaming, conversationId, onDesignContinue, onDeepAnalysis,
+  msg, isStreaming, conversationId, onDeepAnalysis,
 }: {
   msg: AsBotMessage;
   isStreaming: boolean;
   conversationId: number | null;
-  onDesignContinue?: (text: string) => void;
   onDeepAnalysis?: () => void;
 }) {
   const isUser = msg.role === 'user';
@@ -345,7 +343,7 @@ function MessageBubble({
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none break-words [&_table]:block [&_table]:overflow-x-auto [&_table]:max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_code]:break-all">
                 {/* 与工作空间 Chat 同一渲染（图表契约/表格/代码/设计卡片样式一致） */}
-                <MarkdownWithCharts text={msg.content} conversationId={conversationId} onDesignContinue={onDesignContinue} />
+                <MarkdownWithCharts text={msg.content} conversationId={conversationId} />
               </div>
             )}
           </div>

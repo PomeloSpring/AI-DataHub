@@ -81,3 +81,52 @@ class TestOntologyOverview:
             assert "joinExpr" not in n.properties and "join" not in n.properties
         for e in self.edges:
             assert "joinExpr" not in e.properties and "join" not in e.properties
+
+
+class _TypeAwareClient:
+    """按 FILTER(?ntype = adh:X) 分类型返回的假 client。
+
+    锁历史缺陷：单条 `IN(6 类型)+LIMIT 200` 时 Oxigraph 返回顺序里维度先占满预算，
+    指标被整体截掉，业务全景图只剩对象+维度。
+    """
+
+    DIMS = 200
+    METRICS = 5
+
+    def query(self, sparql):
+        if "owl:Class" in sparql:
+            return [{"iri": f"{ADH_NS}obj:case", "label": "案例"}]
+        if "skos:altLabel" in sparql or "adh:Link" in sparql:
+            return []
+        ntype = _type_of(sparql)
+        if ntype == "Dimension":
+            return [{"iri": f"{ADH_NS}dimension:d{i}", "ntype": f"{ADH_NS}Dimension",
+                     "label": f"维度{i}"} for i in range(self.DIMS)]
+        if ntype == "Metric":
+            return [{"iri": f"{ADH_NS}metric:m{i}", "ntype": f"{ADH_NS}Metric",
+                     "label": f"指标{i}"} for i in range(self.METRICS)]
+        return []
+
+
+def _type_of(sparql: str) -> str:
+    for t in ("Action", "Property", "Metric", "Dimension", "Rule", "Scenario"):
+        if f"?ntype = adh:{t}" in sparql:
+            return t
+    return ""
+
+
+def test_metrics_not_starved_by_dimensions():
+    """维度体量远大于指标时，指标不得被挤出总览（按类型取 + 主干优先排序）。"""
+    from collections import Counter
+
+    svc = GraphService.__new__(GraphService)
+    svc._store = FakeStore()
+    svc._client = _TypeAwareClient()
+    nodes, _ = svc._get_ontology_overview_graph(FakeStore.graph_uri(0), 0, 200)
+
+    labels = Counter(n.label for n in nodes)
+    assert labels["Metric"] == _TypeAwareClient.METRICS
+    assert labels["Dimension"] == _TypeAwareClient.DIMS
+    # 截断保护：对象与指标排在维度之前，调用方 nodes[:limit] 砍维度不砍指标
+    assert all(n.label in ("Object", "Metric")
+               for n in nodes[:1 + _TypeAwareClient.METRICS])

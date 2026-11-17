@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import importlib
+import json
 
 import pytest
 
@@ -79,8 +80,13 @@ class _FakeCursor:
         if "FROM adh_dashboards" in s:
             rows = [dict(d) for d in self.db.dashboards]
             if "id IN" in s:
-                ids = set(self._params[1:] if "workspace_id = %s" in s else self._params)
+                params = list(self._params)
+                if "LIMIT %s" in s:
+                    params = params[:-1]          # 末位是 limit, 不是 id
+                ids = set(params[1:] if "workspace_id = %s" in s else params)
                 rows = [r for r in rows if r["id"] in ids]
+            if "LIMIT %s" in s:
+                rows = rows[:int(self._params[-1])]
             return rows
         return []
 
@@ -437,5 +443,60 @@ def test_detail_cache_not_served_without_visibility(db):
     payload = dash_svc.DashboardService()._fetch_dashboard_payload(101)
     dash_svc.dashboard_cache.set(dash_svc.DETAIL_KEY.format(101), payload)
     assert dash_svc.DashboardService().get_dashboard(101, 9) is None
+
+
+# ── V8 AI 看板清单与「数据看板」页同口径 ──────────────────────────────────
+
+
+def _patch_function_tool_identity(monkeypatch, user):
+    from backend.modules.mind.execution import function_tools as ft
+
+    monkeypatch.setattr(ft, "_identity", lambda: dict(user))
+    return ft
+
+
+def _tool_payload(result):
+    return json.loads(result["content"][0]["text"])
+
+
+def test_function_tool_list_dashboards_admin_sees_all(db, monkeypatch):
+    """admin 在数据看板页看得到全部看板, AI 看板清单必须同口径。
+
+    历史缺陷（2026-11-17）：visible_dashboard_ids 对 admin 返回 None（全可见），
+    工具侧 `if not ids` 把 None 当空集 → AI 回「当前角色无可见看板」，与页面矛盾。
+    """
+    ft = _patch_function_tool_identity(
+        monkeypatch, {"user_id": 1, "role": "admin", "workspace_id": 3})
+    db.dashboards = [_dash(101), _dash(102)]
+    payload = _tool_payload(ft._list_dashboards({}))
+    assert sorted(d["id"] for d in payload["dashboards"]) == [101, 102]
+    # admin 走「全可见」分支, 不再查角色授权表/回 fail-closed 文案
+    assert not any("SELECT DISTINCT rda.dashboard_id" in s for s, _ in db.log)
+    assert "未获授" not in payload["note"]
+
+
+def test_function_tool_list_dashboards_non_admin_stays_grant_scoped(db, monkeypatch):
+    """非 admin 仍 fail-closed: 只列角色授权集内的看板, 空授权回空清单+原因。"""
+    ft = _patch_function_tool_identity(
+        monkeypatch, {"user_id": 9, "role": "viewer", "workspace_id": 3})
+    db.dashboards = [_dash(101), _dash(102)]
+    db.allowed = [101]
+    payload = _tool_payload(ft._list_dashboards({}))
+    assert [d["id"] for d in payload["dashboards"]] == [101]
+
+    db.allowed = []
+    payload = _tool_payload(ft._list_dashboards({}))
+    assert payload["dashboards"] == []
+    assert "未获授" in payload["note"]
+
+
+def test_function_tool_list_dashboards_truncation_is_explicit(db, monkeypatch):
+    """截断必须显式：撞到 limit 上限时 note 要告知还有未展示的看板。"""
+    ft = _patch_function_tool_identity(
+        monkeypatch, {"user_id": 1, "role": "admin", "workspace_id": 3})
+    db.dashboards = [_dash(101), _dash(102)]
+    payload = _tool_payload(ft._list_dashboards({"limit": 1}))
+    assert len(payload["dashboards"]) == 1
+    assert "截断" in payload["note"]
 
 

@@ -7,8 +7,6 @@ ExecutionContextVar 注入(见 context.py)。
 工具组(由 AS-BOT 能力按"逐个工具"粒度勾选控制启用):
 - catalog:  search_metadata / get_table_schema / list_datasources
 - semantic: get_metrics / get_glossary / query_by_tags / knowledge_search / run_semantic_query
-- design:   request_dashboard_design / get_dashboard_design / prepare_dashboard_design /
-            get_business_semantics / search_business_knowledge (仪表盘设计专用, 强制 design_id)
 - query:    check_sql(治理预检) / execute_sql(受治理只读执行;由 AS-BOT 显式授权)
 - ontology: 本体建模工具 + 指标/维度字典写(save_metric / save_dimension)
             (本体写只可作用于系统本体 kind='system';字典写受 ontology:save 权限码把关,
@@ -55,7 +53,6 @@ from backend.modules.mind.execution.sdk_tools.render_tools import build_render_s
 from backend.modules.mind.execution.sdk_tools.screen_tools import build_screen_server
 from backend.modules.mind.execution.sdk_tools.semantic_tools import build_semantic_server
 from backend.modules.mind.execution.sdk_tools.skill_tools import build_skill_server
-from backend.modules.mind.execution.sdk_tools.dashboard_design_tools import build_design_server
 from backend.modules.mind.execution.sdk_tools.system_tools import build_system_server
 
 logger = logging.getLogger(__name__)
@@ -68,7 +65,6 @@ TOOL_SERVER_BUILDERS = {
     "query": build_query_server,
     "ontology": build_ontology_server,
     "screen": build_screen_server,
-    "design": build_design_server,
     "system": build_system_server,
     "assets": build_assets_server,
     "memory": build_memory_server,
@@ -100,10 +96,6 @@ TOOL_SERVER_TOOLS = {
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",
         "list_vis_components", "get_vis_component", "save_vis_component",
-    ]),
-    "design": ("datahub_design", [
-        "request_dashboard_design", "get_dashboard_design", "prepare_dashboard_design",
-        "get_business_semantics", "search_business_knowledge",
     ]),
     "system": ("datahub_system", ["system_usage", "system_overview"]),
     "assets": ("datahub_assets", [
@@ -203,7 +195,6 @@ __all__ = [
     "build_semantic_server",
     "build_ontology_server",
     "build_screen_server",
-    "build_design_server",
     "build_render_server",
     "build_system_server",
     "build_assets_server",

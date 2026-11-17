@@ -19,11 +19,14 @@ from backend.models.graph import (
 logger = logging.getLogger(__name__)
 
 
-# 统一大图节点类型优先级: 语义主干(Object/Metric/Dimension/Term) 先于
-# 物理叶子(Table/Column/Property), 抗 nodes[:limit] 截断时主干被剔。
+# 统一大图节点类型优先级: 语义主干(Object/Metric/Dimension) 与**对象直连的属性**先于
+# 物理叶子(Table/Column), 抗 nodes[:limit] 截断时主干被剔。
+# 属性提到物理层之前：属性是本体语义展开（hasProperty 直连对象），而 Table/Column 只是
+# 语义-物理桥接；预算不足时应先舍弃桥接层，否则打开「显示属性」也几乎看不到属性
+# （历史缺陷：Property 优先级 6 排最后，400 预算是被对象+指标+维度吃满，属性只挤进 135/541）。
 _TYPE_PRIORITY = {
-    "Object": 0, "Metric": 1, "Dimension": 2, "Term": 3,
-    "Table": 4, "Column": 5, "Property": 6,
+    "Object": 0, "Metric": 1, "Dimension": 2, "Property": 3, "Term": 4,
+    "Table": 5, "Column": 6,
 }
 _TYPE_PRIORITY_DEFAULT = 99
 
@@ -40,6 +43,54 @@ class GraphService:
     def _iri_to_node_id(self, iri: str) -> str:
         """Convert an RDF IRI to a display-friendly node ID."""
         return iri.replace(ADH_NS, "adh:")
+
+    @staticmethod
+    def _pick_cjk_alias(raw: str) -> str:
+        """从（历史格式不统一的）aliases 文本里提取一个中文业务名。
+
+        现存格式混杂：JSON 数组文本 `['Case', '案例']`、逗号串、单值。
+        这里只做**提取**，不改写数据：取第一个 2~8 字、不含英文标识符的中文词。
+        """
+        import re as _re
+        for token in _re.findall(r"[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9·\-]{0,7}", raw or ""):
+            if 2 <= len(token) <= 8 and not _re.search(r"[A-Za-z_]{3,}", token):
+                return token
+        return ""
+
+    def _object_business_names(self) -> Dict[str, str]:
+        """object_key → 图面可读名（优先中文业务名，其次 display_name）。
+
+        背景：图谱写入侧的 rdfs:label 是 key/英文名（WorkOrder/Company），直接画出来中英混排，
+        用户读不出「这是哪个对象」（ui-resource-display：不得拿内部标识当名称）。
+        对象的中文业务名已登记在 doc / 展开表的 display_name 或 aliases 里，
+        这里只做**读取与清洗**，不新造名字（ontology-modeling §2：别名是模型的合法口径）。
+        """
+        import re as _re
+        names: Dict[str, str] = {}
+        try:
+            from backend.common.db.metadata_db import get_metadata_conn
+            conn = get_metadata_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT object_key, display_name, aliases FROM adh_ontology_objects "
+                        "WHERE is_active=1"
+                    )
+                    for r in cur.fetchall():
+                        key = str(r.get("object_key") or "").strip()
+                        if not key:
+                            continue
+                        display = str(r.get("display_name") or "").strip()
+                        if display and _re.search(r"[\u4e00-\u9fff]", display):
+                            names[key] = display  # display_name 本身是中文 → 权威口径
+                        else:
+                            names[key] = self._pick_cjk_alias(str(r.get("aliases") or "")) or display or key
+            finally:
+                conn.close()
+        except Exception as e:
+            # 显示名只是可读性增强：查不到就退回图上的 rdfs:label（不阻断图渲染，但要能诊断）
+            logger.warning("object business name lookup failed: %s", e)
+        return names
 
     def _to_graph_node(self, iri: str, node_type: str,
                        label: str, properties: Dict[str, Any]) -> GraphNode:
@@ -87,7 +138,8 @@ class GraphService:
             elif graph_type == GraphType.DATA_LINEAGE:
                 nodes, edges = self._get_data_lineage_graph(graph, ds_id, limit)
             elif graph_type == GraphType.ONTOLOGY_OVERVIEW:
-                nodes, edges = self._get_ontology_overview_graph(graph, ds_id, limit)
+                nodes, edges = self._get_ontology_overview_graph(
+                    graph, ds_id, limit, include_properties=include_properties)
             elif graph_type == GraphType.UNIFIED:
                 nodes, edges = self._get_unified_graph(
                     graph, ds_id, limit, include_properties=include_properties)
@@ -179,13 +231,14 @@ class GraphService:
           (否则不相关表灌进预算、把列截没导致 hasColumn 边全悬空, 历史缺陷 "200 表/0 边");
         - 系统域(ds=-1): 表/列即主体, 保留表关系视图, **不含**血缘;
         - 节点/边按 id 去重; 排序 = (类型优先级升序, 连接度降序), 保证截断时高连接语义
-          枢纽与桥接骨架不被剪掉;
+          枢纽与桥接骨架不被剪掉（优先级见 _TYPE_PRIORITY：主语义 > 属性 > 物理叶子）;
         - include_properties=False(默认) 剔除 Property 明细节点(图面克制), 属性边随之悬空;
         - 悬空边剪枝统一由 get_graph_data 末尾处理(本方法只重组装/节点)。
         """
         from backend.semantics.graph_rag.oxigraph_store import is_system_scope
 
-        overview = self._get_ontology_overview_graph(graph, ds_id, limit)
+        overview = self._get_ontology_overview_graph(
+            graph, ds_id, limit, include_properties=include_properties)
         business = self._get_business_knowledge_graph(graph, ds_id, limit)
         if is_system_scope(ds_id):
             physical = self._get_table_relation_graph(graph, ds_id, limit)
@@ -375,7 +428,7 @@ class GraphService:
         return nodes, edges
 
     def _get_ontology_overview_graph(
-        self, graph: str, ds_id: int, limit: int
+        self, graph: str, ds_id: int, limit: int, include_properties: bool = True
     ) -> tuple[List[GraphNode], List[GraphEdge]]:
         """本体总览: 业务对象=点, Link=带名字的边(Palantir 式主语视图)。
 
@@ -387,8 +440,11 @@ class GraphService:
         nodes: List[GraphNode] = []
         edges: List[GraphEdge] = []
         seen: set = set()
+        # 图面显示名：图谱 rdfs:label 写的是 key/英文名（WorkOrder 等），画出来中英混排、
+        # 用户读不出「这是哪个对象」；此处按模型已登记的中文业务名覆盖（不新造名字）。
+        biz_names = self._object_business_names()
 
-        def _add_obj(iri: str, label: str, props: Dict[str, Any] = None):
+        def _add_obj(iri: str, label: str, props: Dict[str, Any] = None, raw_label: str = ""):
             if not iri:
                 return
             nid = self._iri_to_node_id(iri)
@@ -397,6 +453,7 @@ class GraphService:
             seen.add(nid)
             nodes.append(self._to_graph_node(iri, "Object", label or iri, {
                 "label": label or "",
+                "display_name": raw_label or label or "",
                 "object_key": iri.replace(f"{ADH_NS}obj:", ""),
                 **(props or {}),
             }))
@@ -426,7 +483,11 @@ class GraphService:
                     props["binding"] = {"query_mode": r.get("qm", "") or "",
                                         "size_class": r.get("sc", "") or "",
                                         "sync_state": r.get("st", "") or ""}
-                _add_obj(r.get("iri", ""), r.get("label", ""), props)
+                _add_obj(r.get("iri", ""),
+                         biz_names.get(str(r.get("iri", "")).replace(f"{ADH_NS}obj:", ""))
+                         or r.get("label", ""),
+                         props,
+                         raw_label=r.get("label", ""))
         except Exception as e:
             logger.warning("Ontology overview: class query failed: %s", e)
 
@@ -479,14 +540,13 @@ class GraphService:
         except Exception as e:
             logger.warning("Ontology overview: link query failed: %s", e)
 
-        # 4) 语义展开节点/边（M2 行为 / 属性维度 / 派生指标 / M3 规则 / M4 场景）：
+        # 4) 语义展开节点/边（M2 行为 / 属性维度 / 派生指标 / M3 规则 / M4 场景 ）：
         #    知识图谱化——单个对象周围的语义单元以节点+连线呈现，而非只有对象间 link。
-        sem_nodes_sparql = f"""
-            {SPARQL_PREFIXES}
-            SELECT ?iri ?ntype ?label ?extra ?rk WHERE {{
-                GRAPH <{graph}> {{
-                    ?iri a ?ntype ; rdfs:label ?label .
-                    FILTER(?ntype IN (adh:Action, adh:Property, adh:Metric, adh:Dimension, adh:Rule, adh:Scenario))
+        #    **按类型分别取（每类各给 limit 配额）**：单条 IN+LIMIT 的返回顺序由引擎决定，
+        #    维度/属性体量远大于指标时会先吃满预算，把指标整体挤出图面
+        #    （历史缺陷：业务全景图只剩维度 —— 181 维度占满 200 预算，120 指标全被截掉，
+        #     端点丢失后 hasMetric 边又被悬空剪枝，图面只剩对象+维度）。
+        sem_owner_exists = """
                     # 只画**有归属**的语义展开节点（被对象/场景经 has*/uses*/governs/controls
                     # 指向）。字典层孤点（adh:metric:*/adh:term:* 投影，绑定在别的模型对象上）
                     # 不属本体的语义展开，不入本体总览——与「指标/维度/行为」等 Tab 的
@@ -498,55 +558,83 @@ class GraphService:
                                         adh:governs, adh:controls,
                                         adh:usesObject, adh:usesAction, adh:usesRule))
                     }}
-                    OPTIONAL {{ ?iri adh:effect ?extra }}
-                    OPTIONAL {{ ?iri adh:risk ?rk }}
-                }}
-            }} LIMIT {limit}
         """
-        try:
-            for r in self._client.query(sem_nodes_sparql):
-                iri = str(r.get("iri", ""))
-                ntype = str(r.get("ntype", "")).replace(ADH_NS, "")
-                nid = self._iri_to_node_id(iri)
-                if nid in seen:
-                    continue
-                seen.add(nid)
-                props = {"label": str(r.get("label", ""))}
-                if r.get("extra"):
-                    props["comment"] = str(r["extra"])
-                if r.get("rk"):
-                    props["risk"] = str(r["rk"])
-                nodes.append(self._to_graph_node(iri, ntype, str(r.get("label", "")), props))
-        except Exception as e:
-            logger.warning("Ontology overview: semantic node query failed: %s", e)
+        # 属性节点是否入图由调用方声明：本体总览页默认把属性展开（对象直连的语义明细），
+        # 统一大图则默认剔除（include_properties=False，图面克制）。
+        sem_types = ["Action", "Metric", "Dimension", "Rule", "Scenario"]
+        if include_properties:
+            sem_types.append("Property")
+        for ntype_local in sem_types:
+            sem_nodes_sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?iri ?ntype ?label ?extra ?rk WHERE {{
+                    GRAPH <{graph}> {{
+                        ?iri a ?ntype ; rdfs:label ?label .
+                        FILTER(?ntype = adh:{ntype_local})
+                        {sem_owner_exists}
+                        OPTIONAL {{ ?iri adh:effect ?extra }}
+                        OPTIONAL {{ ?iri adh:risk ?rk }}
+                    }}
+                }} LIMIT {limit}
+            """
+            try:
+                for r in self._client.query(sem_nodes_sparql):
+                    iri = str(r.get("iri", ""))
+                    ntype = str(r.get("ntype", "")).replace(ADH_NS, "")
+                    nid = self._iri_to_node_id(iri)
+                    if nid in seen:
+                        continue
+                    seen.add(nid)
+                    props = {"label": str(r.get("label", ""))}
+                    if r.get("extra"):
+                        props["comment"] = str(r["extra"])
+                    if r.get("rk"):
+                        props["risk"] = str(r["rk"])
+                    nodes.append(self._to_graph_node(iri, ntype, str(r.get("label", "")), props))
+            except Exception as e:
+                logger.warning("Ontology overview: semantic node query failed (%s): %s", ntype_local, e)
 
-        sem_edges_sparql = f"""
-            {SPARQL_PREFIXES}
-            SELECT ?from ?to ?rel WHERE {{
-                GRAPH <{graph}> {{
-                    ?from ?rel ?to .
-                    FILTER(?rel IN (adh:hasAction, adh:hasProperty, adh:hasMetric,
-                                    adh:hasDimension,
-                                    adh:governs, adh:controls,
-                                    adh:usesObject, adh:usesAction, adh:usesRule))
-                }}
-            }} LIMIT {limit * 3}
-        """
         rel_names = {
             "hasAction": "行为", "hasProperty": "属性", "hasMetric": "指标",
             "hasDimension": "维度",
             "governs": "约束", "controls": "管控",
             "usesObject": "场景对象", "usesAction": "场景行为", "usesRule": "场景规则",
         }
-        try:
-            for r in self._client.query(sem_edges_sparql):
-                src, tgt = str(r.get("from", "")), str(r.get("to", ""))
-                if not src or not tgt:
-                    continue
-                rel_local = str(r.get("rel", "")).replace(ADH_NS, "")
-                edges.append(self._to_graph_edge(src, tgt, rel_names.get(rel_local, rel_local), {}))
-        except Exception as e:
-            logger.warning("Ontology overview: semantic edge query failed: %s", e)
+        # 与节点同理按关系类型分别取；顺序让业务主干（指标/维度/行为）先占边预算，
+        # 属性明细放最后 —— 截断时先牺牲物理/明细边。
+        sem_rels = ["hasMetric", "hasDimension", "hasAction", "governs", "controls",
+                    "usesObject", "usesAction", "usesRule"]
+        if include_properties:
+            sem_rels.append("hasProperty")
+        for rel_local in sem_rels:
+            sem_edges_sparql = f"""
+                {SPARQL_PREFIXES}
+                SELECT ?from ?to WHERE {{
+                    GRAPH <{graph}> {{
+                        ?from adh:{rel_local} ?to .
+                    }}
+                }} LIMIT {limit * 2}
+            """
+            try:
+                for r in self._client.query(sem_edges_sparql):
+                    src, tgt = str(r.get("from", "")), str(r.get("to", ""))
+                    if not src or not tgt:
+                        continue
+                    edges.append(self._to_graph_edge(
+                        src, tgt, rel_names.get(rel_local, rel_local), {}))
+            except Exception as e:
+                logger.warning("Ontology overview: semantic edge query failed (%s): %s", rel_local, e)
+
+        # 组装顺序 ≠ 重要度：统一按（类型优先级↑, 连接度↓, id）排序，
+        # 保证调用方按 limit 截断时砍的是属性/物理叶子，而不是指标这类业务主干。
+        degree: Dict[str, int] = {}
+        for e in edges:
+            degree[e.source] = degree.get(e.source, 0) + 1
+            degree[e.target] = degree.get(e.target, 0) + 1
+        nodes.sort(key=lambda n: (
+            _TYPE_PRIORITY.get(n.label, _TYPE_PRIORITY_DEFAULT),
+            -degree.get(n.id, 0), n.id,
+        ))
 
         return nodes, edges
 

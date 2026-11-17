@@ -35,7 +35,8 @@ def _svc_with_views(overview, business, table, lineage):
     svc._store = type("_S", (), {"graph_uri": staticmethod(lambda ds: f"adh:ds:{ds}")})()
     svc._client = type("_C", (), {"query": staticmethod(lambda q: [])})()
     svc._get_stats = lambda ds: type("_St", (), {})()
-    svc._get_ontology_overview_graph = lambda g, ds, lim: overview
+    # 分视图 builder 的 include_properties 由 unified 透传（属性开关口径），stub 需同名签名
+    svc._get_ontology_overview_graph = lambda g, ds, lim, include_properties=True: overview
     svc._get_business_knowledge_graph = lambda g, ds, lim: business
     svc._get_table_relation_graph = lambda g, ds, lim: table
     svc._get_data_lineage_graph = lambda g, ds, lim: lineage

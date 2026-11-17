@@ -2,7 +2,7 @@
 
 背景（会话 1783069459151 的 P0 根因）：平台上叫 "RUM" 的采集域有两个，但只有一个有语义层资产——
 
-    arms-prd-cn.logstore-rum        官网/H5 前端体验（Web 端 RUM）  → 已有本体「RUM观测事件」+ 19 指标 28 维度
+    arms-prd-cn.logstore-rum        Web 端（官网/H5 与平台网页）前端体验/点击（RUM）  → 已有本体「RUM观测事件」+ 19 指标 28 维度
     prd-sls-{cn,en,jp,uk,eu}.observability_rum  桌面 app 埋点      → 零本体、零字典、零数据产品
 
 结果：`get_metrics`/语义层拿不到 app 遥测，AI 只能退到裸 SQL 猜列名（appCode 被当成"应用"，
@@ -96,8 +96,9 @@ TARGET_LABELS = {
 # 跨域分界说明：两条域互相点名，是本次争议（RUM 到底指哪个域）的正解 - 只改名字不改分界说明，
 # 下一个问法仍会串。文案只出现业务名与对象 key，不写物理表名/列名（描述会随上云文档下发，护栏 §7）。
 DOMAIN_EDGE = (
-    "本域只覆盖桌面客户端遥测（宿主产品 ScanPro / AS Connect）；"
-    "官网/H5 的 Web 端 RUM 前端体验在另一模型「ARMS RUM 观测本体」（对象 rum_event），两者不得混用。"
+    "本域只覆盖桌面客户端遥测（宿主产品 ScanPro / AS Connect 客户端）；"
+    "Web 端（官网/H5 与 AS Connect 平台网页）的前端体验与页面内点击在另一模型「ARMS RUM 观测本体」"
+    "（对象 rum_event），两者不得混用——同一个 App 名在桌面客户端与平台网页里各记一条，不得相加。"
 )
 
 PENETRATION_NOTE = (
@@ -137,7 +138,7 @@ PROPERTIES: list[dict] = [
 DIMENSIONS: list[dict] = [
     {"name": "事件形态", "name_en": "action", "target_column": "action", "category": "分类",
      "aliases": ["操作类型", "行为类型"], "value_labels": ACTION_LABELS,
-     "description": "app 埋点行为形态（桌面端遥测，非 Web 端 RUM 的事件类型）"},
+     "description": "app 埋点行为形态（桌面客户端遥测，与 Web 端 RUM 的事件类型是两套口径）"},
     {"name": "宿主应用", "name_en": "appCode", "target_column": "appCode", "category": "属性",
      "aliases": ["客户端产品", "宿主产品"], "value_labels": None,
      "description": "上报所在的宿主客户端产品（ScanPro / AS Connect 等），不是被使用的 app"},
@@ -167,7 +168,7 @@ DIMENSIONS: list[dict] = [
 METRICS: list[dict] = [
     {"name": "应用使用事件数", "name_en": "app_usage_events", "agg_type": "COUNT",
      "formula": "COUNT(*)", "unit": "条", "aliases": ["埋点事件数", "app事件数", "使用事件数"],
-     "description": "桌面 app 埋点事件条数（不含官网/H5 的 Web 端 RUM）"},
+     "description": "桌面客户端埋点事件条数（不含 Web 端 RUM：官网/H5 与 AS Connect 平台网页的页面/点击事件）"},
     {"name": "应用活跃用户数", "name_en": "app_active_users", "agg_type": "COUNT_DISTINCT",
      "formula": "COUNT(DISTINCT userCode)", "unit": "人", "aliases": ["使用人数", "app活跃用户数", "app用户数"],
      "description": "去重登录用户数；按「操作目标」过滤即该 app 的使用人数。" + PENETRATION_NOTE},
@@ -187,13 +188,18 @@ METRICS: list[dict] = [
 # ── G1：ARMS 侧命名收窄（只改业务名与分界说明，不动指标名——指标名被看板/技能/云端文档引用）──
 ARMS_MODEL_NAME = "ARMS RUM 观测本体"
 ARMS_OBJECT_KEY = "rum_event"
-ARMS_DISPLAY = "Web 端 RUM 观测事件（官网/H5）"
+# 2026-11-17 修正：RUM 通道并不只承载官网/H5——AS Connect 等平台网页页面的访问与「点开三方 App」
+# 也记在同一条 RUM 通道上（内容中心《2026年度联耀三方集成 App 网页端入口点击分析》的数据就来自这里）。
+# 原名「（官网/H5）」会让模型把「网页端」判成官网专属、把桌面遥测 app_usage_event 并成同层候选。
+ARMS_DISPLAY = "Web 端 RUM 观测事件（官网/H5 · 平台网页）"
 # 保留裸 "RUM" 别名：历史上所有"RUM 问法"都指向这个域，摘掉会让存量问法入口凭空消失
-ARMS_ALIASES = ["RUM", "Web端RUM", "网页RUM", "H5 RUM", "前端体验事件", "用户体验事件",
-                "观测事件", ARMS_OBJECT_KEY, "logstore-rum"]
+ARMS_ALIASES = ["RUM", "Web端RUM", "网页RUM", "网页端RUM", "平台网页RUM", "H5 RUM", "前端体验事件",
+                "用户体验事件", "观测事件", ARMS_OBJECT_KEY, "logstore-rum"]
 ARMS_EDGE = (
-    "本域只覆盖官网/H5 的 Web 端前端体验（页面浏览/资源加载/会话/异常/长任务）；"
-    "桌面 app（ScanPro / AS Connect）的埋点在另一模型「应用使用事件本体（桌面 app 遥测）」（对象 app_usage_event），两者不得混用。"
+    "本域覆盖 Web 端（官网/H5 与 AS Connect 平台网页）的前端体验与页面内点击"
+    "（页面浏览/资源加载/会话/异常/长任务/页面内点击）；"
+    "桌面客户端（ScanPro / AS Connect 客户端）里 app 的使用遥测在另一模型「应用使用事件本体（桌面 app 遥测）」"
+    "（对象 app_usage_event），两者不得混用——同一 App 名在两侧各记一条，不得相加。"
 )
 
 
@@ -487,7 +493,7 @@ def sync_kb_if_stale(model_id: int) -> None:
 
 
 def narrow_arms_naming(apply: bool) -> None:
-    """G1：ARMS 对象业务名收窄为「Web 端 RUM（官网/H5）」，并写进分界说明。
+    """G1：ARMS 对象业务名收窄为「Web 端 RUM（官网/H5 · 平台网页）」，并写进分界说明。
 
     指标名不动（被看板/技能/云端文档引用，改名爆炸半径大于收益）；分域由
     对象业务名 + 两侧描述互指完成，新域的业务名里不出现 "RUM"。
@@ -513,10 +519,13 @@ def narrow_arms_naming(apply: bool) -> None:
     obj["display_name"] = ARMS_DISPLAY
     obj["aliases"] = list(ARMS_ALIASES)
     obj["description"] = (
-        "官网/H5 页面与资源侧上报的单个前端观测事件（页面/资源/会话/交互/异常/长任务）。" + ARMS_EDGE
-        + " 默认仅统计生产环境（应用环境=生产）。")
-    doc["description"] = (str(doc.get("description") or "").split("本域只覆盖")[0].rstrip()
-                          + " " + ARMS_EDGE)
+        "官网/H5 与 AS Connect 平台网页页面与资源侧上报的单个前端观测事件（页面/资源/会话/交互/异常/长任务）。"
+        + ARMS_EDGE + " 默认仅统计生产环境（应用环境=生产）。")
+    # 幂等：新旧两版分界说明的开头都切掉（旧版「本域只覆盖」/新版「本域覆盖」），避免重跑叠加
+    _base = str(doc.get("description") or "")
+    for _marker in ("本域覆盖", "本域只覆盖"):
+        _base = _base.split(_marker)[0]
+    doc["description"] = _base.rstrip() + " " + ARMS_EDGE
     saved = ontology_service.save_draft(int(row["id"]), json.dumps(doc, ensure_ascii=False, indent=2))
     for w in saved.get("validation_warnings") or []:
         _log(f"[arms][warn] {w}")

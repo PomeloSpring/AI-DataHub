@@ -61,6 +61,29 @@ def test_ratio_metric_with_nullif_is_accepted(monkeypatch):
     assert "session_id" in str(e.value)
 
 
+def test_time_function_metric_is_accepted(monkeypatch):
+    """时长类口径（TIMESTAMPDIFF/DATEDIFF 等）不得被当成不存在的列拒登。
+
+    历史缺陷：_SQL_NON_COLUMN 只排了 SQL 关键字与 NULLIF，没排日期/时长函数，
+    `AVG(TIMESTAMPDIFF(HOUR, create_time, update_time))` 这类「平均处理时长」
+    口径一律登记不上，审计还会把它们误报成错口径（实际算子合法）。
+    白名单只排函数名，真错列仍必须拒。
+    """
+    monkeypatch.setattr(
+        "backend.modules.catalog.services.metrics_service._object_property_columns",
+        lambda key: (key, ["create_time", "update_time", "case_status"]),
+    )
+    _require_formula_matches_object(
+        "case",
+        "AVG(CASE WHEN case_status = 5 THEN TIMESTAMPDIFF(HOUR, create_time, update_time) END)")
+    _require_formula_matches_object("case", "AVG(DATEDIFF(update_time, create_time))")
+    _require_formula_matches_object("case", "COUNT(DISTINCT DATE_FORMAT(create_time, '%Y-%m'))")
+    # 函数白名单不放宽列校验：close_time 不在对象上，照旧拒
+    with pytest.raises(ValueError) as e:
+        _require_formula_matches_object("case", "AVG(TIMESTAMPDIFF(HOUR, create_time, close_time))")
+    assert "close_time" in str(e.value)
+
+
 def test_metric_bound_object_without_columns_is_rejected(monkeypatch):
     """归属对象无已登记物理列时不能静默放行（否则校验形同虚设）。"""
     monkeypatch.setattr(
@@ -194,6 +217,60 @@ def test_destructive_overwrite_allows_moving_measures_into_metrics_refs():
     with pytest.raises(ValueError) as e:
         _reject_destructive_overwrite(model, lost)
     assert "会话数" in str(e.value)
+
+
+def test_declared_removal_allows_only_pointed_deletions():
+    """建模页「删除属性」的显式声明：只放行被点名的属性，其余消失照旧阻断。
+
+    历史缺口：护栏按“属性名消失”硬阻断，而建模页没有删属性的入口——
+    报错文案却让用户“去建模页操作”（假引导），用户只能改库。声明机制把
+    “人明确点名要删”与“整份覆盖顺手抹掉”区分开，宁阻断勿损毁不打折。
+    """
+    import json
+    from backend.modules.catalog.services.ontology_service import (
+        _reject_destructive_overwrite, pop_declared_removals)
+
+    current = json.dumps({"objects": [{
+        "key": "equipment",
+        "properties": [{"name": "设备序列号"}, {"name": "设备型号"}, {"name": "出厂日期"}],
+        "links": [{"to": "company"}],
+    }]}, ensure_ascii=False)
+    model = {"json_content": current}
+    one_less = {"objects": [{
+        "key": "equipment",
+        "properties": [{"name": "设备序列号"}, {"name": "设备型号"}],
+        "links": [{"to": "company"}],
+    }]}
+
+    # 未声明 → 照旧阻断（原有护栏不打折）
+    with pytest.raises(ValueError) as e:
+        _reject_destructive_overwrite(model, json.dumps(one_less, ensure_ascii=False))
+    assert "出厂日期" in str(e.value)
+
+    # 声明只点了“设备型号”：实际消失的是“出厂日期” → 仍须阻断（声明不能当批量豁免）
+    with pytest.raises(ValueError) as e:
+        _reject_destructive_overwrite(
+            model, json.dumps(one_less, ensure_ascii=False),
+            {"equipment": {"设备型号"}})
+    assert "出厂日期" in str(e.value)
+
+    # 点名“出厂日期” → 放行，且声明键不会留在 canonical 正文里
+    declared_doc = json.loads(json.dumps(one_less, ensure_ascii=False))
+    declared_doc["_declared_removals"] = {"equipment": ["出厂日期"]}
+    names = pop_declared_removals(declared_doc)
+    assert names == {"equipment": {"出厂日期"}}
+    assert "_declared_removals" not in declared_doc
+    _reject_destructive_overwrite(model, json.dumps(declared_doc, ensure_ascii=False), names)
+
+    # 关系收缩仍一律阻断（页面没有删关系入口，声明也不得开后门）
+    no_links = {"objects": [{
+        "key": "equipment",
+        "properties": [{"name": "设备序列号"}, {"name": "设备型号"}, {"name": "出厂日期"}],
+    }]}
+    with pytest.raises(ValueError) as e:
+        _reject_destructive_overwrite(model, json.dumps(no_links, ensure_ascii=False),
+                                      {"equipment": {"设备序列号"}})
+    assert "关系" in str(e.value)
 
 
 # ── 本体写权限化 + 草案/发布两段式（2026-10-26 拍板）──────────────

@@ -1884,7 +1884,6 @@ export default function Chat() {
                           sections
                           streaming={loading && idx === messages.length - 1}
                           conversationId={currentConvId}
-                          onDesignContinue={text => { void sendMessage(text); }}
                           onSaveReport={reportSaveAction(idx, msg)}
                         />
                         {msg.error && (
@@ -1894,15 +1893,15 @@ export default function Chat() {
                     )}
 
                     {msg.intent && ['chat', 'explain'].includes(msg.intent) && msg.reply && (
-                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
+                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} />
                     )}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'query' && (
-                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
+                      <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} />
                     )}
 
                     {/* Agent/执行层最终回复(无 SQL 结果,如 qoder 执行层,含内嵌图表/设计卡片块)+ 赞踩打标 */}
                     {msg.reply && !msg.sql && !msg.error && msg.intent === 'agent' && (
-                      <MarkdownWithCharts text={msg.reply} sections streaming={loading && idx === messages.length - 1} conversationId={currentConvId} onDrill={handleDrill} onDesignContinue={text => { void sendMessage(text); }} onSaveReport={reportSaveAction(idx, msg)} />
+                      <MarkdownWithCharts text={msg.reply} sections streaming={loading && idx === messages.length - 1} conversationId={currentConvId} onDrill={handleDrill} onSaveReport={reportSaveAction(idx, msg)} />
                     )}
 
                     {/* 前置意图漏斗本地直答：界面上只留「转深度分析」这个逃生门，
@@ -1932,7 +1931,7 @@ export default function Chat() {
                     {/* Agent mode: show analysis text above chart when both reply and sql exist */}
                     {msg.reply && msg.sql && !msg.error && (
                       <div className="mb-3">
-                        <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} onDesignContinue={text => { void sendMessage(text); }} />
+                        <MarkdownWithCharts text={msg.reply} sections conversationId={currentConvId} />
                       </div>
                     )}
 

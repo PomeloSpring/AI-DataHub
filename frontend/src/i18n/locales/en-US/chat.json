@@ -95,6 +95,7 @@
     "result": "Result",
     "omitted": "Tool output details are not persisted (summary only). Full artifacts are in the conversation workspace files.",
     "truncated": "Tool output was too long; only the beginning was saved.",
+    "previewScreen": "Preview screen",
     "header": "Tool calls · {{count}} steps"
   },
   "artifact": {
@@ -696,13 +697,17 @@
     "untitledDoc": "Untitled document"
   },
   "designCard": {
-    "unavailable": "The design card is unavailable (it may have been deleted or you lack permission)",
-    "loading": "Loading design card…",
-    "title": "Dashboard design · {{name}}",
-    "statusVersion": "{{status}} · version {{version}}",
-    "selection": "Business scope: {{name}}",
-    "selectionEmpty": "Select the target dashboard, business scope, and knowledge base first",
-    "openPanel": "Open design panel"
+    "unavailable": "Failed to load the dashboard link (design deleted or no permission). Click to retry.",
+    "preview": "Preview dashboard"
+  },
+  "dashboardPreview": {
+    "title": "Dashboard details",
+    "meta": "{{count}} charts",
+    "loading": "Loading dashboard info…",
+    "unavailable": "Dashboard unavailable (deleted or no permission)",
+    "open": "Open in new window",
+    "refresh": "Refresh data",
+    "retry": "Retry"
   },
   "designStatus": {
     "awaiting_selection": "Awaiting scope selection",

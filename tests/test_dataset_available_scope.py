@@ -768,12 +768,99 @@ class TestChatSurface:
                  "available_datasources": None,
                  "datasource_name": "prd-cn", "created_at": None, "updated_at": None}]
         monkeypatch.setattr(ft, "_select", lambda sql, params=None: [dict(r) for r in rows])
+        from backend.core.role_service import role_service
+        monkeypatch.setattr(role_service, "get_user_allowed_datasets", lambda uid: [501, 502])
         out = json.loads(ft._list_datasets({})["content"][0]["text"])
         by_name = {d["name"]: d for d in out["datasets"]}
         assert by_name["订单概览"]["datasource"] == "prd-cn"
         assert by_name["订单概览"]["available_datasources"] == ["prd-cn", "prd-jp"]
-        assert "available_datasources" not in by_name["单源集"]      # 单源不加噪声
-        assert "datasource_id" not in json.dumps(out["datasets"])   # §7 黑盒：只回业务名
+        assert "available_datasources" not in by_name["单源集"]      # 单源不加 噪声
+        assert "datasource_id" not in json.dumps(out["datasets"])   # §7 黑盒： 只回业务名
+
+    def test_function_tools_list_datasets_admin_sees_all(self, monkeypatch):
+        """admin 全可见（与「数据集」页同口径），不得查角色授权表。"""
+        from backend.modules.mind.execution import function_tools as ft
+
+        monkeypatch.setattr(ft, "_identity", lambda: {"user_id": 1, "role": "admin",
+                                                      "workspace_id": 301})
+        monkeypatch.setattr(ft, "_limit", lambda args: 50)
+        seen = {}
+
+        def _fake_select(sql, params=None):
+            seen["sql"] = sql
+            return [{"id": 501, "name": "订单概览", "description": "", "source_type": "sql",
+                     "object_key": "", "chart_type": "", "status": "active",
+                     "available_datasources": None, "datasource_name": "prd-cn",
+                     "created_at": None, "updated_at": None},
+                    {"id": 502, "name": "单源集", "description": "", "source_type": "sql",
+                     "object_key": "", "chart_type": "", "status": "active",
+                     "available_datasources": None, "datasource_name": "prd-cn",
+                     "created_at": None, "updated_at": None}]
+
+        monkeypatch.setattr(ft, "_select", _fake_select)
+        from backend.core.role_service import role_service
+
+        def _boom(uid):
+            raise AssertionError("admin 不得查角色数据集授权表")
+
+        monkeypatch.setattr(role_service, "get_user_allowed_datasets", _boom)
+        out = json.loads(ft._list_datasets({})["content"][0]["text"])
+        assert {d["name"] for d in out["datasets"]} == {"订单概览", "单源集"}
+        assert "id IN" not in seen["sql"]
+        assert "未获授" not in out["note"]
+
+    def test_function_tools_list_datasets_non_admin_is_grant_scoped(self, monkeypatch):
+        from backend.modules.mind.execution import function_tools as ft
+
+        monkeypatch.setattr(ft, "_identity", lambda: {"user_id": 1, "role": "analyst",
+                                                      "workspace_id": 301})
+        monkeypatch.setattr(ft, "_limit", lambda args: 50)
+        seen = {}
+
+        def _fake_select(sql, params=None):
+            seen["sql"] = sql
+            seen["params"] = tuple(params or ())
+            return [{"id": 502, "name": "单源集", "description": "", "source_type": "sql",
+                     "object_key": "", "chart_type": "", "status": "active",
+                     "available_datasources": None, "datasource_name": "prd-cn",
+                     "created_at": None, "updated_at": None}]
+
+        monkeypatch.setattr(ft, "_select", _fake_select)
+        from backend.core.role_service import role_service
+        monkeypatch.setattr(role_service, "get_user_allowed_datasets", lambda uid: [502, 503])
+        out = json.loads(ft._list_datasets({})["content"][0]["text"])
+        assert [d["name"] for d in out["datasets"]] == ["单源集"]
+        assert "d.id IN (%s,%s)" in seen["sql"]
+        assert seen["params"] == (502, 503, 50)
+
+    def test_function_tools_list_datasets_empty_grant_fails_closed(self, monkeypatch):
+        """空授权 = 一律不可见，且必须如实说明原因（不得静默回空表）。"""
+        from backend.modules.mind.execution import function_tools as ft
+
+        monkeypatch.setattr(ft, "_identity", lambda: {"user_id": 1, "role": "viewer",
+                                                      "workspace_id": 301})
+        monkeypatch.setattr(ft, "_limit", lambda args: 50)
+        monkeypatch.setattr(ft, "_select", lambda sql, params=None: (
+            pytest.fail("空授权不得再查数据集表")))
+        from backend.core.role_service import role_service
+        monkeypatch.setattr(role_service, "get_user_allowed_datasets", lambda uid: [])
+        out = json.loads(ft._list_datasets({})["content"][0]["text"])
+        assert out["datasets"] == []
+        assert "未获授" in out["note"]
+
+    def test_function_tools_list_datasets_truncation_is_explicit(self, monkeypatch):
+        from backend.modules.mind.execution import function_tools as ft
+
+        monkeypatch.setattr(ft, "_identity", lambda: {"user_id": 1, "role": "admin",
+                                                      "workspace_id": 301})
+        monkeypatch.setattr(ft, "_limit", lambda args: 1)
+        monkeypatch.setattr(ft, "_select", lambda sql, params=None: [
+            {"id": 501, "name": "订单概览", "description": "", "source_type": "sql",
+             "object_key": "", "chart_type": "", "status": "active",
+             "available_datasources": None, "datasource_name": "prd-cn",
+             "created_at": None, "updated_at": None}])
+        out = json.loads(ft._list_datasets({})["content"][0]["text"])
+        assert "截断" in out["note"]
 
     def test_prompt_requires_explicit_source_for_multi_source(self):
         from backend.modules.mind.execution import prompt_composer as pc

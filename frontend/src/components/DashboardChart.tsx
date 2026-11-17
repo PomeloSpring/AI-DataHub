@@ -574,6 +574,67 @@ export function resolveXAxisLabelLayout(
   };
 }
 
+// ── Y 轴刻度排布（数字压缩 + 左侧留白）──────────────────────────────────────
+
+const YAXIS_BASE_PADDING = XAXIS_SIDE_PADDING;  // baseSpec 的左留白（与 padding[3] 同源）
+const YAXIS_MAX_PADDING_RATIO = 0.32;           // 左侧最多吃掉图宽 32%，再多就挤压绘图区
+const YAXIS_MAX_PADDING = 150;
+const YAXIS_LABEL_GAP = 14;                     // tick 4 + labelSpacing 4 + 余量
+
+/** 真的画「数值 y 轴」的图型：饼/玫瑰/漏斗/词云/地图等没有 y 刻度，左侧留白不动。 */
+const Y_NUMBER_AXIS_TYPES = new Set([
+  'bar', 'line', 'area', 'scatter',
+  'timeseries_line', 'timeseries_bar', 'timeseries_area', 'waterfall',
+]);
+
+const compactNumberFormatters: Record<string, Intl.NumberFormat> = {};
+
+/**
+ * Y 轴刻度数字压缩：大数按语言习惯折成「万/亿」（en 为 K/M/B）后再排版。
+ *
+ * 为什么必须压缩 + 自己核算留白（历史缺陷根因）：左侧留白固定 24px，而 8 位数标签宽约 55px
+ * —— 标签从轴边向左伸出画布后被整条裁掉，只剩末位一两格贴轴叠成一列；用户看到的是
+ * 「Y 轴数字重叠」，实际是每条标签的残尾。压缩与留白必须同源（见 resolveYAxisLabelLayout），
+ * 只做其中一半仍会被裁。
+ */
+export function formatAxisNumber(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  // 小数字原样：compact 会把 999.6 折成「1K」、0.5 折成「0」——错数比长标签危害大
+  if (Math.abs(n) < 1000) return String(n);
+  const locale = String(i18n.language || '').toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN';
+  const formatter = compactNumberFormatters[locale]
+    || (compactNumberFormatters[locale] = new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }));
+  return formatter.format(n);
+}
+
+/**
+ * Y 轴左侧留白裁决：取轴域端点（含 0）压缩后的最宽标签回推 padding[3]。
+ *
+ * 与 x 轴同理不能交给 G2 自己算（显式 padding 下 autoSizeOf 不参与，轴组件 size 恒为默认值），
+ * 又不能无限给（超长标签会把绘图区挤没），故夹到图宽的 32%。
+ */
+export function resolveYAxisLabelLayout(
+  values: unknown[],
+  opts: { width: number; fontSize: number },
+): { leftPadding: number } {
+  const { width, fontSize } = opts;
+  let lo = 0;
+  let hi = 0;
+  for (const v of values) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) continue;
+    if (n < lo) lo = n;
+    if (n > hi) hi = n;
+  }
+  const widest = Math.max(
+    estimateTextWidth(formatAxisNumber(lo), fontSize),
+    estimateTextWidth(formatAxisNumber(hi), fontSize),
+  );
+  const maxRoom = Math.max(YAXIS_BASE_PADDING, Math.min(YAXIS_MAX_PADDING, Math.round(width * YAXIS_MAX_PADDING_RATIO)));
+  return { leftPadding: Math.max(YAXIS_BASE_PADDING, Math.min(maxRoom, Math.ceil(widest) + YAXIS_LABEL_GAP)) };
+}
+
 /** 不参与 X 轴类目标签自动排布：无极坐标轴（饼/玫瑰/仪表/漏斗/地图/词云/HTML 渲染），
  *  或 x 轴沿圆周排布（radar/radial_bar，统一旋转角无意义）。 */
 const NO_X_LABEL_LAYOUT_TYPES = new Set([
@@ -585,6 +646,39 @@ const NO_X_LABEL_LAYOUT_TYPES = new Set([
 /** 饼图外围标签单条最大宽度：超出截断（完整名仍在 tooltip/图例里）。
  *  spider 列贴在画布两侧，列位 = 外半径 + 引导线长，不限制宽长名字会把列推出画布。 */
 const PIE_LABEL_MAX_WIDTH = 80;
+
+const LEGEND_BAND_MARKER = 14;   // 色块(8) + 色块与文字间距
+const LEGEND_BAND_ITEM_GAP = 12; // 主题 colPadding
+const LEGEND_BAND_SLACK = 10;    // 上下留白：贴边看着就像被裁
+const LEGEND_CROSS_PADDING = 12; // legendCategory 的 defaultCrossPadding：轴带里图例与绘图区的间隙
+
+/**
+ * 横排图例（top/bottom）的轴带高度裁决。
+ *
+ * 图例住在 padding 轴带里：带子高度不够时，多出来的行会被画到画布外（用户反馈
+ * 「左下角图例被挡住 / 只剩一条」）。按条目标签估宽分行，再回推轴带高度；
+ * 调用方必须把同一个值同时写进 `padding` 与图例 `size`，否则 G2 仍按默认 40px 排版。
+ */
+export function resolveLegendBandHeight(
+  labels: string[],
+  opts: { width: number; fontSize: number },
+): number {
+  const { width, fontSize } = opts;
+  const usable = Math.max(160, width - XAXIS_SIDE_PADDING * 2);
+  const rowHeight = Math.round(fontSize * 1.8);
+  let rows = 1;
+  let lineWidth = 0;
+  for (const label of labels) {
+    const w = estimateTextWidth(String(label), fontSize) + LEGEND_BAND_MARKER + LEGEND_BAND_ITEM_GAP;
+    if (lineWidth > 0 && lineWidth + w > usable) {
+      rows += 1;
+      lineWidth = w;
+    } else {
+      lineWidth += w;
+    }
+  }
+  return rows * rowHeight + LEGEND_BAND_SLACK;
+}
 
 // ── KPI 大数字版式（text_display / big_number_trend 共用）─────────────────────
 const KPI_PADDING_X = 16;
@@ -778,6 +872,27 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
   const xLayout = resolveXAxisLabelLayout(xLabels, {
     width, height, fontSize: xLabelFontSize, explicitRotate: rotate,
   });
+  // Y 轴数字与左侧留白同源裁决（压缩后的最宽刻度回推 padding[3]），理由见 resolveYAxisLabelLayout。
+  // 取值口径与各分支实际编码的 y 通道一致：时序族用 valCol，瀑布是累计值（逐行滚动求和）。
+  const yValueCol = (chartType.startsWith('timeseries') || chartType === 'waterfall')
+    ? (config?.valCol || yCol)
+    : yCol;
+  const ySourceRows = chartType.startsWith('timeseries') ? rows : processedData;
+  const yNumberValues = (() => {
+    if (!Y_NUMBER_AXIS_TYPES.has(chartType) || config?.showYAxis === false) return [];
+    if (chartType === 'waterfall') {
+      let acc = 0;
+      return ySourceRows.map(d => { acc += Number(d?.[yValueCol]) || 0; return acc; });
+    }
+    return ySourceRows.map(d => d?.[yValueCol]);
+  })();
+  const yLayout = resolveYAxisLabelLayout(yNumberValues, {
+    width, fontSize: Number(axisLabelStyle.labelFontSize) || 11,
+  });
+  // 刻度格式化必须与留白估算用同一个函数：否则「算宽度时压缩、实际渲染不压缩」标签仍会撑破轴带
+  if (yAxis && yNumberValues.some(v => Number.isFinite(Number(v)))) {
+    yAxis.labelFormatter = (v: any) => formatAxisNumber(v);
+  }
   // 柱顶帽/瀑布等按绘图区高反推数据单位的分支共用：扣掉上下 padding 后的真实高度
   const plotHeightHint = Math.max(60, height - 40 - xLayout.bottomPadding);
   const xAxis: any = config?.showXAxis === false ? false : {
@@ -846,7 +961,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         },
       },
     },
-    padding: [40, 24, xLayout.bottomPadding, 24],
+    padding: [40, XAXIS_SIDE_PADDING, xLayout.bottomPadding, yLayout.leftPadding],
     style: {
       viewFill: bgColor,
     },
@@ -887,11 +1002,15 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { ...xScaleDomain, color: { range: colors } },
         axis: { x: xAxis, y: yAxis },
         children: [
-          { type: 'area', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: areaFillStyle(config, colors, processedData, seriesField || null, 0.15) },
+          // 面积只铺底，tooltip 由 line mark 出：两个 mark 都挂默认 tooltip 会让悬浮框里
+          // 每个系列出现两行同值（用户反馈「users 9509」重复两行）。
+          { type: 'area', tooltip: false, encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'area' : 'smooth' }, style: areaFillStyle(config, colors, processedData, seriesField || null, 0.15) },
           { type: 'line', encode: { x: xCol, y: yCol, color: seriesField || undefined, shape: config.smooth === false ? 'line' : 'smooth' }, style: { lineWidth: config.lineWidth ?? 2, ...(config.glow ? { shadowColor: colors[0], shadowBlur: 8 } : {}) } },
           // 单点时 area/line 都画不出形状，叠加圆点兜住可见性
           ...(isSparseSeries(processedData, xCol) ? [visiblePointMark(lineEncode)] : []),
         ],
+        // 与单 mark 的线/面同口径：同一 x 上把所有系列列在一个悬浮框里
+        interaction: { tooltip: { shared: true } },
       };
       return ensureVisiblePoints({
         ...baseSpec,
@@ -944,6 +1063,23 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       const outerRadius = showPieLabel ? 0.72 : 0.9;
       const innerRadius = innerRatio * outerRadius;
       const pieLabelSize = Number.parseFloat(config?.axisLabelSize ?? '') || 11;
+      // 图例方位规范化：只认四方位名；true/未配按右侧（非 top/bottom 即竖排，不占轴带）
+      const legendPosition = config?.legend === false ? false
+        : (['top', 'bottom', 'left', 'right'].includes(String(config?.legend)) ? String(config?.legend) : 'right');
+      // 横排图例（top/bottom）住在 padding 轴带里，带高不足时多出的行会被分页/画到画布外
+      //（用户反馈「左下角图例被挡住，只剩一条 name」）。按条目标签估宽分行后回推轴带高度，
+      // 且同一个值必须同时写进 padding 与图例 size —— 只改一处 G2 仍按默认 40px 排版。
+      const legendBandRaw = legendPosition === 'top' || legendPosition === 'bottom'
+        ? resolveLegendBandHeight(pieData.map(d => d.name), {
+            width, fontSize: Number(legendLabelStyle.fontSize) || 11,
+          })
+        : 0;
+      // 图例最多吃掉四成图高：类目极多时不把饼挤没（超出的行由 G2 自己的翻页箭头接管，看得见摸得着）
+      const legendBandHeight = legendBandRaw
+        ? Math.max(20, Math.min(legendBandRaw, Math.round(height * 0.4) - LEGEND_CROSS_PADDING))
+        : 0;
+      // G2 把图例放在轴带内的 crossPadding 之后，带高 = 图例高 + crossPadding 才不让它滑出画布
+      const legendBandOuter = legendBandHeight ? legendBandHeight + LEGEND_CROSS_PADDING : 0;
       return {
         ...baseSpec,
         type: 'interval',
@@ -953,6 +1089,13 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         coordinate: { type: 'theta', innerRadius, outerRadius },
         scale: { color: { range: colors } },
         style: { stroke: bgColor, lineWidth: 2 },
+        // 图例占用的轴带与 baseSpec 的固定留白取大值：右侧/左侧图例不影响上下版式
+        padding: [
+          legendPosition === 'top' ? Math.max(40, legendBandOuter) : 40,
+          XAXIS_SIDE_PADDING,
+          legendPosition === 'bottom' ? Math.max(xLayout.bottomPadding, legendBandOuter) : xLayout.bottomPadding,
+          yLayout.leftPadding,
+        ],
         // spider 布局：标签按左右两列竖向避让（dodgeY）并保留引导线锚在弧上，
         // 放不下时才隐藏（值仍在 tooltip/图例里）；单纯 overlapDodgeY 会把引导线整条拖离切片。
         labels: showPieLabel ? [{
@@ -967,7 +1110,16 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           connectorDistance: 4,
           labelHeight: Math.round(pieLabelSize * 1.6),
         }] : [],
-        legend: config?.legend === false ? false : { color: { position: config?.legend || 'right', itemLabelStyle: legendLabelStyle } },
+        legend: legendPosition === false ? false : {
+          color: {
+            position: legendPosition,
+            // color 编码的是中转字段 'name'，G2 会把它当图例标题渲染（截图中被裁剩的粗体 "name"），显式关掉
+            title: false,
+            itemLabelStyle: legendLabelStyle,
+            // 横排图例的内容高与 padding 同源：G2 默认 size 40，多行条目会溢出轴带
+            ...(legendBandHeight ? { size: legendBandHeight } : {}),
+          },
+        },
         interaction: { tooltip: {} },
       };
     }
@@ -1005,6 +1157,8 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors } },
         style: { lineWidth: config?.lineWidth ?? 2, fillOpacity: config?.areaOpacity ?? 0 },
         axis: { x: xAxis, y: yAxis },
+        // color 编码的是中转字段 'category'，不拿它当图例标题（与饼图 'name' 同口径）
+        legend: { color: { title: false, itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
       };
     }
@@ -1058,7 +1212,7 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           transform: [{ type: 'contrastReverse' }],
           style: { fill: '#fff', fontSize: 11 }
         }],
-        legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
+        legend: { color: { position: 'right', title: false, itemLabelStyle: legendLabelStyle } },
         interaction: { tooltip: {} },
       };
     }
@@ -1507,7 +1661,14 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
         scale: { color: { range: colors } },
         style: { stroke: bgColor, lineWidth: 1 },
         labels: [{ text: 'name', style: { fill: textColor, fontSize: 11 } }],
-        legend: { color: { position: 'right', itemLabelStyle: legendLabelStyle } },
+        legend: {
+          color: {
+            position: 'right',
+            // color 编码的是中转字段 'name'，G2 会把它当图例标题渲染（对用户无意义），显式关掉
+            title: false,
+            itemLabelStyle: legendLabelStyle,
+          },
+        },
         interaction: { tooltip: {} },
       };
     }

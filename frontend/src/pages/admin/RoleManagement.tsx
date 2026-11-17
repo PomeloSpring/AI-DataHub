@@ -129,6 +129,8 @@ export default function RoleManagement() {
   // Permission config state
   const [permTarget, setPermTarget] = useState<Role | null>(null);
   const [permTab, setPermTab] = useState('datasources');
+  // 批量勾选（全选/反选）在途态：一次 PUT 整份清单，避免逐条请求把列表刷屏
+  const [bulkSaving, setBulkSaving] = useState<'datasources' | 'datasets' | 'dashboards' | 'policies' | null>(null);
 
   // Datasource access
   const [dsAccess, setDsAccess] = useState<DatasourceAccess[]>([]);
@@ -288,16 +290,91 @@ export default function RoleManagement() {
     }, tr('k_5e489875f5'));
   };
 
+  /** 授权结果回写本地态：名称从数据源清单取（显示 name，不显示裸 id） */
+  const applyDsAccess = (dsIds: number[]) => setDsAccess(dsIds.map(id => {
+    const ds = allDatasources.find((d: any) => d.id === id);
+    return { datasource_id: id, datasource_name: ds?.name || '', db_type: ds?.db_type || '' };
+  }));
+
   const saveDatasourceAccess = async (dsIds: number[]) => {
     if (!permTarget) return;
     try {
       await client.put(`/roles/${permTarget.id}/datasources`, { datasource_ids: dsIds });
-      setDsAccess(dsIds.map(id => {
-        const ds = allDatasources.find((d: any) => d.id === id);
-        return { datasource_id: id, datasource_name: ds?.name || '', db_type: ds?.db_type || '' };
-      }));
+      applyDsAccess(dsIds);
       toast.success(t('k_d8befd9e8c'));
     } catch { toast.error(t('k_6de920b4e4')); }
+  };
+
+  /**
+   * 批量授权统一出口：一次 PUT 整份清单。后端这几个 PUT 本就是全量替换语义
+   * （看板/数据集「空列表=全部不可见」，数据源与 RLS 绑定同理），
+   * 所以「全选/反选」天然是整份提交；逐条 toggle 会发 N 个请求、列表逐条闪。
+   * 写库失败只报错、不回写本地勾选态——否则界面显示「已授权」而库里没变，属静默掩盖。
+   */
+  const bulkSave = async (
+    kind: 'datasources' | 'datasets' | 'dashboards' | 'policies',
+    ids: number[],
+    okMsg: string,
+  ): Promise<boolean> => {
+    if (!permTarget) return false;
+    const bodyKey = {
+      datasources: 'datasource_ids',
+      datasets: 'dataset_ids',
+      dashboards: 'dashboard_ids',
+      policies: 'policy_ids',
+    }[kind];
+    // 策略绑定的接口路径是 rls-policies（其余与清单名同名）
+    const path = kind === 'policies' ? 'rls-policies' : kind;
+    setBulkSaving(kind);
+    try {
+      await client.put(`/roles/${permTarget.id}/${path}`, { [bodyKey]: ids });
+      toast.success(okMsg);
+      return true;
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
+      return false;
+    } finally {
+      setBulkSaving(null);
+    }
+  };
+
+  /** 清单页签顶部的「已选 n/N + 全选 + 反选」工具条（四个勾选清单同口径） */
+  const renderBulkActions = (
+    kind: 'datasources' | 'datasets' | 'dashboards' | 'policies',
+    allIds: number[],
+    selectedIds: number[],
+    onApply: (ids: number[]) => void,
+    okMsg: string,
+  ) => {
+    if (allIds.length === 0) return null;
+    const busy = bulkSaving === kind;
+    const allOn = allIds.every(id => selectedIds.includes(id));
+    // 按清单顺序落库，避免「反选」后顺序乱跳
+    const run = async (ids: number[]) => {
+      const ordered = allIds.filter(id => ids.includes(id));
+      if (await bulkSave(kind, ordered, okMsg)) onApply(ordered);
+    };
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">
+          {t('k_3ae55abc41', { p0: selectedIds.length, p1: allIds.length })}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={busy}
+            onClick={() => run(allOn ? [] : allIds)}
+          >
+            {allOn ? t('k_a04144e4d7') : t('k_3e44b2a933')}
+          </Button>
+          <Button
+            variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={busy}
+            onClick={() => run(allIds.filter(id => !selectedIds.includes(id)))}
+          >
+            {t('k_aab57a3547')}
+          </Button>
+        </div>
+      </div>
+    );
   };
 
   const toggleDsAccess = (dsId: number) => {
@@ -358,6 +435,30 @@ export default function RoleManagement() {
       const next = new Set(prev);
       const allOn = codes.length > 0 && codes.every(c => next.has(c));
       codes.forEach(c => { if (allOn) next.delete(c); else next.add(c); });
+      return next;
+    });
+  };
+
+  /** 全量权限码（菜单分组 + 通用功能），供整批全选/反选 */
+  const allPermCodes = useMemo(() => [
+    ...permGroups.flatMap(g => g.permissions.map(p => p.perm_code)),
+    ...standalonePerms.map(p => p.perm_code),
+  ], [permGroups, standalonePerms]);
+  const permsAllOn = allPermCodes.length > 0 && allPermCodes.every(c => rolePerms.has(c));
+
+  const toggleAllPerms = () => {
+    const allOn = allPermCodes.length > 0 && allPermCodes.every(c => rolePerms.has(c));
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      allPermCodes.forEach(c => { if (allOn) next.delete(c); else next.add(c); });
+      return next;
+    });
+  };
+
+  const invertPerms = () => {
+    setRolePerms(prev => {
+      const next = new Set(prev);
+      allPermCodes.forEach(c => { if (next.has(c)) next.delete(c); else next.add(c); });
       return next;
     });
   };
@@ -508,6 +609,13 @@ export default function RoleManagement() {
             {/* Datasource Access */}
             <TabsContent value="datasources" className="space-y-3">
               <p className="text-sm text-muted-foreground">{t('k_6b7cc53a33')}</p>
+              {renderBulkActions(
+                'datasources',
+                allDatasources.map((d: any) => d.id),
+                dsAccess.map(d => d.datasource_id),
+                applyDsAccess,
+                t('k_d8befd9e8c'),
+              )}
               {allDatasources.map((ds: any) => (
                 <div key={ds.id} className="flex items-center justify-between border rounded px-3 py-2">
                   <div className="flex items-center gap-2">
@@ -527,6 +635,13 @@ export default function RoleManagement() {
             {/* Dataset Access */}
             <TabsContent value="datasets" className="space-y-3">
               <p className="text-sm text-muted-foreground">{t('k_4a44b46b78')}</p>
+              {renderBulkActions(
+                'datasets',
+                datasetCatalog.map(d => d.id),
+                roleDatasets,
+                setRoleDatasets,
+                t('k_7163377e5a'),
+              )}
               {datasetCatalog.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_c46e035dbe")}</p>
               ) : (
@@ -550,6 +665,13 @@ export default function RoleManagement() {
             {/* 数据安全策略绑定（勾选才生效; 策略在 数据安全策略 页维护） */}
             <TabsContent value="policies" className="space-y-3">
               <p className="text-sm text-muted-foreground">{t("k_9c3cf07be5")}</p>
+              {renderBulkActions(
+                'policies',
+                rlsPolicies.map(p => p.id),
+                [...roleRlsPolicies],
+                ids => setRoleRlsPolicies(new Set(ids)),
+                t('k_2f86df5c33'),
+              )}
               {rlsPolicies.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_8dfd345a8c")}</p>
               ) : (
@@ -583,6 +705,13 @@ export default function RoleManagement() {
             {/* Dashboard Visibility */}
             <TabsContent value="dashboards" className="space-y-3">
               <p className="text-sm text-muted-foreground">{t('k_9d000fb4e3')}</p>
+              {renderBulkActions(
+                'dashboards',
+                dashboardCatalog.map(d => d.id),
+                roleDashboards,
+                setRoleDashboards,
+                t('k_afe877a5e7'),
+              )}
               {dashboardCatalog.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_49734c90cc")}</p>
               ) : (
@@ -614,9 +743,14 @@ export default function RoleManagement() {
               <p className="text-xs text-muted-foreground">
                 {t('k_9ff6fa85e4')}
               </p>
-              <div className="flex justify-end gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>{t("k_66c98ab6d8")}</Button>
                 <Button variant="outline" size="sm" onClick={() => setAllCollapsed(true)}>{t("k_3f7e768840")}</Button>
+                {/* 整批勾选权限码（本地态，点「保存功能权限」才落库） */}
+                <Button variant="outline" size="sm" onClick={toggleAllPerms}>
+                  {permsAllOn ? t('k_a04144e4d7') : t('k_3e44b2a933')}
+                </Button>
+                <Button variant="outline" size="sm" onClick={invertPerms}>{t('k_aab57a3547')}</Button>
               </div>
               {permGroups.length === 0 && standalonePerms.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">{t("k_0e4016d665")}</p>

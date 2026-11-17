@@ -497,4 +497,33 @@ describe('ObjectHubTab — 编辑对象里可改属性物理列', () => {
     expect(screen.queryByText(/属性列映射/)).toBeNull();
     expect(vi.mocked(ontologyApi.objectColumns)).not.toHaveBeenCalled();
   });
+
+  it('可新增属性：填业务名 + 选实存列，保存写进 doc.properties（不写删除声明）', async () => {
+    const { onSave } = await openEdit();
+    await userEvent.click(await screen.findByRole('button', { name: '新增属性' }));
+    const nameInput = await screen.findByLabelText('属性业务名');
+    await userEvent.type(nameInput, '客户端版本号');
+    await userEvent.click(screen.getByRole('combobox', { name: '客户端版本号 的物理列' }));
+    await userEvent.click(await screen.findByRole('option', { name: /c_version/ }));
+    await userEvent.click(screen.getByRole('button', { name: '保存为草案' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const doc = JSON.parse(onSave.mock.calls[0][0]);
+    const props = doc.objects[0].properties;
+    expect(props).toHaveLength(3);
+    expect(props[2]).toMatchObject({ name: '客户端版本号', column: 'c_version' });
+    // 没有删除任何属性 → 不得凭空产生删除声明（否则等于给后端开了一个常驻豁免口）
+    expect(doc._declared_removals).toBeUndefined();
+  });
+
+  it('可删除属性：写进顶层 _declared_removals 声明（后端只放行被点名的删除）', async () => {
+    const { onSave } = await openEdit();
+    await userEvent.click(await screen.findByRole('button', { name: '删除属性 设备序列号' }));
+    await userEvent.click(screen.getByRole('button', { name: '保存为草案' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const doc = JSON.parse(onSave.mock.calls[0][0]);
+    const props = doc.objects[0].properties;
+    expect(props).toHaveLength(1);
+    expect(props[0].name).toBe('客户端版本');
+    expect(doc._declared_removals).toEqual({ equipment_operation_log: ['设备序列号'] });
+  });
 });

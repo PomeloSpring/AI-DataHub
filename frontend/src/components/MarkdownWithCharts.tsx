@@ -25,8 +25,6 @@ interface Props {
   conversationId?: number | null;
   /** 图上下钻: 点击图表元素时回传下钻问题(不传则不启用)。 */
   onDrill?: (question: string) => void;
-  /** 设计卡片「返回对话继续完善」时回传追问文本(不传则按钮不可用)。 */
-  onDesignContinue?: (text: string) => void;
   /**
    * 交付文档的「存为报告草稿」入口（与消息操作行同一个流程：同一函数 + 同一 reportable 判定，
    * 不另写一套归档逻辑）。不传就是本轮服务端未判为可报告 —— 卡片里不能给一个调不通的按钮。
@@ -67,10 +65,10 @@ function RevealBlock({ show, className, style, children }: { show: boolean; clas
 /**
  * 渲染助手回答:普通文本走 ReactMarkdown,```chart 块解析后渲染 ChartPicker,
  * ```mermaid 块渲染流程图/时序图,```artifact 块渲染可下载文件产物,
- * ```design 块在该位置内嵌仪表盘设计卡片(LLM 需要用户打开面板时输出)。
+ * ```design 块在该位置只剩「预览看板」入口(设计已落成看板时)或整块不渲染(无看板/已取消), 不再是设计卡片。
  * 解析失败降级为代码块。图表/卡片内嵌于 content,天然随消息持久化与回放。
  */
-export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onDesignContinue, onSaveReport, sections = false, streaming = false, reveal = false }: Props) {
+export default function MarkdownWithCharts({ text, className, conversationId, onDrill, onSaveReport, sections = false, streaming = false, reveal = false }: Props) {
   const { t } = useTranslation('chat');
   const segments = useMemo(() => splitChartBlocks(text || '', streaming), [text, streaming]);
   // 逐段滑入的节奏（时长/错峰/上限）取自动效解析口，不再写死 90ms/450ms
@@ -179,7 +177,8 @@ export default function MarkdownWithCharts({ text, className, conversationId, on
           );
         }
         if (seg.kind === 'design') {
-          return <DesignCard key={i} designId={seg.designId} onContinue={onDesignContinue} />;
+          // 设计卡片已退役：无看板整块不渲染，有看板只渲染「预览看板」入口
+          return <DesignCard key={i} designId={seg.designId} />;
         }
         if (seg.kind === 'report') {
           // 交付形态渲染机产出的文档：正文按 doc_id 取回落在此处，不在消息里存快照

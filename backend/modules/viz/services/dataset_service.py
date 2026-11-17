@@ -1556,6 +1556,13 @@ def _query_semantic(ds: dict, params: dict, scopes: list[dict], identity: dict) 
         "limit": min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT),
         "datasource_id": int(ds.get("datasource_id") or 0),
     }
+    # 相对时间窗（近 7 天/本月/今年）与时间列/粒度必须能进来：否则直建大屏的图
+    # 刷新时只剩维度/指标，时间过滤被默默丢掉 → “建屏时对、刷新后变成全量”。
+    # 统一交 `parse_intent` 校验（形状不合法就报错，不静默丢）。
+    for key in ("time_window", "time_column", "time_grain",
+                "time_range", "time_start", "time_end"):
+        if params.get(key) not in (None, "", [], {}):
+            payload[key] = params[key]
     q, err, notes = parse_intent(payload)
     if err:
         raise ValueError(f"查询意图非法: {err}")

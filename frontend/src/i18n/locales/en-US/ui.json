@@ -1380,7 +1380,7 @@
   "k_95f4519aab": "Permission rule",
   "k_f687b1634f": "allow",
   "k_d93d771421": "deny",
-  "k_827281b669": "Physical column name, used for modeling only",
+  "k_827281b669": "Property list, add/remove allowed; physical column names are for modeling only",
   "k_244918077d": "Loading physical column candidates...",
   "k_bde30433cd": "No physical column (this table has no such concept)",
   "k_4897a8af7d": "New business object",
@@ -2662,6 +2662,11 @@
   "k_83489a8e2f": "Properties ({{p0}})",
   "k_73286542d3": "Relationship Links ({{p0}})",
   "k_ddd8060872": "Property column mapping ({{p0}})",
+  "k_7a1e5c3b90": "Add property",
+  "k_8b2f6d4c01": "Delete property {{p0}}",
+  "k_9c3a7e5d12": "Property business name",
+  "k_2f6d8a1c40": "This object has no properties yet — click “Add property” below to map real columns of this table",
+  "k_5e9c0d3a21": "Deletions go into this draft and take effect after publishing",
   "k_659a89487f": "Tags not used by any table of this model: ",
   "k_5c5ff23458": "Publish draft",
   "k_55bfb65260": "Confirm discard",
@@ -4545,5 +4550,7 @@
   "k_788f68564a": "Leaving the price empty means “unpriced”: the capability tags and the cost page say so honestly instead of guessing a price from the model name.",
   "k_65ecec1953": "English title (optional)",
   "k_5dc39da8cf": "English note (optional)",
-  "k_464fbc58b4": "English body"
+  "k_464fbc58b4": "English body",
+  "k_aab57a3547": "Invert selection",
+  "k_a04144e4d7": "Clear all"
 }

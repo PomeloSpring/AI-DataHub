@@ -115,22 +115,37 @@ def _list_reports(args):
 
 
 def _list_dashboards(args):
-    """看板清单：可见范围复用 visible_dashboard_ids（角色授权唯一裁决）。"""
+    """看板清单：可见范围复用 visible_dashboard_ids（角色授权唯一裁决）。
+
+    ``visible_dashboard_ids`` 对 admin 返回 **None**（= 全可见），与空集（fail-closed）
+    语义不同。历史缺陷（2026-11-17）：``if not ids`` 把 admin 的 None 当成「无可见看板」，
+    admin 在「数据看板」页看得到全部看板，AI 通道却回「当前角色无可见看板」。
+    """
     from backend.modules.viz.services.dashboard_service import visible_dashboard_ids
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
     ws = int(ident.get("workspace_id") or 0)
     ids = visible_dashboard_ids(int(ident["user_id"]), ident.get("role") or "", ws)
-    if not ids:
-        return _text({"dashboards": [], "note": "当前角色无可见看板"})
-    ids = list(ids)[:_limit(args)]
-    ph = ",".join(["%s"] * len(ids))
-    rows = _select(
-        "SELECT id, name, description, status, is_public, is_default, sort_order, updated_at "
-        f"FROM adh_dashboards WHERE id IN ({ph}) ORDER BY sort_order", tuple(ids))
-    return _text({"dashboards": [_iso(r, "updated_at") for r in rows],
-                  "note": "可见范围以角色授权为准；布局与筛选参数不在 AI 可见范围内"})
+    limit = _limit(args)
+    cols = "id, name, description, status, is_public, is_default, sort_order, updated_at"
+    # 排序与服务端目录同口径(is_default→sort_order→id), 末尾 id 兜底保证 limit 截断确定
+    order = "ORDER BY is_default DESC, sort_order, id LIMIT %s"
+    if ids is None:                      # admin：全可见（与「数据看板」页同口径）
+        rows = _select(f"SELECT {cols} FROM adh_dashboards {order}", (limit,))
+        note = "管理员可见全部看板；布局与筛选参数不在 AI 可见范围内"
+    elif not ids:                        # fail-closed：角色未获授任何看板
+        return _text({"dashboards": [],
+                      "note": "当前角色未获授任何看板（角色授权为空即一律不可见）"})
+    else:
+        ph = ",".join(["%s"] * len(ids))
+        rows = _select(
+            f"SELECT {cols} FROM adh_dashboards WHERE id IN ({ph}) {order}",
+            (*ids, limit))
+        note = "可见范围以角色授权为准；布局与筛选参数不在 AI 可见范围内"
+    if len(rows) >= limit:               # 截断必须显式（不得静默少给）
+        note += f"；结果已按上限 {limit} 条截断，可调大 limit（最大 200）"
+    return _text({"dashboards": [_iso(r, "updated_at") for r in rows], "note": note})
 
 
 def _list_scheduled_tasks(args):
@@ -165,23 +180,39 @@ def _list_quality_rules(args):
 
 
 def _list_datasets(args):
-    """数据集清单：只回名称/来源类型/预设图表/可用数据源业务名。不含 SQL 原文与字段配置。
+    """数据集清单：只回名称/来源类型/预设图表/可用数据源业务名。不含 SQL 原 文与字段配置。
 
     数据源一律以**业务名**下发（护栏 §7：内部 datasource_id 是黑盒）——多源数据集
     要让 LLM 知道可以用 site/datasource 指定这次跑哪个源，否则它只能看见一个名字。
+
+    可见范围与「数据集」页同口径（角色数据集授权唯一裁决）：admin 全可见，其余角色
+    走 ``role_service.get_user_allowed_datasets``，**空授权 = 一律不可见（fail-closed）**。
+    历史缺陷（2026-11-17）：这里不过角色过滤，AI 能列出用户在页面上看不到的数据集。
     """
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
-    rows = _select(
-        "SELECT d.id, d.name, d.description, d.source_type, d.object_key, d.chart_type, "
-        "       d.status, d.available_datasources, ds.name AS datasource_name, "
-        "       d.created_at, d.updated_at "
-        "FROM adh_datasets d "
-        "LEFT JOIN adh_datasources ds ON ds.id = d.datasource_id "
-        "WHERE d.status = 'active' "
-        "ORDER BY d.updated_at DESC LIMIT %s",
-        (_limit(args),))
+    limit = _limit(args)
+    cols = ("d.id, d.name, d.description, d.source_type, d.object_key, d.chart_type, "
+            "d.status, d.available_datasources, ds.name AS datasource_name, "
+            "d.created_at, d.updated_at")
+    base = ("FROM adh_datasets d "
+            "LEFT JOIN adh_datasources ds ON ds.id = d.datasource_id "
+            "WHERE d.status = 'active'")
+    # updated_at 同秒的行很多, 末尾 d.id 兜底保证 LIMIT 截断确定（list-pagination §2）
+    order = "ORDER BY d.updated_at DESC, d.id DESC LIMIT %s"
+    if (ident.get("role") or "") == "admin":
+        rows = _select(f"SELECT {cols} {base} {order}", (limit,))
+    else:
+        from backend.core.role_service import role_service
+
+        allowed_ids = role_service.get_user_allowed_datasets(int(ident["user_id"]))
+        if not allowed_ids:                  # fail-closed：角色未获授任何数据集
+            return _text({"datasets": [],
+                          "note": "当前角色未获授任何数据集（角色授权为空即一律不可见）"})
+        ph = ",".join(["%s"] * len(allowed_ids))
+        rows = _select(f"SELECT {cols} {base} AND d.id IN ({ph}) {order}",
+                       (*allowed_ids, limit))
     for r in rows:
         r["datasource"] = str(r.pop("datasource_name", "") or "") or "默认引擎"
         raw = r.pop("available_datasources", None)
@@ -194,9 +225,12 @@ def _list_datasets(args):
         names = list(dict.fromkeys([r["datasource"]] + scope if r["datasource"] else scope))
         if len(names) > 1:                     # 单源数据集不加噪声
             r["available_datasources"] = names
+    note = ("SQL 原文与字段配置不在 AI 可见范围内；数据源只给 业务名，"
+            "跨源数据集按 site/datasource 指定其一（不得传 id ）")
+    if len(rows) >= limit:                   # 截断必须显式（不得静默少给）
+        note += f"；结果已按上限 {limit} 条截断，可调大 limit（最大 200）"
     return _text({"datasets": [_iso(r, "created_at", "updated_at") for r in rows],
-                  "note": "SQL 原文与字段配置不在 AI 可见范围内；数据源只给业务名，"
-                          "跨源数据集按 site/datasource 指定其一（不得传 id）"})
+                  "note": note})
 
 
 def _list_registered_datasources(args):
@@ -993,7 +1027,8 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "tool_name": "list_dashboards",
         "label": "查看看板清单",
         "description": "列出当前角色可见的可视化看板（名称/说明/状态）。"
-                       "可见范围以角色授权为准；不返回布局与筛选参数。",
+                       "可见范围以角色授权为准（管理员可见全部看板）；"
+                       "不返回布局与筛选参数。",
         "perm_code": "dashboard:read", "object_key": "dashboard", "read_only": True,
         "schema": {"type": "object", "properties": {
             "limit": {"type": "integer", "description": "返回条数上限，默认 50，最大 200"}},

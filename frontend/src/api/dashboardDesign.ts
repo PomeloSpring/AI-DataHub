@@ -45,6 +45,21 @@ export interface DesignPreview {
 }
 export const designPath = (id: string) => `/as-bot/dashboard-designs/${id}`;
 export const getDesign = async (id: string) => (await client.get<DashboardDesign>(designPath(id))).data;
+/**
+ * 设计落成的看板 id（历史卡片「预览」的落点）。
+ *
+ * 以 `result.dashboard_id` 为准；老版本只写了 `result.url`（`/screen/<id>` 或
+ * `/dashboard/editor/<id>`）时从路径解析；追加/改图没有 result 时用 `selection.dashboard_id`。
+ * 都拿不到 = 这份设计从未生成过看板（已取消/未发布），卡片如实说明而不是给个点了没结果
+ * 的入口。
+ */
+export function designDashboardId(design?: DashboardDesign | null): number {
+  if (!design) return 0;
+  const explicit = Number(design.result?.dashboard_id) || Number(design.selection?.dashboard_id) || 0;
+  if (explicit) return explicit;
+  const match = String(design.result?.url || '').match(/^\/(?:screen|dashboard\/editor)\/(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
 export function designError(error: any): string {
   const detail = error?.response?.data?.detail;
   return typeof detail === 'string' ? detail : detail?.message || '设计操作失败，请重试';

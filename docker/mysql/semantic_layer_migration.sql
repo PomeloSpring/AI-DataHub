@@ -127,10 +127,12 @@ CREATE TABLE IF NOT EXISTS adh_meta_sync_state (
 
 -- ----------------------------------------------------------------------------
 -- 7. 大屏语义化 (chart 存 SemanticQuery 而非裸 SQL)
+-- 2026-11-17: 枚举补 'dataset'（直建通道挂数据集的图，见
+-- chart_query_source_dataset_migration.sql；新库直接建全三条通道）
 -- ----------------------------------------------------------------------------
 ALTER TABLE adh_charts
     ADD COLUMN semantic_query JSON NULL COMMENT '声明式 SemanticQuery',
-    ADD COLUMN query_source   ENUM('raw_sql','semantic') NOT NULL DEFAULT 'raw_sql';
+    ADD COLUMN query_source   ENUM('raw_sql','semantic','dataset') NOT NULL DEFAULT 'raw_sql';
 
 -- ----------------------------------------------------------------------------
 -- 8. Phase 4 · 语义查询审计闸门 (gate 7)

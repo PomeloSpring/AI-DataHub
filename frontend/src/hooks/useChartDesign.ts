@@ -9,7 +9,7 @@ import {
  * 图表样式解析 —— UI 字模库是系统统一样式规范的唯一消费入口。
  *
  * 所有图表渲染面（Chat 结果卡/Markdown chart 块、看板与大屏、数据集预览、
- * 弹窗页、AS-BOT 设计面板）一律经此取 `config`+`visual` 再交给 DashboardChart，
+ * 弹窗页、看板预览弹窗）一律经此取 `config`+`visual` 再交给 DashboardChart，
  * 禁止各自写配色/线型或裸渲染 DashboardChart（.qoder/rules/ui-vis-library-style.md）。
  *
  * 解析链：主题包 `tp_<theme>`（缺则 tp_datafoundry）→ `charts.default`+`charts.<type>`

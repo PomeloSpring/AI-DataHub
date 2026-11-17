@@ -104,7 +104,7 @@ export function useEnterClass(): string {
 
 /**
  * 看板 filters → 板上挂载的动效引用（**唯一取法**）。
- * Screen/大屏播放、阅读页、编辑器、设计面板一律经这里读，不得各读一套字段 ——
+ * Screen/大屏播放、阅读页、编辑器、看板预览弹窗一律经这里读，不得各读一套字段 ——
  * 出现第二套取法就等于“存了一处、生效一处”，与 ui-vis-library-style §1 同理。
  * `design.motionOverride` = 这块板自己的时长/错峰微调（只叠在挂载预设上）。
  */

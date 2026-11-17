@@ -10,7 +10,7 @@ AI 只能退到裸 SQL 猜列名（把宿主产品 appCode 当"应用"，而 app
    必须等于物理表（planner 按物理表加载字典，空值=列名对了却取不到数，历史缺陷）；
 2. **五站同构部署**：deploy_sites 是模型级唯一事实源，跨站按 object_key 必须路由到本站源；
    不属于本站的源必须被拒（宁缺勿错，不拿别站数据当本站答案）；
-3. **命名分域不漂移**：ARMS 侧业务名收窄到「Web 端 RUM（官网/H5）」，app 域的业务名里
+3. **命名分域不漂移**：ARMS 侧业务名收窄到「Web 端 RUM（官网/H5 · 平台网页）」，app 域的业务名里
    不出现 "RUM"，两域指标名互不重叠（否则 get_metrics 目录与解析串味）；
 4. **渗透率不得登记成伪指标**：分子分母来自不同过滤集，无法编译成单表聚合 → 只登记两个
    计数指标 + 口径文字（`retire_derived_pseudo_metrics` 的教训：目录挂着、编译用不了）。
@@ -143,6 +143,10 @@ def test_two_rum_domains_are_name_disjoint():
     assert arms, "ARMS 对象行丢失（命名分域不得删旧域）"
     assert "Web 端" in str(arms["display_name"]), \
         f"ARMS 业务名未收窄: {arms['display_name']}（双域同名是本次争议的根源）"
+    # 2026-11-17：RUM 通道还承载 AS Connect 等平台网页（内容中心的“三方 App 网页端入口点击”就取自这里），
+    # 业务名不写这一层，模型会把“网页端”判成官网专属、把桌面遥测并成同层候选（会话 1783069459334）。
+    assert "平台网页" in str(arms["display_name"]), \
+        f"ARMS 业务名须写明也承载平台网页: {arms['display_name']}"
     assert "RUM" in str(arms["aliases"] or ""), "裸 RUM 别名要保留，否则历史问法入口凭空消失"
 
     obj = execute_query("SELECT display_name, aliases FROM adh_ontology_objects "

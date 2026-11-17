@@ -645,6 +645,15 @@ _SQL_NON_COLUMN = {
     # NULLIF 是函数不是列：漏在这里会让「合法比率口径」（x * 1.0 / NULLIF(y, 0)）被
     # _require_formula_matches_object 当成不存在的列拒绝，比率指标一律登记不上。
     "nullif",
+    # 日期/时长/字符串/数学函数同理：漏登记会让合法口径（如 TIMESTAMPDIFF(HOUR, a, b)
+    # 算平均处理时长）被当成「引用了不存在的列」而拒绝，且审计会把它们误报成错口径。
+    "timestampdiff", "timestampadd", "datediff", "timediff", "date_add", "date_sub",
+    "date_format", "str_to_date", "unix_timestamp", "from_unixtime", "curdate",
+    "current_date", "current_timestamp", "last_day", "weekofyear", "week", "quarter",
+    "monthname", "dayname", "greatest", "least", "concat", "concat_ws", "substr",
+    "substring", "length", "char_length", "locate", "instr", "trim", "lower", "upper",
+    "floor", "ceil", "ceiling", "power", "sqrt", "mod", "regexp", "xor", "if",
+    "isnull", "json_extract", "json_unquote",
 }
 
 

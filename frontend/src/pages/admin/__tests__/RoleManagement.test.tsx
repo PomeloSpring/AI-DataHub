@@ -57,12 +57,21 @@ const POLICIES = {
   ],
 };
 
+// 「数据集」页签数据：批量勾选（全选/反选）用例默认回显 1/3 已选
+const DATASET_CATALOG = [
+  { id: 31, name: '订单明细' },
+  { id: 32, name: '访问日志' },
+  { id: 33, name: '设备明细' },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(client.get).mockImplementation(async (url: string) => {
     if (url === '/roles/') return { data: [{ id: 1, name: 'viewer', display_name: '查看角色', description: '', is_system: 1, is_active: 1 }] };
     if (url === '/roles/perm-registry') return { data: REGISTRY };
     if (url === '/roles/1/permissions') return { data: { role_id: 1, permissions: ['ontology:save'] } };
+    if (url === '/roles/dataset-catalog') return { data: DATASET_CATALOG };
+    if (url === '/roles/1/datasets') return { data: [{ dataset_id: 31 }] };
     if (url === '/admin/rls-policies') return { data: POLICIES };
     if (url === '/roles/1/rls-policies') return { data: { role_id: 1, policy_ids: [10] } };
     return { data: [] };
@@ -91,6 +100,10 @@ async function openPoliciesTab() {
 
 async function openDashboardsTab() {
   await openPermTab(/看板/, '数字化大屏');
+}
+
+async function openDatasetsTab() {
+  await openPermTab(/数据集/, '订单明细');
 }
 
 describe('角色权限 — 菜单与功能页签', () => {
@@ -311,5 +324,123 @@ describe('角色权限 — 看板页签', () => {
     await waitFor(() => expect(client.put).toHaveBeenCalledWith('/roles/1/dashboards', {
       dashboard_ids: expect.arrayContaining([21, 22]),
     }));
+  });
+});
+
+// 清单行开关的当前态（Radix Switch 走 aria-checked）
+const switchOn = (name: string) => {
+  const sw = within(screen.getByText(name).closest('.border') as HTMLElement).getByRole('switch');
+  return (sw.getAttribute('aria-checked') ?? String((sw as HTMLInputElement).checked)) === 'true';
+};
+
+describe('角色权限 — 数据集页签一键全选/反选', () => {
+  it('一键全选：一次 PUT 整份清单，不是逐条请求', async () => {
+    await openDatasetsTab();
+    // 已选计数与清单总数同源（1/3 回显）
+    expect(screen.getByText('已选1/3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(client.put).mock.calls[0]).toEqual([
+      '/roles/1/datasets', { dataset_ids: [31, 32, 33] },
+    ]);
+    expect(await screen.findByText('已选3/3')).toBeInTheDocument();
+    expect(switchOn('访问日志')).toBe(true);
+    // 全选后按钮翻成「取消全选」，再点即一键清空
+    fireEvent.click(screen.getByRole('button', { name: '取消全选' }));
+    await waitFor(() => expect(vi.mocked(client.put).mock.calls[1]).toEqual([
+      '/roles/1/datasets', { dataset_ids: [] },
+    ]));
+    expect(await screen.findByText('已选0/3')).toBeInTheDocument();
+  });
+
+  it('一键反选：已选的取消、未选的勾上（按清单顺序整份提交）', async () => {
+    await openDatasetsTab();
+    fireEvent.click(screen.getByRole('button', { name: '反选' }));
+    await waitFor(() => expect(vi.mocked(client.put).mock.calls[0]).toEqual([
+      '/roles/1/datasets', { dataset_ids: [32, 33] },
+    ]));
+    expect(await screen.findByText('已选2/3')).toBeInTheDocument();
+    expect(switchOn('订单明细')).toBe(false);
+    expect(switchOn('访问日志')).toBe(true);
+    expect(switchOn('设备明细')).toBe(true);
+  });
+
+  it('批量写库失败只报错，不回写「已授权」勾选态（不静默掩盖）', async () => {
+    vi.mocked(client.put).mockRejectedValueOnce({ response: { data: { detail: '写库失败' } } });
+    await openDatasetsTab();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledTimes(1));
+    // 写入没成功 → 界面必须保持原样（否则就是“看着已授权、库里没变”）
+    expect(screen.getByText('已选1/3')).toBeInTheDocument();
+    expect(switchOn('访问日志')).toBe(false);
+  });
+});
+
+describe('角色权限 — 数据安全策略页签一键全选', () => {
+  it('一键全选策略：整份绑定提交（勾选才生效语义不变）', async () => {
+    await openPoliciesTab();
+    expect(screen.getByText('已选1/2')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    await waitFor(() => expect(vi.mocked(client.put).mock.calls[0]).toEqual([
+      '/roles/1/rls-policies', { policy_ids: [10, 11] },
+    ]));
+    expect(await screen.findByText('已选2/2')).toBeInTheDocument();
+  });
+});
+
+describe('角色权限 — 看板页签一键反选', () => {
+  beforeEach(() => {
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/roles/') return { data: [{ id: 1, name: 'viewer', display_name: '查看角色', description: '', is_system: 1, is_active: 1 }] };
+      if (url === '/roles/dashboard-catalog') return { data: [
+        { id: 21, name: '数字化大屏', status: 'enabled' },
+        { id: 22, name: 'Test', status: 'designing' },
+      ] };
+      if (url === '/roles/1/dashboards') return { data: [{ dashboard_id: 21 }] };
+      return { data: [] };
+    });
+  });
+
+  it('一键反选：已选 21 取消、未选 22 勾上', async () => {
+    await openDashboardsTab();
+    fireEvent.click(screen.getByRole('button', { name: '反选' }));
+    await waitFor(() => expect(vi.mocked(client.put).mock.calls[0]).toEqual([
+      '/roles/1/dashboards', { dashboard_ids: [22] },
+    ]));
+    expect(await screen.findByText('已选1/2')).toBeInTheDocument();
+    expect(switchOn('数字化大屏')).toBe(false);
+    expect(switchOn('Test')).toBe(true);
+  });
+});
+
+describe('角色权限 — 菜单与功能区一键全选/反选', () => {
+  it('整批全选只改勾选态，点「保存功能权限」才整份提交', async () => {
+    await openFunctionsTab();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+    // 本页签是本地态 + 显式保存，全选即时不得偷偷发请求
+    expect(client.put).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '保存功能权限' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/roles/1/permissions', {
+      permissions: expect.arrayContaining([
+        'ontology:save', 'ontology:delete', 'report:view', 'kbdoc:read', 'kbdoc:write', 'legacy:code', 'report:read',
+      ]),
+    }));
+    const calls = vi.mocked(client.put).mock.calls;
+    const payload = calls[calls.length - 1][1] as { permissions: string[] };
+    expect(payload.permissions).toHaveLength(7);
+  });
+
+  it('整批反选：已授权的取消、其余全部勾上', async () => {
+    await openFunctionsTab();
+    fireEvent.click(screen.getByRole('button', { name: '反选' }));
+    expect((screen.getByRole('checkbox', { name: /保存本体/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: /删除本体/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '保存功能权限' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalled());
+    const calls = vi.mocked(client.put).mock.calls;
+    const payload = calls[calls.length - 1][1] as { permissions: string[] };
+    expect(payload.permissions.sort()).toEqual([
+      'kbdoc:read', 'kbdoc:write', 'legacy:code', 'ontology:delete', 'report:read', 'report:view',
+    ]);
   });
 });

@@ -84,7 +84,7 @@ async def get_graph_visualization(
     max_depth: int = Query(2, ge=1, le=5),
     center_node: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1500, description="节点预算上限；统一大图打开「显示属性」时前端传 1200（属性可达数百条，500 会把属性截没）"),
     include_properties: bool = Query(False, description="统一大图是否平铺属性(Property)明细; 默认否"),
     model_id: Optional[int] = Query(None, ge=1, description="按选中本体模型聚焦: 只回该模型对象+一跳邻居; 留空=全图"),
 ):

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '@/i18n/runtime';
 import {
   ReactFlow,
@@ -61,10 +61,44 @@ export function circleSize(label: string): number {
   return Math.max(64, Math.min(150, 44 + chars * 13));
 }
 
+/** hub 节点（业务对象）直径：够放一个首字图标，名称放圆外胶囊（商用图观感）。 */
+export const hubSizeOf = (label: string): number =>
+  Math.max(56, Math.min(96, 42 + Array.from(String(label || '')).length * 2.2));
+
+/**
+ * 叶子节点（指标/维度/属性/字段…）圆点直径。
+ * 千级节点图不能用 64~150px 的大圆：圆一大就互相挤压，缩略后变成一片色球。
+ * 商用图谱（Palantir / Neo4j Bloom）用「小圆点 + 外侧标签」，密度和可读性都更好。
+ */
+export function leafDotSize(type?: string): number {
+  switch (type) {
+    case 'Table': return 24;
+    case 'Metric': return 20;
+    case 'Dimension': return 18;
+    case 'Term': return 16;
+    case 'Property': return 12;
+    case 'Column': return 10;
+    case 'DataSource': return 26;
+    case 'ETLTask': return 22;
+    default: return 16;
+  }
+}
+
+/** 图节点尺寸（compact 渲染口径，与 CompactCircleNode 同源，布局也读它）。 */
+export function compactNodeSize(type: string, label: string): number {
+  return type === 'Object' ? hubSizeOf(label) : leafDotSize(type);
+}
+
 // ── 圆形节点（统一渲染，类型只决定颜色） ─────────────────────────────
 
 /** 基准圆节点：图可视化规范 §2 的唯一实现，其他图页面（决策树编辑器等）直接复用，不得另画一套。 */
 export function CircleNode({ data, selected }: { data: any; selected?: boolean }) {
+  // 大规模图谱（业务全景/知识图谱，数百~上千节点）走紧凑 LOD 渲染：
+  // hub 用大圆 + 圆外名称胶囊，叶子用小圆点 + 右侧小字（缩远自动隐藏标签）。
+  // 标签压圆内 + 64~150px 大圆在千级图上必然糊成一片色球（历史反馈「太难看」）；
+  // 商用图谱（Palantir / Neo4j Bloom）同款做法是「小点 + 外置标签 + 缩放分级」。
+  // 决策树等小图不传 compact，仍走基准圆节点。
+  if (data?.compact) return <CompactCircleNode data={data} selected={selected} />;
   const cfg = NODE_CONFIG[data.nodeType] || { color: '#64748b', label: data.nodeType || '节点' };
   const label = String(data.label || cfg.label);
   const chars = Array.from(label).length;
@@ -94,6 +128,74 @@ export function CircleNode({ data, selected }: { data: any; selected?: boolean }
           title={data.statusText || ''}
         />
       )}
+    </div>
+  );
+}
+
+// ── 紧凑节点（大规模图谱 LOD） ─────────────────────
+
+/**
+ * 千级节点图的节点渲染：hub（业务对象）大圆 + 圆外名称胶囊；叶子小圆点 + 右侧小标签。
+ * - 叶子标签带 `.kg-leaf-label`，缩远（zoom < 0.55）时由容器 `.kg-lod-far` 隐藏，避免文字糊成一片；
+ * - 仍然复用 NODE_CONFIG 色板与 Handle 隐藏约定（图可视化规范 §2 同源配色）。
+ */
+function CompactCircleNode({ data, selected }: { data: any; selected?: boolean }) {
+  const cfg = NODE_CONFIG[data.nodeType] || { color: '#64748b', label: data.nodeType || '节点' };
+  const label = String(data.label || cfg.label);
+  const hub = data.role === 'hub';
+  const size = data.size || (hub ? hubSizeOf(label) : leafDotSize(data.nodeType));
+  const active = Boolean(selected || data.focused);
+
+  if (hub) {
+    return (
+      <div className="relative flex flex-col items-center" style={{ width: size }}>
+        <div
+          className="flex items-center justify-center rounded-full font-bold text-white select-none"
+          style={{
+            width: size,
+            height: size,
+            background: cfg.color,
+            border: '2px solid hsl(var(--background))',
+            boxShadow: active
+              ? '0 0 0 4px hsl(var(--primary) / 0.30), 0 4px 14px rgba(15,23,42,0.20)'
+              : '0 3px 10px rgba(15,23,42,0.18)',
+            transition: 'box-shadow 140ms ease',
+          }}
+          title={label}
+        >
+          <Handle type="target" position={data.targetPosition ?? Position.Top} className="!w-1.5 !h-1.5 !opacity-0" />
+          <Handle type="source" position={data.sourcePosition ?? Position.Bottom} className="!w-1.5 !h-1.5 !opacity-0" />
+          <span style={{ fontSize: Math.max(14, Math.min(24, size * 0.30)) }}>{Array.from(label)[0]}</span>
+        </div>
+        <div
+          className="kg-hub-label mt-1 max-w-[160px] truncate rounded-full border border-border/60 bg-card/90 px-2 py-[1px] text-[11px] font-semibold text-foreground shadow-sm"
+          title={label}
+        >
+          {label}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex items-center" style={{ width: size, height: size }} title={label}>
+      <div
+        className="rounded-full"
+        style={{
+          width: size,
+          height: size,
+          background: cfg.color,
+          border: '1.5px solid hsl(var(--background))',
+          boxShadow: active ? '0 0 0 3px hsl(var(--primary) / 0.32)' : 'none',
+          transition: 'box-shadow 140ms ease',
+        }}
+      >
+        <Handle type="target" position={data.targetPosition ?? Position.Top} className="!w-1 !h-1 !opacity-0" />
+        <Handle type="source" position={data.sourcePosition ?? Position.Bottom} className="!w-1 !h-1 !opacity-0" />
+      </div>
+      <span className="kg-leaf-label pointer-events-none absolute left-full ml-1.5 max-w-[120px] truncate whitespace-nowrap rounded border border-border/50 bg-card/85 px-1 py-[1px] text-[10px] leading-tight text-muted-foreground">
+        {label}
+      </span>
     </div>
   );
 }
@@ -229,6 +331,10 @@ function KnowledgeGraphInner({
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [showLabels, setShowLabels] = useState(false);
+  // 缩放分级（LOD）：缩远时用 `.kg-lod-far` 隐叶子标签，避免上千个小字糊成一片；只在跨阈值时更新 state。
+  const [lodFar, setLodFar] = useState(false);
+  // hub 名称反向缩放用的容器（直接改 CSS 变量，不走 React state，拖动缩放不卡）。
+  const containerRef = useRef<HTMLDivElement>(null);
   // 图例即筛选器: 被隐藏的类型(业务对象/维度/指标/属性…)从画布中节点与相关边剔除。
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
 
@@ -298,7 +404,9 @@ function KnowledgeGraphInner({
     const flowNodes: Node[] = nodes.map((node) => {
       // label 键位修复: 后端 properties.label 为主展示名(此前误读 name 导致显示裸 IRI)
       const label = node.properties.label || node.properties.name || node.properties.name_cn || node.id;
-      const size = circleSize(label);
+      // 紧凑尺寸：业务对象=hub 大圆，其余=小圆点（见 CompactCircleNode，千级图不再用 150px 大圆）
+      const isHub = node.label === 'Object';
+      const size = compactNodeSize(node.label, label);
       const status = String(node.properties.status || node.properties.binding?.sync_state || '').toLowerCase();
       const statusDot = ['active', 'bound', 'running'].includes(status) ? '#22c55e'
         : ['error', 'drifted', 'orphaned'].includes(status) ? '#f59e0b'
@@ -314,6 +422,8 @@ function KnowledgeGraphInner({
           label,
           size,
           nodeType: node.label,
+          compact: true,
+          role: isHub ? 'hub' : 'leaf',
           statusDot,
           statusText: status,
         },
@@ -330,13 +440,14 @@ function KnowledgeGraphInner({
         label: edge.properties?.cardinality
           ? `${edge.type} · ${edge.properties.cardinality}`
           : edge.type,
-        color: edgeColorMap[edge.type] || (graphType === 'ontology-overview' ? '#a5b4fc' : '#94a3b8'),
+        // 千级图上统一淡灰细线（彩色连线会压过节点），语义色仍留给血缘/表关系视图
+        color: edgeColorMap[edge.type] || '#94a3b8',
       },
       markerEnd: {
         type: MarkerType.ArrowClosed,
         width: 12,
         height: 12,
-        color: edgeColorMap[edge.type] || (graphType === 'ontology-overview' ? '#a5b4fc' : '#94a3b8'),
+        color: edgeColorMap[edge.type] || '#94a3b8',
       },
     }));
 
@@ -348,7 +459,9 @@ function KnowledgeGraphInner({
 
     // Fit view after layout
     const timer = setTimeout(() => {
-      reactFlow.fitView({ padding: 0.15, minZoom: 0.05, maxZoom: 1 });
+      // 千级节点整图 fitView 会把缩放压到 0.05（亚像素点阵，啥也读不清）。
+      // 初始视图改为「可读缩放下限 0.35」：先看局部结构，要看全貌点工具栏的适布。
+      reactFlow.fitView({ padding: 0.12, minZoom: 0.35, maxZoom: 1 });
     }, 100);
     return () => clearTimeout(timer);
   }, [graphData, graphType]);
@@ -387,6 +500,20 @@ function KnowledgeGraphInner({
   const handleZoomOut = () => reactFlow.zoomOut();
   const handleFitView = () => reactFlow.fitView({ padding: 0.2 });
 
+  // 缩放分级：阈值只在跨 0.9 时重渲染（避免每次拖动都 setState）。
+  // 0.9 而不是更小：叶子标签是 11px 流坐标文字、会随缩放一起缩，缩到 0.6 时标签比圆点还大，
+  // 整图糊成一片字（历史反馈「太难看」）——点够大之后再出名字。
+  const handleViewportMove = useCallback((_: unknown, viewport: { zoom: number }) => {
+    const far = viewport.zoom < 0.9;
+    setLodFar((prev) => (prev === far ? prev : far));
+    // hub（业务对象）名称按 1/zoom 反向缩放 → 缩到全景时仍是 11px 屏幕字号，
+    // 商用图谱（Palantir / Bloom）同做法：全图状态下也能读到对象名，而不是一排色点。
+    containerRef.current?.style.setProperty(
+      '--kg-inv-zoom',
+      String(Math.min(8, 1 / Math.max(0.05, viewport.zoom))),
+    );
+  }, []);
+
   const handleReLayout = () => {
     const { nodes: layoutedNodes, edges: layoutedEdges } = layoutGraph(nodes, edges);
     setNodes(layoutedNodes);
@@ -397,7 +524,7 @@ function KnowledgeGraphInner({
   // ── Render ──────────────────────────────────────────────────────────
 
   return (
-    <div className="w-full h-full relative bg-muted/10">
+    <div ref={containerRef} className={`w-full h-full relative bg-muted/10 ${lodFar ? 'kg-lod-far' : ''}`}>
       {/* Loading Overlay */}
       {isLoading && (
         <div className="absolute inset-0 bg-background/50 flex items-center justify-center z-50">
@@ -489,11 +616,12 @@ function KnowledgeGraphInner({
         onNodeMouseLeave={() => setHoveredNodeId(null)}
         onEdgeMouseEnter={(_, edge) => setHoveredEdgeId(edge.id)}
         onEdgeMouseLeave={() => setHoveredEdgeId(null)}
+        onMove={handleViewportMove}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
         minZoom={0.05}
-        fitViewOptions={{ padding: 0.15, minZoom: 0.05, maxZoom: 1 }}
+        fitViewOptions={{ padding: 0.12, minZoom: 0.35, maxZoom: 1 }}
         defaultEdgeOptions={{
           type: 'knowledge',
           markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#94a3b8' },

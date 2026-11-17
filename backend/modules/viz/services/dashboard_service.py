@@ -586,6 +586,13 @@ def _dataset_bound_args(dataset_id: int, params: dict) -> tuple[dict, dict]:
     return param_plan.bound_args(ds, values)
 
 
+# 图表 config 里随意图一起存的取数口径键（直建通道写入）：刷新时补回数据集入参。
+# 相对时间窗（近 7 天/本月/今年）必须每次刷新按**当前时刻**重算 —— 把绝对日期
+# 固化进数据集/图表就等于“建屏时对、第二天错”。
+_INTENT_PASSTHROUGH_KEYS = ("time_window", "time_column", "time_grain",
+                            "time_range", "time_start", "time_end")
+
+
 def _chart_effective_source(data: dict, chart_id: int) -> dict:
     """patch 常只带局部字段（只改 source_id 或只改标题）→ 回读现有行拼出有效口径。"""
     row = (execute_query(
@@ -1584,8 +1591,9 @@ class ChartService:
         """Update a chart within a dashboard.
 
         patch 只带局部字段，因此把关时回读现有行拼出有效口径（`chart_id` 传入闸门）；
-        `sql_query` 不在可写字段清单里 —— 旧版自带 SQL 不能经“改标题”这类请求顺手写回，
-        提交了或存量行里本就有 SQL 都会被闸门指名收编（不静默受理也不静默清空）。
+        `sql_query` 只允许**清空**（不能写回新 SQL）—— 旧版自带 SQL 不能经“改标题”这类
+        请求顺手写回，而改挂数据集时必须能抹掉旧口径；存量行里本就有 SQL 都会被闸门指名收编
+        （不静默受理也不静默清空）。
         """
         now = _now()
         payload = dict(data or {})
@@ -1599,6 +1607,7 @@ class ChartService:
                 allowed = (
                     "name", "chart_type", "config", "position",
                     "source_type", "source_id", "data_cache", "semantic_query", "query_source",
+                    "sql_query",
                     i18n.I18N_COLUMN,
                 )
                 sets, params = [], []
@@ -1608,6 +1617,12 @@ class ChartService:
                     value = data[field]
                     if field in ("name", "chart_type", "source_type", "query_source") and not value:
                         raise ValueError(f"{field} cannot be empty")
+                    if field == "sql_query" and str(value or "").strip():
+                        # 只允许**清空**：改挂数据集时必须能抹掉旧口径，否则存量 SQL 会让
+                        # 下一次编辑被闸门判成“人在看板上写 SQL”而把图锁死；但不得写回新 SQL。
+                        raise ValueError(
+                            "看板图表不再接受直接编写 SQL：取数口径请先到「数据集」页定义（或选用已有的数据集），"
+                            "然后在图表配置里改挂数据集。")
                     if field in ("config", "position", "semantic_query", i18n.I18N_COLUMN):
                         value = json.dumps(value, ensure_ascii=False) if value is not None else None
                     sets.append(f"`{field}`=%s")
@@ -1758,6 +1773,15 @@ class ChartService:
             "order": params.get("order") or [],
             "limit": int(cfg.get("limit") or params.get("limit") or 500),
         }
+        # 看板参数优先（控件给了值就以控件为准）；未给时回落到图表 config 里随意图存的
+        # 筛选/排序/时间窗等口径 —— 直建通道的图靠这条逐次重算“今年/近 7 天”，
+        # 也保住建屏时写进意图的业务筛选（否则刷新后只剩维度/指标，数字默默变大）。
+        for key in ("filters", "order", *_INTENT_PASSTHROUGH_KEYS):
+            if params.get(key) not in (None, "", [], {}):
+                continue
+            value = cfg.get(key)
+            if value not in (None, "", [], {}):
+                ds_params[key] = value
         if page_size:
             # 分页只递两个业务参数（每页行数 + 页号），偏移量与行总数均由服务端算
             ds_params["page_size"] = int(page_size)
