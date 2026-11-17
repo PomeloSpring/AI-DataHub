@@ -10,6 +10,7 @@ import { toast } from '@/lib/toast';
 import { Users, HardDrive, Trash2, RefreshCw, Settings2 } from 'lucide-react';
 import client from '@/api/client';
 import { WorkspaceDeleteDialog } from '@/components/WorkspaceDeleteDialog';
+import { useTranslation } from 'react-i18next';
 
 // 管理员统管: 工作空间为用户个人空间(随用户走, 无成员协作),
 // 管理员在此按用户限制可建空间数与每空间磁盘配额, 并查看磁盘用量。
@@ -54,6 +55,7 @@ function UsageBar({ used, quota }: { used: number; quota: number }) {
 }
 
 export default function WorkspaceManagerV2() {
+  const { t } = useTranslation('ui');
   const [users, setUsers] = useState<QuotaUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [quotaTarget, setQuotaTarget] = useState<QuotaUser | null>(null);
@@ -116,7 +118,7 @@ export default function WorkspaceManagerV2() {
     <div className="p-6 w-full space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">用户工作空间统管</h1>
+          <h1 className="text-2xl font-bold">{t("k_c8b912ff8c")}</h1>
           <p className="text-muted-foreground mt-1">
             工作空间是用户的个人空间（随用户走，用户自助创建）；在此限制每个用户的空间数量与磁盘配额。
           </p>
@@ -130,7 +132,7 @@ export default function WorkspaceManagerV2() {
       {loading ? (
         <div className="text-center py-8 text-muted-foreground">加载中...</div>
       ) : users.length === 0 ? (
-        <div className="text-center py-8 text-muted-foreground">暂无用户</div>
+        <div className="text-center py-8 text-muted-foreground">{t("k_3d268bdd39")}</div>
       ) : (
         <div className="space-y-4">
           {users.map(u => (
@@ -153,7 +155,7 @@ export default function WorkspaceManagerV2() {
               </div>
 
               {u.workspaces.length === 0 ? (
-                <p className="text-sm text-muted-foreground">该用户还没有工作空间（首次访问时自动创建默认工作空间）</p>
+                <p className="text-sm text-muted-foreground">{t("k_7a5f8a85b4")}</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
                   {u.workspaces.map(ws => {
@@ -166,7 +168,7 @@ export default function WorkspaceManagerV2() {
                             <span className="text-sm font-medium truncate">{ws.name}</span>
                             {ws.is_default ? (
                               <Badge variant="outline" className="text-[10px]"
-                                title="默认工作空间不可删除，仅可删除用户自行创建的自定义空间">默认</Badge>
+                                title={t("k_3d776cb51b")}>{t("k_c8d09cf955")}</Badge>
                             ) : null}
                           </div>
                           {/* 默认工作空间不给删(与用户侧下拉、后端 409 同一口径) */}
@@ -174,7 +176,7 @@ export default function WorkspaceManagerV2() {
                             <Button
                               variant="ghost" size="sm" className="text-destructive"
                               onClick={() => setDeleteWs({ user: u, ws })}
-                              title="删除工作空间"
+                              title={t("k_0717b53396")}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -182,7 +184,7 @@ export default function WorkspaceManagerV2() {
                         </div>
                         <div className="space-y-1">
                           <div className="flex justify-between text-xs text-muted-foreground">
-                            <span>磁盘用量</span>
+                            <span>{t("k_240cb16114")}</span>
                             <span>{fmtBytes(ws.disk_usage_bytes)} / {fmtBytes(u.disk_quota_bytes)}{pct >= 90 ? '（接近上限）' : ''}</span>
                           </div>
                           <UsageBar used={ws.disk_usage_bytes} quota={u.disk_quota_bytes} />
@@ -202,15 +204,15 @@ export default function WorkspaceManagerV2() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>配额设置 — {quotaTarget?.username}</DialogTitle>
-            <DialogDescription>限制该用户可创建的工作空间数量与每个工作空间的磁盘上限。</DialogDescription>
+            <DialogDescription>{t("k_560f6d5cc0")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>可建工作空间数（含默认工作空间）</Label>
+              <Label>{t("k_fc5cdea640")}</Label>
               <Input type="number" min={1} value={editMax} onChange={e => setEditMax(e.target.value)} />
             </div>
             <div className="space-y-2">
-              <Label>每工作空间磁盘配额（GB）</Label>
+              <Label>{t("k_788216c066")}</Label>
               <Input type="number" min={0.1} step={0.1} value={editDiskGb} onChange={e => setEditDiskGb(e.target.value)} />
               <p className="text-xs text-muted-foreground">
                 达到上限后将拒绝新建会话，用户需归档收藏产物或清理会话文件。
@@ -221,7 +223,7 @@ export default function WorkspaceManagerV2() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setQuotaTarget(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setQuotaTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={saveQuota} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>

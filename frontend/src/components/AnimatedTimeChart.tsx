@@ -6,6 +6,7 @@ import { useThemeStore } from '@/stores/themeStore';
 import { readToken } from '@/lib/chartTheme';
 import { useVisConfig } from '@/lib/visStyle';
 import { buildTimeFrames, frameRows, inferChartFields } from '@/lib/chartFrames';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   chartType: 'bar_race' | 'timeline_play';
@@ -31,6 +32,7 @@ const DEFAULT_CHART = {
  * 时长/速率可调,播完循环;数据不足(无时间列/单帧)时直接静态渲染。
  */
 export default function AnimatedTimeChart({ chartType, data, config, style }: Props) {
+  const { t } = useTranslation('ui');
   const theme = useThemeStore(s => s.theme);
   // 样式取字模库 chart_style(cs_bar_race / cs_timeline_play),含速率/条数旋钮
   const visCfg = useVisConfig(chartType === 'bar_race' ? 'cs_bar_race' : 'cs_timeline_play', DEFAULT_CHART);
@@ -131,7 +133,7 @@ export default function AnimatedTimeChart({ chartType, data, config, style }: Pr
   }, [playing, idx, speed, frames.length, visCfg.speedMs]);
 
   if (!columns.length || !rows.length) {
-    return <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">暂无数据</div>;
+    return <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">{t("k_b246458f20")}</div>;
   }
   if (!xField || !yField) {
     return <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">缺少时间列或数值列,无法播放</div>;
@@ -152,7 +154,7 @@ export default function AnimatedTimeChart({ chartType, data, config, style }: Pr
         <Button
           variant="ghost" size="sm" className="h-7 w-7 p-0"
           onClick={() => { setIdx(0); setPlaying(true); }}
-          title="从头播放"
+          title={t("k_fb283adaa8")}
         >
           <RotateCcw className="h-3.5 w-3.5" />
         </Button>
@@ -163,7 +165,7 @@ export default function AnimatedTimeChart({ chartType, data, config, style }: Pr
           value={Math.min(idx, frames.length - 1)}
           onChange={e => { setPlaying(false); setIdx(Number(e.target.value)); }}
           className="flex-1 accent-primary"
-          aria-label="时间进度"
+          aria-label={t("k_32e920a5df")}
         />
         <span className="w-24 truncate text-xs text-muted-foreground" title={String(frames[Math.min(idx, frames.length - 1)])}>
           {frames[Math.min(idx, frames.length - 1)] ?? ''}
@@ -172,7 +174,7 @@ export default function AnimatedTimeChart({ chartType, data, config, style }: Pr
           value={speed}
           onChange={e => setSpeed(Number(e.target.value))}
           className="h-7 rounded-md border bg-card px-1 text-xs text-muted-foreground"
-          aria-label="播放速率"
+          aria-label={t("k_59244f2808")}
         >
           <option value={0.5}>0.5×</option>
           <option value={1}>1×</option>

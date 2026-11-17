@@ -34,6 +34,7 @@ import { createVisComponent, VIS_CATEGORIES, type VisCategory, type VisComponent
 import { applyChartComponent, applyScreenComponent, applyLayout, chartRect, chartZIndex, clampPosition, compatible, getCanvas, minSizeOf, naturalSizeOf,
   resolveChartDesign, resolveDashboardDesign, sanitizeStyle, sanitizePack, screenToCanvas, visualConfig, legacyCanvasFilters,
   clearChartVisualOverrides, libraryThemeFilters, themePackFor } from '@/lib/dashboardDesign';
+import { useTranslation } from 'react-i18next';
 
 function ChangeGroup({ title, charts, onPick }: { title: string; charts: any[]; onPick: (chart: any) => void }) {
   if (!charts.length) return null;
@@ -76,6 +77,7 @@ export default function DashboardEditor() {
   return <EditorWorkspace key={id} dashboardId={Number(id)} />;
 }
 function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const location = useLocation();
   const store = useDashboardStore();
@@ -473,16 +475,16 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       await library.refresh(); setSaveVis(false); toast.success('已保存为自定义字模');
     } catch { toast.error('字模保存失败，请重试'); } finally { setVisSaving(false); }
   };
-  if (!current || !draftDashboard) return <div className="p-8">{store.loading ? '正在加载…' : '看板不存在'}<Button variant="link" onClick={() => navigate('/system/dashboards')}>返回列表</Button></div>;
+  if (!current || !draftDashboard) return <div className="p-8">{store.loading ? '正在加载…' : '看板不存在'}<Button variant="link" onClick={() => navigate('/system/dashboards')}>{t("k_53505b1fcd")}</Button></div>;
   // 可写性服务端裁决: 角色授予的可见权不含编辑权 —— 非属主/非 admin 直接拒入编辑器(fail-loud),
   // 后端写接口同样按 check_dashboard_editable 拦截, 双层都不放行
   if (current.editable === false) return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-      <p className="text-lg font-medium">仅看板属主或管理员可编辑该看板</p>
-      <p className="text-sm text-muted-foreground">该看板是按角色分配给你的，可见权不含编辑权；可以查看与大屏播放，但不能修改。</p>
+      <p className="text-lg font-medium">{t("k_4b65b2a901")}</p>
+      <p className="text-sm text-muted-foreground">{t("k_1a648a577e")}</p>
       <div className="flex items-center gap-2">
-        <Button onClick={() => navigate(returnTo)}>返回</Button>
-        <Button variant="outline" onClick={() => navigate(`/system/dashboards/${current.id}`)}>查看看板</Button>
+        <Button onClick={() => navigate(returnTo)}>{t("k_11d0241540")}</Button>
+        <Button variant="outline" onClick={() => navigate(`/system/dashboards/${current.id}`)}>{t("k_157369140c")}</Button>
       </div>
     </div>
   );
@@ -553,7 +555,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
                 transformOrigin: 'top left', transform: resizing ? `scale(${p.w / original.w}, ${p.h / original.h})` : undefined }}>{card}</div>
             </div>;
           }}>
-          {dropGhost && dropGhost.mode === 'screen' && <div aria-label="图表放置预览" className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
+          {dropGhost && dropGhost.mode === 'screen' && <div aria-label={t("k_b8c46b58a6")} className="pointer-events-none absolute border-2 border-dashed bg-primary/10"
             style={{ left: dropGhost.x, top: dropGhost.y, width: dropGhost.w, height: dropGhost.h, borderColor: CANVAS_COLORS.dropGhostBorder }} />}
           {canvas.guides.map(g => <div key={`${g.axis}-${g.value}`} className="pointer-events-none absolute z-20"
             style={{ background: CANVAS_COLORS.guide,
@@ -569,11 +571,11 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
         </DashboardCanvas>
         {allCharts.length === 0 && <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
           <div className="pointer-events-auto max-w-sm rounded-lg border bg-background/95 p-4 text-center shadow-sm">
-            <p className="text-sm font-medium">大屏画布还是空的</p>
-            <p className="mt-1 text-xs text-muted-foreground">从左侧组件库拖入图表或控件；开启吸附后会自动对齐网格与邻居边缘。</p>
+            <p className="text-sm font-medium">{t("k_36757afa88")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("k_4a45a3b0b8")}</p>
             <div className="mt-3 flex justify-center gap-2">
-              <Button size="sm" variant="outline" onClick={openInsertGuide}>从数据集引入</Button>
-              <Button size="sm" variant="outline" onClick={() => charts.setTemplatesOpen(true)}>套用模板</Button>
+              <Button size="sm" variant="outline" onClick={openInsertGuide}>{t("k_e0a423f4a7")}</Button>
+              <Button size="sm" variant="outline" onClick={() => charts.setTemplatesOpen(true)}>{t("k_e360c4fd5b")}</Button>
             </div>
           </div>
         </div>}
@@ -597,7 +599,7 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           if (layoutMode === 'screen') { charts.handlePositionChange(id, axis, value); return; }
           const item = pageLayout.items.find(item => item.chart.id === id);
           if (item && Number.isFinite(value)) charts.updatePageLayout(breakpoint, movePageItem(pageLayout.items, id, { ...item.rect, [axis]: value }, breakpoint, pageLayout.gaps));
-        }} onWidgetConfigChange={charts.handleWidgetConfigChange}
+        }} onWidgetConfigChange={charts.handleWidgetConfigChange} onWidgetI18nChange={charts.handleWidgetI18nChange}
         onDelete={charts.handleDeleteSelected} onChartConfig={openConfig} tab={propertyTab} onTab={setPropertyTab}
         pageParams={draftDashboard.page_params || []}
         widgetStyleBase={selectedWidgetBase} widgetVisName={selectedWidgetVisName}
@@ -620,12 +622,12 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       onCancel={() => setParamAssembly(null)} onConfirm={applyParamAssembly} />
     <Dialog open={paramsOpen} onOpenChange={open => !open && setParamsOpen(false)}>
       <DialogContent className="max-h-[88vh] w-[min(880px,95vw)] overflow-auto">
-        <DialogHeader><DialogTitle>看板参数</DialogTitle>
-          <DialogDescription>只改草稿，保存后生效。画布控件已驱动的键不会在页面顶部重复出现输入口。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{t("k_9c967cfb7e")}</DialogTitle>
+          <DialogDescription>{t("k_2811e04279")}</DialogDescription></DialogHeader>
         <DashboardParamsManager params={draftDashboard.params || []} pageParams={draftDashboard.page_params || []}
           charts={allCharts} onChange={next => charts.updateMetadata(next)} onConvertToControl={convertLegacyParamToControl} />
-        <DialogFooter><Button size="sm" variant="outline" onClick={() => setParamsOpen(false)}>关闭</Button>
-          <Button size="sm" onClick={() => { setParamsOpen(false); void charts.saveAllChanges(); }}>保存参数</Button></DialogFooter>
+        <DialogFooter><Button size="sm" variant="outline" onClick={() => setParamsOpen(false)}>{t("k_6c14bd7f6f")}</Button>
+          <Button size="sm" onClick={() => { setParamsOpen(false); void charts.saveAllChanges(); }}>{t("k_3fab71cb32")}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     <DashboardTemplates open={charts.templatesOpen} onClose={() => charts.setTemplatesOpen(false)} items={library.items} onApply={async template => {
@@ -639,25 +641,25 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
       }
       void applyTemplate();
     }} />
-    <Dialog open={preview} onOpenChange={setPreview}><DialogContent className="max-w-[95vw] h-[90vh] flex flex-col"><DialogHeader><DialogTitle>草稿预览</DialogTitle><DialogDescription>仅使用当前草稿与已有数据，不查询、不自动保存；页面内容以真实宽度展示。</DialogDescription></DialogHeader>
+    <Dialog open={preview} onOpenChange={setPreview}><DialogContent className="max-w-[95vw] h-[90vh] flex flex-col"><DialogHeader><DialogTitle>{t("k_1525ef5f38")}</DialogTitle><DialogDescription>{t("k_e41b875897")}</DialogDescription></DialogHeader>
       <div className="flex gap-2">
-        <select aria-label="预览布局" className="rounded border bg-background p-1" value={layoutMode} onChange={e => setLayoutMode(e.target.value as 'page' | 'screen')}><option value="page">页面布局</option><option value="screen">大屏布局</option></select>
-        {layoutMode === 'page' && <select aria-label="预览设备" className="rounded border bg-background p-1" value={breakpoint} onChange={e => setBreakpoint(e.target.value as PageBreakpoint)}>{Object.entries(PAGE_LABELS).map(([bp, label]) => <option value={bp} key={bp}>{label} · {PAGE_WIDTHS[bp as PageBreakpoint]}px</option>)}</select>}
+        <select aria-label={t("k_af09ea30be")} className="rounded border bg-background p-1" value={layoutMode} onChange={e => setLayoutMode(e.target.value as 'page' | 'screen')}><option value="page">{t("k_56cb71ddba")}</option><option value="screen">{t("k_a20fe87020")}</option></select>
+        {layoutMode === 'page' && <select aria-label={t("k_4a577b96e0")} className="rounded border bg-background p-1" value={breakpoint} onChange={e => setBreakpoint(e.target.value as PageBreakpoint)}>{Object.entries(PAGE_LABELS).map(([bp, label]) => <option value={bp} key={bp}>{label} · {PAGE_WIDTHS[bp as PageBreakpoint]}px</option>)}</select>}
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">{layoutMode === 'page' ? <div className="mx-auto" style={{ width: PAGE_WIDTHS[breakpoint] }}><ResponsiveDashboardCanvas dashboard={draftDashboard} items={library.items} draft breakpoint={breakpoint} /></div> : <FittedDashboardCanvas dashboard={draftDashboard} items={library.items} draft />}</div></DialogContent></Dialog>
     <Dialog open={!!pack || followTheme} onOpenChange={() => { setPack(null); setFollowTheme(false); }}><DialogContent><DialogHeader><DialogTitle>{pack ? `套用主题包：${pack.name}` : '全部使用 UI 字模库'}</DialogTitle><DialogDescription>背景、卡片、全部图表与控件使用整套字模。{followTheme ? '跟随用户选择的系统主题。' : ''}仅修改草稿，保存后生效；数据绑定和布局不变。</DialogDescription></DialogHeader>
       {packPreview && <DashboardThumbnail dashboard={packPreview} items={library.items} />}
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={replaceStyles} onChange={e => setReplaceStyles(e.target.checked)} />替换旧的图表、控件和背景样式</label>
-      <DialogFooter><Button variant="outline" onClick={() => { setPack(null); setFollowTheme(false); }}>取消</Button><Button disabled={saving} onClick={() => {
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={replaceStyles} onChange={e => setReplaceStyles(e.target.checked)} />{t("k_2ea0400e6c")}</label>
+      <DialogFooter><Button variant="outline" onClick={() => { setPack(null); setFollowTheme(false); }}>{t("k_4d0b4688c7")}</Button><Button disabled={saving} onClick={() => {
         charts.transaction(() => {
           if (packFilters) charts.updateMetadata({ filters: packFilters });
           if (replaceStyles) for (const chart of allCharts) charts.updateLocalChart(chart.id, { config: clearChartVisualOverrides(chart.config) });
         });
         setPack(null); setFollowTheme(false);
-      }}>确认套用</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={!!layout} onOpenChange={() => setLayout(null)}><DialogContent><DialogHeader><DialogTitle>应用布局：{layout?.name}</DialogTitle><DialogDescription>仅修改当前草稿位置；控件保持原位，空间不足时向下扩展。</DialogDescription></DialogHeader>
+      }}>{t("k_1595f3f3da")}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!layout} onOpenChange={() => setLayout(null)}><DialogContent><DialogHeader><DialogTitle>应用布局：{layout?.name}</DialogTitle><DialogDescription>{t("k_f735677f23")}</DialogDescription></DialogHeader>
       {layoutPreview && <DashboardThumbnail dashboard={layoutPreview} items={library.items} />}
-      <DialogFooter><Button variant="outline" onClick={() => setLayout(null)}>取消</Button><Button onClick={() => {
+      <DialogFooter><Button variant="outline" onClick={() => setLayout(null)}>{t("k_4d0b4688c7")}</Button><Button onClick={() => {
         if (!layout || !layoutResult) return;
         const filters = applyScreenComponent(draftDashboard.filters, layout);
         charts.transaction(() => {
@@ -665,28 +667,28 @@ function EditorWorkspace({ dashboardId }: { dashboardId: number }) {
           charts.updateMetadata({ filters: { ...filters, design: { ...filters.design, canvas: { ...dimensions, ...filters.design?.canvas, height: layoutResult.height } } } });
         });
         setLayout(null);
-      }}>确认应用布局</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog open={saveVis} onOpenChange={open => { if (!visSaving) setSaveVis(open); }}><DialogContent><DialogHeader><DialogTitle>存为字模</DialogTitle><DialogDescription>仅保存视觉白名单字段，不包含查询、数据源或缓存。</DialogDescription></DialogHeader>
-      <Input aria-label="字模名称" placeholder="字模名称" value={visName} onChange={e => setVisName(e.target.value)} />
-      <select aria-label="回存类别" className="rounded border bg-background p-2" value={visCategory} onChange={e => setVisCategory(e.target.value as VisCategory)}>
+      }}>{t("k_49450ed37d")}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={saveVis} onOpenChange={open => { if (!visSaving) setSaveVis(open); }}><DialogContent><DialogHeader><DialogTitle>{t("k_bc21a6255a")}</DialogTitle><DialogDescription>{t("k_7a801aade9")}</DialogDescription></DialogHeader>
+      <Input aria-label={t("k_7bfbf91d75")} placeholder={t("k_7bfbf91d75")} value={visName} onChange={e => setVisName(e.target.value)} />
+      <select aria-label={t("k_2551e47168")} className="rounded border bg-background p-2" value={visCategory} onChange={e => setVisCategory(e.target.value as VisCategory)}>
         {VIS_CATEGORIES.filter(c => (selectedChart || !['chart_style', 'kpi_card'].includes(c.id))).map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
       </select><DialogFooter><Button disabled={visSaving || !visName.trim()} onClick={persistVis}>{visSaving ? '保存中…' : '保存字模'}</Button></DialogFooter>
     </DialogContent></Dialog>
     <Dialog open={!!confirmAction} onOpenChange={open => { if (!open) setConfirmAction(null); }}>
       <DialogContent><DialogHeader><DialogTitle>{confirmAction?.title}</DialogTitle><DialogDescription>{confirmAction?.description}</DialogDescription></DialogHeader>
-        <DialogFooter><Button variant="outline" onClick={() => setConfirmAction(null)}>取消</Button>
+        <DialogFooter><Button variant="outline" onClick={() => setConfirmAction(null)}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={() => { const action = confirmAction; setConfirmAction(null); action?.run(); }}>{confirmAction?.actionLabel}</Button></DialogFooter>
       </DialogContent></Dialog>
     {/* 变更清单：只一个 badge 无法知道改了什么，点开可逐项跳转选中 */}
     <Dialog open={changesOpen} onOpenChange={setChangesOpen}>
       <DialogContent className="max-h-[80vh] w-[min(560px,95vw)]"><DialogHeader><DialogTitle>未保存的更改 ({charts.pendingCount})</DialogTitle>
-        <DialogDescription>来自主动编辑，保存后清空。点条目可在画布上选中它。</DialogDescription></DialogHeader>
+        <DialogDescription>{t("k_fb811805e7")}</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-3 overflow-auto text-sm">
           {charts.pendingNewCount > 0 && <ChangeGroup title={`新增 (${charts.pendingNewCount})`} charts={allCharts.filter(c => c.id < 0)} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
           {charts.pendingChangeCount > 0 && <ChangeGroup title={`修改 (${charts.dirtyIds.length})`} charts={allCharts.filter(c => charts.dirtyIds.includes(c.id))} onPick={chart => { charts.handleSelectElement(chart); setChangesOpen(false); }} />}
           {charts.pendingDeleteCount > 0 && <p className="text-xs text-muted-foreground">待删除图表：{charts.pendingDeleteCount} 个（保存后不可恢复，只能从版本备份找回）</p>}
           {Object.keys(charts.draftMetadataKeys || {}).length > 0 && <p className="text-xs text-muted-foreground">看板级变更：{(charts.draftMetadataKeys || []).join('、')}</p>}
-          {!charts.pendingCount && <p className="text-xs text-muted-foreground">当前没有未保存的更改。</p>}
+          {!charts.pendingCount && <p className="text-xs text-muted-foreground">{t("k_f6492cadd1")}</p>}
         </div>
       </DialogContent></Dialog>
   </div>;

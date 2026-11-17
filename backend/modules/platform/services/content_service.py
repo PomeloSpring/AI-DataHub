@@ -38,6 +38,7 @@ import uuid
 from datetime import date, datetime
 
 from backend.common.db import execute_insert, execute_query, execute_write
+from backend.common import i18n
 from backend.common.object_storage import build_content_file_key, get_object_storage
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,9 @@ LIVE_WHERE = "live_revision_id <> 0 AND status <> 'archived'"
 
 SUMMARY_SOFT_MAX = 120
 PLACEHOLDER_RE = re.compile(r"【待填")
+# 英文稿的半成品标记：与【待填 同纪律（硬阻断），因为双语版同样不得带占位发布。
+# 用 word boundary 避开 "TBD" 出现在缩写里（如 "PTBDS"）；大小写敏感避免误报正文单词。
+PLACEHOLDER_EN_RE = re.compile(r"\b(?:TBD|TODO|FIXME|PLACEHOLDER)\b")
 # 疑似患者可识别形态：只按**明确指向病例的键名/称谓**提醒，不做通用内容形态正则
 # （手机号/IP 等属业务数据内容，由 adh_sensitive_fields 在取数侧裁决，见护栏 §7）。
 PII_HINT_RE = re.compile(r"(患者姓名|病人姓名|就诊号|病历号|病例号|随访电话|牙位图|就诊卡号)")
@@ -325,18 +329,26 @@ def releases_of(article_id: int, *, for_reader: bool) -> dict:
 # ── 栏目 ──────────────────────────────────────────────────────────────────────
 
 def list_categories(*, with_counts: bool = True, include_inactive: bool = False) -> list[dict]:
-    sql = ("SELECT id, category_key, label, description, icon, color, sort, is_active "
+    sql = ("SELECT id, category_key, label, description, icon, color, sort, is_active, i18n "
            "FROM adh_content_categories")
     if not include_inactive:
         sql += " WHERE is_active=1"
     sql += " ORDER BY sort, id"
     rows = execute_query(sql) or []
-    out = [{
-        "id": int(r["id"]), "key": r["category_key"], "label": r["label"],
-        "description": r.get("description") or "", "icon": r.get("icon") or "",
-        "color": r.get("color") or "", "sort": int(r.get("sort") or 0),
-        "is_active": int(r.get("is_active") or 0),
-    } for r in rows]
+    out = []
+    for r in rows:
+        item = {
+            "id": int(r["id"]), "key": r["category_key"], "label": r["label"],
+            "description": r.get("description") or "", "icon": r.get("icon") or "",
+            "color": r.get("color") or "", "sort": int(r.get("sort") or 0),
+            "is_active": int(r.get("is_active") or 0),
+            "i18n": _loads(r.get("i18n"), {}),
+        }
+        # label/description 按请求语言下发；回落记 `i18n_fallback_fields`，不静默
+        miss = i18n.localize_display(item, fields=("label", "description"))
+        if miss:
+            item["i18n_fallback_fields"] = miss
+        out.append(item)
     if with_counts:
         counts = execute_query(
             f"SELECT category_id, COUNT(*) AS n FROM adh_content_articles "
@@ -375,11 +387,12 @@ def create_category(payload: dict, actor: str) -> dict:
     if execute_query("SELECT id FROM adh_content_categories WHERE category_key=%s", (key,), fetchone=True):
         raise ContentError(f"栏目标识「{key}」已存在")
     cid = execute_insert(
-        "INSERT INTO adh_content_categories (category_key, label, description, icon, color, sort, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO adh_content_categories (category_key, label, description, icon, color, sort, is_active, i18n) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
         (key, label, str(payload.get("description") or ""), str(payload.get("icon") or ""),
          str(payload.get("color") or ""), int(payload.get("sort") or 0),
-         1 if payload.get("is_active", 1) else 0))
+         1 if payload.get("is_active", 1) else 0,
+         json.dumps(payload.get("i18n") or {}, ensure_ascii=False)))
     logger.info("[content] 栏目创建 id=%s label=%s by=%s", cid, label, actor)
     return {"id": int(cid), "key": key, "label": label}
 
@@ -401,6 +414,9 @@ def update_category(category_id: int, payload: dict, actor: str) -> dict:
         sets.append("sort=%s"); params.append(int(payload["sort"]))
     if "is_active" in payload:
         sets.append("is_active=%s"); params.append(1 if payload["is_active"] else 0)
+    # 双语：payload 里显式给了 i18n 才写（未给 = 不改覆盖层，保留既有英文）
+    if "i18n" in payload:
+        sets.append("i18n=%s"); params.append(json.dumps(payload.get("i18n") or {}, ensure_ascii=False))
     if sets:
         params.append(int(category_id))
         execute_write(f"UPDATE adh_content_categories SET {','.join(sets)} WHERE id=%s", tuple(params))
@@ -423,7 +439,7 @@ def delete_category(category_id: int, actor: str) -> dict:
 # ── 标签受控词表 ──────────────────────────────────────────────────────────────
 
 def list_tags(*, include_inactive: bool = False) -> list[dict]:
-    sql = "SELECT id, tag, sort, is_active FROM adh_content_tag_vocab"
+    sql = "SELECT id, tag, sort, is_active, i18n FROM adh_content_tag_vocab"
     if not include_inactive:
         sql += " WHERE is_active=1"
     sql += " ORDER BY sort, id"
@@ -436,9 +452,16 @@ def list_tags(*, include_inactive: bool = False) -> list[dict]:
     for r in hits:
         for t in _loads(r.get("tags"), []):
             tally[str(t)] = tally.get(str(t), 0) + 1
-    return [{"id": int(r["id"]), "tag": r["tag"], "sort": int(r.get("sort") or 0),
-             "is_active": int(r.get("is_active") or 0), "count": tally.get(r["tag"], 0)}
-            for r in rows]
+    out = []
+    for r in rows:
+        item = {"id": int(r["id"]), "tag": r["tag"], "sort": int(r.get("sort") or 0),
+                "is_active": int(r.get("is_active") or 0), "count": tally.get(r["tag"], 0),
+                "i18n": _loads(r.get("i18n"), {})}
+        miss = i18n.localize_display(item, fields=("tag",))
+        if miss:
+            item["i18n_fallback_fields"] = miss
+        out.append(item)
+    return out
 
 
 def create_tag(payload: dict, actor: str) -> dict:
@@ -449,8 +472,10 @@ def create_tag(payload: dict, actor: str) -> dict:
         raise ContentError("标签太长了（不超过 32 字）")
     if execute_query("SELECT id FROM adh_content_tag_vocab WHERE tag=%s", (tag,), fetchone=True):
         raise ContentError(f"标签「{tag}」已存在")
-    tid = execute_insert("INSERT INTO adh_content_tag_vocab (tag, sort, is_active) VALUES (%s,%s,1)",
-                         (tag, int(payload.get("sort") or 0)))
+    tid = execute_insert(
+        "INSERT INTO adh_content_tag_vocab (tag, sort, is_active, i18n) VALUES (%s,%s,1,%s)",
+        (tag, int(payload.get("sort") or 0),
+         json.dumps(payload.get("i18n") or {}, ensure_ascii=False)))
     logger.info("[content] 标签创建 id=%s tag=%s by=%s", tid, tag, actor)
     return {"id": int(tid), "tag": tag}
 
@@ -473,6 +498,9 @@ def update_tag(tag_id: int, payload: dict, actor: str) -> dict:
         sets.append("tag=%s"); params.append(tag)
     if payload.get("sort") is not None:
         sets.append("sort=%s"); params.append(int(payload["sort"]))
+    # 双语：显式给了 i18n 才写（未给 = 不改覆盖层）
+    if "i18n" in payload:
+        sets.append("i18n=%s"); params.append(json.dumps(payload.get("i18n") or {}, ensure_ascii=False))
     if "is_active" in payload:
         sets.append("is_active=%s"); params.append(1 if payload["is_active"] else 0)
     if sets:
@@ -540,6 +568,15 @@ def _kind_label(kind: str) -> str:
     return KIND_LABELS.get(kind or "") or KIND_LEGACY_LABELS.get(kind or "") or str(kind or "")
 
 
+def _localized_category_label(row: dict) -> str:
+    """栏目 label 与 list_categories 同一口径的本地化：命中改写、未命中回落中文（no-silent-degradation）。
+    category_i18n 是 SQL JOIN 时从 adh_content_categories.i18n 直接带出的原始 JSON。"""
+    blob = _loads(row.get("category_i18n"), {}) or {}
+    text, _fell_back = i18n.localized_text(
+        row.get("category_label") or "", blob, "label", i18n.current_locale())
+    return text
+
+
 def _article_out(row: dict, *, body: str = "", with_body: bool = False) -> dict:
     """响应组装：只回业务可读字段。
 
@@ -557,7 +594,9 @@ def _article_out(row: dict, *, body: str = "", with_body: bool = False) -> dict:
         "title": row.get("title") or "",
         "summary": row.get("summary") or "",
         "category_id": int(row.get("category_id") or 0),
-        "category_label": row.get("category_label") or "",
+        # 双语：栏目 label 走 category_i18n（SQL JOIN 一起带出）本地化，与 list_categories 同一口径；
+        # 同时保留 category_label_zh，供编辑页回填中文事实源（英文界面下编辑不污染中文列）。
+        "category_label": _localized_category_label(row),
         "category_icon": row.get("category_icon") or "",
         "category_color": row.get("category_color") or "",
         "tags": _loads(row.get("tags"), []),
@@ -595,7 +634,19 @@ def _article_out(row: dict, *, body: str = "", with_body: bool = False) -> dict:
         "updated_by": row.get("updated_by") or "",
         "updated_at": _iso(row.get("updated_at")),
         "version": int(row.get("version") or 1),
+        # ── 双语：正文按语言各一条，这里带上本篇 lang / 译文分组；标题/摘要短字段走 i18n blob ──
+        "lang": row.get("lang") or i18n.DEFAULT_LOCALE,
+        "translation_group": row.get("translation_group") or "",
+        "i18n": _loads(row.get("i18n"), {}),
     }
+    miss = i18n.localize_display(out, fields=("title", "summary"))
+    # 双语：category_label 是 JOIN 拉进来的旁字段（不走 localize_display 的 fields），需要独立挂载
+    # 中文事实源：仅在**非默认语言 + 已本地化命中**时补 `category_label_zh`（默认语言请求形状零变化，
+    # 与 plan §P1 "默认语言请求啥都不改" 同纪律）。未命中英文时不补，因为字段本身就是中文事实源。
+    if i18n.current_locale() != i18n.DEFAULT_LOCALE and out.get("category_label") != (row.get("category_label") or ""):
+        out["category_label_zh"] = row.get("category_label") or ""
+    if miss:
+        out["i18n_fallback_fields"] = miss
     # 知识库同步状态：行里带了 JOIN 列才输出（未同步时是 null，前端据此显示“未同步”）
     state = _kb_sync_of(row)
     if state is not None or "sync_kb_name" in row:
@@ -605,8 +656,47 @@ def _article_out(row: dict, *, body: str = "", with_body: bool = False) -> dict:
     return out
 
 
+def _attach_translations(items: list[dict]) -> None:
+    """给一行/一页文章批量补 `translation` 字段：同一 translation_group 里的中英两份。
+
+    一次 SQL 拉齐当前页所有 group 的兄弟条目，避免 N+1；输出契约：
+      {
+        "en": {"slug": "...", "available": bool},  # 英文在线版是否可直读
+        "zh": {"slug": "...", "available": bool},  # 中文在线版
+      }
+    available 只按 live_revision_id<>0 判（未发布不广告，避免点了 404）。
+    无英文条目时 `en.slug=""`+`available=False`；前端据此显示“暂无英文版”（不静默换语言）。
+    """
+    groups = [str(it.get("translation_group") or "") for it in items if it.get("translation_group")]
+    if not groups:
+        for it in items:
+            it["translation"] = {"en": {"slug": "", "available": False},
+                                  "zh": {"slug": "", "available": False}}
+        return
+    marks = ",".join(["%s"] * len(set(groups)))
+    rows = execute_query(
+        "SELECT translation_group, slug, lang, live_revision_id "
+        f"FROM adh_content_articles WHERE translation_group IN ({marks})",
+        tuple(set(groups))) or []
+    by_group: dict = {}
+    for r in rows:
+        g = str(r.get("translation_group") or "")
+        lg = str(r.get("lang") or i18n.DEFAULT_LOCALE)
+        by_group.setdefault(g, {})[lg] = {
+            "slug": r.get("slug") or "",
+            "available": int(r.get("live_revision_id") or 0) != 0,
+        }
+    for it in items:
+        g = str(it.get("translation_group") or "")
+        per = by_group.get(g, {})
+        it["translation"] = {
+            "en": per.get("en-US") or {"slug": "", "available": False},
+            "zh": per.get("zh-CN") or {"slug": "", "available": False},
+        }
+
+
 _SELECT = (
-    "SELECT a.*, c.label AS category_label, c.icon AS category_icon, c.color AS category_color, "
+    "SELECT a.*, c.label AS category_label, c.icon AS category_icon, c.color AS category_color, c.i18n AS category_i18n, "
     "       s.kb_name AS sync_kb_name, s.doc_title AS sync_doc_title, "
     "       s.revision_id AS sync_revision_id, s.synced_at AS sync_synced_at, "
     "       s.state AS sync_state, s.error AS sync_error, "
@@ -676,6 +766,7 @@ def _kb_sync_of(row: dict) -> dict | None:
 def list_articles(*, category: str = "", exclude_category: str = "", kind: str = "",
                   tag: str = "", q: str = "", status: str = "", mine: str = "",
                   can_edit: bool = False, sort: str = "latest", expired: bool = False,
+                  lang: str = "",
                   page: int = 1, page_size: int = 12) -> dict:
     """分页清单。默认只回门户可见内容；草稿只有可编辑者按 status 显式筛才回。
 
@@ -723,6 +814,12 @@ def list_articles(*, category: str = "", exclude_category: str = "", kind: str =
         if kind not in KIND_LABELS:
             raise ContentError(f"形态取值不合法（只支持 {'/'.join(KIND_LABELS)}）")
         where.append("a.kind=%s"); params.append(kind)
+    if lang:
+        # 按正文语言筛：受控清单外的值一律拒（不猜、不就近映射，与 i18n.normalize_locale 同口径）
+        norm = i18n.normalize_locale(lang)
+        if not norm:
+            raise ContentError(f"语言取值不合法（只支持 {'/'.join(i18n.SUPPORTED_LOCALES)}）")
+        where.append("a.lang=%s"); params.append(norm)
     if tag:
         where.append("a.tags LIKE %s"); params.append(f'%"{tag}"%')
     if q:
@@ -747,7 +844,9 @@ def list_articles(*, category: str = "", exclude_category: str = "", kind: str =
     rows = execute_query(_SELECT + clause +
                          f" ORDER BY a.pinned DESC, {order}, a.id DESC LIMIT %s OFFSET %s",
                          tuple(params) + (page_size, (page - 1) * page_size)) or []
-    return {"items": [_article_out(r) for r in rows], "total": total,
+    items = [_article_out(r) for r in rows]
+    _attach_translations(items)
+    return {"items": items, "total": total,
             "page": page, "page_size": page_size}
 
 
@@ -821,6 +920,9 @@ def get_article(*, slug: str = "", article_id: int = 0, can_edit: bool = False,
     # 附件按条目归属、不进版本链：翻旧期时看到的仍是“当前挂着的这几个”，这句话由
     # releases 接口的 attachments_shared 交给 UI 说出来，不在这里静默换成“旧期的附件”。
     out["files"] = _files_of(int(row["id"]))
+    # 双语条目：给阅读页顶部语言切换（有英文版直给 slug；没有就显式标 available=false，
+    # 让“暂无英文版”可见——不得静默切语言）。
+    _attach_translations([out])
     return out
 
 
@@ -833,7 +935,9 @@ def related_articles(article_id: int, *, limit: int = 5) -> list[dict]:
         _SELECT + f" WHERE {' AND '.join(['a.category_id=%s', 'a.id<>%s', LIVE_WHERE])}"
         " ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT %s",
         (int(row["category_id"] or 0), int(article_id), int(limit))) or []
-    return [_article_out(r) for r in rows]
+    out = [_article_out(r) for r in rows]
+    _attach_translations(out)
+    return out
 
 
 # ── 条目写入 ──────────────────────────────────────────────────────────────────
@@ -899,18 +1003,26 @@ def create_article(payload: dict, actor: str, *, source_type: str = "manual",
     slug = _unique_slug(slugify(str(payload.get("slug") or "").strip() or title))
     tags = _clean_tags(payload.get("tags"))
     refs = _clean_refs(payload.get("refs"))
+    # 双语条目：正文按语言各建一条（用户 2026-11-16 拍板）。默认跟随当前请求语言，
+    # `translation_group` 空时回填本篇 slug —— 中文条目自关联即成组，英文条目须显式指向中文原条目。
+    article_lang = i18n.normalize_locale(payload.get("lang")) or i18n.current_locale()
+    tg = str(payload.get("translation_group") or "").strip()
 
     article_id = int(execute_insert(
         "INSERT INTO adh_content_articles (slug, title, summary, category_id, tags, kind, link_url, "
         "link_label, refs, pinned, featured, status, review_by, source_type, source_ref, versioning, "
+        "lang, translation_group, i18n, "
         "created_by, updated_by, version) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)",
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)",
         (slug, title, str(payload.get("summary") or "").strip(), category_id,
          json.dumps(tags, ensure_ascii=False), kind, link_url,
          str(payload.get("link_label") or "").strip(), json.dumps(refs, ensure_ascii=False),
          1 if payload.get("pinned") else 0, 1 if payload.get("featured") else 0,
          STATUS_DRAFT, _date_or_none(payload.get("review_by")),
-         str(source_type or "manual"), str(source_ref or ""), versioning, actor, actor)))
+         str(source_type or "manual"), str(source_ref or ""), versioning,
+         article_lang, tg or slug,
+         json.dumps(payload.get("i18n") or {}, ensure_ascii=False),
+         actor, actor)))
     rid = _add_revision(article_id, str(payload.get("body") or ""), "初稿", actor)
     execute_write("UPDATE adh_content_articles SET head_revision_id=%s WHERE id=%s", (rid, article_id))
     logger.info("[content] 条目创建 id=%s slug=%s source=%s by=%s", article_id, slug, source_type, actor)
@@ -1063,6 +1175,13 @@ def gate_article(article: dict, body: str) -> tuple[list[dict], list[dict]]:
     if PLACEHOLDER_RE.search(text):
         hard.append({"code": "placeholder", "line": _line_of(text, PLACEHOLDER_RE),
                      "message": "正文还有未填写的占位（【待填…）。填不出来的数据请把该段落删掉，不要带着占位发布"})
+    # 英文稿（lang=en-US）同样禁带 TBD/TODO/FIXME/PLACEHOLDER 半成品标记上线（与【待填 同纪律）
+    if str(article.get("lang") or "") == "en-US":
+        if PLACEHOLDER_EN_RE.search(text):
+            hard.append({"code": "placeholder_en", "line": _line_of(text, PLACEHOLDER_EN_RE),
+                         "message": "English draft still contains a placeholder marker "
+                                    "(TBD/TODO/FIXME/PLACEHOLDER). Delete that paragraph if the value cannot "
+                                    "be filled; never publish a half-finished translation."})
     leak = _leak_hits(text)
     if leak:
         hard.append({"code": "internal_leak", "line": leak[0][1],

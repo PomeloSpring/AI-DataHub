@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { t } from '@/i18n/runtime';
 import {
   ReactFlow, Background, Controls, MiniMap,
   Handle, Position, applyEdgeChanges, applyNodeChanges,
@@ -27,6 +28,7 @@ import {
 import { udfApi, type Udf } from '@/api/udf';
 import { DatasourceSelect } from './DatasourceSelect';
 import DagDataflowView from './DagDataflowView';
+import { useTranslation } from 'react-i18next';
 
 // ── 自定义节点 ──────────────────────────────────────────────────
 const TYPE_LABEL: Record<string, string> = {
@@ -122,7 +124,7 @@ function NodeConfigPanel({
   return (
     <div className="space-y-3 text-sm">
       <div>
-        <label className="text-xs font-medium text-muted-foreground">节点名称</label>
+        <label className="text-xs font-medium text-muted-foreground">{t("k_3de90b4272")}</label>
         <Input className="mt-1" value={node.name || ''} onChange={e => onChange({ ...config, __name: e.target.value })} />
       </div>
 
@@ -145,12 +147,12 @@ function NodeConfigPanel({
             <Input className="mt-1" value={config.target_table || ''} onChange={e => set({ target_table: e.target.value })} />
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">同步模式</label>
+            <label className="text-xs font-medium text-muted-foreground">{t("k_c15748bd6f")}</label>
             <Select value={config.sync_mode || 'full'} onValueChange={v => set({ sync_mode: v })}>
               <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="full">全量</SelectItem>
-                <SelectItem value="incremental">增量</SelectItem>
+                <SelectItem value="full">{t("k_07a5db8b5e")}</SelectItem>
+                <SelectItem value="incremental">{t("k_6078bac61a")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -161,12 +163,12 @@ function NodeConfigPanel({
             </div>
           )}
           <div>
-            <label className="text-xs font-medium text-muted-foreground">写入模式</label>
+            <label className="text-xs font-medium text-muted-foreground">{t("k_244d6de40f")}</label>
             <Select value={config.write_mode || 'append'} onValueChange={v => set({ write_mode: v })}>
               <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="append">追加</SelectItem>
-                <SelectItem value="overwrite">覆盖（全量刷新）</SelectItem>
+                <SelectItem value="append">{t("k_aec344de80")}</SelectItem>
+                <SelectItem value="overwrite">{t("k_80598cde3b")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -188,9 +190,9 @@ function NodeConfigPanel({
               placeholder={'SELECT ... FROM 源库表 s\nJOIN 另一数据源.db.table t ON ...\nLIMIT 1000'} />
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">UDF 引用</label>
+            <label className="text-xs font-medium text-muted-foreground">{t("k_7714352a81")}</label>
             <div className="mt-1 flex flex-wrap gap-1">
-              {udfs.length === 0 && <span className="text-xs text-muted-foreground">暂无 UDF</span>}
+              {udfs.length === 0 && <span className="text-xs text-muted-foreground">{t("k_50d596f2ee")}</span>}
               {udfs.map(u => {
                 const ref = `${u.name}:${u.version}`;
                 const active = (config.udf_refs || []).includes(ref) || (config.udf_refs || []).includes(u.name);
@@ -210,19 +212,19 @@ function NodeConfigPanel({
             </div>
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground">写入目标（可选）</label>
+            <label className="text-xs font-medium text-muted-foreground">{t("k_eff2016531")}</label>
             <div className="mt-1"><DatasourceSelect allowEmpty value={config.target?.datasource}
               onChange={v => set({ target: v ? { ...(config.target || { table: '' }), datasource: v } : undefined })} /></div>
             {config.target?.datasource && (
               <>
-                <Input className="mt-1" placeholder="目标表名" value={config.target?.table || ''}
+                <Input className="mt-1" placeholder={t("k_451035fee3")} value={config.target?.table || ''}
                   onChange={e => set({ target: { ...config.target!, table: e.target.value } })} />
                 <Select value={config.target?.write_mode || 'append'}
                   onValueChange={v => set({ target: { ...config.target!, write_mode: v } })}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="append">追加</SelectItem>
-                    <SelectItem value="overwrite">覆盖</SelectItem>
+                    <SelectItem value="append">{t("k_aec344de80")}</SelectItem>
+                    <SelectItem value="overwrite">{t("k_a26056298a")}</SelectItem>
                   </SelectContent>
                 </Select>
               </>
@@ -233,12 +235,12 @@ function NodeConfigPanel({
 
       {node.type === 'control' && (
         <div>
-          <label className="text-xs font-medium text-muted-foreground">动作</label>
+          <label className="text-xs font-medium text-muted-foreground">{t("k_d9d9827827")}</label>
           <Select value={config.action || 'pass'} onValueChange={v => set({ action: v })}>
             <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="pass">通过</SelectItem>
-              <SelectItem value="fail">显式失败</SelectItem>
+              <SelectItem value="pass">{t("k_dcc4233255")}</SelectItem>
+              <SelectItem value="fail">{t("k_ff24cedd52")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -249,6 +251,7 @@ function NodeConfigPanel({
 
 // ── 主页面 ──────────────────────────────────────────────────────
 export default function DagEditor() {
+  const { t } = useTranslation('ui');
   const { workflowId } = useParams();
   const navigate = useNavigate();
   const isNew = !workflowId || workflowId === 'new';
@@ -407,7 +410,7 @@ export default function DagEditor() {
             <ArrowLeft className="w-4 h-4 mr-1" />返回
           </Button>
           <Input className="w-[220px]" placeholder="工作流名称 *" value={name} onChange={e => setName(e.target.value)} />
-          <Input className="w-[160px]" placeholder="Cron（可选）" value={cron} onChange={e => setCron(e.target.value)} />
+          <Input className="w-[160px]" placeholder={t("k_4a7239c74a")} value={cron} onChange={e => setCron(e.target.value)} />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setSqlDlgOpen(true)}>
@@ -428,7 +431,7 @@ export default function DagEditor() {
       <div className="flex-1 flex min-h-0">
         {/* Left: node palette */}
         <div className="w-[180px] border-r p-3 space-y-2">
-          <p className="text-xs font-medium text-muted-foreground">节点</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("k_e840cd6f1e")}</p>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('sync')}>
             <Plus className="w-3.5 h-3.5 mr-1" />同步节点
           </Button>
@@ -446,8 +449,8 @@ export default function DagEditor() {
         {/* Canvas: 编排图（控制流） / 数据流（源→转换→目标）双视图 */}
         <Tabs defaultValue="design" className="flex-1 flex flex-col min-h-0">
           <TabsList className="mx-3 mt-2 self-start">
-            <TabsTrigger value="design">编排图</TabsTrigger>
-            <TabsTrigger value="dataflow">数据流</TabsTrigger>
+            <TabsTrigger value="design">{t("k_6bc3ff93aa")}</TabsTrigger>
+            <TabsTrigger value="dataflow">{t("k_b2047f645e")}</TabsTrigger>
           </TabsList>
           <TabsContent value="design" className="flex-1 min-h-0 mt-2 data-[state=active]:flex">
             <div className="flex-1 min-h-0 w-full">
@@ -485,7 +488,7 @@ export default function DagEditor() {
           {selectedNode ? (
             <>
               <div className="flex items-center justify-between mb-2">
-                <p className="text-sm font-medium">节点配置</p>
+                <p className="text-sm font-medium">{t("k_7eddbd9247")}</p>
                 <Button variant="ghost" size="sm" onClick={removeSelected}>
                   <Trash2 className="w-3.5 h-3.5 text-red-500" />
                 </Button>
@@ -493,7 +496,7 @@ export default function DagEditor() {
               <NodeConfigPanel node={selectedNode} udfs={udfs} onChange={updateSelectedConfig} />
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">点击画布中的节点进行配置。</p>
+            <p className="text-sm text-muted-foreground">{t("k_a1b7e2b306")}</p>
           )}
         </div>
       </div>
@@ -501,19 +504,19 @@ export default function DagEditor() {
       {/* SQL → DAG 对话框 */}
       <Dialog open={sqlDlgOpen} onOpenChange={setSqlDlgOpen}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>从 SQL 生成 DAG</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_4118acbda2")}</DialogTitle></DialogHeader>
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
               粘贴多语句 SQL 脚本（支持 SELECT / INSERT INTO...SELECT / CREATE TABLE AS...SELECT）。
               将按表产出/消费依赖自动拆解为节点，生成后可在画布继续编辑。
             </p>
-            <DatasourceSelect value={sqlDatasource} onChange={setSqlDatasource} placeholder="主数据源（未限定表所属源）" />
+            <DatasourceSelect value={sqlDatasource} onChange={setSqlDatasource} placeholder={t("k_4de3d6c8a3")} />
             <Textarea className="font-mono min-h-[220px]" value={sqlScript} onChange={e => setSqlScript(e.target.value)}
               placeholder={'CREATE TABLE agg AS SELECT ...;\nINSERT INTO doris_ds.dwh.agg SELECT ... FROM agg;'} />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSqlDlgOpen(false)}>取消</Button>
-            <Button onClick={handleSqlToDag} disabled={!sqlScript.trim() || !sqlDatasource}>解析生成</Button>
+            <Button variant="outline" onClick={() => setSqlDlgOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleSqlToDag} disabled={!sqlScript.trim() || !sqlDatasource}>{t("k_1417f615a6")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -521,13 +524,13 @@ export default function DagEditor() {
       {/* 导出 SQL 对话框 */}
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>导出 SQL（人审阅用）</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_6a2ce32a7a")}</DialogTitle></DialogHeader>
           <Textarea className="font-mono min-h-[260px]" readOnly value={exportSql} />
           <DialogFooter>
             <Button variant="outline" onClick={() => navigator.clipboard.writeText(exportSql).then(() => toast.success('已复制'))}>
               复制
             </Button>
-            <Button onClick={() => setExportOpen(false)}>关闭</Button>
+            <Button onClick={() => setExportOpen(false)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

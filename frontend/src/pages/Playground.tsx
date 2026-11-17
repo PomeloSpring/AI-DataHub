@@ -18,6 +18,7 @@ import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import ASTTreeView from '../components/ASTTreeView';
 import client from '../api/client';
+import { useTranslation } from 'react-i18next';
 
 /** 数据集列表项（服务端不返 SQL 正文，载入时按 id 取详情） */
 interface DatasetBrief {
@@ -185,6 +186,7 @@ function ProvenanceCard({ data }: { data: any }) {
 }
 
 export default function Playground() {
+  const { t } = useTranslation('ui');
   const [sql, setSql] = useState('');
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [selectedDs, setSelectedDs] = useState<number | null>(null);
@@ -440,7 +442,7 @@ export default function Playground() {
             }}
           >
             <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="选择数据源" />
+              <SelectValue placeholder={t("k_422b9e314a")} />
             </SelectTrigger>
             <SelectContent>
               {datasources.map((ds) => (
@@ -474,7 +476,7 @@ export default function Playground() {
         {/* Left sidebar - Tables */}
         <div className={`border-r flex flex-col overflow-hidden transition-all duration-200 ${sidebarCollapsed ? 'w-0' : 'w-[250px]'}`}>
           <div className="p-3 border-b flex items-center justify-between shrink-0">
-            <h3 className="text-sm font-semibold">数据表</h3>
+            <h3 className="text-sm font-semibold">{t("k_61abbaa1c0")}</h3>
             <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
               <ChevronRight className={`h-4 w-4 transition-transform ${sidebarCollapsed ? 'rotate-180' : ''}`} />
             </Button>
@@ -484,13 +486,13 @@ export default function Playground() {
               {!selectedDs && (
                 <div className="text-center py-8 text-muted-foreground">
                   <Database className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                  <p className="text-xs">请先选择数据源</p>
+                  <p className="text-xs">{t("k_192dc9f17f")}</p>
                 </div>
               )}
               {selectedDs && tables.length === 0 && (
                 <div className="text-center py-8 text-muted-foreground">
                   <Table className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                  <p className="text-xs">暂无数据表</p>
+                  <p className="text-xs">{t("k_611f92ed97")}</p>
                 </div>
               )}
               {tables.map((table) => (
@@ -539,7 +541,7 @@ export default function Playground() {
 
           <Separator className="shrink-0" />
           <div className="p-3 border-b shrink-0">
-            <h3 className="text-sm font-semibold">已保存查询</h3>
+            <h3 className="text-sm font-semibold">{t("k_2c3dddc637")}</h3>
           </div>
           <ScrollArea className="flex-1 min-h-0">
             <div className="p-2">
@@ -574,7 +576,7 @@ export default function Playground() {
 
           <Separator className="shrink-0" />
           <div className="p-3 border-b shrink-0">
-            <h3 className="text-sm font-semibold">查询数据集</h3>
+            <h3 className="text-sm font-semibold">{t("k_e0ddd762f9")}</h3>
           </div>
           <ScrollArea className="flex-1 min-h-0 max-h-[220px]">
             <div className="p-2">
@@ -652,9 +654,9 @@ export default function Playground() {
                 <div className="h-full flex flex-col overflow-hidden">
                   {execResult && !execResult.error && (execResult.columns?.length > 0) && (
                     <div className="px-3 py-1.5 text-xs text-muted-foreground border-b flex gap-4 shrink-0">
-                      <span>返回 <span className="font-medium text-foreground">{execResult.row_count ?? execResult.rows?.length ?? 0}</span> 行</span>
+                      <span>{t("k_11d0241540")} <span className="font-medium text-foreground">{execResult.row_count ?? execResult.rows?.length ?? 0}</span> {t("k_2a2b777ae4")}</span>
                       {execResult.elapsed_ms != null && <span>耗时 {execResult.elapsed_ms}ms</span>}
-                      <span className="text-amber-600">已按当前用户权限脱敏/屏蔽与行级过滤</span>
+                      <span className="text-amber-600">{t("k_bce7b02fd4")}</span>
                     </div>
                   )}
                   <div className="flex-1 overflow-auto">
@@ -686,7 +688,7 @@ export default function Playground() {
                         </tbody>
                       </table>
                     ) : (
-                      <p className="p-4 text-sm text-muted-foreground">无结果</p>
+                      <p className="p-4 text-sm text-muted-foreground">{t("k_9b7997c71d")}</p>
                     ))}
                   </div>
                 </div>
@@ -696,7 +698,7 @@ export default function Playground() {
                 <ScrollArea className="h-full">
                   <div className="p-4">
                     {analyzing === 'ast' ? <Spinner size={16} /> : !analysis.ast ? (
-                      <p className="text-sm text-muted-foreground">点击「AST」按钮解析当前 SQL 的语法树。</p>
+                      <p className="text-sm text-muted-foreground">{t("k_5a364fec42")}</p>
                     ) : analysis.ast.error ? (
                       <p className="text-sm text-destructive">{String(analysis.ast.error)}</p>
                     ) : (
@@ -705,7 +707,7 @@ export default function Playground() {
                           引用表: <span className="font-mono">{analysis.ast.tables?.join(', ') || '—'}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">语法树</span>
+                          <span className="text-xs text-muted-foreground">{t("k_d4297c3860")}</span>
                           <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setAstRaw((v) => !v)}>
                             {astRaw ? '树视图' : '查看原始 JSON'}
                           </Button>
@@ -721,14 +723,14 @@ export default function Playground() {
                 <ScrollArea className="h-full">
                   <div className="p-4">
                     {analyzing === 'lineage' ? <Spinner size={16} /> : !analysis.lineage ? (
-                      <p className="text-sm text-muted-foreground">点击「血缘」按钮查看列级血缘。</p>
+                      <p className="text-sm text-muted-foreground">{t("k_97097b00e3")}</p>
                     ) : analysis.lineage.error ? (
                       <p className="text-sm text-destructive">{String(analysis.lineage.error)}</p>
                     ) : (
                       <div className="space-y-4">
                         {(analysis.lineage.columns || []).map((c: any, i: number) => (
                           <div key={i}>
-                            <div className="text-xs font-semibold mb-1">列 <span className="font-mono">{c.column}</span></div>
+                            <div className="text-xs font-semibold mb-1">{t("k_ad3ee64830")} <span className="font-mono">{c.column}</span></div>
                             {c.error ? <p className="text-xs text-destructive">{c.error}</p> : <LineageNode node={c.lineage} />}
                           </div>
                         ))}
@@ -748,7 +750,7 @@ export default function Playground() {
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <Badge variant="secondary" className="font-normal">生效策略: {(analysis.rls.rlsPolicies || []).join(', ') || '无'}</Badge>
                           <Badge variant="outline" className="font-normal">改写表: {(analysis.rls.appliedRls || []).join(', ') || '无'}</Badge>
-                          {!analysis.rls.changed && <span className="text-muted-foreground">当前用户对该查询无生效 RLS</span>}
+                          {!analysis.rls.changed && <span className="text-muted-foreground">{t("k_bd3f1f8d47")}</span>}
                           {analysis.rls.error && <span className="text-destructive">{String(analysis.rls.error)}</span>}
                         </div>
                         {/* 列级限制明细: 隐藏列已从 securedSql 剔除, 掩码列已替换为脱敏表达式 */}
@@ -811,7 +813,7 @@ export default function Playground() {
       <Dialog open={saveModalOpen} onOpenChange={setSaveModalOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>保存查询</DialogTitle>
+            <DialogTitle>{t("k_4993994952")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -819,15 +821,15 @@ export default function Playground() {
               <Input
                 value={saveName}
                 onChange={(e) => setSaveName(e.target.value)}
-                placeholder="查询名称"
+                placeholder={t("k_0a43e312b6")}
               />
             </div>
             <div className="space-y-2">
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Textarea
                 value={saveDesc}
                 onChange={(e) => setSaveDesc(e.target.value)}
-                placeholder="查询描述"
+                placeholder={t("k_00f1ce3e12")}
                 rows={2}
               />
             </div>
@@ -836,12 +838,12 @@ export default function Playground() {
                 checked={isDataset}
                 onCheckedChange={setIsDataset}
               />
-              <Label>保存为数据集</Label>
+              <Label>{t("k_3e0c817ea4")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSaveModalOpen(false)}>取消</Button>
-            <Button onClick={saveQuery}>保存</Button>
+            <Button variant="outline" onClick={() => setSaveModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={saveQuery}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

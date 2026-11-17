@@ -34,6 +34,7 @@ import {
   analyzeReportTemplateLayout, deleteReportTemplate, listReportTemplateRows, listReportThemeOptions,
   saveReportTemplate, type ReportTemplateLayout, type ReportTemplateRow,
 } from '@/api/report';
+import { useTranslation } from 'react-i18next';
 
 const FORMAT_MAP: Record<string, { label: string; color: string }> = {
   markdown: { label: 'Markdown', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
@@ -82,6 +83,7 @@ function layoutSummary(r: ReportTemplateRow): { text: string; warn: boolean } {
 }
 
 export default function ReportTemplatePanel() {
+  const { t } = useTranslation('ui');
   const isAdmin = useAuthStore(s => s.user?.role) === 'admin';
   const currentTheme = useThemeStore(s => s.theme);
   const setCurrentTheme = useThemeStore(s => s.setTheme);
@@ -282,7 +284,7 @@ export default function ReportTemplatePanel() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           报告模板登记的是一份版式：章节骨架 + 图表规格 + 主题包。定时任务、报告「套用模板」与「用最新数据重新生成」共用这一份口径；
-          模板只存结构与主题，<b>不存数据</b>。
+          模板只存结构与主题，<b>{t("k_4fd4923ba0")}</b>。
         </p>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -292,21 +294,21 @@ export default function ReportTemplatePanel() {
           <Button variant="outline" size="sm" onClick={load}>
             <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />刷新
           </Button>
-          <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />新建模板</Button>
+          <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />{t("k_a38a511b8c")}</Button>
         </div>
       </div>
 
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>模板名称</TableHead>
-            <TableHead>格式</TableHead>
-            <TableHead>版式</TableHead>
-            <TableHead>主题</TableHead>
-            <TableHead className="text-right">被任务引用</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>更新时间</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>{t("k_bbc511d06d")}</TableHead>
+            <TableHead>{t("k_9d2601c843")}</TableHead>
+            <TableHead>{t("k_431c606023")}</TableHead>
+            <TableHead>{t("k_e848ddd482")}</TableHead>
+            <TableHead className="text-right">{t("k_c45eb317f8")}</TableHead>
+            <TableHead>{t("k_62e951a692")}</TableHead>
+            <TableHead>{t("k_093dea88c9")}</TableHead>
+            <TableHead className="text-right">{t("k_f3ea6d345e")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -326,7 +328,7 @@ export default function ReportTemplatePanel() {
                 <TableCell>
                   <div className="flex items-center gap-1.5 font-medium">
                     {r.name}
-                    {!!r.is_builtin && <Lock className="h-3 w-3 text-muted-foreground" aria-label="内置模板" />}
+                    {!!r.is_builtin && <Lock className="h-3 w-3 text-muted-foreground" aria-label={t("k_1cddfcf703")} />}
                   </div>
                   {r.description && (
                     <div className="text-xs text-muted-foreground max-w-[320px] truncate">{r.description}</div>
@@ -347,12 +349,12 @@ export default function ReportTemplatePanel() {
                 <TableCell className="text-xs">
                   {r.theme
                     ? <span className="inline-flex items-center gap-1"><Palette className="h-3 w-3" />{themeName(r.theme)}</span>
-                    : <span className="text-muted-foreground">跟随查看者</span>}
+                    : <span className="text-muted-foreground">{t("k_d7a768d8e3")}</span>}
                 </TableCell>
                 <TableCell className="text-right">
                   {r.used_by_tasks
                     ? <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">{r.used_by_tasks} 个任务</Badge>
-                    : <span className="text-muted-foreground text-xs">未引用</span>}
+                    : <span className="text-muted-foreground text-xs">{t("k_2c6270bcce")}</span>}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className={Number(r.is_active) ? 'text-green-500' : 'text-gray-500'}>
@@ -368,7 +370,7 @@ export default function ReportTemplatePanel() {
                       <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(r) ? '编辑' : '只读'}
                     </Button>
                     <Button variant="ghost" size="sm" disabled={!canEdit(r)} onClick={() => setDeleteTarget(r)}
-                      className="text-destructive" aria-label="下架">
+                      className="text-destructive" aria-label={t("k_a2698bcf9e")}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
@@ -396,16 +398,16 @@ export default function ReportTemplatePanel() {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>模板名称</Label>
-              <Input value={name} onChange={e => setName(e.target.value)} placeholder="如：周报版式模板" />
+              <Label>{t("k_bbc511d06d")}</Label>
+              <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("k_fb58ee1fb5")} />
             </div>
             <div className="space-y-1.5">
-              <Label>输出格式</Label>
+              <Label>{t("k_b015409988")}</Label>
               <Select value={format} onValueChange={v => setFormat(v as 'markdown' | 'html')}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="markdown">Markdown（章节 + ```chart 图表）</SelectItem>
-                  <SelectItem value="html">HTML（整份自包含报告）</SelectItem>
+                  <SelectItem value="html">{t("k_27988b22a6")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -413,11 +415,11 @@ export default function ReportTemplatePanel() {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>主题包（字模库）</Label>
+              <Label>{t("k_a23dedc9e2")}</Label>
               <Select value={theme} onValueChange={setTheme}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={THEME_NONE}>不锁定（跟随查看者主题）</SelectItem>
+                  <SelectItem value={THEME_NONE}>{t("k_3dee804e18")}</SelectItem>
                   {themeOptions.map(o => <SelectItem key={o.theme} value={o.theme}>{o.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -426,8 +428,8 @@ export default function ReportTemplatePanel() {
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label>描述</Label>
-              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="适用场景说明（可选）" />
+              <Label>{t("k_412f54dc38")}</Label>
+              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder={t("k_abd27398a2")} />
             </div>
           </div>
 
@@ -437,9 +439,9 @@ export default function ReportTemplatePanel() {
             if (next === 'preview' && !preview) void showPreview();
           }}>
             <TabsList>
-              <TabsTrigger value="layout"><Layers className="w-4 h-4 mr-1" />版式</TabsTrigger>
-              <TabsTrigger value="body"><FileText className="w-4 h-4 mr-1" />正文</TabsTrigger>
-              <TabsTrigger value="preview"><RefreshCw className="w-4 h-4 mr-1" />预览</TabsTrigger>
+              <TabsTrigger value="layout"><Layers className="w-4 h-4 mr-1" />{t("k_431c606023")}</TabsTrigger>
+              <TabsTrigger value="body"><FileText className="w-4 h-4 mr-1" />{t("k_a0d95bc304")}</TabsTrigger>
+              <TabsTrigger value="preview"><RefreshCw className="w-4 h-4 mr-1" />{t("k_de61aa8e1c")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="layout" className="space-y-3">
@@ -455,17 +457,17 @@ export default function ReportTemplatePanel() {
 
               <div className="space-y-2 border rounded-lg p-3">
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">章节标题（按顺序逐字保留）</Label>
+                  <Label className="text-xs">{t("k_7455c6711c")}</Label>
                   <Button variant="ghost" size="sm" className="h-7 text-xs"
                     onClick={() => { setLayoutEdited(true); setLayout(p => ({ ...p, headings: [...p.headings, ''] })); }}>
                     <Plus className="h-3.5 w-3.5 mr-1" />加章节
                   </Button>
                 </div>
-                {!layout.headings.length && <p className="text-xs text-muted-foreground">还没有章节</p>}
+                {!layout.headings.length && <p className="text-xs text-muted-foreground">{t("k_bd73d88da9")}</p>}
                 {layout.headings.map((h, i) => (
                   <div key={`h-${i}`} className="flex items-center gap-2">
                     <span className="w-5 shrink-0 text-xs text-muted-foreground">{i + 1}</span>
-                    <Input value={h} placeholder="如：核心结论"
+                    <Input value={h} placeholder={t("k_a781eef3dd")}
                       onChange={e => {
                         setLayoutEdited(true);
                         setLayout(p => ({ ...p, headings: p.headings.map((x, j) => (j === i ? e.target.value : x)) }));
@@ -489,11 +491,11 @@ export default function ReportTemplatePanel() {
                     <Plus className="h-3.5 w-3.5 mr-1" />加图表
                   </Button>
                 </div>
-                {!layout.charts.length && <p className="text-xs text-muted-foreground">还没有图表规格</p>}
+                {!layout.charts.length && <p className="text-xs text-muted-foreground">{t("k_47b5f6eb48")}</p>}
                 {layout.charts.map((ch, i) => (
                   <div key={`c-${i}`} className="space-y-1.5 rounded-md border border-dashed p-2">
                     <div className="flex items-center gap-2">
-                      <Input className="h-8 text-xs" value={ch.title} placeholder="图表标题（可选）"
+                      <Input className="h-8 text-xs" value={ch.title} placeholder={t("k_9891d7b39f")}
                         onChange={e => {
                           setLayoutEdited(true);
                           setLayout(p => ({ ...p, charts: p.charts.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)) }));
@@ -502,7 +504,7 @@ export default function ReportTemplatePanel() {
                         setLayoutEdited(true);
                         setLayout(p => ({ ...p, charts: p.charts.map((x, j) => (j === i ? { ...x, chart_type: v } : x)) }));
                       }}>
-                        <SelectTrigger className="w-[150px] h-8 text-xs"><SelectValue placeholder="图表类型" /></SelectTrigger>
+                        <SelectTrigger className="w-[150px] h-8 text-xs"><SelectValue placeholder={t("k_e891b46dbb")} /></SelectTrigger>
                         <SelectContent>
                           {CHART_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                         </SelectContent>
@@ -528,7 +530,7 @@ export default function ReportTemplatePanel() {
               </p>
               <Textarea value={content} onChange={e => setContent(e.target.value)}
                 className="font-mono text-sm min-h-[360px]"
-                placeholder={format === 'html' ? '<h2>章节标题</h2><p>…</p>' : '# 报告标题\n\n## 核心结论\n…'} />
+                placeholder={format === 'html' ? '<h2>{t("k_023329e7f4")}</h2><p>…</p>' : '# 报告标题\n\n## 核心结论\n…'} />
             </TabsContent>
 
             <TabsContent value="preview" className="space-y-2">
@@ -560,15 +562,15 @@ export default function ReportTemplatePanel() {
                 : 'border rounded-lg p-3 bg-card max-h-[460px] overflow-y-auto'}>
                 {preview
                   ? <ReportContent content={preview.skeleton} format={format} />
-                  : <p className="text-sm text-muted-foreground">点「重算预览」按当前版式生成骨架。</p>}
+                  : <p className="text-sm text-muted-foreground">{t("k_e9a2532235")}</p>}
               </div>
             </TabsContent>
           </Tabs>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中…</> : editRow ? '更新' : '创建'}
+              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{t("k_6644f06197")}</> : editRow ? '更新' : '创建'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -581,8 +583,8 @@ export default function ReportTemplatePanel() {
           </DialogDescription></DialogHeader>
           <p className="text-sm text-muted-foreground">将「{deleteTarget?.name}」下架（软删除）。</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>确认下架</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_02d4dbab69")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

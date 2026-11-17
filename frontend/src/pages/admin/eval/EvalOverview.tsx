@@ -14,6 +14,7 @@
 import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { t } from '@/i18n/runtime';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -59,7 +60,7 @@ export default function EvalOverview({
       <div className="border rounded-md p-3 space-y-2">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-4 w-4" />
-          <b className="text-sm">发布前检查（双口径）</b>
+          <b className="text-sm">{t("k_b78c41ddd9")}</b>
           <Badge variant="outline" className="text-[10px]">
             release_ok = 相对未回退 AND 达绝对下限
           </Badge>
@@ -68,7 +69,7 @@ export default function EvalOverview({
             刷新
           </Button>
         </div>
-        {!precheck && <p className="text-xs text-muted-foreground">加载中…</p>}
+        {!precheck && <p className="text-xs text-muted-foreground">{t("k_300ee3dee4")}</p>}
         {precheck && (
           <>
             <div className={`text-sm font-medium ${precheck.release_ok ? 'text-green-600' : 'text-destructive'}`}>
@@ -77,12 +78,12 @@ export default function EvalOverview({
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40">
-                  <TableHead className="text-xs">评测层</TableHead>
-                  <TableHead className="text-xs">最近运行</TableHead>
-                  <TableHead className="text-xs">判定分母</TableHead>
-                  <TableHead className="text-xs">正确率</TableHead>
-                  <TableHead className="text-xs">退役 / 已知缺陷</TableHead>
-                  <TableHead className="text-xs">门禁</TableHead>
+                  <TableHead className="text-xs">{t("k_0e8e7b44a1")}</TableHead>
+                  <TableHead className="text-xs">{t("k_648c5a6b11")}</TableHead>
+                  <TableHead className="text-xs">{t("k_1c368ce472")}</TableHead>
+                  <TableHead className="text-xs">{t("k_8dc159502e")}</TableHead>
+                  <TableHead className="text-xs">{t("k_6ab9c882d2")}</TableHead>
+                  <TableHead className="text-xs">{t("k_a0d14adcf1")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -170,7 +171,7 @@ export default function EvalOverview({
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="bg-muted/40 text-left">
-                <th className="p-2 sticky left-0 bg-muted/40">能力契约</th>
+                <th className="p-2 sticky left-0 bg-muted/40">{t("k_b13ab1ec69")}</th>
                 {suites.map(s => (
                   <th key={s.suite} className="p-2 min-w-[120px]" title={s.scope_note}>
                     {SUITE_LABEL[s.suite] || s.label}
@@ -222,7 +223,7 @@ export default function EvalOverview({
         </div>
         <p className="text-[11px] text-muted-foreground">
           「缺口」不等于必须补 —— 由人判断该能力在该层是否成立（例：L1 不需要
-          governance，L2 不需要 recall）。但缺口必须<b>看得见</b>，否则"有多少条用例"
+          governance，L2 不需要 recall）。但缺口必须<b>{t("k_8a4fe63710")}</b>，否则"有多少条用例"
           会被当成"覆盖了什么"。
         </p>
       </div>

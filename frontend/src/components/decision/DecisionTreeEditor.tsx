@@ -3,6 +3,7 @@ import { Plus, Trash2, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import DictTermSelect from '@/components/decision/DictTermSelect';
+import { t } from '@/i18n/runtime';
 import type {
   DecisionConditionInput, DecisionAdviceRow, DecisionTreeDocInput, DecisionTreeNode,
 } from '@/api/decisions';
@@ -50,10 +51,10 @@ export default function DecisionTreeEditor({
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <Input
-          aria-label="判定名称"
+          aria-label={t("k_2dfd96d034")}
           value={root.label ?? ''}
           disabled={readOnly}
-          placeholder="这棵树在判什么（如：精度风险判定）"
+          placeholder={t("k_443fbdd23f")}
           onChange={(e) => patchRoot({ ...root, label: e.target.value } as any)}
           className="h-8 text-sm font-medium"
         />
@@ -103,26 +104,26 @@ function NodeEditor({
   return (
     <div className="rounded-lg border border-border/70 bg-muted/20 p-2">
       <div className="flex items-center gap-2">
-        <button type="button" onClick={() => setOpen(o => !o)} aria-label="展开/收起"
+        <button type="button" onClick={() => setOpen(o => !o)} aria-label={t("k_becc67987b")}
           className="text-muted-foreground">
           <ChevronRight className={`h-4 w-4 transition-transform ${open ? 'rotate-90' : ''}`} />
         </button>
         <Input
-          aria-label="分支名称"
+          aria-label={t("k_01571fe5e5")}
           value={branch.label}
           disabled={readOnly}
-          placeholder="分支名称（如：先看校准，再看精度）"
+          placeholder={t("k_c5c836c9e6")}
           onChange={(e) => onChange({ ...branch, label: e.target.value } as DecisionTreeNode)}
           className="h-8 flex-1 text-sm"
         />
         <select
-          aria-label="组合方式"
+          aria-label={t("k_69c9851709")}
           value={branch.op}
           disabled={readOnly}
           onChange={(e) => onChange({ ...branch, op: e.target.value as 'all' | 'any' } as DecisionTreeNode)}
           className="h-8 rounded-md border border-border bg-background px-2 text-xs">
-          <option value="all">全部满足（且）</option>
-          <option value="any">任一满足（或）</option>
+          <option value="all">{t("k_061e49bef4")}</option>
+          <option value="any">{t("k_7d5470b1e6")}</option>
         </select>
       </div>
 
@@ -145,10 +146,10 @@ function NodeEditor({
           {!readOnly && (
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => addChild('leaf')}>
-                <Plus className="h-4 w-4" /><span className="ml-1">加判定条件</span>
+                <Plus className="h-4 w-4" /><span className="ml-1">{t("k_bac98bfa2b")}</span>
               </Button>
               <Button size="sm" variant="outline" onClick={() => addChild('branch')}>
-                <Plus className="h-4 w-4" /><span className="ml-1">加分支</span>
+                <Plus className="h-4 w-4" /><span className="ml-1">{t("k_b94602141d")}</span>
               </Button>
             </div>
           )}
@@ -173,37 +174,37 @@ export function LeafEditor({
   const useRefMode = !!cond.threshold_ref;
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3 space-y-2" aria-label="判定条件">
+    <div className="rounded-lg border border-border bg-card p-3 space-y-2" aria-label={t("k_613a90fb6a")}>
       <Input
-        aria-label="情形描述"
+        aria-label={t("k_12f27cf5ec")}
         value={leaf.label}
         disabled={readOnly}
-        placeholder="这条判定说的是什么情形（如：校准超差）"
+        placeholder={t("k_8da5129fd3")}
         onChange={(e) => onChange({ ...leaf, label: e.target.value } as DecisionTreeNode)}
         className="h-8 text-sm"
       />
       <div className="grid gap-2 md:grid-cols-[1.4fr_1.4fr_0.7fr_1fr]">
         <div>
-          <label className="text-xs text-muted-foreground">指标</label>
+          <label className="text-xs text-muted-foreground">{t("k_1dfc810a7b")}</label>
           <DictTermSelect kind="metric" value={cond.metric} disabled={readOnly}
             onChange={(v) => patchCond({ metric: v })} />
         </div>
         <div>
-          <label className="text-xs text-muted-foreground">切分维度（可留空）</label>
+          <label className="text-xs text-muted-foreground">{t("k_f8dec0248d")}</label>
           <DictTermSelect kind="dimension" value={cond.dimension || ''} disabled={readOnly}
             onChange={(v) => patchCond({ dimension: v })} />
         </div>
         <div>
-          <label className="text-xs text-muted-foreground">比较</label>
-          <select aria-label="比较符" value={cond.comparator} disabled={readOnly}
+          <label className="text-xs text-muted-foreground">{t("k_ea94027944")}</label>
+          <select aria-label={t("k_5f9681375f")} value={cond.comparator} disabled={readOnly}
             onChange={(e) => patchCond({ comparator: e.target.value })}
             className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
             {COMPARATORS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-xs text-muted-foreground">时间窗</label>
-          <Input aria-label="相对时间窗" value={cond.time_window || ''} disabled={readOnly}
+          <label className="text-xs text-muted-foreground">{t("k_6b6f11b61c")}</label>
+          <Input aria-label={t("k_bc3efda5c1")} value={cond.time_window || ''} disabled={readOnly}
             placeholder="7d / 24h / 2w / 1M"
             onChange={(e) => patchCond({ time_window: e.target.value || null })}
             className="mt-1 h-8 text-sm" />
@@ -219,7 +220,7 @@ export function LeafEditor({
             <DictTermSelect kind="metric" value={cond.threshold_ref || ''} disabled={readOnly}
               onChange={(v) => patchCond({ threshold_ref: v })} />
           ) : (
-            <Input aria-label="阈值" value={formatThreshold(cond.value)} disabled={readOnly}
+            <Input aria-label={t("k_a05320e189")} value={formatThreshold(cond.value)} disabled={readOnly}
               placeholder={cond.comparator === 'between' ? '下界,上界' : cond.comparator === 'in' ? '值1,值2' : '0.05'}
               onChange={(e) => patchCond({ value: parseThreshold(e.target.value, cond.comparator) })}
               className="mt-1 h-8 text-sm" />
@@ -233,19 +234,19 @@ export function LeafEditor({
           引用另一指标当阈值
         </label>
         <div className="w-24">
-          <label className="text-xs text-muted-foreground">单位</label>
-          <Input aria-label="展示单位" value={cond.unit || ''} disabled={readOnly} placeholder="mm"
+          <label className="text-xs text-muted-foreground">{t("k_8ec8c8c712")}</label>
+          <Input aria-label={t("k_d099333360")} value={cond.unit || ''} disabled={readOnly} placeholder="mm"
             onChange={(e) => patchCond({ unit: e.target.value })} className="mt-1 h-8 text-sm" />
         </div>
       </div>
 
       <div className="grid gap-2 md:grid-cols-[1.6fr_0.8fr]">
         <div>
-          <label className="text-xs text-muted-foreground">建议动作（从文案库选）</label>
-          <select aria-label="建议动作（从文案库选）" value={leaf.advice_key} disabled={readOnly}
+          <label className="text-xs text-muted-foreground">{t("k_6f28b516c8")}</label>
+          <select aria-label={t("k_6f28b516c8")} value={leaf.advice_key} disabled={readOnly}
             onChange={(e) => onChange({ ...leaf, advice_key: e.target.value } as DecisionTreeNode)}
             className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
-            <option value="">请选择建议文案</option>
+            <option value="">{t("k_2eaf15fbad")}</option>
             {adviceRows.map(a => (
               <option key={a.advice_key} value={a.advice_key}>{a.action}（{a.advice_key}）</option>
             ))}
@@ -253,16 +254,16 @@ export function LeafEditor({
         </div>
         <div>
           <label className="text-xs text-muted-foreground">严重级（空=沿用库值）</label>
-          <select aria-label="严重级" value={leaf.severity || ''} disabled={readOnly}
+          <select aria-label={t("k_af156f3ea7")} value={leaf.severity || ''} disabled={readOnly}
             onChange={(e) => onChange({ ...leaf, severity: e.target.value as any } as DecisionTreeNode)}
             className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
-            <option value="">沿用文案库</option>
+            <option value="">{t("k_fe6fb576cb")}</option>
             {['low', 'medium', 'high', 'critical'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
       </div>
-      <Input aria-label="依据说明" value={leaf.evidence_note || ''} disabled={readOnly}
-        placeholder="给人看的依据说明（会出现在建议卡上）"
+      <Input aria-label={t("k_47bb4a2afb")} value={leaf.evidence_note || ''} disabled={readOnly}
+        placeholder={t("k_03a9a78cd6")}
         onChange={(e) => onChange({ ...leaf, evidence_note: e.target.value } as DecisionTreeNode)}
         className="h-8 text-sm" />
     </div>

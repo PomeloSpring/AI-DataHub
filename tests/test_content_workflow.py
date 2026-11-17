@@ -261,7 +261,7 @@ class FakeDB:
             hit = next((c for c in self.categories.values()
                         if (str(key).isdigit() and c["id"] == int(key)) or c["category_key"] == str(key)), None)
             return [{"id": hit["id"]}] if hit else []
-        if sql.startswith("SELECT id, tag, sort, is_active FROM adh_content_tag_vocab"):
+        if sql.startswith("SELECT id, tag, sort, is_active"):
             return [{"id": i + 1, "tag": t, "sort": i + 1, "is_active": 1}
                     for i, t in enumerate(self.tags)]
         if sql.startswith("SELECT tags FROM adh_content_articles"):

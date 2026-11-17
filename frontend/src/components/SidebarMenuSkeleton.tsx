@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 /**
  * 侧栏菜单骨架：权限清单还没回来时的占位。
  *
@@ -6,8 +7,9 @@
  * 「自动化」等分组闪一下消失。骨架保持与真实菜单同高的行，避免布局跳动。
  */
 export function SidebarMenuSkeleton({ rows = 5, collapsed = false }: { rows?: number; collapsed?: boolean }) {
+  const { t } = useTranslation('ui');
   return (
-    <div aria-busy="true" aria-label="菜单加载中" className="space-y-1">
+    <div aria-busy="true" aria-label={t("k_1390c7d353")} className="space-y-1">
       {Array.from({ length: rows }).map((_, i) => (
         <div
           key={i}

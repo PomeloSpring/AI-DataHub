@@ -29,6 +29,7 @@ import { json } from '@codemirror/lang-json';
 import { yaml } from '@codemirror/lang-yaml';
 import { markdown } from '@codemirror/lang-markdown';
 import { ModelGraphTab, SyncBadges } from './ModelAssetTabs';
+import { useTranslation } from 'react-i18next';
 
 const KIND_LABEL: Record<string, string> = {
   source: '源本体', business: '业务本体', system: '系统本体',
@@ -55,6 +56,7 @@ function formatSparqlCell(v: any): string {
 }
 
 export default function OntologyGraphView() {
+  const { t } = useTranslation('ui');
   const [models, setModels] = useState<OntologyModelSummary[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -268,7 +270,7 @@ export default function OntologyGraphView() {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Network className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">关系图谱</h1>
+          <h1 className="text-lg font-semibold">{t("k_2ea6798094")}</h1>
         </div>
         <span className="text-xs text-muted-foreground">
           语义层关系视图（图谱 + 结构化投影）；图谱生成与同步知识库在本页，
@@ -280,7 +282,7 @@ export default function OntologyGraphView() {
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-sm flex items-center gap-2">
-              <span>模型</span>
+              <span>{t("k_98fd0cbd9c")}</span>
               <Select
                 value={selectedId != null ? String(selectedId) : ''}
                 onValueChange={(v) => setSelectedId(Number(v))}
@@ -303,7 +305,7 @@ export default function OntologyGraphView() {
               </Select>
               {modelsLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
               {!modelsLoading && !models.length && (
-                <span className="text-xs text-muted-foreground">暂无本体模型</span>
+                <span className="text-xs text-muted-foreground">{t("k_158954fcfe")}</span>
               )}
             </CardTitle>
             {selected && (
@@ -323,11 +325,11 @@ export default function OntologyGraphView() {
                     选具体库=一次性定向推送到该库（含源本体，用户主动的手动例外） */}
                 <Select value={selectedKbId} onValueChange={(v) => setSelectedKbId(v)}
                         disabled={syncingKb}>
-                  <SelectTrigger className="w-44 h-8 text-xs" title="选择同步目标知识库">
-                    <SelectValue placeholder="默认（按模型归属）" />
+                  <SelectTrigger className="w-44 h-8 text-xs" title={t("k_343e6fa5bb")}>
+                    <SelectValue placeholder={t("k_85bab14432")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="0">默认（按模型归属）</SelectItem>
+                    <SelectItem value="0">{t("k_85bab14432")}</SelectItem>
                     {kbOptions.map((kb) => (
                       <SelectItem key={kb.id} value={String(kb.id)}>
                         <span className="truncate max-w-[12rem]">{kb.name}</span>
@@ -348,7 +350,7 @@ export default function OntologyGraphView() {
                   同步知识库
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setViewTick((t) => t + 1)}
-                        title="重新拉取结构化投影（反映字典最新值）">
+                        title={t("k_fb4e24d4ae")}>
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />刷新
                 </Button>
               </div>
@@ -357,12 +359,12 @@ export default function OntologyGraphView() {
         </CardHeader>
         <CardContent>
           {!selected ? (
-            <div className="text-sm text-muted-foreground py-12 text-center">从上方选择一个模型以查看其图谱与结构化视图</div>
+            <div className="text-sm text-muted-foreground py-12 text-center">{t("k_f44e675fce")}</div>
           ) : (
             <Tabs defaultValue="graph">
               <TabsList>
-                <TabsTrigger value="graph">图谱</TabsTrigger>
-                <TabsTrigger value="editor">结构化视图</TabsTrigger>
+                <TabsTrigger value="graph">{t("k_34778e2933")}</TabsTrigger>
+                <TabsTrigger value="editor">{t("k_66cdd98e11")}</TabsTrigger>
               </TabsList>
               <TabsContent value="graph" className="mt-2 h-[62vh] overflow-hidden">
                 <ModelGraphTab
@@ -375,15 +377,15 @@ export default function OntologyGraphView() {
               </TabsContent>
               <TabsContent value="editor" className="mt-2">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs text-muted-foreground">canonical 文档只读预览（编辑请在「数据建模」的编辑器）</span>
+                  <span className="text-xs text-muted-foreground">{t("k_c6491797c5")}</span>
                   {viewLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
                 </div>
                 <Tabs defaultValue="json">
                   <TabsList>
                     <TabsTrigger value="json">JSON</TabsTrigger>
                     <TabsTrigger value="yaml">YAML</TabsTrigger>
-                    <TabsTrigger value="md">MD 预览</TabsTrigger>
-                    <TabsTrigger value="sparql">SPARQL 查询</TabsTrigger>
+                    <TabsTrigger value="md">{t("k_6af87bfe5d")}</TabsTrigger>
+                    <TabsTrigger value="sparql">{t("k_5e42489108")}</TabsTrigger>
                   </TabsList>
                   <TabsContent value="json" className="mt-2">
                     <CodeMirror

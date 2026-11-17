@@ -5,6 +5,7 @@
  * 门禁结论。写两处迟早飘 —— 而这里的口径直接决定用户看到的"能不能发布"对不对。
  */
 import { Badge } from '@/components/ui/badge';
+import { useTranslation } from 'react-i18next';
 
 export type Suite = 'compile' | 'semantic' | 'retrieval' | 'llm';
 export type CaseStatus = 'active' | 'known_defect' | 'retired';
@@ -272,11 +273,12 @@ export const pct = (v: number | null | undefined): string =>
 
 /** 门禁结论徽标：release_ok 才是发布依据；只看"未回退"会漏接长期坏掉的层。 */
 export function GateBadge({ v }: { v: PrecheckSuite }) {
+  const { t } = useTranslation('ui');
   if (!v.has_run) {
-    return <Badge variant="destructive" className="text-[9px]">无运行</Badge>;
+    return <Badge variant="destructive" className="text-[9px]">{t("k_15c4b2bb21")}</Badge>;
   }
   if (v.release_ok) {
-    return <Badge variant="secondary" className="text-[9px]">通过</Badge>;
+    return <Badge variant="secondary" className="text-[9px]">{t("k_dcc4233255")}</Badge>;
   }
   return (
     <Badge variant="destructive" className="text-[9px]">

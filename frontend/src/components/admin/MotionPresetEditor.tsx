@@ -9,6 +9,7 @@ import {
   REVEAL_EFFECTS, TRANSITION_EFFECTS, enterClass, enterStaggerStyle, g2Animate,
   motionCssVars, revealClass, sectionStaggerStyle, transitionClass, validateMotion, type MotionSpec,
 } from '@/lib/motion';
+import { useTranslation } from 'react-i18next';
 
 type Section = keyof MotionSpec;
 const SECTIONS: { key: Section; label: string; hint: string }[] = [
@@ -48,6 +49,7 @@ export function g2AnimateHint(spec: MotionSpec): string {
 
 /** 迷你卡片预览：class / CSS 变量 / 错峰全部来自 lib/motion 同一份实现。 */
 export function MotionPresetPreview({ spec, replay, onReplay }: { spec: MotionSpec; replay: number; onReplay: () => void }) {
+  const { t } = useTranslation('ui');
   const vars = motionCssVars(spec);
   const enter = enterClass(spec.enter);
   const transition = transitionClass(spec.transition);
@@ -57,13 +59,13 @@ export function MotionPresetPreview({ spec, replay, onReplay }: { spec: MotionSp
   return (
     <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-semibold">预览（与真实渲染同一份实现）</span>
-        <Button type="button" variant="outline" size="sm" className="h-6 text-[11px]" onClick={onReplay}>重新播放</Button>
+        <span className="text-[11px] font-semibold">{t("k_dae64bf487")}</span>
+        <Button type="button" variant="outline" size="sm" className="h-6 text-[11px]" onClick={onReplay}>{t("k_a1215cafb9")}</Button>
       </div>
 
       <div key={replay} style={vars} className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-1">
-          <div className="text-[10px] text-muted-foreground">卡片入场</div>
+          <div className="text-[10px] text-muted-foreground">{t("k_8dd6392263")}</div>
           <div className="flex h-14 items-end gap-1">
             {[0, 1, 2].map(i => (
               <div key={i} className={cn('h-9 flex-1 rounded bg-primary/70', enter)} style={enterStaggerStyle(i, spec.enter)} />
@@ -72,7 +74,7 @@ export function MotionPresetPreview({ spec, replay, onReplay }: { spec: MotionSp
         </div>
 
         <div className="space-y-1">
-          <div className="text-[10px] text-muted-foreground">切板转场</div>
+          <div className="text-[10px] text-muted-foreground">{t("k_de2b6fd62b")}</div>
           <div className="relative h-14 overflow-hidden rounded border bg-background">
             <div className="absolute inset-1 rounded bg-muted" />
             <div className={cn('absolute inset-1 rounded bg-primary/25', transition)} />
@@ -80,7 +82,7 @@ export function MotionPresetPreview({ spec, replay, onReplay }: { spec: MotionSp
         </div>
 
         <div className="space-y-1">
-          <div className="text-[10px] text-muted-foreground">正文出现</div>
+          <div className="text-[10px] text-muted-foreground">{t("k_be7c35f3e0")}</div>
           <div className={cn('space-y-1 border bg-background p-1', !staggered && reveal)}>
             {[0, 1, 2].map(i => (
               <div key={i} className={cn('h-2 rounded bg-muted', staggered && reveal)}
@@ -99,6 +101,7 @@ export function MotionPresetPreview({ spec, replay, onReplay }: { spec: MotionSp
 }
 
 export default function MotionPresetEditor({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+  const { t } = useTranslation('ui');
   const parsed = useMemo(() => {
     try { return { ok: true as const, data: (JSON.parse(value || '{}') ?? {}) as Record<string, unknown> }; }
     catch { return { ok: false as const, data: null }; }
@@ -129,7 +132,7 @@ export default function MotionPresetEditor({ value, onChange }: { value: string;
 
       {!!errors.length && (
         <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
-          <div className="mb-0.5 font-medium">这些值不会生效（保存前请修正）：</div>
+          <div className="mb-0.5 font-medium">{t("k_9d5fed499c")}</div>
           <ul className="list-disc space-y-0.5 pl-4">{errors.map(e => <li key={e}>{e}</li>)}</ul>
         </div>
       )}
@@ -175,7 +178,7 @@ export default function MotionPresetEditor({ value, onChange }: { value: string;
 
       <div className="flex justify-end">
         <Button type="button" variant="outline" size="sm" className="h-6 text-[11px]"
-          onClick={() => onChange(JSON.stringify(DEFAULT_MOTION, null, 2))}>恢复默认</Button>
+          onClick={() => onChange(JSON.stringify(DEFAULT_MOTION, null, 2))}>{t("k_a191935bc6")}</Button>
       </div>
 
       <MotionPresetPreview spec={spec} replay={replay} onReplay={() => setReplay(r => r + 1)} />

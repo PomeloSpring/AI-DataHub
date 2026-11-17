@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePermissionStore } from '@/stores/permissionStore';
+import { t } from '@/i18n/runtime';
 import {
   contentApi, contentError,
   STATUS_LABELS, STATUS_TONES,
   type ArticleStatus, type ContentArticle, type ContentCategory, type ContentTag, type GateItem,
   type KbSyncState,
 } from '@/api/content';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 内容中心各页共用的小件。
@@ -83,8 +85,9 @@ export function StatusBadge({ article }: { article: Pick<ContentArticle, 'status
  * 库名一律显业务名（ui-resource-display §1），云端内部标识不在这里。
  */
 export function KbSyncBadge({ sync }: { sync?: KbSyncState | null }) {
+  const { t } = useTranslation('ui');
   if (!sync) {
-    return <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">未同步</span>;
+    return <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t("k_16f4087b8b")}</span>;
   }
   if (sync.state !== 'synced') {
     return (
@@ -141,7 +144,7 @@ export function NoticeBanner({ message, onDismiss }: { message: string; onDismis
     <div className="flex items-center gap-3 rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
       <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
       <span className="flex-1">{message}</span>
-      {onDismiss && <Button size="sm" variant="ghost" onClick={onDismiss}>关闭</Button>}
+      {onDismiss && <Button size="sm" variant="ghost" onClick={onDismiss}>{t("k_6c14bd7f6f")}</Button>}
     </div>
   );
 }
@@ -163,7 +166,7 @@ export function EmptyState({ title, hint, onClear }: { title: string; hint?: str
     <div className="rounded-xl border border-dashed p-10 text-center">
       <p className="text-sm font-medium">{title}</p>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
-      {onClear && <Button size="sm" variant="outline" className="mt-3" onClick={onClear}>清除筛选条件</Button>}
+      {onClear && <Button size="sm" variant="outline" className="mt-3" onClick={onClear}>{t("k_a6d31adef9")}</Button>}
     </div>
   );
 }

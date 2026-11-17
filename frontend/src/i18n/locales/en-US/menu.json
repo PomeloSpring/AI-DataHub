@@ -10,5 +10,18 @@
     "reports": "Reports",
     "assets": "Assets",
     "scheduled": "Schedules"
+  },
+  "switcher": {
+    "trigger": "Switch module",
+    "label": "Modules",
+    "home": "Home",
+    "workspace": "Workspace",
+    "data": "Data Platform",
+    "content": "Content Center",
+    "system": "System Config"
+  },
+  "releaseNotes": {
+    "trigger": "Release Notes",
+    "error": "Failed to load release notes"
   }
 }

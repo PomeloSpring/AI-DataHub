@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useEffect, useMemo, useState } from 'react';
 import { Megaphone, AlertTriangle, Compass } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -32,6 +33,7 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const { t } = useTranslation(['ui', 'menu']);
   const notes = useGuideStore(s => s.notes);
   const states = useGuideStore(s => s.states);
   const loading = useGuideStore(s => s.loading);
@@ -59,12 +61,12 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Megaphone className="h-4 w-4 text-primary" />
-            版本更新公告
+            {t('releaseNotes.trigger')}
             {!!unread.length && (
               <Badge variant="secondary" className="ml-1">{unread.length} 条未读</Badge>
             )}
           </DialogTitle>
-          <DialogDescription>这里记录每次版本发了什么功能与更新项，由管理员维护。</DialogDescription>
+          <DialogDescription>{t("ui:k_1350c28b8a")}</DialogDescription>
         </DialogHeader>
 
         {error ? (
@@ -73,13 +75,13 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
               <AlertTriangle className="h-4 w-4 shrink-0" />
               公告加载失败：{error}
             </span>
-            <Button variant="outline" size="sm" onClick={() => void load(true)}>重试</Button>
+            <Button variant="outline" size="sm" onClick={() => void load(true)}>{t("ui:k_e2d53a6d3a")}</Button>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[220px_1fr]">
             <div className="min-w-0">
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">全部版本</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("ui:k_eaf1b3133c")}</span>
                 {!!unread.length && (
                   <button
                     type="button" className="text-xs text-primary hover:underline"
@@ -91,9 +93,9 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
               </div>
               <ScrollArea className="h-[320px] rounded-lg border border-border/70 pr-1">
                 <div className="flex flex-col gap-1 p-1.5">
-                  {loading && !notes.length && <div className="p-2 text-xs text-muted-foreground">加载中…</div>}
+                  {loading && !notes.length && <div className="p-2 text-xs text-muted-foreground">{t("ui:k_300ee3dee4")}</div>}
                   {!loading && !notes.length && (
-                    <div className="p-2 text-xs text-muted-foreground">还没有已发布的公告</div>
+                    <div className="p-2 text-xs text-muted-foreground">{t("ui:k_e61733192f")}</div>
                   )}
                   {notes.map(n => (
                     <button
@@ -105,7 +107,7 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
                       <span className="flex items-center gap-1.5">
                         <span className="font-medium">v{n.version}</span>
                         {!states[noteKey(n.version)] && (
-                          <span aria-label="未读" className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" />
+                          <span aria-label={t("ui:k_1e230aa201")} className="h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" />
                         )}
                       </span>
                       <span className="mt-0.5 block truncate text-muted-foreground">{n.title}</span>
@@ -116,13 +118,13 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
             </div>
 
             <div className="min-w-0">
-              {!active && <div className="p-2 text-sm text-muted-foreground">选择左侧版本查看更新内容</div>}
+              {!active && <div className="p-2 text-sm text-muted-foreground">{t("ui:k_641b099fcc")}</div>}
               {active && (
                 <div className="flex h-[320px] flex-col gap-3 overflow-y-auto rounded-lg border border-border/70 p-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary">v{active.version}</Badge>
-                      {!!active.is_major && <Badge>重大版本</Badge>}
+                      {!!active.is_major && <Badge>{t("ui:k_34089895a6")}</Badge>}
                       {active.published_at && (
                         <span className="text-xs text-muted-foreground">
                           {String(active.published_at).slice(0, 10)}
@@ -178,6 +180,7 @@ export function ReleaseNotesDialog({ open, onOpenChange }: {
 }
 
 export default function ReleaseNotesButton() {
+  const { t } = useTranslation(['menu', 'ui']);
   const notes = useGuideStore(s => s.notes);
   const states = useGuideStore(s => s.states);
   const error = useGuideStore(s => s.error);
@@ -195,7 +198,7 @@ export default function ReleaseNotesButton() {
           <Button
             variant="ghost" size="sm"
             className="relative h-9 w-9 p-0"
-            aria-label="版本更新公告"
+            aria-label={t("releaseNotes.trigger")}
             data-tour={TOUR.headerReleaseNotes}
             data-testid="release-notes-button"
             onClick={() => { void load(); setOpen(true); }}
@@ -213,7 +216,7 @@ export default function ReleaseNotesButton() {
             )}
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{error ? '公告加载失败' : '版本更新公告'}</TooltipContent>
+        <TooltipContent>{error ? t('releaseNotes.error') : t('releaseNotes.trigger')}</TooltipContent>
       </Tooltip>
       <ReleaseNotesDialog open={open} onOpenChange={setOpen} />
     </>

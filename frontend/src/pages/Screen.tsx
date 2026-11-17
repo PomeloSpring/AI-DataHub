@@ -18,6 +18,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuIte
 import { useDashboardFullscreen } from '@/hooks/useDashboardFullscreen';
 import { fetchVisibleGroups, type GroupView } from '@/lib/dashboardCatalog';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 // 大屏播放范围 = 仪表盘组(组内 ∩ 角色可见 enabled); group=0/缺省(管理域入口)=全部可见 enabled。
 // 兼容旧链接的 workspace_id 参数(语义迁移为组)。
@@ -30,13 +31,15 @@ function playbackScope(searchText: string, state: { from?: string } | null) {
   return { returnPath, scope: raw === undefined ? undefined : Number(raw), sourceScope };
 }
 export default function Screen() {
+  const { t } = useTranslation('ui');
   const location = useLocation();
   const { scope, returnPath, sourceScope } = playbackScope(location.search, location.state);
   if (scope === undefined && !returnPath.startsWith('/system/')) return <Navigate to="/dashboards" replace />;
-  if ((scope !== undefined && (!Number.isSafeInteger(scope) || scope < 0)) || (sourceScope && Number(sourceScope) !== scope)) return <div role="alert" className="p-8">播放链接的仪表盘组范围无效。<a href="/dashboards" className="underline">返回数据看板</a></div>;
+  if ((scope !== undefined && (!Number.isSafeInteger(scope) || scope < 0)) || (sourceScope && Number(sourceScope) !== scope)) return <div role="alert" className="p-8">{t("k_05f3db8b1c")}<a href="/dashboards" className="underline">{t("k_dd1816330b")}</a></div>;
   return <ScreenPlayer key={scope ?? 0} />;
 }
 function ScreenPlayer() {
+  const { t } = useTranslation('ui');
   const { dashboardId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -136,26 +139,26 @@ function ScreenPlayer() {
   useEffect(() => { showControls(); return () => clearTimeout(timer.current); }, []);
   // 无 board id 直接进大屏：从清单首块板起播（组内 = 管理端编排首位，与「数据看板」点组合卡同一口径）
   if (!dashboardId && ready && !error && enabled.length) return <Navigate to={`/screen/${enabled[0].id}${location.search}`} replace state={location.state} />;
-  if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? '正在加载…' : error || '该看板不存在、未启用或不在你的可见范围'}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>重试</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>返回看板列表</Button></div>;
+  if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? '正在加载…' : error || '该看板不存在、未启用或不在你的可见范围'}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>{t("k_e2d53a6d3a")}</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>{t("k_8d2906babb")}</Button></div>;
   return <div ref={root} className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background" onMouseMove={showControls} onTouchStart={showControls}>
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
-      <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">退出大屏</span></Button>
+      <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">{t("k_4acd359b51")}</span></Button>
       <h1 className="min-w-0 flex-1 truncate font-semibold">{detail.name}</h1>
       <DashboardAutoRefresh key={detail.id} onRefresh={refreshCharts} loading={detailLoading} menuItems={<>
         <div className="space-y-2 p-2">
-          <label className="block text-xs">切换看板<select aria-label="切换看板" className="mt-1 w-full rounded border bg-background p-2" value={detail.id} onChange={e => navigate(`/screen/${e.target.value}${location.search}`, { replace: true, state: location.state })}>{enabled.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
-          <label className="block text-xs">轮播间隔<select aria-label="轮播间隔" className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? `每 ${v} 秒` : '关闭轮播'}</option>)}</select></label>
+          <label className="block text-xs">{t("k_48293dd531")}<select aria-label={t("k_48293dd531")} className="mt-1 w-full rounded border bg-background p-2" value={detail.id} onChange={e => navigate(`/screen/${e.target.value}${location.search}`, { replace: true, state: location.state })}>{enabled.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label className="block text-xs">{t("k_629780a2f8")}<select aria-label={t("k_629780a2f8")} className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? `每 ${v} 秒` : '关闭轮播'}</option>)}</select></label>
         </div>
         <DropdownMenuItem onClick={() => setPaused(v => !v)}>{paused ? '恢复轮播' : '暂停轮播'}</DropdownMenuItem>
-        {enabled.length > 1 && <><DropdownMenuItem onClick={() => go(-1)}>上一看板</DropdownMenuItem><DropdownMenuItem onClick={() => go(1)}>下一看板</DropdownMenuItem></>}
+        {enabled.length > 1 && <><DropdownMenuItem onClick={() => go(-1)}>{t("k_2215cee2a6")}</DropdownMenuItem><DropdownMenuItem onClick={() => go(1)}>{t("k_6dc0e11df5")}</DropdownMenuItem></>}
       </>} />
       {/* 入口存在与否 = 面板里真的能改东西（与 DashboardRuntimeParams 同判据）：
           只看 uncontrolledParams 全量的话，只剩只读常数的看板会渲出一个点开是空的按钮 */}
-      {!!editableParamRows(uncontrolledParams(detail, detail.charts || [])).length && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title="筛选条件" aria-label="筛选条件"><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
-      <Button size="icon" variant="ghost" title="全屏" aria-label="切换全屏播放" onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
-      {!fromWorkspace && (user?.role === 'admin' || user?.id === detail.owner_id) && <Button size="icon" variant="ghost" aria-label="编辑外观与数据" title="编辑外观与数据" onClick={() => navigate(`/dashboard/editor/${detail.id}`, { state: { from: location.pathname + location.search } })}><Edit className="h-4 w-4" /></Button>}
+      {!!editableParamRows(uncontrolledParams(detail, detail.charts || [])).length && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="ghost" title={t("k_e9d5ab4d74")} aria-label={t("k_e9d5ab4d74")}><SlidersHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-80"><DashboardRuntimeParams dashboard={detail} /></DropdownMenuContent></DropdownMenu>}
+      <Button size="icon" variant="ghost" title={t("k_93c44f6b1b")} aria-label={t("k_f989477f06")} onClick={toggleFullscreen}>{fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}</Button>
+      {!fromWorkspace && (user?.role === 'admin' || user?.id === detail.owner_id) && <Button size="icon" variant="ghost" aria-label={t("k_61d5fcf98e")} title={t("k_61d5fcf98e")} onClick={() => navigate(`/dashboard/editor/${detail.id}`, { state: { from: location.pathname + location.search } })}><Edit className="h-4 w-4" /></Button>}
     </header>
-    {library.error && <div role="alert" className="px-4 text-xs">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
+    {library.error && <div role="alert" className="px-4 text-xs">{library.error}<Button variant="link" onClick={library.refresh}>{t("k_e2d53a6d3a")}</Button></div>}
     {/* 动效预设失效（下架/禁用/系统减少动效）要说在明处：不能让用户以为"挂了没反应" */}
     {motionReason && <p role="status" className="px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>}
     {/* 大屏播放走与阅读页同一套响应式页面网格：按视口宽度铺满、超出部分纵向滚动。

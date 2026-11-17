@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
+import { useTranslation } from 'react-i18next';
 
 interface DashboardExportImportProps {
   dashboard: any;
@@ -52,6 +53,7 @@ export function exportChart(chart: any) {
 }
 
 export default function DashboardExportImport({ dashboard, onImport }: DashboardExportImportProps) {
+  const { t } = useTranslation('ui');
   const [exportOpen, setExportOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -186,7 +188,7 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent className="max-w-[600px]">
           <DialogHeader>
-            <DialogTitle>导出仪表盘</DialogTitle>
+            <DialogTitle>{t("k_7239195e26")}</DialogTitle>
           </DialogHeader>
 
           <p className="text-sm text-muted-foreground">
@@ -220,7 +222,7 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
       }}>
         <DialogContent className="max-w-[600px]">
           <DialogHeader>
-            <DialogTitle>导入仪表盘</DialogTitle>
+            <DialogTitle>{t("k_39701cfbf5")}</DialogTitle>
           </DialogHeader>
 
           <p className="text-sm text-muted-foreground">
@@ -230,7 +232,7 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
           <div className="space-y-4">
             <div className="border-2 border-dashed rounded-lg p-8 text-center">
               <FileJson className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-sm mb-2">点击或拖拽JSON文件到此区域</p>
+              <p className="text-sm mb-2">{t("k_b3fe1a204c")}</p>
               <p className="text-xs text-muted-foreground mb-4">支持 .json 格式的仪表盘配置文件</p>
               <input
                 type="file"
@@ -241,13 +243,13 @@ export default function DashboardExportImport({ dashboard, onImport }: Dashboard
               />
               <label htmlFor="file-upload">
                 <Button variant="outline" size="sm" asChild>
-                  <span>选择文件</span>
+                  <span>{t("k_21a6f5a8d9")}</span>
                 </Button>
               </label>
             </div>
 
             <div className="space-y-2">
-              <Label>或粘贴JSON内容：</Label>
+              <Label>{t("k_a56b11eccb")}</Label>
               <Textarea
                 value={importData}
                 onChange={(e) => setImportData(e.target.value)}

@@ -34,6 +34,7 @@ import {
   Filter,
   X,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface TagCategory {
   id: number;
@@ -124,6 +125,7 @@ const emptyTagForm: TagFormData = {
 };
 
 export default function TagsManager() {
+  const { t } = useTranslation('ui');
   const { currentWorkspaceId } = useWorkspaceStore();
 
   // Left panel state
@@ -370,8 +372,8 @@ export default function TagsManager() {
     <div className="p-6 h-full flex flex-col">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold">标签管理</h1>
-          <p className="text-muted-foreground text-sm mt-1">管理标签分类、标签定义和标签值</p>
+          <h1 className="text-2xl font-bold">{t("k_4e02a991e1")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_b84c065515")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => { loadCategories(); loadTags(); }}>
@@ -389,7 +391,7 @@ export default function TagsManager() {
         {/* Left Panel: Category Tree */}
         <div className="w-64 border rounded-lg flex flex-col shrink-0">
           <div className="p-3 border-b flex items-center justify-between">
-            <span className="text-sm font-medium">标签分类</span>
+            <span className="text-sm font-medium">{t("k_e3901c2d01")}</span>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setCategoryForm(emptyCategoryForm); setCategoryFormOpen(true); }}>
               <Plus className="w-4 h-4" />
             </Button>
@@ -402,7 +404,7 @@ export default function TagsManager() {
               onClick={() => setSelectedCatId(null)}
             >
               <Layers className="w-4 h-4 text-muted-foreground mr-1.5" />
-              <span>全部标签</span>
+              <span>{t("k_ffd92f5524")}</span>
             </div>
             {categories.map((cat) => renderCategoryNode(cat))}
           </div>
@@ -429,7 +431,7 @@ export default function TagsManager() {
             {loading ? (
               <div className="p-8 text-center text-muted-foreground">加载中...</div>
             ) : tags.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">暂无标签</div>
+              <div className="p-8 text-center text-muted-foreground">{t("k_ec7eb0e788")}</div>
             ) : (
               <div className="divide-y">
                 {tags.map((tag) => (
@@ -485,7 +487,7 @@ export default function TagsManager() {
             ) : valuesLoading ? (
               <div className="p-8 text-center text-muted-foreground">加载中...</div>
             ) : tagValues.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground text-sm">暂无标签值</div>
+              <div className="p-8 text-center text-muted-foreground text-sm">{t("k_a6a3d71296")}</div>
             ) : (
               <div className="divide-y">
                 {tagValues.map((v) => (
@@ -507,7 +509,7 @@ export default function TagsManager() {
       <Dialog open={categoryFormOpen} onOpenChange={setCategoryFormOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>新建标签分类</DialogTitle>
+            <DialogTitle>{t("k_65ef925644")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -519,7 +521,7 @@ export default function TagsManager() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">显示名称</label>
+              <label className="text-sm font-medium">{t("k_75ae6a8a7d")}</label>
               <Input
                 placeholder="如: 业务标签"
                 value={categoryForm.display_name}
@@ -527,17 +529,17 @@ export default function TagsManager() {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">描述</label>
+              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
               <Input
-                placeholder="分类说明"
+                placeholder={t("k_9de027c1cc")}
                 value={categoryForm.description}
                 onChange={(e) => setCategoryForm({ ...categoryForm, description: e.target.value })}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCategoryFormOpen(false)}>取消</Button>
-            <Button onClick={handleCreateCategory}>创建</Button>
+            <Button variant="outline" onClick={() => setCategoryFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleCreateCategory}>{t("k_fcbd093292")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -569,7 +571,7 @@ export default function TagsManager() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">标签类型</label>
+                <label className="text-sm font-medium">{t("k_f862713fce")}</label>
                 <Select value={tagForm.tag_type} onValueChange={(v) => setTagForm({ ...tagForm, tag_type: v })}>
                   <SelectTrigger>
                     <SelectValue />
@@ -582,7 +584,7 @@ export default function TagsManager() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">实体类型</label>
+                <label className="text-sm font-medium">{t("k_102b091f8d")}</label>
                 <Select value={tagForm.entity_type} onValueChange={(v) => setTagForm({ ...tagForm, entity_type: v })}>
                   <SelectTrigger>
                     <SelectValue />
@@ -596,17 +598,17 @@ export default function TagsManager() {
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">数据类型</label>
+              <label className="text-sm font-medium">{t("k_b031dc9a85")}</label>
               <Select value={tagForm.data_type} onValueChange={(v) => setTagForm({ ...tagForm, data_type: v })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="string">字符串</SelectItem>
-                  <SelectItem value="int">整数</SelectItem>
-                  <SelectItem value="float">浮点数</SelectItem>
-                  <SelectItem value="boolean">布尔值</SelectItem>
-                  <SelectItem value="date">日期</SelectItem>
+                  <SelectItem value="string">{t("k_4dc9621a04")}</SelectItem>
+                  <SelectItem value="int">{t("k_58306b30f4")}</SelectItem>
+                  <SelectItem value="float">{t("k_82dbe08c5a")}</SelectItem>
+                  <SelectItem value="boolean">{t("k_642a2c8a34")}</SelectItem>
+                  <SelectItem value="date">{t("k_b6fed9af83")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -621,16 +623,16 @@ export default function TagsManager() {
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm font-medium">描述</label>
+              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
               <Input
-                placeholder="标签说明"
+                placeholder={t("k_1d61efe733")}
                 value={tagForm.description}
                 onChange={(e) => setTagForm({ ...tagForm, description: e.target.value })}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTagFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setTagFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSaveTag} disabled={saving}>
               {saving ? '保存中...' : '保存'}
             </Button>
@@ -642,14 +644,14 @@ export default function TagsManager() {
       <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             确定要删除标签 <strong>{deleteTarget?.display_name || deleteTarget?.name || '(未命名)'}</strong> 吗？此操作不可恢复。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDeleteTag}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDeleteTag}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -658,11 +660,11 @@ export default function TagsManager() {
       <Dialog open={queryOpen} onOpenChange={setQueryOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>标签查询</DialogTitle>
+            <DialogTitle>{t("k_ddb558cc28")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">匹配模式：</span>
+              <span className="text-sm text-muted-foreground">{t("k_3de5bfc915")}</span>
               <Select value={queryMode} onValueChange={(v: any) => setQueryMode(v)}>
                 <SelectTrigger className="w-32">
                   <SelectValue />
@@ -688,7 +690,7 @@ export default function TagsManager() {
                       onValueChange={(v) => updateQueryCondition(idx, 'tag_id', Number(v))}
                     >
                       <SelectTrigger className="w-40">
-                        <SelectValue placeholder="选择标签" />
+                        <SelectValue placeholder={t("k_608b8e137e")} />
                       </SelectTrigger>
                       <SelectContent>
                         {tags.map((t) => (
@@ -701,15 +703,15 @@ export default function TagsManager() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="eq">等于</SelectItem>
-                        <SelectItem value="neq">不等于</SelectItem>
-                        <SelectItem value="contains">包含</SelectItem>
-                        <SelectItem value="gt">大于</SelectItem>
-                        <SelectItem value="lt">小于</SelectItem>
+                        <SelectItem value="eq">{t("k_bd0f309115")}</SelectItem>
+                        <SelectItem value="neq">{t("k_3b8d5ab52b")}</SelectItem>
+                        <SelectItem value="contains">{t("k_f896fb3776")}</SelectItem>
+                        <SelectItem value="gt">{t("k_9e2e25fc2d")}</SelectItem>
+                        <SelectItem value="lt">{t("k_b445321cbd")}</SelectItem>
                       </SelectContent>
                     </Select>
                     <Input
-                      placeholder="值"
+                      placeholder={t("k_321b955840")}
                       value={cond.value}
                       onChange={(e) => updateQueryCondition(idx, 'value', e.target.value)}
                       className="flex-1"
@@ -731,9 +733,9 @@ export default function TagsManager() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 sticky top-0">
                     <tr>
-                      <th className="text-left p-2 font-medium">实体ID</th>
-                      <th className="text-left p-2 font-medium">实体类型</th>
-                      <th className="text-left p-2 font-medium">匹配标签</th>
+                      <th className="text-left p-2 font-medium">{t("k_48c09a901b")}</th>
+                      <th className="text-left p-2 font-medium">{t("k_102b091f8d")}</th>
+                      <th className="text-left p-2 font-medium">{t("k_a6691a5c6a")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -754,7 +756,7 @@ export default function TagsManager() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setQueryOpen(false); setQueryResults([]); }}>关闭</Button>
+            <Button variant="outline" onClick={() => { setQueryOpen(false); setQueryResults([]); }}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -69,12 +69,16 @@ class CategoryPayload(BaseModel):
     color: Optional[str] = None
     sort: Optional[int] = None
     is_active: Optional[int] = None
+    # 双语覆盖层：{field: {locale: text}}；label/description 支持 en-US
+    i18n: Optional[dict] = None
 
 
 class TagPayload(BaseModel):
     tag: Optional[str] = None
     sort: Optional[int] = None
     is_active: Optional[int] = None
+    # 双语覆盖层（label 支持 en-US；tag 是主字段/中文事实源）
+    i18n: Optional[dict] = None
 
 
 class ArticlePayload(BaseModel):
@@ -98,6 +102,12 @@ class ArticlePayload(BaseModel):
     versioning: Optional[str] = None      # keep_history | latest_only（读者可见性策略）
     change_note: Optional[str] = None
     expected_version: Optional[int] = None
+    # 双语：正文按语言各一条；`lang` 留空则服务端跟随当前请求语言。
+    # `translation_group` 空时服务端回填本篇 slug（自关联即成组）；英文条目须显式指向中文原条目。
+    lang: Optional[str] = None
+    translation_group: Optional[str] = None
+    # 标题/摘要等短字段的双语覆盖层 {field: {locale: text}}
+    i18n: Optional[dict] = None
 
 
 class ReviewAction(BaseModel):
@@ -307,6 +317,7 @@ def read_articles(
     mine: str = Query("", description="按作者用户名过滤（仅可编辑者生效）"),
     expired: bool = Query(False, description="只看「到期复核」的稿（与待审队列同谓词）"),
     sort: str = Query("latest"),
+    lang: str = Query("", description="按正文语言筛（zh-CN / en-US）；留空=全语言"),
     page: int = Query(1, ge=1),
     page_size: int = Query(12, ge=1, le=50),
     user: dict = Depends(get_current_user),
@@ -323,7 +334,7 @@ def read_articles(
         return svc.list_articles(category=category, exclude_category=exclude_category,
                                  kind=kind, tag=tag, q=q, status=status,
                                  mine=mine, can_edit=_can_edit(user), sort=sort,
-                                 expired=expired, page=page, page_size=page_size)
+                                 expired=expired, lang=lang, page=page, page_size=page_size)
     except svc.ContentError as e:
         raise _fail(e) from None
 

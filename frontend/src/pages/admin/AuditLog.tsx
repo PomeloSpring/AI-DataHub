@@ -11,6 +11,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { listAuditLogs, AuditLogItem } from '../../api/audit';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
+import { useTranslation } from 'react-i18next';
 
 const MODULE_OPTIONS = [
   { value: '', label: '全部模块' },
@@ -110,6 +111,7 @@ function formatAction(action: string): string {
 }
 
 export default function AuditLog() {
+  const { t } = useTranslation('ui');
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -159,7 +161,7 @@ export default function AuditLog() {
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">审计日志</h2>
+          <h2 className="text-lg font-semibold">{t("k_7666cd4323")}</h2>
           <Badge variant="secondary" className="ml-2">{total} 条记录</Badge>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()}>
@@ -171,10 +173,10 @@ export default function AuditLog() {
       <div className="flex items-center gap-2 flex-wrap shrink-0">
         <Select value={filterModule} onValueChange={(v) => { setFilterModule(v === '__all__' ? '' : v); }}>
           <SelectTrigger className="w-36">
-            <SelectValue placeholder="全部模块" />
+            <SelectValue placeholder={t("k_ecbfa7c3f2")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__all__">全部模块</SelectItem>
+            <SelectItem value="__all__">{t("k_ecbfa7c3f2")}</SelectItem>
             {MODULE_OPTIONS.filter(m => m.value).map(m => (
               <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
             ))}
@@ -190,7 +192,7 @@ export default function AuditLog() {
             className="pl-8"
           />
         </div>
-        <Button variant="secondary" size="sm" onClick={handleSearch}>查询</Button>
+        <Button variant="secondary" size="sm" onClick={handleSearch}>{t("k_711363c424")}</Button>
       </div>
 
       {/* Table */}
@@ -202,18 +204,18 @@ export default function AuditLog() {
       ) : logs.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
           <Shield className="h-12 w-12 mx-auto mb-3 opacity-30" />
-          <p>暂无审计日志</p>
+          <p>{t("k_4e95331245")}</p>
         </div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
-          <table className="w-full" aria-label="审计日志列表">
+          <table className="w-full" aria-label={t("k_c0aeecbe7b")}>
             <thead>
               <tr className="bg-muted/50 text-sm text-muted-foreground">
-                <th className="text-left p-3 font-medium">时间</th>
-                <th className="text-left p-3 font-medium">用户</th>
-                <th className="text-left p-3 font-medium">模块</th>
-                <th className="text-left p-3 font-medium">操作</th>
-                <th className="text-left p-3 font-medium">详情</th>
+                <th className="text-left p-3 font-medium">{t("k_89b4aa6364")}</th>
+                <th className="text-left p-3 font-medium">{t("k_9ba763ea34")}</th>
+                <th className="text-left p-3 font-medium">{t("k_c1bebd4ab3")}</th>
+                <th className="text-left p-3 font-medium">{t("k_f3ea6d345e")}</th>
+                <th className="text-left p-3 font-medium">{t("k_4f55ee1e68")}</th>
                 <th className="text-left p-3 font-medium">IP</th>
               </tr>
             </thead>

@@ -207,6 +207,23 @@ export function useEditorCharts(dashboardId: number | undefined) {
     if (chart) updateLocalChart(chartId, { position: { ...chartRect(chart), ...position } });
   };
   const handleResizeEnd = (chartId: number, position: DashboardChart['position']) => updateLocalChart(chartId, { position });
+  /** 双语：写 chart.i18n.config['en-US'][key]（覆盖层），供 widget_label.content 与后续 config 深路径的英文输入位使用。
+   *  空值即清除该字段（后端 `merge_overlay` 只在有英时覆盖中文事实源，避免英文界面看到空标题）。*/
+  const handleWidgetI18nChange = (chartId: number, key: string, enValue: string) => {
+    const chart = allCharts.find(c => c.id === chartId);
+    if (!chart) return;
+    const i18n = { ...((chart as any).i18n || {}) };
+    const cfg = { ...(i18n.config || {}) };
+    const en = { ...(cfg['en-US'] || {}) };
+    const trimmed = (enValue || '').trim();
+    if (trimmed) en[key] = trimmed;
+    else delete en[key];
+    if (Object.keys(en).length) cfg['en-US'] = en;
+    else delete cfg['en-US'];
+    if (Object.keys(cfg).length) i18n.config = cfg;
+    else delete i18n.config;
+    updateLocalChart(chartId, { i18n } as any);
+  };
   /** 删除可撤销：接现有 undo 栈，避免“直接删了且不知道能不能回” */
   const notifyDeleted = useCallback((removed: DashboardChart[]) => {
     if (!removed.length) return;
@@ -237,7 +254,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
   }, [mutate, notifyDeleted]);
   const handleSaveChartConfig = (value: any) => {
     if (!selectedChart) return;
-    const { _dataset_id, _previewData, _chart_type, ...config } = value;
+    const { _dataset_id, _previewData, _chart_type, _i18n, ...config } = value;
     const preservedConfig = { ...config, ...(selectedChart.config?.pageLayout !== undefined ? { pageLayout: selectedChart.config.pageLayout } : {}) };
     // 数据源归属不再写进 config（旧版 config.datasource_id 是直连源的残留键）：
     // 取数通道只由 source_type/source_id 表达，服务端按角色清单裁决
@@ -246,6 +263,9 @@ export function useEditorCharts(dashboardId: number | undefined) {
     // 服务端据此清掉演示缓存（不能让用户绑完源还看着一屏假数）。
     if (preservedConfig[TEMPLATE_DEMO_KEY] === true && _dataset_id) preservedConfig[TEMPLATE_DEMO_KEY] = false;
     const updates: Partial<DashboardChart> = { config: preservedConfig };
+    // 双语：面板上送的 _i18n 直接落到 chart.i18n（后端 update_chart 白名单里有 i18n，深合并）。
+    // 空对象 = 用户显式清空英文标题（后端 _merge_patch 语义：整段替换，不留旧值）。
+    if (_i18n !== undefined) (updates as any).i18n = _i18n;
     if (_chart_type) updates.chart_type = _chart_type;
     if (selectedChart.query_source !== 'semantic' && !selectedChart.semantic_query && _dataset_id !== undefined) {
       // 图表不再携带 SQL：改数据只能改挂数据集（清单来自 /datasets/、服务端按角色裁决）
@@ -332,7 +352,7 @@ export function useEditorCharts(dashboardId: number | undefined) {
     pendingNewCount: draft.added.length, draftMetadataKeys: Object.keys(draft.metadata),
     updateMetadata, updateCanvas, updatePage, updatePageLayout, getChartData: chartData, isNewChart: (chartId: number) => chartId < 0,
     dirtyIds: Object.keys(draft.changes).map(Number).filter(id => !draft.deleted.includes(id)),
-    updateLocalChart, handlePropertyChange, handlePositionChange, handleWidgetConfigChange, handleAddFromPanel,
+    updateLocalChart, handlePropertyChange, handlePositionChange, handleWidgetConfigChange, handleWidgetI18nChange, handleAddFromPanel,
     handleAddFromDataset,
     handleDragEnd, handleResizeEnd, handleDeleteSelected, handleDeleteMany, handleSaveChartConfig, saveAllChanges,
     createFromTemplate: store.createFromTemplate };

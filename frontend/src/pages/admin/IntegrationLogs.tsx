@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import client from '../../api/client';
+import { useTranslation } from 'react-i18next';
 
 interface EmbedLog {
   id: number;
@@ -22,6 +23,7 @@ interface EmbedLog {
 }
 
 export default function IntegrationLogs() {
+  const { t } = useTranslation('ui');
   const [logs, setLogs] = useState<EmbedLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -71,11 +73,11 @@ export default function IntegrationLogs() {
           value={filterAppId}
           onChange={(e) => setFilterAppId(e.target.value)}
         >
-          <option value="">全部应用</option>
+          <option value="">{t("k_cf2c501336")}</option>
           {apps.map(app => <option key={app.id} value={String(app.id)}>{app.name}</option>)}
         </select>
         <Input
-          placeholder="用户ID"
+          placeholder={t("k_e0e375c2ba")}
           value={filterUserId}
           onChange={(e) => setFilterUserId(e.target.value)}
           className="w-40"
@@ -85,9 +87,9 @@ export default function IntegrationLogs() {
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
         >
-          <option value="">全部状态</option>
-          <option value="success">成功</option>
-          <option value="error">失败</option>
+          <option value="">{t("k_1a4c26d92d")}</option>
+          <option value="success">{t("k_51991a5d11")}</option>
+          <option value="error">{t("k_3e3c8068bb")}</option>
         </select>
         <Button variant="outline" size="sm" onClick={() => { setPage(1); load(1); }}>
           <Search className="h-4 w-4 mr-1" />筛选
@@ -104,13 +106,13 @@ export default function IntegrationLogs() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="p-3 text-left">时间</th>
-                <th className="p-3 text-left">应用ID</th>
-                <th className="p-3 text-left">用户ID</th>
-                <th className="p-3 text-left">操作</th>
-                <th className="p-3 text-left">详情</th>
+                <th className="p-3 text-left">{t("k_89b4aa6364")}</th>
+                <th className="p-3 text-left">{t("k_be8af550f3")}</th>
+                <th className="p-3 text-left">{t("k_e0e375c2ba")}</th>
+                <th className="p-3 text-left">{t("k_f3ea6d345e")}</th>
+                <th className="p-3 text-left">{t("k_4f55ee1e68")}</th>
                 <th className="p-3 text-left">IP</th>
-                <th className="p-3 text-left">状态</th>
+                <th className="p-3 text-left">{t("k_62e951a692")}</th>
               </tr>
             </thead>
             <tbody>
@@ -137,7 +139,7 @@ export default function IntegrationLogs() {
                 </tr>
               ))}
               {logs.length === 0 && (
-                <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无日志</td></tr>
+                <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_44060e77b1")}</td></tr>
               )}
             </tbody>
           </table>

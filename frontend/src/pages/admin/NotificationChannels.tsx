@@ -45,6 +45,7 @@ import {
   KIND_LABELS,
   type MessageTemplate,
 } from '@/api/messageTemplate';
+import { useTranslation } from 'react-i18next';
 
 const CHANNEL_TYPE_MAP: Record<string, { label: string; icon: string }> = {
   dingtalk: { label: '钉钉', icon: '🤖' },
@@ -80,6 +81,7 @@ const DEFAULT_FORM: FormData = {
 };
 
 export default function NotificationChannels() {
+  const { t } = useTranslation('ui');
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -239,7 +241,7 @@ export default function NotificationChannels() {
             />
           </div>
           <div className="space-y-1.5">
-            <Label>签名密钥（可选）</Label>
+            <Label>{t("k_0782ff8e4d")}</Label>
             <Input
               value={form.config.secret || ''}
               onChange={e => updateConfig('secret', e.target.value)}
@@ -278,7 +280,7 @@ export default function NotificationChannels() {
         <>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>SMTP 服务器</Label>
+              <Label>{t("k_941346a5f4")}</Label>
               <Input
                 value={form.config.smtp_host || ''}
                 onChange={e => updateConfig('smtp_host', e.target.value)}
@@ -286,7 +288,7 @@ export default function NotificationChannels() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>端口</Label>
+              <Label>{t("k_6cbb7335b5")}</Label>
               <Input
                 type="number"
                 value={form.config.smtp_port || 465}
@@ -296,14 +298,14 @@ export default function NotificationChannels() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>用户名</Label>
+              <Label>{t("k_a1aaf352cb")}</Label>
               <Input
                 value={form.config.smtp_user || ''}
                 onChange={e => updateConfig('smtp_user', e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
-              <Label>密码</Label>
+              <Label>{t("k_c839a8ff17")}</Label>
               <Input
                 type="password"
                 value={form.config.smtp_password || ''}
@@ -312,7 +314,7 @@ export default function NotificationChannels() {
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>收件人（多个用逗号分隔）</Label>
+            <Label>{t("k_7621421730")}</Label>
             <Input
               value={Array.isArray(form.config.to_addrs) ? form.config.to_addrs.join(',') : (form.config.to_addrs || '')}
               onChange={e => updateConfig('to_addrs', e.target.value.split(',').map((s: string) => s.trim()))}
@@ -327,18 +329,18 @@ export default function NotificationChannels() {
         <>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>短信签名</Label>
+              <Label>{t("k_f57fae8462")}</Label>
               <Input value={form.config.sign_name || ''} onChange={e => updateConfig('sign_name', e.target.value)}
-                placeholder="签名名称" />
+                placeholder={t("k_c1404a5ad1")} />
             </div>
             <div className="space-y-1.5">
-              <Label>运营商模板码</Label>
+              <Label>{t("k_65a5c8a193")}</Label>
               <Input value={form.config.template_code || ''} onChange={e => updateConfig('template_code', e.target.value)}
                 placeholder="SMS_123456789" />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>收件号码（多个用逗号分隔）</Label>
+            <Label>{t("k_b2fb81945b")}</Label>
             <Input
               value={Array.isArray(form.config.to_numbers) ? form.config.to_numbers.join(',') : (form.config.to_numbers || '')}
               onChange={e => updateConfig('to_numbers', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
@@ -364,7 +366,7 @@ export default function NotificationChannels() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>请求头（JSON，可选）</Label>
+          <Label>{t("k_b435afecc0")}</Label>
           <Textarea
             value={form.config.headers ? JSON.stringify(form.config.headers) : ''}
             onChange={e => {
@@ -384,8 +386,8 @@ export default function NotificationChannels() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">通知渠道</h1>
-          <p className="text-muted-foreground text-sm mt-1">配置消息推送渠道</p>
+          <h1 className="text-2xl font-bold">{t("k_56807dfa08")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_0dc350db4d")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadChannels}>
@@ -404,7 +406,7 @@ export default function NotificationChannels() {
         {loading ? (
           <div className="col-span-full text-center p-8 text-muted-foreground">加载中...</div>
         ) : channels.length === 0 ? (
-          <div className="col-span-full text-center p-8 text-muted-foreground">暂无通知渠道</div>
+          <div className="col-span-full text-center p-8 text-muted-foreground">{t("k_5709a77ffe")}</div>
         ) : (
           channels.map(ch => (
             <div key={ch.id} className="border rounded-lg p-4 space-y-3">
@@ -448,10 +450,10 @@ export default function NotificationChannels() {
                   <Send className="w-4 h-4 mr-1" />
                   {testing === ch.id ? '发送中...' : '测试'}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => openEdit(ch)} aria-label="编辑">
+                <Button variant="ghost" size="sm" onClick={() => openEdit(ch)} aria-label={t("k_a7f814c0a4")}>
                   <Edit className="w-4 h-4" />
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(ch)} aria-label="删除">
+                <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(ch)} aria-label={t("k_3755f56f2f")}>
                   <Trash2 className="w-4 h-4 text-destructive" />
                 </Button>
               </div>
@@ -468,15 +470,15 @@ export default function NotificationChannels() {
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label>渠道名称</Label>
+              <Label>{t("k_99e9ec8d48")}</Label>
               <Input
                 value={form.name}
                 onChange={e => setForm(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="如：运维告警群"
+                placeholder={t("k_a3fd66e434")}
               />
             </div>
             <div className="space-y-1.5">
-              <Label>渠道类型</Label>
+              <Label>{t("k_7ba72e5172")}</Label>
               <Select
                 value={form.channel_type}
                 onValueChange={v => {
@@ -504,14 +506,14 @@ export default function NotificationChannels() {
                 而发送侧从不读它（改了十遍也发不出去），并且自己列了 9 个变量 ——
                 其中 task_name/result_summary 属业务内容，按护栏不允许进通知 */}
             <div className="space-y-1.5">
-              <Label>消息模板</Label>
+              <Label>{t("k_1c3b85787f")}</Label>
               <Select
                 value={selectedKey && templateOf(selectedKey) ? selectedKey : (selectedKey || TEMPLATE_NONE)}
                 onValueChange={v => updateConfig('message_template_key', v === TEMPLATE_NONE ? '' : v)}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={TEMPLATE_NONE}>平台默认文案（不选模板）</SelectItem>
+                  <SelectItem value={TEMPLATE_NONE}>{t("k_c7a4b86add")}</SelectItem>
                   {templateOptions.map(t => (
                     <SelectItem key={t.code} value={t.code}>{t.name}</SelectItem>
                   ))}
@@ -568,11 +570,11 @@ export default function NotificationChannels() {
                 checked={form.is_active}
                 onCheckedChange={v => setForm(prev => ({ ...prev, is_active: v }))}
               />
-              <Label>启用</Label>
+              <Label>{t("k_d4e9ca3dd4")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -582,14 +584,14 @@ export default function NotificationChannels() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除通知渠道「{deleteTarget?.name}」吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

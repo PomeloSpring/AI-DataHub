@@ -8,6 +8,8 @@ import client from '@/api/client';
 import { metricsApi } from '@/api/metrics';
 import type { PageParam } from '@/stores/dashboardStore';
 import { PARAM_SHAPE_LABELS } from '@/lib/dashboardParamAssembly';
+import { useTranslation } from 'react-i18next';
+import { t } from '@/i18n/runtime';
 
 /**
  * 参数名选择框（对齐 ui-resource-display.md：从资源清单中选，不手填内部标识）。
@@ -57,18 +59,18 @@ export function ParamNameSelect({ value, params, placeholder, label, onChange, o
     </p>}
     {creating && <div className="space-y-1.5 rounded-md border bg-muted/30 p-2">
       <div className="space-y-1">
-        <Label className="text-[10px]">参数名（字母/数字/下划线，不以数字开头）</Label>
+        <Label className="text-[10px]">{t("k_33b3f3446c")}</Label>
         <Input className="h-6 text-xs font-mono" value={draft.name} placeholder="如 date_start"
           onChange={e => setName(e.target.value)} />
       </div>
       <div className="space-y-1">
-        <Label className="text-[10px]">显示名</Label>
-        <Input className="h-6 text-xs" value={draft.label} placeholder="如 开始日期"
+        <Label className="text-[10px]">{t("k_c10bbf5ddd")}</Label>
+        <Input className="h-6 text-xs" value={draft.label} placeholder={t("k_bdc990de7d")}
           onChange={e => { setLabelTouched(true); setDraft(d => ({ ...d, label: e.target.value })); }} />
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         <div className="space-y-1">
-          <Label className="text-[10px]">类型</Label>
+          <Label className="text-[10px]">{t("k_e4e46c7235")}</Label>
           <Select value={draft.type} onValueChange={v => setDraft(d => ({ ...d, type: v as PageParam['type'] }))}>
             <SelectTrigger className="h-6 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -77,7 +79,7 @@ export function ParamNameSelect({ value, params, placeholder, label, onChange, o
           </Select>
         </div>
         <div className="space-y-1">
-          <Label className="text-[10px]">默认值</Label>
+          <Label className="text-[10px]">{t("k_d93919c37b")}</Label>
           <Input className="h-6 text-xs" value={draft.default} onChange={e => setDraft(d => ({ ...d, default: e.target.value }))} />
         </div>
       </div>
@@ -87,14 +89,14 @@ export function ParamNameSelect({ value, params, placeholder, label, onChange, o
         （名字不一致时在数据集页「入参」里改判归属，不靠手打对齐）。
       </p>
       <div className="flex justify-end gap-1">
-        <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setCreating(false)}>取消</Button>
+        <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setCreating(false)}>{t("k_4d0b4688c7")}</Button>
         <Button size="sm" className="h-6 text-xs" disabled={!VALID_PARAM_NAME.test(draft.name) || !draft.label.trim() || params.some(p => p.name === draft.name)} onClick={() => {
           const created: PageParam = { name: draft.name, type: draft.type, default: draft.default, label: draft.label.trim() || draft.name };
           onCreate(created); onChange(created.name); setCreating(false); setLabelTouched(false);
           setDraft({ name: '', type: 'string', default: '', label: '' });
-        }}>创建并选用</Button>
+        }}>{t("k_1a39794c16")}</Button>
       </div>
-      {params.some(p => p.name === draft.name) && draft.name && <p className="text-[10px] text-destructive">参数名已存在</p>}
+      {params.some(p => p.name === draft.name) && draft.name && <p className="text-[10px] text-destructive">{t("k_71416173fa")}</p>}
     </div>}
   </div>;
 }
@@ -115,17 +117,18 @@ export interface WidgetOption { label: string; value: string }
  * 含逗号的选项被 split 静默截断、也不能从字典/数据集取候选。
  */
 export function WidgetOptionsEditor({ value, onChange }: { value: WidgetOption[]; onChange: (options: WidgetOption[]) => void }) {
+  const { t } = useTranslation('ui');
   const [source, setSource] = useState<OptionsSource>(() => 'manual');
   const options = value || [];
   return <div className="space-y-2">
     <div className="flex items-center justify-between">
-      <Label className="text-xs">选项</Label>
+      <Label className="text-xs">{t("k_221ee0cc94")}</Label>
       <Select value={source} onValueChange={v => setSource(v as OptionsSource)}>
-        <SelectTrigger className="h-6 w-32 text-[11px]" aria-label="选项来源"><SelectValue /></SelectTrigger>
+        <SelectTrigger className="h-6 w-32 text-[11px]" aria-label={t("k_ace6d8d9c1")}><SelectValue /></SelectTrigger>
         <SelectContent>
-          <SelectItem value="manual" className="text-xs">手动录入</SelectItem>
-          <SelectItem value="dict" className="text-xs">维度字典</SelectItem>
-          <SelectItem value="dataset" className="text-xs">数据集列</SelectItem>
+          <SelectItem value="manual" className="text-xs">{t("k_380a48764f")}</SelectItem>
+          <SelectItem value="dict" className="text-xs">{t("k_d8fec2efb4")}</SelectItem>
+          <SelectItem value="dataset" className="text-xs">{t("k_90dcf7ece0")}</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -133,19 +136,20 @@ export function WidgetOptionsEditor({ value, onChange }: { value: WidgetOption[]
     {source === 'dict' && <DictOptionSource onSelect={onChange} />}
     {source === 'dataset' && <DatasetOptionSource onSelect={onChange} />}
     {options.length === 0 && source !== 'manual' && (
-      <p className="text-[10px] text-muted-foreground">尚未选择来源，当前控件没有可选项。</p>
+      <p className="text-[10px] text-muted-foreground">{t("k_af16b1065c")}</p>
     )}
   </div>;
 }
 
 function OptionRows({ options, onChange }: { options: WidgetOption[]; onChange: (o: WidgetOption[]) => void }) {
+  const { t } = useTranslation('ui');
   const update = (index: number, key: keyof WidgetOption, text: string) =>
     onChange(options.map((o, i) => i === index ? { ...o, [key]: text } : o));
   return <div className="space-y-1">
     {options.map((o, i) => <div key={i} className="flex items-center gap-1">
-      <Input className="h-6 flex-1 text-xs" value={o.label} placeholder="显示名" aria-label={`选项 ${i + 1} 显示名`}
+      <Input className="h-6 flex-1 text-xs" value={o.label} placeholder={t("k_c10bbf5ddd")} aria-label={`选项 ${i + 1} 显示名`}
         onChange={e => update(i, 'label', e.target.value)} />
-      <Input className="h-6 w-20 text-xs font-mono" value={o.value} placeholder="值" aria-label={`选项 ${i + 1} 取值`}
+      <Input className="h-6 w-20 text-xs font-mono" value={o.value} placeholder={t("k_321b955840")} aria-label={`选项 ${i + 1} 取值`}
         onChange={e => update(i, 'value', e.target.value)} />
       <Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label={`删除选项 ${i + 1}`} onClick={() => onChange(options.filter((_, j) => j !== i))}>
         <Trash2 className="h-3 w-3" />
@@ -154,12 +158,13 @@ function OptionRows({ options, onChange }: { options: WidgetOption[]; onChange: 
     <Button size="sm" variant="outline" className="h-6 w-full text-xs" onClick={() => onChange([...options, { label: '', value: '' }])}>
       <Plus className="h-3 w-3 mr-1" />添加选项
     </Button>
-    <p className="text-[10px] text-muted-foreground">显示名给使用者看，取值下发给 SQL；两者可以不同。</p>
+    <p className="text-[10px] text-muted-foreground">{t("k_ac8c793271")}</p>
   </div>;
 }
 
 /** 维度字典 value_labels 是枚举码→业务标签的唯一事实源（对齐 ontology-modeling.md §3） */
 function DictOptionSource({ onSelect }: { onSelect: (o: WidgetOption[]) => void }) {
+  const { t } = useTranslation('ui');
   const [items, setItems] = useState<{ id: number; name: string; labels: Record<string, string> }[]>([]);
   const [picked, setPicked] = useState('');
   const [error, setError] = useState('');
@@ -178,7 +183,7 @@ function DictOptionSource({ onSelect }: { onSelect: (o: WidgetOption[]) => void 
       const dim = items.find(i => i.name === name);
       if (dim) onSelect(Object.entries(dim.labels).map(([value, label]) => ({ label: label || value, value })));
     }}>
-      <SelectTrigger className="h-6 text-xs" aria-label="选择维度字典"><SelectValue placeholder="选择维度字典" /></SelectTrigger>
+      <SelectTrigger className="h-6 text-xs" aria-label={t("k_6a528263df")}><SelectValue placeholder={t("k_6a528263df")} /></SelectTrigger>
       <SelectContent>{items.map(i => <SelectItem key={i.id} value={i.name} className="text-xs">{i.name}</SelectItem>)}</SelectContent>
     </Select>
     {picked && <p className="text-[10px] text-muted-foreground">已按字典「{picked}」的码值生成 {countLabels(items, picked)} 个选项。</p>}
@@ -189,6 +194,7 @@ const countLabels = (items: { name: string; labels: Record<string, string> }[], 
   Object.keys(items.find(i => i.name === name)?.labels || {}).length;
 
 function DatasetOptionSource({ onSelect }: { onSelect: (o: WidgetOption[]) => void }) {
+  const { t } = useTranslation('ui');
   const [datasets, setDatasets] = useState<{ id: number; name: string }[]>([]);
   const [datasetId, setDatasetId] = useState('');
   const [columns, setColumns] = useState<string[]>([]);
@@ -222,11 +228,11 @@ function DatasetOptionSource({ onSelect }: { onSelect: (o: WidgetOption[]) => vo
   return <div className="space-y-1">
     <div className="grid grid-cols-2 gap-1">
       <Select value={datasetId} onValueChange={v => { setDatasetId(v); setColumn(''); }}>
-        <SelectTrigger className="h-6 text-xs"><SelectValue placeholder="数据集" /></SelectTrigger>
+        <SelectTrigger className="h-6 text-xs"><SelectValue placeholder={t("k_fc2b4735c3")} /></SelectTrigger>
         <SelectContent>{datasets.map(d => <SelectItem key={d.id} value={String(d.id)} className="text-xs">{d.name}</SelectItem>)}</SelectContent>
       </Select>
       <Select value={column} onValueChange={setColumn} disabled={!datasetId}>
-        <SelectTrigger className="h-6 text-xs"><SelectValue placeholder="列" /></SelectTrigger>
+        <SelectTrigger className="h-6 text-xs"><SelectValue placeholder={t("k_ad3ee64830")} /></SelectTrigger>
         <SelectContent>{columns.map(c => <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>)}</SelectContent>
       </Select>
     </div>

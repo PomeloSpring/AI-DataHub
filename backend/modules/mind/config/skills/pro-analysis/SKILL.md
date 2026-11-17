@@ -6,6 +6,8 @@ category: analysis
 exclusive_group: playbook
 requires_any: [execute_sql]
 triggers: [复杂查询, 多表, 关联查, join, 窗口函数, 子查询, 明细数据, 未建模, 原始数据, 物理表, SQL, 统计检验, 中位数, 分位数, 相关系数, 回归, 行级, 导出全量]
+display_name_en: "Deep Analysis"
+description_en: "Multi-turn deep analysis: iterative querying, attribution drill-down, cross-site fan-out and chart output; full capability with permission-gated writes."
 ---
 
 # 专业数据分析师 Skill

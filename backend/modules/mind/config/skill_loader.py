@@ -85,6 +85,26 @@ def _parse_skill_md(text: str) -> tuple[dict, str]:
     return meta, body
 
 
+def _skill_i18n(meta: dict) -> dict:
+    """frontmatter 的 `*_en` 键 → 与库内元数据同一形态的双语 blob `{field: {locale: text}}`。
+
+    为什么写在同一份 SKILL.md 而不是另建语言文件：SKILL.md 文件即事实源（本模块唯一入口），
+    语言拆到第二个文件必然出现"改了中文忘改英文"。`i18n:` 子映射同时支持（第三语言往这里加）。
+    只双语**展示字段**；技能正文是作业细则，多语言两份必然飘。
+    """
+    blob = {}
+    for field, key in (("display_name", "display_name_en"), ("description", "description_en")):
+        text = str(meta.get(key) or "").strip()
+        if text:
+            blob[field] = {"en-US": text}
+    extra = meta.get("i18n")
+    if isinstance(extra, dict):
+        for field, per in extra.items():
+            if isinstance(per, dict):
+                blob[field] = {**(blob.get(field) or {}), **per}
+    return blob
+
+
 def _load_skill_from_file(skill_name: str) -> Optional[dict]:
     """Load skill from config/skills/{name}/ directory.
 
@@ -103,6 +123,7 @@ def _load_skill_from_file(skill_name: str) -> Optional[dict]:
             meta, body = _parse_skill_md(skill_md.read_text(encoding="utf-8"))
             result["display_name"] = meta.get("display_name") or meta.get("name") or skill_name
             result["description"] = meta.get("description", "")
+            result["i18n"] = _skill_i18n(meta)
             result["category"] = meta.get("category", "")
             result["skill_config"] = meta
             result["system_prompt"] = body
@@ -121,6 +142,7 @@ def _load_skill_from_file(skill_name: str) -> Optional[dict]:
                 meta = yaml.safe_load(f) or {}
             result["display_name"] = meta.get("display_name", skill_name)
             result["description"] = meta.get("description", "")
+            result["i18n"] = _skill_i18n(meta)
             result["category"] = meta.get("category", "")
             result["skill_config"] = meta
             result["is_builtin"] = (meta.get("source") or "builtin") != "custom"

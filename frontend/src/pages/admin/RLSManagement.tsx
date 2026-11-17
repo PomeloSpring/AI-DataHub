@@ -25,6 +25,7 @@ import {
   listDatasourceTables, listDatasourceColumns, listRoleAttrKeys,
   type RLSPolicy, type RLSAuditLog, type SelectOption,
 } from '@/api/rls';
+import { useTranslation } from 'react-i18next';
 
 interface Datasource { id: number; name: string; db_type?: string; }
 
@@ -54,6 +55,7 @@ const DEFAULT_FORM: PolicyFormData = {
 const TAB_TYPES: Record<string, string[]> = { row: ['row', 'both'], column: ['column'], table: ['table'] };
 
 export default function RLSManagement() {
+  const { t } = useTranslation('ui');
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   // 行/列/表三个页签 = 三份独立的服务端分页清单（类型筛选下推到 SQL，
   // 不得“整张清单分页 + 前端再筛”，否则每页条数与「共 N 条」永远对不上）
@@ -335,7 +337,7 @@ export default function RLSManagement() {
   const renderEmpty = (msg: string, ctx: EditContext) => (
     <div className="text-center py-8 text-muted-foreground">
       <p className="mb-3">{msg}</p>
-      <Button onClick={() => openCreate(ctx)} size="sm"><Plus className="h-4 w-4 mr-2" />新建策略</Button>
+      <Button onClick={() => openCreate(ctx)} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_e42e8184fd")}</Button>
     </div>
   );
 
@@ -372,18 +374,18 @@ export default function RLSManagement() {
       <Tabs value={tab} onValueChange={(v) => { setTab(v); setPage(1); setAuditPage(1); }} className="flex-1 min-h-0 flex flex-col">
         {/* self-start: flex-col 的 Tabs 会把 inline-flex 的 TabsList 拉伸成通栏色带, 页签会跑到正中 */}
         <TabsList className="shrink-0 self-start">
-          <TabsTrigger value="row"><Rows3 className="h-4 w-4 mr-2" />行策略</TabsTrigger>
-          <TabsTrigger value="column"><Columns3 className="h-4 w-4 mr-2" />列策略</TabsTrigger>
-          <TabsTrigger value="table"><Table2 className="h-4 w-4 mr-2" />表策略</TabsTrigger>
-          <TabsTrigger value="audit"><FileText className="h-4 w-4 mr-2" />审计日志</TabsTrigger>
+          <TabsTrigger value="row"><Rows3 className="h-4 w-4 mr-2" />{t("k_aff627e54b")}</TabsTrigger>
+          <TabsTrigger value="column"><Columns3 className="h-4 w-4 mr-2" />{t("k_a8b880d21f")}</TabsTrigger>
+          <TabsTrigger value="table"><Table2 className="h-4 w-4 mr-2" />{t("k_90fa0ea225")}</TabsTrigger>
+          <TabsTrigger value="audit"><FileText className="h-4 w-4 mr-2" />{t("k_7666cd4323")}</TabsTrigger>
         </TabsList>
 
         {/* ── 行策略 Tab ──────────────────────────────────────── */}
         <TabsContent value="row" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
             <p className="text-sm text-muted-foreground shrink-0">共 {rowTotal} 条行策略</p>
-            <div className="flex-1 max-w-xs"><Input value={rowSearch} onChange={e => setRowSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
-            <Button onClick={() => openCreate('row')} size="sm"><Plus className="h-4 w-4 mr-2" />新建行策略</Button>
+            <div className="flex-1 max-w-xs"><Input value={rowSearch} onChange={e => setRowSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
+            <Button onClick={() => openCreate('row')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_bc1cd6e26d")}</Button>
           </div>
           <div className="flex-1 min-h-0 overflow-auto">
           {loading ? <div className="text-center py-8 text-muted-foreground">加载中...</div>
@@ -398,8 +400,8 @@ export default function RLSManagement() {
         <TabsContent value="column" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
             <p className="text-sm text-muted-foreground shrink-0">共 {colTotal} 条列策略</p>
-            <div className="flex-1 max-w-xs"><Input value={colSearch} onChange={e => setColSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
-            <Button onClick={() => openCreate('column')} size="sm"><Plus className="h-4 w-4 mr-2" />新建列策略</Button>
+            <div className="flex-1 max-w-xs"><Input value={colSearch} onChange={e => setColSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
+            <Button onClick={() => openCreate('column')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_54023673d4")}</Button>
           </div>
           <p className="text-xs text-muted-foreground mb-3 shrink-0">
             列策略是黑名单：列出的列将被隐藏/脱敏，未列出的列默认可访问（敏感数据管理的屏蔽列对所有用户额外生效）。
@@ -417,8 +419,8 @@ export default function RLSManagement() {
         <TabsContent value="table" className="flex-1 min-h-0 flex flex-col">
           <div className="flex justify-between items-center mb-4 gap-2 shrink-0">
             <p className="text-sm text-muted-foreground shrink-0">共 {tableTotal} 条表策略</p>
-            <div className="flex-1 max-w-xs"><Input value={tableSearch} onChange={e => setTableSearch(e.target.value)} placeholder="搜索策略名/表名…" className="h-8 text-xs" /></div>
-            <Button onClick={() => openCreate('table')} size="sm"><Plus className="h-4 w-4 mr-2" />新建表策略</Button>
+            <div className="flex-1 max-w-xs"><Input value={tableSearch} onChange={e => setTableSearch(e.target.value)} placeholder={t("k_bf495ba6c2")} className="h-8 text-xs" /></div>
+            <Button onClick={() => openCreate('table')} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_c440add3f0")}</Button>
           </div>
           <p className="text-xs text-muted-foreground mb-3 shrink-0">
             表策略是白名单：角色一旦绑定任一表策略，该角色在此数据源下仅可访问清单内的表；未绑定表策略的角色不受表级限制（仍受角色数据源/表授权约束）。
@@ -436,7 +438,7 @@ export default function RLSManagement() {
         <TabsContent value="audit" className="flex-1 min-h-0 flex flex-col">
           <div className="mb-4 text-sm text-muted-foreground shrink-0">共 {auditTotal} 条审计记录</div>
           <div className="flex-1 min-h-0 overflow-auto">
-          {auditLogs.length === 0 ? <div className="text-center py-8 text-muted-foreground">暂无审计记录<br /><span className="text-xs">提示：创建/修改/删除策略时将自动记录审计日志</span></div>
+          {auditLogs.length === 0 ? <div className="text-center py-8 text-muted-foreground">{t("k_2c18694012")}<br /><span className="text-xs">{t("k_885907c4ae")}</span></div>
             : <div className="space-y-2">{auditLogs.map(log => {
               const actionLabels: Record<string, string> = {
                 policy_create: '创建策略',
@@ -466,20 +468,20 @@ export default function RLSManagement() {
                 {log.table_name && <p className="text-xs">表: {log.table_name}</p>}
                 {(log.deny_reason || log.original_sql || log.filtered_sql) && (
                   <details className="mt-1">
-                    <summary className="cursor-pointer text-xs text-muted-foreground">查看详情</summary>
+                    <summary className="cursor-pointer text-xs text-muted-foreground">{t("k_faea8c1db9")}</summary>
                     <div className="mt-1 space-y-1">
                       {log.deny_reason && (
                         <p className="text-xs"><span className="text-muted-foreground">拒绝原因:</span> {log.deny_reason}</p>
                       )}
                       {log.original_sql && (
                         <div>
-                          <p className="text-xs text-muted-foreground">原始 SQL</p>
+                          <p className="text-xs text-muted-foreground">{t("k_b4a2faa115")}</p>
                           <pre className="mt-1 text-xs bg-muted p-2 rounded overflow-auto max-h-32">{log.original_sql}</pre>
                         </div>
                       )}
                       {log.filtered_sql && (
                         <div>
-                          <p className="text-xs text-muted-foreground">治理后 SQL</p>
+                          <p className="text-xs text-muted-foreground">{t("k_c2f5f2c808")}</p>
                           <pre className="mt-1 text-xs bg-muted p-2 rounded overflow-auto max-h-32">{log.filtered_sql}</pre>
                         </div>
                       )}
@@ -521,7 +523,7 @@ export default function RLSManagement() {
                   setForm(f => ({ ...f, datasource_id: Number(v), table_name: '', columns: [] }));
                   setNewColName('');
                 }}>
-                <SelectTrigger aria-label="数据源"><SelectValue placeholder="选择数据源" /></SelectTrigger>
+                <SelectTrigger aria-label={t("k_a3ccf702c5")}><SelectValue placeholder={t("k_422b9e314a")} /></SelectTrigger>
                 <SelectContent>
                   {datasources.map(ds => <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}{ds.db_type ? ` (${ds.db_type})` : ''}</SelectItem>)}
                 </SelectContent>
@@ -552,24 +554,24 @@ export default function RLSManagement() {
             {editContext === 'row' && (
               <>
                 <div>
-                  <Label>过滤类型</Label>
+                  <Label>{t("k_4a3d1afbed")}</Label>
                   <Select value={form.filter_type} onValueChange={(v: any) => setForm(f => ({ ...f, filter_type: v }))}>
-                    <SelectTrigger aria-label="过滤类型"><SelectValue /></SelectTrigger>
+                    <SelectTrigger aria-label={t("k_4a3d1afbed")}><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="condition">条件表达式</SelectItem>
-                      <SelectItem value="user_attribute">角色属性</SelectItem>
+                      <SelectItem value="condition">{t("k_25290fa627")}</SelectItem>
+                      <SelectItem value="user_attribute">{t("k_32ecdb1729")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label>过滤表达式</Label>
+                  <Label>{t("k_1048013bc1")}</Label>
                   <Textarea value={form.filter_expr} onChange={e => setForm(f => ({ ...f, filter_expr: e.target.value }))}
                     placeholder={'如: region = :user_region\n或: status = \'active\''} rows={3} />
                   <p className="text-xs text-muted-foreground mt-1">自由 SQL 条件（无清单可枚举，允许手填）；使用 :user_xxx 引用角色属性值</p>
                 </div>
                 {form.filter_type === 'user_attribute' && (
                   <div>
-                    <Label>属性名</Label>
+                    <Label>{t("k_f18a118e3d")}</Label>
                     <SearchSelect
                       ariaLabel="属性名"
                       value={form.user_attribute}
@@ -579,7 +581,7 @@ export default function RLSManagement() {
                       error={attrKeys === null ? '角色属性清单加载失败' : null}
                       onRetry={() => loadAttrs(true)}
                       emptyText="尚未定义角色属性（请先在角色管理中配置）"
-                      placeholder="搜索并选择属性"
+                      placeholder={t("k_c45755d24d")}
                     />
                   </div>
                 )}
@@ -589,7 +591,7 @@ export default function RLSManagement() {
             {/* ── 列策略专属: 黑名单编辑 ── */}
             {editContext === 'column' && (
               <div className="space-y-2">
-                <Label>黑名单列（禁止访问的列）</Label>
+                <Label>{t("k_92532d8cd3")}</Label>
                 <div className="flex gap-2">
                   <div className="flex-1">
                     <SearchSelect
@@ -609,18 +611,18 @@ export default function RLSManagement() {
                     />
                   </div>
                   <Select value={newColAccess} onValueChange={(v: any) => setNewColAccess(v)}>
-                    <SelectTrigger aria-label="屏蔽方式" className="w-28"><SelectValue /></SelectTrigger>
+                    <SelectTrigger aria-label={t("k_9e026afea1")} className="w-28"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="hidden">隐藏</SelectItem>
-                      <SelectItem value="masked">脱敏</SelectItem>
+                      <SelectItem value="hidden">{t("k_bb0e7e01aa")}</SelectItem>
+                      <SelectItem value="masked">{t("k_9e5bb0438d")}</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Button aria-label="添加黑名单列" onClick={addColToBlacklist} disabled={!newColName || !!colsLoadingKey}>
+                  <Button aria-label={t("k_86e5773185")} onClick={addColToBlacklist} disabled={!newColName || !!colsLoadingKey}>
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
                 {form.columns.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-3 border rounded">黑名单为空：该策略不屏蔽任何列</p>
+                  <p className="text-sm text-muted-foreground text-center py-3 border rounded">{t("k_2be4194fa0")}</p>
                 ) : (
                   <div className="space-y-2">
                     {form.columns.map(col => (
@@ -642,16 +644,16 @@ export default function RLSManagement() {
             )}
 
             <div>
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="策略说明..." rows={2} />
             </div>
             <div className="flex items-center gap-2">
               <Switch checked={form.is_active} onCheckedChange={v => setForm(f => ({ ...f, is_active: v }))} />
-              <Label>启用策略</Label>
+              <Label>{t("k_fc94dc5947")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -660,11 +662,11 @@ export default function RLSManagement() {
       {/* ── Delete Confirmation ─────────────────────────────────── */}
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>确认删除</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_3c06abe116")}</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">确定要删除策略 "{deleteTarget?.name}" 吗？此操作不可撤销。</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

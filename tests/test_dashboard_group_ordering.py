@@ -295,13 +295,61 @@ def test_create_group_respects_explicit_sort(fake_conn, payload_invalidations):
 
 def test_group_items_endpoint_writes_arrangement_index(fake_db, payload_invalidations):
     """组内看板全量替换时按数组下标写 sort —— 前端「已选看板」的上移/下移靠它落库。"""
-    fake_db.box["rows"] = lambda sql: [{"id": 5}] if "SELECT id FROM adh_dashboard_groups" in sql else []
+    fake_db.box["rows"] = lambda sql: (
+        [{"id": 5}] if "SELECT id FROM adh_dashboard_groups" in sql else
+        [{"id": 33}, {"id": 11}, {"id": 22}] if "FROM adh_dashboards" in sql else [])
 
     out = api.set_group_items_endpoint(5, api.GroupItemsRequest(dashboard_ids=[33, 11, 22]), admin=ADMIN)
 
     inserts = [w for w in fake_db.log if w[0].startswith("INSERT IGNORE INTO adh_dashboard_group_items")]
     assert [(p[1], p[2]) for _, p in inserts] == [(33, 0), (11, 1), (22, 2)]
     assert out["count"] == 3
+
+
+def test_set_group_items_drops_nonexistent_dashboard(fake_db, payload_invalidations):
+    """已删除看板不得写回组内（否则组合重新长出"看板已删除"悬空成员）：
+    写口按 adh_dashboards 存在性过滤，被拒的 id 显式回传（no-silent-degradation）。"""
+    def rows(sql):
+        if "SELECT id FROM adh_dashboard_groups" in sql:
+            return [{"id": 5}]
+        if "FROM adh_dashboards" in sql:
+            return [{"id": 33}, {"id": 22}]   # 11 已被删除
+        return []
+    fake_db.box["rows"] = rows
+
+    out = api.set_group_items_endpoint(5, api.GroupItemsRequest(dashboard_ids=[33, 11, 22]), admin=ADMIN)
+
+    inserts = [w for w in fake_db.log if w[0].startswith("INSERT IGNORE INTO adh_dashboard_group_items")]
+    assert [p[1] for _, p in inserts] == [33, 22]        # 11 被拒登记
+    assert [p[2] for _, p in inserts] == [0, 1]          # sort 按保留后的下标连续
+    assert out["count"] == 2 and out["dropped"] == [11]  # dropped 显式回传
+
+
+def test_group_payload_hides_deleted_dashboards(fake_db):
+    """管理端组合清单只回仍存在的看板：读口 JOIN adh_dashboards 按全局存在性过滤
+    （不按工作空间清单，以免误删“存在但不在当前工作空间”的看板）。"""
+    fake_db.box["rows"] = lambda sql: (
+        [{"dashboard_id": 22}] if "group_items" in sql else
+        [{"id": 5, "name": "经营日报", "description": "", "sort": 10}] if "FROM adh_dashboard_groups" in sql else [])
+
+    out = api.list_groups_endpoint(user=ADMIN)
+
+    items_sql = next(sql for sql, _ in fake_db.log if "group_items" in sql)
+    assert "JOIN adh_dashboards" in items_sql
+    assert out[0]["dashboard_ids"] == [22]
+
+
+def test_delete_dashboard_endpoint_cascades_group_items(fake_db, payload_invalidations, monkeypatch):
+    """删板端点必须级联删组内引用（adh_dashboard_group_items 对 adh_dashboards 无外键级联）。"""
+    monkeypatch.setattr(api, "_require_editable", lambda *a, **k: None)
+    monkeypatch.setattr(api.dashboard_service, "delete_dashboard", lambda did, uid: True)
+
+    out = api.delete_dashboard_endpoint(555, user=ADMIN)
+
+    assert out == {"success": True}
+    dels = [p for sql, p in fake_db.log
+            if sql.startswith("DELETE FROM adh_dashboard_group_items") and p == (555,)]
+    assert dels   # 按 dashboard_id 清组内引用
 
 
 def test_groups_endpoint_returns_arrangement_order(fake_db):

@@ -12,6 +12,7 @@ import { Layers, Link2, AlertTriangle, Boxes } from 'lucide-react';
 import { normalizeDocObjects, type DocObjectIssue } from '@/lib/ontologyObjects';
 import { ObjectEditButton } from './ModelAssetTabs';
 import { ontologyApi, type ContractObjectRow, type DraftObjectDiff, type PropertyDriftEntry } from '@/api/ontology';
+import { t } from '@/i18n/runtime';
 
 /** 草案视图下每个对象的状态标记（由服务端 draft_diff 算好，前端不再自己比） */
 const DRAFT_STATE_META: Record<string, { label: string; cls: string }> = {
@@ -137,13 +138,13 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
           <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-600">
             <AlertTriangle className="h-3 w-3 mr-1 inline" />
             {issues.length} 个对象定义无法展示：{issues.map((e) => `${e.label}${e.hint}`).join('；')}
-            <div className="mt-0.5 text-amber-600/80">请在 JSON 中补齐 key（对象英文标识）后保存</div>
+            <div className="mt-0.5 text-amber-600/80">{t("k_7e5b0f1568")}</div>
           </div>
         )}
         <div className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
           对象（{list.length}）
           {viewMode === 'draft' && (
-            <Badge variant="outline" className="text-[10px] px-1.5 h-4 border-amber-500/40 text-amber-600">草案</Badge>
+            <Badge variant="outline" className="text-[10px] px-1.5 h-4 border-amber-500/40 text-amber-600">{t("k_bbcb968bf3")}</Badge>
           )}
         </div>
         {viewMode === 'draft' && draftHint && (
@@ -177,7 +178,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                   <span className="font-mono">{o.key}</span>
                   <span className="ml-auto" />
                   {st && delta ? (
-                    <span className="truncate" title="草案中的变更摘要">
+                    <span className="truncate" title={t("k_026380221f")}>
                       {[delta.properties_added?.length ? `+${delta.properties_added.length}` : '',
                         delta.properties_removed?.length ? `-${delta.properties_removed.length}` : '',
                         delta.links_added?.length ? `关系+${delta.links_added.length}` : '']
@@ -189,15 +190,15 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                         title={`路由至 ${o.route.source_ontology}${o.route.object_key ? ' · ' + o.route.object_key : ''}`}>route</Badge>
                     : bind.loading
                       ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-muted-foreground border-border"
-                          title="绑定状态来自部署绑定层，加载中">…</Badge>
+                          title={t("k_2f2d8627fb")}>…</Badge>
                       : bind.error
                         ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-red-500 border-red-500/30"
-                            title={`无法读取部署绑定（${bind.error}），不拿 doc 字段猜绑定状态`}>绑定状态未知</Badge>
+                            title={`无法读取部署绑定（${bind.error}），不拿 doc 字段猜绑定状态`}>{t("k_5c067c3c3a")}</Badge>
                         : contractOf(o.key)?.physical_table
                           ? <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-green-600 border-green-500/30"
                               title={`部署绑定: ${contractOf(o.key)!.datasource || '未指定数据源'} · ${contractOf(o.key)!.bind_kind || 'primary'}`}>bound</Badge>
                           : <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 text-amber-500 border-amber-500/30"
-                              title={bindHint}>未绑定物理表</Badge>}
+                              title={bindHint}>{t("k_f059a1e4bf")}</Badge>}
                 {(() => {
                   // 徽标按 verdict 分流：列不存在（定义要改）与列元数据未同步（要先同步）
                   // 不是同一件事，统一叫「列待修」会把人引向一个改了也没用的操作。
@@ -346,7 +347,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                     });
                   })()}
                   {!(obj.properties || []).length && (
-                    <div className="text-xs text-muted-foreground p-3">暂无属性</div>)}
+                    <div className="text-xs text-muted-foreground p-3">{t("k_7c1acf8680")}</div>)}
                 </div>
               </ScrollArea>
             </div>
@@ -368,7 +369,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                           onClick={() => l.target && setSelKey(String(l.target))}
                         >{l.target}</button>
                         {l.cardinality && <span className="text-xs text-muted-foreground">{l.cardinality}</span>}
-                        {orphan && <span title="目标对象不在本模型内（引用悬空）"><AlertTriangle className="h-3.5 w-3.5 inline" /></span>}
+                        {orphan && <span title={t("k_02efe42ae7")}><AlertTriangle className="h-3.5 w-3.5 inline" /></span>}
                       </div>
                     );
                   })}
@@ -377,7 +378,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                       ⚠ {orphanLinks.length} 条 Link 目标不在本模型，激活校验会拒绝
                     </div>
                   )}
-                  {!(obj.links || []).length && <div className="text-xs text-muted-foreground p-3">暂无关系</div>}
+                  {!(obj.links || []).length && <div className="text-xs text-muted-foreground p-3">{t("k_d1db64962d")}</div>}
                 </div>
               </ScrollArea>
             </div>

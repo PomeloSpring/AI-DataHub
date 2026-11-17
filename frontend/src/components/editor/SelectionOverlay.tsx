@@ -2,6 +2,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Settings, Trash2 } from 'lucide-react';
 import { CANVAS_COLORS, OVERLAY } from '@/lib/canvasTheme';
 import type { Rect } from '@/lib/dashboardDesign';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   /** 选中卡片在视口内的屏幕矩形（由 canvasRectToScreen 算出，已含缩放与平移） */
@@ -25,6 +26,7 @@ interface Props {
  * 50% 缩放时放大 2 倍直接压住卡片标题；这里改为按屏幕矩形定位并优先放在卡片上方。
  */
 export default function SelectionOverlay({ screen, size, minimum, onConfig, onDelete, onResizeStart, onNudge, readout }: Props) {
+  const { t } = useTranslation('ui');
   const fitsAbove = screen.y - OVERLAY.toolbarHeight - OVERLAY.edge >= 0;
   const toolbarTop = fitsAbove ? screen.y - OVERLAY.toolbarHeight - OVERLAY.edge : screen.y + OVERLAY.edge;
   const toolbarLeft = Math.max(OVERLAY.edge, screen.x + screen.w - OVERLAY.toolbarHeight * 2 - (readout ? 104 : 0));
@@ -32,14 +34,14 @@ export default function SelectionOverlay({ screen, size, minimum, onConfig, onDe
     <div className="pointer-events-auto absolute flex items-center rounded-md border bg-background/95 shadow-sm"
       style={{ left: toolbarLeft, top: toolbarTop, height: OVERLAY.toolbarHeight }}>
       {readout && <span className="px-2 font-mono text-[10px] text-muted-foreground">{readout}</span>}
-      <button type="button" className="px-1.5 hover:text-foreground" aria-label="配置图表" title="配置" onClick={onConfig}>
+      <button type="button" className="px-1.5 hover:text-foreground" aria-label={t("k_6c152d3118")} title={t("k_d7d7ce790b")} onClick={onConfig}>
         <Settings className="h-3.5 w-3.5" />
       </button>
-      <button type="button" className="px-1.5 hover:text-destructive" aria-label="删除图表" title="删除" onClick={onDelete}>
+      <button type="button" className="px-1.5 hover:text-destructive" aria-label={t("k_b1af878016")} title={t("k_3755f56f2f")} onClick={onDelete}>
         <Trash2 className="h-3.5 w-3.5" />
       </button>
     </div>
-    <div role="slider" tabIndex={onNudge ? 0 : -1} aria-label="调整图表大小"
+    <div role="slider" tabIndex={onNudge ? 0 : -1} aria-label={t("k_757a84f58e")}
       aria-valuenow={size ? Math.round(size.w) : undefined} aria-valuetext={size ? `宽 ${Math.round(size.w)}，高 ${Math.round(size.h)}` : undefined}
       aria-valuemin={minimum?.w} aria-valuemax={10000}
       onKeyDown={e => {

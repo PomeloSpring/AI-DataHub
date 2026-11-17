@@ -19,6 +19,7 @@ import {
 import { dagApi, type DagWorkflow, type DagRun, type DagGraph } from '@/api/dag';
 import { udfApi, type Udf } from '@/api/udf';
 import { DatasourceSelect } from './DatasourceSelect';
+import { useTranslation } from 'react-i18next';
 
 // ── 任务中心：简单同步（单节点 DAG）与 DAG 编排统一列表 ──
 // 模型统一：简单同步保存为 kind='simple' 的单节点 DAG，执行/调度/血缘/质量同构。
@@ -39,9 +40,10 @@ function StatusBadge({ status }: { status: string | null }) {
 }
 
 function KindBadge({ kind }: { kind: string }) {
+  const { t } = useTranslation('ui');
   return kind === 'simple'
-    ? <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20"><Zap className="w-3 h-3 mr-0.5" />简单同步</Badge>
-    : <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20"><Workflow className="w-3 h-3 mr-0.5" />DAG 编排</Badge>;
+    ? <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20"><Zap className="w-3 h-3 mr-0.5" />{t("k_cb247d8135")}</Badge>
+    : <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20"><Workflow className="w-3 h-3 mr-0.5" />{t("k_cb8daea8b9")}</Badge>;
 }
 
 function fmtTime(value?: string | null): string {
@@ -85,6 +87,7 @@ function formToGraph(f: SimpleForm): DagGraph {
 }
 
 export default function SyncTasks() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<DagWorkflow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -192,7 +195,7 @@ export default function SyncTasks() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">数据同步</h1>
+          <h1 className="text-2xl font-bold">{t("k_a1ff6cf80c")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
             离线数据同步与转换任务中心：简单同步与 DAG 编排统一管理，支持 cron 调度、数据流查看与运行监控
           </p>
@@ -211,20 +214,20 @@ export default function SyncTasks() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">任务名称</th>
-              <th className="text-left p-3 font-medium">类型</th>
-              <th className="text-left p-3 font-medium">数据流</th>
-              <th className="text-left p-3 font-medium">调度</th>
-              <th className="text-left p-3 font-medium">上次状态</th>
-              <th className="text-center p-3 font-medium">启用</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t("k_2e30469899")}</th>
+              <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+              <th className="text-left p-3 font-medium">{t("k_b2047f645e")}</th>
+              <th className="text-left p-3 font-medium">{t("k_36019dc2f4")}</th>
+              <th className="text-left p-3 font-medium">{t("k_b0155dd075")}</th>
+              <th className="text-center p-3 font-medium">{t("k_d4e9ca3dd4")}</th>
+              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
             ) : tasks.length === 0 ? (
-              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无同步任务</td></tr>
+              <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_0e7aa874aa")}</td></tr>
             ) : tasks.map(task => (
               <tr key={task.id} className="border-t hover:bg-muted/30">
                 <td className="p-3">
@@ -264,10 +267,10 @@ export default function SyncTasks() {
                 </td>
                 <td className="p-3">
                   <div className="flex justify-end gap-1">
-                    <Button variant="ghost" size="sm" onClick={() => handleRun(task)} title="立即运行"><Play className="w-4 h-4" /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => openEdit(task)} title="编辑"><Edit className="w-4 h-4" /></Button>
-                    <Button variant="ghost" size="sm" onClick={() => openHistory(task)} title="运行历史"><History className="w-4 h-4" /></Button>
-                    <Button variant="ghost" size="sm" title="删除"
+                    <Button variant="ghost" size="sm" onClick={() => handleRun(task)} title={t("k_275f997278")}><Play className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => openEdit(task)} title={t("k_a7f814c0a4")}><Edit className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => openHistory(task)} title={t("k_57a96617b3")}><History className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="sm" title={t("k_3755f56f2f")}
                       onClick={async () => {
                         try {
                           await dagApi.deleteWorkflow(task.id);
@@ -290,12 +293,12 @@ export default function SyncTasks() {
       {/* 新建向导：选形态 */}
       <Dialog open={wizardOpen} onOpenChange={setWizardOpen}>
         <DialogContent className="max-w-xl">
-          <DialogHeader><DialogTitle>新建同步任务</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_8f38747459")}</DialogTitle></DialogHeader>
           <div className="grid grid-cols-2 gap-4 py-2">
             <button className="border rounded-lg p-4 text-left hover:border-primary transition-colors"
               onClick={openSimpleCreate}>
               <Zap className="w-6 h-6 text-amber-500 mb-2" />
-              <div className="font-medium">简单同步</div>
+              <div className="font-medium">{t("k_cb247d8135")}</div>
               <div className="text-xs text-muted-foreground mt-1">
                 表单配置：源表 → 转换（可选 UDF）→ 目标表；内部为单节点 DAG，执行/血缘/质量同构
               </div>
@@ -303,7 +306,7 @@ export default function SyncTasks() {
             <button className="border rounded-lg p-4 text-left hover:border-primary transition-colors"
               onClick={() => { setWizardOpen(false); navigate('/data/sync/dag/new'); }}>
               <Workflow className="w-6 h-6 text-blue-500 mb-2" />
-              <div className="font-medium">DAG 编排</div>
+              <div className="font-medium">{t("k_cb8daea8b9")}</div>
               <div className="text-xs text-muted-foreground mt-1">
                 画布编排多节点（同步 / SQL 任务 / 控制），支持依赖、并行与数据流视图
               </div>
@@ -326,14 +329,14 @@ export default function SyncTasks() {
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
               </div>
               <div>
-                <label className="text-sm font-medium">Cron 调度（可选）</label>
+                <label className="text-sm font-medium">{t("k_0ffff13ec8")}</label>
                 <Input className="mt-1" value={form.schedule_cron}
                   onChange={e => setForm(f => ({ ...f, schedule_cron: e.target.value }))}
                   placeholder="如 0 2 * * *（留空仅手动）" />
               </div>
             </div>
             <div>
-              <label className="text-sm font-medium">描述</label>
+              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
               <Input className="mt-1" value={form.description}
                 onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
             </div>
@@ -365,22 +368,22 @@ export default function SyncTasks() {
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div>
-                <label className="text-sm font-medium">同步模式</label>
+                <label className="text-sm font-medium">{t("k_c15748bd6f")}</label>
                 <Select value={form.sync_mode} onValueChange={v => setForm(f => ({ ...f, sync_mode: v }))}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="full">全量</SelectItem>
-                    <SelectItem value="incremental">增量</SelectItem>
+                    <SelectItem value="full">{t("k_07a5db8b5e")}</SelectItem>
+                    <SelectItem value="incremental">{t("k_6078bac61a")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <label className="text-sm font-medium">写入模式</label>
+                <label className="text-sm font-medium">{t("k_244d6de40f")}</label>
                 <Select value={form.write_mode} onValueChange={v => setForm(f => ({ ...f, write_mode: v }))}>
                   <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="append">追加</SelectItem>
-                    <SelectItem value="overwrite">覆盖</SelectItem>
+                    <SelectItem value="append">{t("k_aec344de80")}</SelectItem>
+                    <SelectItem value="overwrite">{t("k_a26056298a")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -393,7 +396,7 @@ export default function SyncTasks() {
               )}
             </div>
             <div>
-              <label className="text-sm font-medium">转换 SQL（可选，可引用 UDF）</label>
+              <label className="text-sm font-medium">{t("k_384b7b8aec")}</label>
               <Textarea className="mt-1 font-mono min-h-[90px]" value={form.transform_sql}
                 onChange={e => setForm(f => ({ ...f, transform_sql: e.target.value }))}
                 placeholder={'SELECT id, name_mask(name) AS name, ip2geo(ip_addr) AS region FROM {{source}}'} />
@@ -402,7 +405,7 @@ export default function SyncTasks() {
               </p>
             </div>
             <div>
-              <label className="text-sm font-medium">UDF 引用</label>
+              <label className="text-sm font-medium">{t("k_7714352a81")}</label>
               <div className="mt-1 flex flex-wrap gap-1">
                 {udfs.map(u => {
                   const ref = `${u.name}:${u.version}`;
@@ -419,13 +422,13 @@ export default function SyncTasks() {
                     </Badge>
                   );
                 })}
-                {udfs.length === 0 && <span className="text-xs text-muted-foreground">暂无 UDF（数据中台-UDF 管理查看）</span>}
+                {udfs.length === 0 && <span className="text-xs text-muted-foreground">{t("k_0c90377902")}</span>}
               </div>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
-            <Button onClick={handleSave}>保存</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleSave}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -437,16 +440,16 @@ export default function SyncTasks() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
-                <th className="text-left p-2 font-medium">触发</th>
-                <th className="text-left p-2 font-medium">状态</th>
-                <th className="text-left p-2 font-medium">开始</th>
-                <th className="text-left p-2 font-medium">结束</th>
-                <th className="text-right p-2 font-medium">操作</th>
+                <th className="text-left p-2 font-medium">{t("k_27eccf9785")}</th>
+                <th className="text-left p-2 font-medium">{t("k_62e951a692")}</th>
+                <th className="text-left p-2 font-medium">{t("k_79cc871ca9")}</th>
+                <th className="text-left p-2 font-medium">{t("k_76b9880829")}</th>
+                <th className="text-right p-2 font-medium">{t("k_f3ea6d345e")}</th>
               </tr>
             </thead>
             <tbody>
               {runs.length === 0 ? (
-                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">暂无运行记录</td></tr>
+                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">{t("k_920daa51ce")}</td></tr>
               ) : runs.map(run => (
                 <tr key={run.id} className="border-t">
                   <td className="p-2">{run.trigger_type}</td>

@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   ReactFlow,
   Background,
@@ -26,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Database, Link, GripVertical, X, Plus, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -89,6 +91,7 @@ function splitRelationToMappings(r: Relation): FieldMapping[] {
 // ── Custom Table Node ──────────────────────────────────────────────────
 
 function TableNode({ data }: NodeProps<any>) {
+  const { t } = useTranslation('ui');
   const relations = (data.relations || []) as Relation[];
 
   const relatedColumns = useMemo(() => {
@@ -130,7 +133,7 @@ function TableNode({ data }: NodeProps<any>) {
           ))}
         </div>
       ) : (
-        <div className="px-3 py-2 text-xs text-muted-foreground italic">拖拽连接点创建关联</div>
+        <div className="px-3 py-2 text-xs text-muted-foreground italic">{t("k_6b99cd3def")}</div>
       )}
     </div>
   );
@@ -229,7 +232,7 @@ function FieldMappingForm({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <Label className="text-xs font-medium">字段映射</Label>
+        <Label className="text-xs font-medium">{t("k_c9acc26f65")}</Label>
         <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={addRow}>
           <Plus className="h-3 w-3 mr-1" /> 添加字段
         </Button>
@@ -237,14 +240,14 @@ function FieldMappingForm({
       {mappings.map((m, i) => (
         <div key={i} className="flex items-center gap-2">
           <Input
-            placeholder="源字段"
+            placeholder={t("k_8e32143204")}
             value={m.source_column}
             onChange={(e) => updateRow(i, 'source_column', e.target.value)}
             className="h-7 text-xs flex-1"
           />
           <span className="text-muted-foreground text-xs shrink-0">→</span>
           <Input
-            placeholder="目标字段"
+            placeholder={t("k_167c3f094d")}
             value={m.target_column}
             onChange={(e) => updateRow(i, 'target_column', e.target.value)}
             className="h-7 text-xs flex-1"
@@ -320,7 +323,7 @@ function RelationConfigPanel({
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
-          <Label className="text-xs">关系类型</Label>
+          <Label className="text-xs">{t("k_9d0d00b8f5")}</Label>
           <Select value={relationType} onValueChange={onRelationTypeChange}>
             <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -331,7 +334,7 @@ function RelationConfigPanel({
           </Select>
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">JOIN 类型</Label>
+          <Label className="text-xs">{t("k_308a012113")}</Label>
           <Select value={joinType} onValueChange={onJoinTypeChange}>
             <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -344,7 +347,7 @@ function RelationConfigPanel({
       </div>
 
       <div className="space-y-1">
-        <Label className="text-xs">描述（可选）</Label>
+        <Label className="text-xs">{t("k_552d7f3746")}</Label>
         <Input
           placeholder="如: 订单关联用户"
           value={description}
@@ -354,7 +357,7 @@ function RelationConfigPanel({
       </div>
 
       <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>取消</Button>
+        <Button variant="outline" size="sm" onClick={onCancel}>{t("k_4d0b4688c7")}</Button>
         <Button size="sm" onClick={onSubmit} disabled={!canSubmit}>{submitLabel}</Button>
       </div>
     </div>
@@ -367,6 +370,7 @@ const nodeTypes: Record<string, React.ComponentType<any>> = { tableNode: TableNo
 const edgeTypes: Record<string, React.ComponentType<any>> = { relationEdge: RelationEdge };
 
 function ERDiagramInner({ tables, relations, onRelationCreate, onRelationDelete, onRelationUpdate }: ERDiagramProps) {
+  const { t } = useTranslation('ui');
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [sidebarSearch, setSidebarSearch] = useState('');
@@ -618,7 +622,7 @@ function ERDiagramInner({ tables, relations, onRelationCreate, onRelationDelete,
       <div className="w-[220px] border-r bg-muted/30 flex flex-col shrink-0 min-h-0">
         <div className="p-2 border-b shrink-0">
           <Input
-            placeholder="搜索表名…"
+            placeholder={t("k_487e4eb8b4")}
             value={sidebarSearch}
             onChange={(e) => setSidebarSearch(e.target.value)}
             className="h-8 text-xs"
@@ -705,8 +709,8 @@ function ERDiagramInner({ tables, relations, onRelationCreate, onRelationDelete,
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-muted-foreground">
               <Database className="h-12 w-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">从左侧拖拽表到画布</p>
-              <p className="text-xs mt-1">已有关系的表会自动加载</p>
+              <p className="text-sm">{t("k_c81107261f")}</p>
+              <p className="text-xs mt-1">{t("k_a3212a65b7")}</p>
             </div>
           </div>
         )}
@@ -715,7 +719,7 @@ function ERDiagramInner({ tables, relations, onRelationCreate, onRelationDelete,
         {pendingConnection && (
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50">
             <RelationConfigPanel
-              title="新建关联关系"
+              title={t("k_89c431b5fc")}
               sourceTable={pendingConnection.source}
               targetTable={pendingConnection.target}
               relationType={createRelType}
@@ -738,7 +742,7 @@ function ERDiagramInner({ tables, relations, onRelationCreate, onRelationDelete,
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50">
             <div className="relative">
               <RelationConfigPanel
-                title="编辑关联关系"
+                title={t("k_f54438b1c0")}
                 sourceTable={editingRelation.source_table}
                 targetTable={editingRelation.target_table}
                 relationType={editRelType}

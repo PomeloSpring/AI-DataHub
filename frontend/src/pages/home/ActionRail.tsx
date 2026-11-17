@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { AlertTriangle, ClipboardList, Hash, LayoutDashboard, MessageSquareQuote } from 'lucide-react';
 import type { ContentTag } from '@/api/content';
+import { t } from '@/i18n/runtime';
 
 export interface RailStats {
   /** 我的草稿（仅具备编辑权时取） */
@@ -46,13 +47,13 @@ export default function ActionRail({
   return (
     <aside className="flex flex-col gap-3.5">
       <Panel
-        title="我的看板"
+        title={t("k_5e976d9d29")}
         icon={LayoutDashboard}
         action={boards.length ? { label: '全部', onClick: () => onOpenBoard(-1) } : undefined}
       >
         {!boards.length && (
           <div className="space-y-2 p-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
-            <p className="text-[13px] font-medium text-foreground">还没有分配仪表盘</p>
+            <p className="text-[13px] font-medium text-foreground">{t("k_20d2294838")}</p>
             <p>
               角色被分配看板组合后，登录会直达数据看板；也可以随时从工作空间侧栏「数据看板」进入。
               {onConfigureDashboards ? '在「系统配置 → 仪表盘」里创建看板并编排组合、分配角色。' : '可联系管理员为你的角色分配看板组合。'}
@@ -87,7 +88,7 @@ export default function ActionRail({
       </Panel>
 
       {!!todos.length && (
-        <Panel title="待我处理" icon={ClipboardList} action={{ label: '内容中心', onClick: onGoContent }}>
+        <Panel title={t("k_58faa68f4b")} icon={ClipboardList} action={{ label: '内容中心', onClick: onGoContent }}>
           {todos.map(t => (
             <button
               key={t.key}
@@ -107,7 +108,7 @@ export default function ActionRail({
         </Panel>
       )}
 
-      <Panel title="热门标签" icon={Hash} hidden={!tags.length}>
+      <Panel title={t("k_2fd71ef4d8")} icon={Hash} hidden={!tags.length}>
         <div className="flex flex-wrap gap-1.5 p-3.5">
           {tags.map(t => (
             <button
@@ -127,17 +128,17 @@ export default function ActionRail({
         </div>
       </Panel>
 
-      <Panel title="就着资讯问一句" icon={MessageSquareQuote}>
+      <Panel title={t("k_d9a484d062")} icon={MessageSquareQuote}>
         <div className="space-y-2 p-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
           <p>
             读到的结论想深挖，文章底部的
-            <button type="button" onClick={onAskAboutFeed} className="text-primary underline-offset-2 hover:underline">「就本主题提问」</button>
+            <button type="button" onClick={onAskAboutFeed} className="text-primary underline-offset-2 hover:underline">{t("k_8ba55fde52")}</button>
             会带着这篇的标题与栏目进智能问数，不用你复述背景。
           </p>
           <p className="flex items-start gap-1.5 rounded-lg border bg-muted/40 p-2.5">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" />
             <span>
-              资讯区只呈现<b className="text-foreground">已发布</b>内容；草稿与待审只出现在有编辑权、审核权的人的「待我处理」里。
+              资讯区只呈现<b className="text-foreground">{t("k_176a2eb4eb")}</b>内容；草稿与待审只出现在有编辑权、审核权的人的「待我处理」里。
             </span>
           </p>
         </div>

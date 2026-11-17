@@ -5,6 +5,7 @@ import { useTaxonomy } from '@/pages/content/shared';
 import { TOUR } from '@/lib/onboarding/guides';
 import NewsFeed from './NewsFeed';
 import ActionRail, { type RailStats } from './ActionRail';
+import { t } from '@/i18n/runtime';
 
 /**
  * 首页双栏主体（资讯流 + 行动栏）与它的取数容器。
@@ -86,7 +87,7 @@ function PaneInner({
         {!!error && (
           <p className="mt-3 flex flex-wrap items-center gap-2 text-xs text-destructive">
             栏目与标签清单读取失败：{error}
-            <button type="button" onClick={reload} className="underline underline-offset-2">重试</button>
+            <button type="button" onClick={reload} className="underline underline-offset-2">{t("k_e2d53a6d3a")}</button>
           </p>
         )}
       </div>

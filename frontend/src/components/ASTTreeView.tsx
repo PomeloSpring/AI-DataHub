@@ -6,6 +6,7 @@
 
 import { useMemo, useState } from 'react';
 import { ChevronRight, ChevronDown, FileCode2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface DumpNode {
   idx: number;
@@ -143,10 +144,11 @@ function NodeRow({ node, depth, defaultOpen, expandSignal }: {
 }
 
 export default function ASTTreeView({ dump }: { dump: unknown }) {
+  const { t } = useTranslation('ui');
   const root = useMemo(() => buildAstTree(dump), [dump]);
   const [expandSignal, setExpandSignal] = useState<{ open: boolean | null; seq: number }>({ open: null, seq: 0 });
   if (!root) {
-    return <p className="text-xs text-muted-foreground">AST 数据为空或格式不支持树视图。</p>;
+    return <p className="text-xs text-muted-foreground">{t("k_5d46c9e302")}</p>;
   }
   const nodeCount = Array.isArray(dump) ? dump.length : 0;
   return (
@@ -155,9 +157,9 @@ export default function ASTTreeView({ dump }: { dump: unknown }) {
         <FileCode2 size={13} />
         <span>{nodeCount} 个节点</span>
         <button type="button" className="ml-auto underline-offset-2 hover:underline"
-          onClick={() => setExpandSignal((s) => ({ open: true, seq: s.seq + 1 }))}>展开全部</button>
+          onClick={() => setExpandSignal((s) => ({ open: true, seq: s.seq + 1 }))}>{t("k_64edd632fb")}</button>
         <button type="button" className="underline-offset-2 hover:underline"
-          onClick={() => setExpandSignal((s) => ({ open: false, seq: s.seq + 1 }))}>收起全部</button>
+          onClick={() => setExpandSignal((s) => ({ open: false, seq: s.seq + 1 }))}>{t("k_7305410922")}</button>
       </div>
       <NodeRow node={root} depth={0} defaultOpen expandSignal={expandSignal} />
     </div>

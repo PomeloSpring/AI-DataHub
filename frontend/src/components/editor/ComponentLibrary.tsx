@@ -5,6 +5,7 @@ import { useVisLibrary } from '@/hooks/useVisLibrary';
 import VisComponentPreview, { ShapePreview, typeLabelsOf } from '@/components/VisComponentPreview';
 import { compatible, resolveDashboardDesign, chartZIndex, isChartHidden, isChartLocked } from '@/lib/dashboardDesign';
 import { libraryDragId, type LibraryDragData } from '@/lib/editorDrag';
+import { t } from '@/i18n/runtime';
 import {
   DATASET_KIND_LABELS, EMPTY_DATASET_FILTER,
   datasetKindOptions, datasetSourceOptions, filterDatasets, isDatasetFilterActive, type DatasetFilterState,
@@ -120,20 +121,20 @@ export default function ComponentLibrary({
 
       <Tabs value={tab} onValueChange={onTab} className="flex-1 flex flex-col min-h-0">
         <TabsList className="w-full rounded-none border-b">
-          <TabsTrigger value="vis" className="flex-1 text-xs">字模</TabsTrigger>
-          <TabsTrigger value="charts" className="flex-1 text-xs">图表</TabsTrigger>
-          <TabsTrigger value="datasets" className="flex-1 text-xs">数据集</TabsTrigger>
-          <TabsTrigger value="widgets" className="flex-1 text-xs">控件</TabsTrigger>
-          <TabsTrigger value="layers" className="flex-1 text-xs">图层</TabsTrigger>
+          <TabsTrigger value="vis" className="flex-1 text-xs">{t("k_6018ff3d19")}</TabsTrigger>
+          <TabsTrigger value="charts" className="flex-1 text-xs">{t("k_a66b71e29e")}</TabsTrigger>
+          <TabsTrigger value="datasets" className="flex-1 text-xs">{t("k_fc2b4735c3")}</TabsTrigger>
+          <TabsTrigger value="widgets" className="flex-1 text-xs">{t("k_f17e504804")}</TabsTrigger>
+          <TabsTrigger value="layers" className="flex-1 text-xs">{t("k_ec4bca7dcc")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="vis" className="flex-1 min-h-0 mt-0 overflow-auto p-3 space-y-3">
-          <select aria-label="字模分类" className="w-full rounded border bg-background p-2 text-xs" value={category} onChange={e => setCategory(e.target.value)}>
+          <select aria-label={t("k_5cbe95c7ae")} className="w-full rounded border bg-background p-2 text-xs" value={category} onChange={e => setCategory(e.target.value)}>
             {VIS_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
           <p className="text-xs text-muted-foreground">{category === 'theme_pack' ? '主题包=一整套风格(背景+卡片+全部图表/控件)，点击一键套用。' : '点击应用到选中元素；图表字模可拖入新建。布局应用前可预览。'}</p>
-          {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>重试</Button></div>}
-          {library.loading && <p className="text-xs">正在加载字模…</p>}
+          {library.error && <div role="alert" className="text-xs text-destructive">{library.error}<Button variant="link" onClick={library.refresh}>{t("k_e2d53a6d3a")}</Button></div>}
+          {library.loading && <p className="text-xs">{t("k_213c2f13af")}</p>}
           {library.items.filter(c => c.category === category).map(c => {
             // chart_style / kpi_card 可拖入新建图表；其余分类只能应用到选中元素
             const creatable = ['chart_style', 'kpi_card'].includes(c.category);
@@ -154,7 +155,7 @@ export default function ComponentLibrary({
                   className={`block w-full rounded-lg border p-2 text-left hover:border-foreground/50 ${incompatible ? 'opacity-50 hover:border' : ''}`}
                   onClick={() => onApplyVis(c)}>{body}</button>;
           })}
-          {!library.loading && !library.error && !library.items.some(c => c.category === category) && <p className="text-xs">该分类暂无字模</p>}
+          {!library.loading && !library.error && !library.items.some(c => c.category === category) && <p className="text-xs">{t("k_73cb831f52")}</p>}
         </TabsContent>
         <TabsContent value="charts" className="flex-1 min-h-0 mt-0">
           <ScrollArea className="h-full p-2">
@@ -189,14 +190,14 @@ export default function ComponentLibrary({
             <div className="relative mb-1.5">
               <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <Input
-                aria-label="搜索数据集"
+                aria-label={t("k_5a3415ff02")}
                 value={dsFilter.keyword}
                 onChange={e => setDsFilter(f => ({ ...f, keyword: e.target.value }))}
-                placeholder="搜索名称/描述/字段/数据源"
+                placeholder={t("k_f0c3a3e333")}
                 className="h-8 pl-7 pr-7 text-xs"
               />
               {dsFilter.keyword && (
-                <button type="button" aria-label="清空搜索关键词" role="button"
+                <button type="button" aria-label={t("k_827bfd5390")} role="button"
                   className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   onClick={() => setDsFilter(f => ({ ...f, keyword: '' }))}>
                   <X className="h-3.5 w-3.5" />
@@ -204,18 +205,18 @@ export default function ComponentLibrary({
               )}
             </div>
             <div className="flex gap-1.5 mb-1.5">
-              <select aria-label="按数据源筛选数据集" title="按数据源筛选（该数据集能在所选源上执行；ES 型数据集也挂在 ES 数据源上，按源筛自然涵盖）"
+              <select aria-label={t("k_3a38ce0110")} title={t("k_956748e547")}
                 className="flex-1 min-w-0 rounded border bg-background p-1.5 text-xs" value={dsFilter.source}
                 onChange={e => setDsFilter(f => ({ ...f, source: e.target.value }))}>
-                <option value="">全部数据源</option>
+                <option value="">{t("k_ae6802c77c")}</option>
                 {dsSourceOptions.map(n => (
                   <option key={n} value={n}>{n}</option>
                 ))}
               </select>
-              <select aria-label="按类型筛选数据集" title="按取数通道类型筛选"
+              <select aria-label={t("k_49c772524c")} title={t("k_fcd16ed7d5")}
                 className="w-[7.5rem] flex-shrink-0 rounded border bg-background p-1.5 text-xs" value={dsFilter.kind}
                 onChange={e => setDsFilter(f => ({ ...f, kind: e.target.value }))}>
-                <option value="">全部类型</option>
+                <option value="">{t("k_fa6968d9f0")}</option>
                 {dsKindOptions.map(k => <option key={k} value={k}>{DATASET_KIND_LABELS[k] || k}</option>)}
               </select>
             </div>
@@ -236,11 +237,11 @@ export default function ComponentLibrary({
               </Button>
             )}
             {datasetsLoading ? (
-              <p className="text-xs px-2 text-muted-foreground">正在加载数据集…</p>
+              <p className="text-xs px-2 text-muted-foreground">{t("k_baf39546ad")}</p>
             ) : datasetsError ? (
               <div role="alert" className="flex items-center gap-2 text-xs text-destructive px-2">
                 <span className="flex-1">{datasetsError}</span>
-                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>重试</Button>
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>{t("k_e2d53a6d3a")}</Button>
               </div>
             ) : datasets.length === 0 ? (
               <p className="text-xs px-2 text-muted-foreground">
@@ -287,7 +288,7 @@ export default function ComponentLibrary({
         <TabsContent value="widgets" className="flex-1 min-h-0 mt-0">
           <ScrollArea className="h-full p-2">
             <div className="mb-2 px-2">
-              <p className="text-[10px] text-muted-foreground">拖入或点击添加到画布，用于参数筛选和交互</p>
+              <p className="text-[10px] text-muted-foreground">{t("k_2768266ac1")}</p>
             </div>
             <div className="grid grid-cols-2 gap-1">
               {widgetItems.map(item => (
@@ -310,7 +311,7 @@ export default function ComponentLibrary({
         </div>
         <ScrollArea className="flex-1 min-h-0">
           {allCharts.length === 0 ? (
-            <div className="text-center py-4 text-muted-foreground text-xs">暂无组件</div>
+            <div className="text-center py-4 text-muted-foreground text-xs">{t("k_44d9b7fb41")}</div>
           ) : (
             <div className="space-y-0.5">
               {layerOrder.map(chart => {
@@ -331,12 +332,12 @@ export default function ComponentLibrary({
                           onBlur={e => { setRenaming(null); const name = e.target.value.trim(); if (name && name !== chart.name) onLayerAction(chart, 'rename', name); }}
                           onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); }} />
                       : <span className="text-xs truncate flex-1" title={`${chart.name}（双击重命名）`} onDoubleClick={() => setRenaming(chart.id)}>{chart.name}</span>}
-                    {chart.id < 0 && <Badge variant="secondary" className="px-1 py-0 text-[8px]">新</Badge>}
-                    {chart.id >= 0 && dirtyIds.includes(chart.id) && <Badge variant="secondary" className="px-1 py-0 text-[8px]">改</Badge>}
+                    {chart.id < 0 && <Badge variant="secondary" className="px-1 py-0 text-[8px]">{t("k_7b8a6bebd3")}</Badge>}
+                    {chart.id >= 0 && dirtyIds.includes(chart.id) && <Badge variant="secondary" className="px-1 py-0 text-[8px]">{t("k_798f95db5d")}</Badge>}
                     <span className="flex flex-shrink-0 items-center" onClick={e => e.stopPropagation()}>
-                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label="上移一层" title="上移一层" disabled={layoutMode !== 'screen'}
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label={t("k_2c4964dcde")} title={t("k_2c4964dcde")} disabled={layoutMode !== 'screen'}
                         onClick={() => onLayerAction(chart, 'up')}><ChevronUp className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label="下移一层" title="下移一层" disabled={layoutMode !== 'screen'}
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label={t("k_a31336ba2b")} title={t("k_a31336ba2b")} disabled={layoutMode !== 'screen'}
                         onClick={() => onLayerAction(chart, 'down')}><ChevronDown className="h-3 w-3" /></Button>
                       <Button variant="ghost" size="sm" className="h-5 w-5 p-0" aria-label={hidden ? '显示' : '隐藏'} title={hidden ? '显示' : '隐藏（仅阅读态生效）'}
                         onClick={() => onLayerAction(chart, hidden ? 'show' : 'hide')}>{hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}</Button>
@@ -348,7 +349,7 @@ export default function ComponentLibrary({
               })}
             </div>
           )}
-          {layoutMode !== 'screen' && <p className="px-2 pt-2 text-[10px] text-muted-foreground">叠放顺序仅大屏模式适用；网格模式由行列决层。</p>}
+          {layoutMode !== 'screen' && <p className="px-2 pt-2 text-[10px] text-muted-foreground">{t("k_caf5d3e723")}</p>}
         </ScrollArea>
       </div>
       </TabsContent>

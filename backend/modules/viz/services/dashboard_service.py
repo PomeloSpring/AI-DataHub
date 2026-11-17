@@ -21,6 +21,7 @@ from typing import Optional
 
 from backend.common.db import execute_query
 from backend.common.db.metadata_db import get_metadata_conn
+from backend.common import i18n
 from backend.common.ttl_cache import dashboard_cache
 from backend.core.governed_query import governed_execute, NoIdentityError
 
@@ -73,7 +74,7 @@ def _json_loads_safe(val):
 
 def _normalize_dashboard(row: dict) -> dict:
     """Normalize dashboard row for JSON serialization."""
-    for field in ("layout", "filters", "params"):
+    for field in ("layout", "filters", "params", i18n.I18N_COLUMN):
         row[field] = _json_loads_safe(row.get(field))
     # tags: JSON 列经 pymysql 回读为字符串, 与 layout/filters/params 同法解析; 归一为字符串数组
     row["tags"] = _clean_tags(row.get("tags"))
@@ -106,7 +107,7 @@ def _clean_tags(value) -> list:
 
 def _normalize_chart(row: dict) -> dict:
     """Normalize chart row for JSON serialization."""
-    for field in ("config", "position", "semantic_query"):
+    for field in ("config", "position", "semantic_query", i18n.I18N_COLUMN):
         row[field] = _json_loads_safe(row.get(field))
     for ts in ("created_at", "updated_at"):
         if hasattr(row.get(ts), "isoformat"):
@@ -120,6 +121,36 @@ def _normalize_chart(row: dict) -> dict:
         row.pop("sql_query", None)
         row["data_cache"] = None
     return row
+
+
+# ── 双语本地化（消费面唯一入口，缓存之后做）──────────────────────────────
+#: 为什么在**出缓存之后**做：DETAIL_KEY 载荷是语言无关的（同一看板全语言共享一份），
+#: 把语言编进缓存键会让命中率减半并在缓存里存多份同源结构；在深拷贝后的副本上就地改写，
+#: 缓存永不受某一请求语言污染。改写/回落行为与 `*_zh` 保留口径统一在 i18n.localize_display，
+#: 本模块只决定哪些字段需要本地化。
+_DASHBOARD_TEXT_FIELDS = ("name", "description")
+_DASHBOARD_OVERLAYS = ("params",)   # 参数 label 与选项显示名在 params JSON 里
+_CHART_TEXT_FIELDS = ("name",)      # 图表卡标题取 `name` 列（DashboardCanvas）
+_CHART_OVERLAYS = ("config",)       # title / 说明卡 content / 控件 label 在 config 深处
+
+
+def _localize_dashboard_row(dash: dict) -> None:
+    """一个看板（含其图表）的就地本地化 + 回落记账。"""
+    missing = i18n.localize_display(
+        dash, fields=_DASHBOARD_TEXT_FIELDS, overlays=_DASHBOARD_OVERLAYS)
+    for chart in dash.get("charts") or []:
+        cm = i18n.localize_display(
+            chart, fields=_CHART_TEXT_FIELDS, overlays=_CHART_OVERLAYS)
+        if cm:
+            chart["i18n_fallback_fields"] = cm
+    if missing:
+        dash["i18n_fallback_fields"] = missing
+
+
+def _localize_dashboards(rows: list) -> list:
+    for d in rows:
+        _localize_dashboard_row(d)
+    return rows
 
 
 def _geo_num(value, default: float) -> float:
@@ -1155,7 +1186,7 @@ class DashboardService:
                     d["charts"] = charts_map.get(d["id"], [])
                 # editable 仅供前端隐藏写入口: 角色授予的可见权不含编辑权(写在 API 层再裁决一次)
                 _mark_editable(dashboards, user_id, user_role)
-                return dashboards
+                return _localize_dashboards(dashboards)
         finally:
             conn.close()
 
@@ -1201,6 +1232,8 @@ class DashboardService:
         result = copy.deepcopy(payload)  # 缓存对象不外泄: 调用方就地改写不得污染缓存
         # editable: 仅属主/admin 可写(角色授予的可见权不含编辑权); 保留 owner_id 供属主自检
         _mark_editable([result], user_id, user_role)
+        # 本地化必须在深拷贝之后（缓存本体语言无关）
+        _localize_dashboard_row(result)
         return result
 
     def create_dashboard(self, data: dict, user_id: int) -> int:
@@ -1218,9 +1251,10 @@ class DashboardService:
                 cur.execute(
                     "INSERT INTO adh_dashboards "
                     "(`id`, `name`, `description`, `layout`, `filters`, `params`, `tags`, `status`, "
+                    "`i18n`, "
                     "`owner_id`, `workspace_id`, `is_public`, `is_default`, `carousel_interval`, "
                     "`created_at`, `updated_at`) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         did,
                         data["name"],
@@ -1230,6 +1264,7 @@ class DashboardService:
                         json.dumps(data.get("params") or []),
                         json.dumps(_clean_tags(data.get("tags"))),
                         data.get("status", "designing"),
+                        json.dumps(data.get(i18n.I18N_COLUMN) or {}),
                         user_id,
                         workspace_id,
                         1 if data.get("is_public") else 0,
@@ -1277,7 +1312,7 @@ class DashboardService:
                         updates.append(f"{col} = %s")
                         params.append(data[key])
 
-                for json_field in ("layout", "filters", "params"):
+                for json_field in ("layout", "filters", "params", i18n.I18N_COLUMN):
                     if json_field in data and data[json_field] is not None:
                         updates.append(f"`{json_field}` = %s")
                         params.append(json.dumps(data[json_field]))
@@ -1476,8 +1511,8 @@ class ChartService:
                     "INSERT INTO adh_charts "
                     "(`id`, `dashboard_id`, `name`, `chart_type`, `sql_query`, "
                     "`config`, `position`, `source_type`, `source_id`, `data_cache`, "
-                    "`semantic_query`, `query_source`, `created_at`, `updated_at`) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "`semantic_query`, `query_source`, `i18n`, `created_at`, `updated_at`) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         cid, dashboard_id,
                         payload["name"], payload["chart_type"], None,
@@ -1487,6 +1522,7 @@ class ChartService:
                         payload.get("source_id"), cache,
                         json.dumps(payload.get("semantic_query"), ensure_ascii=False) if payload.get("semantic_query") else None,
                         payload.get("query_source") or "raw_sql",
+                        json.dumps(payload.get(i18n.I18N_COLUMN) or {}, ensure_ascii=False),
                         now, now,
                     ),
                 )
@@ -1563,6 +1599,7 @@ class ChartService:
                 allowed = (
                     "name", "chart_type", "config", "position",
                     "source_type", "source_id", "data_cache", "semantic_query", "query_source",
+                    i18n.I18N_COLUMN,
                 )
                 sets, params = [], []
                 for field in allowed:
@@ -1571,7 +1608,7 @@ class ChartService:
                     value = data[field]
                     if field in ("name", "chart_type", "source_type", "query_source") and not value:
                         raise ValueError(f"{field} cannot be empty")
-                    if field in ("config", "position", "semantic_query"):
+                    if field in ("config", "position", "semantic_query", i18n.I18N_COLUMN):
                         value = json.dumps(value, ensure_ascii=False) if value is not None else None
                     sets.append(f"`{field}`=%s")
                     params.append(value)

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 看板级「批量切换执行数据源」。
@@ -45,6 +46,7 @@ interface Props {
 }
 
 export default function DashboardSourceSwitchDialog({ open, charts, onCancel, onApply }: Props) {
+  const { t } = useTranslation('ui');
   const [datasets, setDatasets] = useState<Record<number, any>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -104,7 +106,7 @@ export default function DashboardSourceSwitchDialog({ open, charts, onCancel, on
     <Dialog open={open} onOpenChange={v => { if (!v) onCancel(); }}>
       <DialogContent className="max-w-[560px] max-h-[82vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5" />批量切换执行数据源</DialogTitle>
+          <DialogTitle className="flex items-center gap-2"><RefreshCw className="h-5 w-5" />{t("k_cadc055362")}</DialogTitle>
           <DialogDescription>
             把所选数据源一次性钉到「其数据集支持该源」的图表上；不支持的图表保持原样并列出原因。
             只改草稿，保存后生效；跨查看者按其角色权限裁决。
@@ -116,18 +118,18 @@ export default function DashboardSourceSwitchDialog({ open, charts, onCancel, on
             <div role="alert" className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
               <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
               <span className="flex-1">{error}</span>
-              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={load}>重试</Button>
+              <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={load}>{t("k_e2d53a6d3a")}</Button>
             </div>
           )}
 
           {rows.length === 0 && !loading && !error && (
-            <p className="text-xs text-muted-foreground">本看板还没有绑定数据集的图表（控件与占位图不参与切换）。</p>
+            <p className="text-xs text-muted-foreground">{t("k_f694fe1d23")}</p>
           )}
 
           {rows.length > 0 && (
             <>
               <div className="space-y-1.5">
-                <Label className="text-xs">目标数据源</Label>
+                <Label className="text-xs">{t("k_6daeb016b3")}</Label>
                 <Select key={resetKey} onValueChange={setTarget} disabled={loading || !candidates.length}>
                   <SelectTrigger className="h-8 text-xs"><SelectValue placeholder={loading ? '正在加载数据集清单…' : (candidates.length ? '选择要切换到的数据源' : '当前图表都没有可切换的多源数据集')} /></SelectTrigger>
                   <SelectContent>
@@ -170,7 +172,7 @@ export default function DashboardSourceSwitchDialog({ open, charts, onCancel, on
               {pinnedCount > 0 && !target && (
                 <p className="text-[11px] text-muted-foreground">
                   当前有 {pinnedCount} 个图表已钉选数据源。
-                  <Button variant="link" size="sm" className="h-5 px-1 text-[11px]" onClick={clearAll}>全部改回自动定源</Button>
+                  <Button variant="link" size="sm" className="h-5 px-1 text-[11px]" onClick={clearAll}>{t("k_4055d87ec1")}</Button>
                 </p>
               )}
             </>
@@ -178,7 +180,7 @@ export default function DashboardSourceSwitchDialog({ open, charts, onCancel, on
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>取消</Button>
+          <Button variant="outline" onClick={onCancel}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={apply} disabled={loading || !!error || !target || matched.length === 0}>
             {target && matched.length ? `切换到 ${matched.length} 个图表` : '应用'}
           </Button>

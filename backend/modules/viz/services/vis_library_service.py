@@ -35,7 +35,7 @@ CATEGORIES = {
     "report_template",
 }
 
-_JSON_FIELDS = ("style_config",)
+_JSON_FIELDS = ("style_config", "i18n")
 
 
 class BuiltinProtectedError(PermissionError):
@@ -174,14 +174,15 @@ class VisLibraryService:
         cid = execute_insert(
             "INSERT INTO adh_vis_components "
             "(code, name, category, chart_type, style_config, thumbnail, "
-            " description, source, workspace_id, is_active, is_builtin, sort_order, created_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            " description, source, workspace_id, is_active, is_builtin, sort_order, created_by, i18n) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 code, name, category, data.get("chart_type"),
                 json.dumps(data.get("style_config") or {}, ensure_ascii=False),
                 data.get("thumbnail"),
                 data.get("description", ""), source, int(data.get("workspace_id") or 0),
                 1, is_builtin, int(data.get("sort_order") or 0), user_id or 0,
+                json.dumps(data.get("i18n") or {}, ensure_ascii=False),
             ),
         )
         logger.info("[vis_library] created component id=%s code=%s builtin=%s by=%s", cid, code, is_builtin, user_id)
@@ -201,6 +202,10 @@ class VisLibraryService:
             if k in data:
                 sets.append(f"`{k}` = %s")
                 params.append(data[k])
+        if "i18n" in data:
+            # 双语 blob 整体写回（编辑页带完整结构上来），空值 = 显式清空英文
+            sets.append("`i18n` = %s")
+            params.append(json.dumps(data.get("i18n") or {}, ensure_ascii=False))
         if "style_config" in data:
             sets.append("style_config = %s")
             params.append(json.dumps(data.get("style_config") or {}, ensure_ascii=False))

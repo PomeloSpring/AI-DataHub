@@ -236,12 +236,19 @@ def list_chat_slash_options(
                                              user_id=user["user_id"])
     if as_bot_key:
         resolved = [w for w in resolved if w.get("as_bot_key") == as_bot_key] or resolved
+    from backend.common import i18n
+
     names = as_bot_service.collect_skill_names(resolved)
-    skills = [
-        {"name": s.get("name"), "display_name": s.get("display_name") or s.get("name"),
-         "description": (s.get("description") or "").strip()}
-        for s in as_bot_service.load_skills(names)
-    ]
+    skills = []
+    for s in as_bot_service.load_skills(names):
+        row, _missing = i18n.localize_row(
+            {"display_name": s.get("display_name") or s.get("name"),
+             "description": (s.get("description") or "").strip(),
+             "i18n": s.get("i18n") or {}},
+            "", ("display_name", "description"))
+        skills.append({"name": s.get("name"),
+                       "display_name": row["display_name"],
+                       "description": row["description"]})
 
     tasks: list[dict] = []
     try:

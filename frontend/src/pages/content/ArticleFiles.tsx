@@ -2,11 +2,13 @@ import { useRef, useState } from 'react';
 import { Download, Paperclip, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatBytes } from '@/api/monitoring';
+import { t } from '@/i18n/runtime';
 import {
   CONTENT_FILE_ACCEPT, CONTENT_FILE_MAX_COUNT, CONTENT_FILE_MAX_MB,
   contentApi, contentError, downloadContentFile, type ContentFile,
 } from '@/api/content';
 import { ErrorBanner, NoticeBanner } from './shared';
+import { useTranslation } from 'react-i18next';
 
 /** 扩展名白名单（从 CONTENT_FILE_ACCEPT 派生，不另列一份清单） */
 const ALLOWED_EXT = CONTENT_FILE_ACCEPT.split(',').map(s => s.trim().toLowerCase());
@@ -116,7 +118,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
               <Upload className="mr-1.5 h-3.5 w-3.5" />{busy ? '上传中' : '上传附件'}
             </Button>
             <input
-              ref={inputRef} type="file" className="hidden" aria-label="选择附件文件"
+              ref={inputRef} type="file" className="hidden" aria-label={t("k_0c836c15f9")}
               accept={CONTENT_FILE_ACCEPT}
               onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); }}
             />
@@ -140,7 +142,7 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
             还没有附件。支持 Word / PPT / Excel / PDF / HTML，单个最大 {CONTENT_FILE_MAX_MB}MB，
             一条最多 {CONTENT_FILE_MAX_COUNT} 个；附件在门户里只提供下载，不做站内预览。
           </p>
-        ) : <p className="text-xs text-muted-foreground">这篇没有附件。</p>
+        ) : <p className="text-xs text-muted-foreground">{t("k_5d02b0dae0")}</p>
       ) : (
         <ul className="divide-y rounded-lg border">
           {files.map(f => (
@@ -176,5 +178,6 @@ export default function ArticleFiles({ slug, files, scope, editable = false, onR
 
 /** 面板标题行（标题不硬编码在调用方，统一在这里出） */
 function PanelTitle() {
-  return <span className="text-sm font-medium">附件</span>;
+  const { t } = useTranslation('ui');
+  return <span className="text-sm font-medium">{t("k_99f6fe6c41")}</span>;
 }

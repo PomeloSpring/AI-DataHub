@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Compass, Home as HomeIcon, Folder, Database, Settings, Sparkles } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -138,7 +139,7 @@ export default function WelcomeDialog({
 
         {hereGuide && (
           <div className="space-y-1.5">
-            <div className="text-xs font-medium text-muted-foreground">当前页面的引导</div>
+            <div className="text-xs font-medium text-muted-foreground">{t("k_8d20e7a7b3")}</div>
             <button
               type="button" onClick={() => play(here)}
               className="flex w-full items-start gap-3 rounded-lg border border-border/70 p-3 text-left transition-colors hover:bg-accent/60"
@@ -158,12 +159,12 @@ export default function WelcomeDialog({
           <button
             type="button" onClick={skipAll}
             className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            title="之后不再自动弹出，可随时从右上角用户菜单「新手引导」重新观看"
+            title={t("k_6ecf309bdb")}
           >
             跳过全部引导（之后不再自动弹出，可手动重看）
           </button>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={dismiss}>稍后再说</Button>
+            <Button variant="outline" size="sm" onClick={dismiss}>{t("k_52b7c8fada")}</Button>
             <Button size="sm" onClick={begin} disabled={!hereGuide}>
               <Compass className="mr-1.5 h-4 w-4" />开始引导
             </Button>

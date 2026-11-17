@@ -65,6 +65,9 @@ describe('DatasetDetail 入参面板', () => {
     // 口径常数不冒充筛选器
     expect(screen.getByText('函数实参（口径常数）')).toBeInTheDocument();
     expect(screen.getByText(/不自动建控件/)).toBeInTheDocument();
+    // 入参默认值直接落在每个变量行：days=30、window_sec=1800（start/end 空串不单独断言，会重）
+    expect(screen.getByText('默认值 30')).toBeInTheDocument();
+    expect(screen.getByText('默认值 1800')).toBeInTheDocument();
   });
 
   it('未登记归属时说明"留空=按形状推断为哪个键"，不让人以为必须手填', async () => {

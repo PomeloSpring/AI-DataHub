@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
+import { t } from '@/i18n/runtime';
 import {
   Dialog,
   DialogContent,
@@ -25,6 +26,7 @@ import {
 } from 'lucide-react';
 import client from '@/api/client';
 import { listRLSPolicies, type RLSPolicy } from '@/api/rls';
+import { useTranslation } from 'react-i18next';
 
 interface Role {
   id: number;
@@ -109,6 +111,7 @@ const AI_CHANNEL_LABEL: Record<string, string> = {
 };
 
 export default function RoleManagement() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(false);
@@ -439,13 +442,13 @@ export default function RoleManagement() {
 
       <div className="flex justify-between items-center mb-4">
         <p className="text-sm text-muted-foreground">共 {roles.length} 个角色 · 系统角色不可删除</p>
-        <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-2" />新建角色</Button>
+        <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-2" />{t("k_7a0524c3a7")}</Button>
       </div>
 
       {loading ? (
         <div className="text-center py-8 text-muted-foreground">加载中...</div>
       ) : roles.length === 0 ? (
-        <div className="text-center py-8 text-muted-foreground">暂无角色</div>
+        <div className="text-center py-8 text-muted-foreground">{t("k_6103376362")}</div>
       ) : (
         <div className="space-y-3">
           {roles.map(role => (
@@ -455,18 +458,18 @@ export default function RoleManagement() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium">{role.display_name}</span>
                     <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{role.name}</code>
-                    {role.is_system ? <Badge variant="secondary">系统</Badge> : <Badge variant="outline">自定义</Badge>}
+                    {role.is_system ? <Badge variant="secondary">{t("k_1a1f6dff78")}</Badge> : <Badge variant="outline">{t("k_c493338e8c")}</Badge>}
                   </div>
                   {role.description && <p className="text-sm text-muted-foreground">{role.description}</p>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => navigate('/system/as-bots')} title="编辑 AS-BOT 配置">
+                  <Button variant="outline" size="sm" onClick={() => navigate('/system/as-bots')} title={t("k_1f45e50d4b")}>
                     <Bot className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => openPermissions(role)} title="权限配置">
+                  <Button variant="outline" size="sm" onClick={() => openPermissions(role)} title={t("k_f9f59a9827")}>
                     <Key className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => openUsers(role)} title="用户分配">
+                  <Button variant="outline" size="sm" onClick={() => openUsers(role)} title={t("k_edede123a2")}>
                     <Users className="h-4 w-4" />
                   </Button>
                   {!role.is_system && (
@@ -487,15 +490,15 @@ export default function RoleManagement() {
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-auto">
           <DialogHeader>
             <DialogTitle>权限配置 — {permTarget?.display_name}</DialogTitle>
-            <DialogDescription>配置该角色的数据访问范围与功能权限</DialogDescription>
+            <DialogDescription>{t("k_4eeea0280e")}</DialogDescription>
           </DialogHeader>
           <Tabs value={permTab} onValueChange={setPermTab}>
             <TabsList className="grid grid-cols-5 w-full">
-              <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />数据源</TabsTrigger>
-              <TabsTrigger value="datasets"><Layers className="h-3.5 w-3.5 mr-1" />数据集</TabsTrigger>
-              <TabsTrigger value="policies"><Lock className="h-3.5 w-3.5 mr-1" />数据安全策略</TabsTrigger>
-              <TabsTrigger value="dashboards"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />看板</TabsTrigger>
-              <TabsTrigger value="functions"><ListChecks className="h-3.5 w-3.5 mr-1" />菜单与功能</TabsTrigger>
+              <TabsTrigger value="datasources"><Database className="h-3.5 w-3.5 mr-1" />{t("k_a3ccf702c5")}</TabsTrigger>
+              <TabsTrigger value="datasets"><Layers className="h-3.5 w-3.5 mr-1" />{t("k_fc2b4735c3")}</TabsTrigger>
+              <TabsTrigger value="policies"><Lock className="h-3.5 w-3.5 mr-1" />{t("k_e284beb40c")}</TabsTrigger>
+              <TabsTrigger value="dashboards"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />{t("k_9dc1a19f2c")}</TabsTrigger>
+              <TabsTrigger value="functions"><ListChecks className="h-3.5 w-3.5 mr-1" />{t("k_eb0509962a")}</TabsTrigger>
             </TabsList>
 
             {/* Datasource Access */}
@@ -514,14 +517,14 @@ export default function RoleManagement() {
                   />
                 </div>
               ))}
-              {allDatasources.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">暂无数据源</p>}
+              {allDatasources.length === 0 && <p className="text-sm text-muted-foreground py-4 text-center">{t("k_bb6750d7bc")}</p>}
             </TabsContent>
 
             {/* Dataset Access */}
             <TabsContent value="datasets" className="space-y-3">
               <p className="text-sm text-muted-foreground">勾选该角色可查看的数据集。未勾选任何数据集 = 不可见（fail-closed，admin 不受限）</p>
               {datasetCatalog.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无数据集</p>
+                <p className="text-sm text-muted-foreground text-center py-4">{t("k_c46e035dbe")}</p>
               ) : (
                 <div className="grid grid-cols-2 gap-1.5">
                   {datasetCatalog.map(ds => (
@@ -542,9 +545,9 @@ export default function RoleManagement() {
 
             {/* 数据安全策略绑定（勾选才生效; 策略在 数据安全策略 页维护） */}
             <TabsContent value="policies" className="space-y-3">
-              <p className="text-sm text-muted-foreground">勾选该角色生效的数据安全策略。策略在「数据安全策略」页维护（行策略过滤/列策略黑名单/表策略白名单），此处仅选择绑定；勾选的策略对该角色生效，未勾选不生效。</p>
+              <p className="text-sm text-muted-foreground">{t("k_9c3cf07be5")}</p>
               {rlsPolicies.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无策略，请先在「数据安全策略」页配置</p>
+                <p className="text-sm text-muted-foreground text-center py-4">{t("k_8dfd345a8c")}</p>
               ) : (
                 <div className="space-y-1">
                   {rlsPolicies.map(p => (
@@ -556,7 +559,7 @@ export default function RoleManagement() {
                           <Badge variant="outline" className="text-xs flex-shrink-0">
                             {p.policy_type === 'row' ? '行策略' : p.policy_type === 'column' ? '列策略' : p.policy_type === 'table' ? '表策略' : '行/列(遗留)'}
                           </Badge>
-                          {!p.is_active && <Badge variant="secondary" className="text-xs flex-shrink-0">已停用</Badge>}
+                          {!p.is_active && <Badge variant="secondary" className="text-xs flex-shrink-0">{t("k_6c7dcbb73a")}</Badge>}
                         </div>
                         <div className="pl-6 text-xs text-muted-foreground truncate">
                           表 <code>{p.table_name}</code>
@@ -577,7 +580,7 @@ export default function RoleManagement() {
             <TabsContent value="dashboards" className="space-y-3">
               <p className="text-sm text-muted-foreground">勾选该角色可查看的看板。未勾选任何看板 = 除 admin 外不可见（fail-closed）</p>
               {dashboardCatalog.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">暂无看板</p>
+                <p className="text-sm text-muted-foreground text-center py-4">{t("k_49734c90cc")}</p>
               ) : (
                 <div className="grid grid-cols-2 gap-1.5">
                   {dashboardCatalog.map(d => (
@@ -585,7 +588,7 @@ export default function RoleManagement() {
                       <div className="flex items-center gap-2 min-w-0">
                         <LayoutDashboard className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                         <span className="text-xs truncate">{d.name}</span>
-                        {d.status !== 'enabled' && <Badge variant="outline" className="text-[10px] flex-shrink-0">未启用</Badge>}
+                        {d.status !== 'enabled' && <Badge variant="outline" className="text-[10px] flex-shrink-0">{t("k_8bb38ef00c")}</Badge>}
                       </div>
                       <Switch
                         checked={roleDashboards.includes(d.id)}
@@ -610,11 +613,11 @@ export default function RoleManagement() {
                 徽标「AI 工具 / 权限码把关 / 未接入」表示该级别到底有没有消费方。
               </p>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>全部展开</Button>
-                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(true)}>全部收起</Button>
+                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(false)}>{t("k_66c98ab6d8")}</Button>
+                <Button variant="outline" size="sm" onClick={() => setAllCollapsed(true)}>{t("k_3f7e768840")}</Button>
               </div>
               {permGroups.length === 0 && standalonePerms.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">权限注册表为空</p>
+                <p className="text-sm text-muted-foreground text-center py-4">{t("k_0e4016d665")}</p>
               ) : (
                 <div className="space-y-4">
                   {permModules.map(({ value: mod, label: modLabel }) => {
@@ -647,7 +650,7 @@ export default function RoleManagement() {
                   {standalonePerms.length > 0 && (
                     <div>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center justify-between">
-                        <span>通用功能</span>
+                        <span>{t("k_dd8bb81826")}</span>
                         <Button
                           variant="ghost" size="sm" className="h-6 w-6 p-0"
                           aria-label={collapsedGroups.has('__standalone__') ? '展开 通用功能' : '收起 通用功能'}
@@ -673,13 +676,13 @@ export default function RoleManagement() {
                       )}
                     </div>
                   )}
-                  <Button size="sm" onClick={saveFunctionPerms}>保存功能权限</Button>
+                  <Button size="sm" onClick={saveFunctionPerms}>{t("k_0a4cf60d5a")}</Button>
                 </div>
               )}
             </TabsContent>
           </Tabs>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPermTarget(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setPermTarget(null)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -692,11 +695,11 @@ export default function RoleManagement() {
           </DialogHeader>
           <div className="space-y-4">
             <div><Label>角色标识 *</Label><Input value={formName} onChange={e => setFormName(e.target.value)} placeholder="如 sales_cn" disabled={!!editRole} /></div>
-            <div><Label>显示名称 *</Label><Input value={formDisplayName} onChange={e => setFormDisplayName(e.target.value)} placeholder="如 中国区销售" /></div>
-            <div><Label>描述</Label><Textarea value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} /></div>
+            <div><Label>显示名称 *</Label><Input value={formDisplayName} onChange={e => setFormDisplayName(e.target.value)} placeholder={t("k_47ebb1f096")} /></div>
+            <div><Label>{t("k_412f54dc38")}</Label><Textarea value={formDesc} onChange={e => setFormDesc(e.target.value)} rows={2} /></div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -711,7 +714,7 @@ export default function RoleManagement() {
           <div className="space-y-4">
             <div>
               <Label className="mb-2 block">已分配用户 ({roleUsers.length})</Label>
-              {roleUsers.length === 0 ? <p className="text-sm text-muted-foreground py-2">暂无用户</p> : (
+              {roleUsers.length === 0 ? <p className="text-sm text-muted-foreground py-2">{t("k_3d268bdd39")}</p> : (
                 <div className="space-y-1 max-h-[200px] overflow-auto">
                   {roleUsers.map(u => (
                     <div key={u.user_id} className="flex items-center justify-between border rounded px-3 py-1.5">
@@ -723,7 +726,7 @@ export default function RoleManagement() {
               )}
             </div>
             <div>
-              <Label className="mb-2 block">添加用户</Label>
+              <Label className="mb-2 block">{t("k_4f965d4969")}</Label>
               <div className="max-h-[200px] overflow-auto space-y-1">
                 {allUsers.filter(u => !roleUsers.some(r => r.user_id === u.id)).map(u => (
                   <div key={u.id} className="flex items-center justify-between border rounded px-3 py-1.5">
@@ -734,18 +737,18 @@ export default function RoleManagement() {
               </div>
             </div>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setUserTarget(null)}>关闭</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setUserTarget(null)}>{t("k_6c14bd7f6f")}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* ── Delete Confirmation ─────────────────────────────────── */}
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>确认删除</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_3c06abe116")}</DialogTitle></DialogHeader>
           <p>确定要删除角色 "{deleteTarget?.display_name}" 吗？</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -795,12 +798,12 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
                 ? `该功能涉敏，AI 级别已锁死为「${AI_LEVEL_LABEL[effective]}」。${perm.ai_note || ''}`
                 : `AI 可调用级别：${AI_LEVEL_LABEL[effective]}`}
             >
-              <SelectValue placeholder="AI 级别" />
+              <SelectValue placeholder={t("k_deb7157586")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">不开放给 AI</SelectItem>
-              <SelectItem value="read">只读可见</SelectItem>
-              <SelectItem value="write">可读可写</SelectItem>
+              <SelectItem value="none">{t("k_292a251e16")}</SelectItem>
+              <SelectItem value="read">{t("k_7a33d9210f")}</SelectItem>
+              <SelectItem value="write">{t("k_079280e097")}</SelectItem>
             </SelectContent>
           </Select>
           <Badge

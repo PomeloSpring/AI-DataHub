@@ -62,7 +62,9 @@
     "total_one": "{{count}} item",
     "total_other": "{{count}} items",
     "selected_one": "{{count}} selected",
-    "selected_other": "{{count}} selected"
+    "selected_other": "{{count}} selected",
+    "selected": "Selected",
+    "total": "Total"
   },
   "pagination": {
     "prev": "Previous",

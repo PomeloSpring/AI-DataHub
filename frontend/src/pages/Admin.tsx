@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
+import { t } from '@/i18n/runtime';
 import {
   RefreshCw, Search, Plus, Edit, Trash2, Database, Users, UserPlus,
   Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, Link, AlertTriangle, Plug,
@@ -29,6 +30,7 @@ import IntegrationLogs from './admin/IntegrationLogs';
 import SiteManagement from './admin/SiteManagement';
 import { listSites, siteNameOf, concreteSites, type Site } from '../api/sites';
 import { modelCapabilityTags, MODEL_TAG_TONE_CLASS } from '../lib/llmModelTags';
+import { useTranslation } from 'react-i18next';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -89,6 +91,7 @@ const COL_KEYWORDS_HELP = [
 ];
 
 function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
+  const { t } = useTranslation('ui');
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -98,7 +101,7 @@ function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
       </PopoverTrigger>
       <PopoverContent className="w-80 text-sm" side="right">
         <div className="space-y-2">
-          <p className="font-medium text-foreground">检索关键词填写指南</p>
+          <p className="font-medium text-foreground">{t("k_4d8cf1e584")}</p>
           {items.map((item, i) => (
             <div key={i} className="flex gap-2">
               <span className="font-medium text-muted-foreground shrink-0">{item.title}:</span>
@@ -114,6 +117,7 @@ function KeywordsHelp({ items }: { items: { title: string; desc: string }[] }) {
 // ── Table Info Tab ─────────────────────────────────────────────────────
 
 function TableInfoTab() {
+  const { t } = useTranslation('ui');
   const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/table-info');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<any>({});
@@ -250,17 +254,17 @@ function TableInfoTab() {
         <div className="flex items-center gap-2">
           <Select value={filterDsId || "all"} onValueChange={(v) => { const dsId = v === "all" ? "" : v; setFilterDsId(dsId); setPage(1); load(1, { table_name: searchTable, ...(dsId ? { datasource_id: dsId } : {}) }); }}>
             <SelectTrigger className="w-[160px] h-9">
-              <SelectValue placeholder="全部数据源" />
+              <SelectValue placeholder={t("k_ae6802c77c")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部数据源</SelectItem>
+              <SelectItem value="all">{t("k_ae6802c77c")}</SelectItem>
               {datasources.map((ds) => (
                 <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Input
-            placeholder="搜索表名"
+            placeholder={t("k_17a019127d")}
             value={searchTable}
             onChange={(e) => setSearchTable(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doSearch()}
@@ -278,7 +282,7 @@ function TableInfoTab() {
           </Button>
           <Select value={String(syncDsId)} onValueChange={(v) => setSyncDsId(Number(v))}>
             <SelectTrigger className="w-[180px] h-9">
-              <SelectValue placeholder="选择数据源" />
+              <SelectValue placeholder={t("k_422b9e314a")} />
             </SelectTrigger>
             <SelectContent>
               {datasources.map((ds) => (
@@ -311,10 +315,10 @@ function TableInfoTab() {
           <p className="text-sm text-muted-foreground">
             确定要清理数据源 <strong>{datasources.find(ds => ds.id === syncDsId)?.name}</strong> 的所有元数据吗？
             <br /><br />
-            此操作将删除该数据源下的<strong>所有表信息、字段元数据和关联关系</strong>，且不可撤销。
+            此操作将删除该数据源下的<strong>{t("k_2c314c996a")}</strong>，且不可撤销。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setClearDsOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setClearDsOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleClearDs} disabled={clearing}>
               {clearing && <Spinner className="h-4 w-4 mr-2" />}
               确认清理
@@ -330,20 +334,20 @@ function TableInfoTab() {
           </div>
         ) : (
           <ScrollArea className="h-[600px]">
-            <table className="w-full" aria-label="表信息列表">
+            <table className="w-full" aria-label={t("k_005848dafd")}>
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">表名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">数据源</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">表注释</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">业务描述</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_584c112b78")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a3ccf702c5")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_80e60abd25")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_581778ce60")}</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
-                    <span className="flex items-center gap-1">检索关键词 <KeywordsHelp items={TABLE_KEYWORDS_HELP} /></span>
+                    <span className="flex items-center gap-1">{t("k_035664a01b")} <KeywordsHelp items={TABLE_KEYWORDS_HELP} /></span>
                   </th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">领域</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">区域</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">操作</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_388b18c89a")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_17fc93c9cd")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -369,7 +373,7 @@ function TableInfoTab() {
                         <Input
                           size={20}
                           value={editValues.table_business_desc}
-                          placeholder="完整业务描述"
+                          placeholder={t("k_9d7c52435a")}
                           onChange={(e) => setEditValues({ ...editValues, table_business_desc: e.target.value })}
                         />
                       ) : (
@@ -381,7 +385,7 @@ function TableInfoTab() {
                         <Input
                           size={20}
                           value={editValues.keywords}
-                          placeholder="检索关键词"
+                          placeholder={t("k_035664a01b")}
                           onChange={(e) => setEditValues({ ...editValues, keywords: e.target.value })}
                         />
                       ) : (
@@ -421,8 +425,8 @@ function TableInfoTab() {
                     <td className="p-4 align-middle">
                       {editingId === row.id ? (
                         <div className="flex items-center gap-2">
-                          <Button size="sm" onClick={saveEdit}>保存</Button>
-                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>取消</Button>
+                          <Button size="sm" onClick={saveEdit}>{t("k_fadf24dbc5")}</Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>{t("k_4d0b4688c7")}</Button>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1">
@@ -457,7 +461,7 @@ function TableInfoTab() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[560px]">
           <DialogHeader>
-            <DialogTitle>手动添加表信息</DialogTitle>
+            <DialogTitle>{t("k_952c850282")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -469,16 +473,16 @@ function TableInfoTab() {
               />
             </div>
             <div className="space-y-2">
-              <Label>数据源</Label>
+              <Label>{t("k_a3ccf702c5")}</Label>
               <Select
                 value={String(formValues.datasource_id || 0)}
                 onValueChange={(v) => setFormValues({ ...formValues, datasource_id: Number(v) })}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择数据源（可选）" />
+                  <SelectValue placeholder={t("k_8a5f5aed02")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">不指定</SelectItem>
+                  <SelectItem value="0">{t("k_1aad39c63a")}</SelectItem>
                   {datasources.map((ds) => (
                     <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
                   ))}
@@ -486,17 +490,17 @@ function TableInfoTab() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>表注释</Label>
+              <Label>{t("k_80e60abd25")}</Label>
               <Input
-                placeholder="表的中文注释"
+                placeholder={t("k_46747c0b90")}
                 value={formValues.table_comment || ''}
                 onChange={(e) => setFormValues({ ...formValues, table_comment: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <Label>业务描述</Label>
+              <Label>{t("k_581778ce60")}</Label>
               <Textarea
-                placeholder="完整的表用途描述，传给 LLM 理解表的使用方法"
+                placeholder={t("k_85e0747560")}
                 rows={2}
                 value={formValues.table_business_desc || ''}
                 onChange={(e) => setFormValues({ ...formValues, table_business_desc: e.target.value })}
@@ -504,7 +508,7 @@ function TableInfoTab() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Label>检索关键词</Label>
+                <Label>{t("k_035664a01b")}</Label>
                 <KeywordsHelp items={TABLE_KEYWORDS_HELP} />
               </div>
               <Input
@@ -512,11 +516,11 @@ function TableInfoTab() {
                 value={formValues.keywords || ''}
                 onChange={(e) => setFormValues({ ...formValues, keywords: e.target.value })}
               />
-              <p className="text-xs text-muted-foreground">短小精炼，影响向量检索准确性。业务描述传给 LLM，不参与检索。</p>
+              <p className="text-xs text-muted-foreground">{t("k_f42b512745")}</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>领域标签</Label>
+                <Label>{t("k_49aa0a7282")}</Label>
                 <Input
                   placeholder="如: 医疗"
                   value={formValues.domain_tag || ''}
@@ -524,7 +528,7 @@ function TableInfoTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>区域标签</Label>
+                <Label>{t("k_c286d8e149")}</Label>
                 <Input
                   placeholder="如: 华东"
                   value={formValues.region_tag || ''}
@@ -537,12 +541,12 @@ function TableInfoTab() {
                 checked={formValues.is_active !== false}
                 onCheckedChange={(v) => setFormValues({ ...formValues, is_active: v })}
               />
-              <Label>启用</Label>
+              <Label>{t("k_d4e9ca3dd4")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
-            <Button onClick={handleCreate}>添加</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleCreate}>{t("k_94191ce210")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -553,6 +557,7 @@ function TableInfoTab() {
 // ── Column Metadata Tab ───────────────────────────────────────────────
 
 function ColumnMetadataTab() {
+  const { t } = useTranslation('ui');
   const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/metadata');
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<any>({});
@@ -708,10 +713,10 @@ function ColumnMetadataTab() {
       {/* Sync per-table row */}
       <div className="flex items-center gap-2 p-3 border rounded-lg bg-muted/30">
         <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium whitespace-nowrap">同步单表字段：</span>
+        <span className="text-sm font-medium whitespace-nowrap">{t("k_364135d47b")}</span>
         <Select value={String(syncDsId)} onValueChange={(v) => setSyncDsId(Number(v))}>
           <SelectTrigger className="w-[160px] h-8">
-            <SelectValue placeholder="选择数据源" />
+            <SelectValue placeholder={t("k_422b9e314a")} />
           </SelectTrigger>
           <SelectContent>
             {datasources.map((ds) => (
@@ -720,7 +725,7 @@ function ColumnMetadataTab() {
           </SelectContent>
         </Select>
         <Input
-          placeholder="输入表名"
+          placeholder={t("k_47a244c67f")}
           value={syncTableName}
           onChange={(e) => setSyncTableName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSync()}
@@ -748,10 +753,10 @@ function ColumnMetadataTab() {
           <p className="text-sm text-muted-foreground">
             确定要清理表 <strong>{syncTableName}</strong> 的所有元数据吗？
             <br /><br />
-            此操作将删除该表的<strong>表信息、字段元数据和相关联的关联关系</strong>，且不可撤销。
+            此操作将删除该表的<strong>{t("k_b874fc9ed3")}</strong>，且不可撤销。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setClearTableOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setClearTableOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleClearTable} disabled={clearing}>
               {clearing && <Spinner className="h-4 w-4 mr-2" />}
               确认清理
@@ -765,24 +770,24 @@ function ColumnMetadataTab() {
         <div className="flex items-center gap-2">
           <Select value={filterDsId || "all"} onValueChange={(v) => { const dsId = v === "all" ? "" : v; setFilterDsId(dsId); setPage(1); load(1, { table_name: searchTable, column_name: searchColumn, ...(dsId ? { datasource_id: dsId } : {}) }); }}>
             <SelectTrigger className="w-[140px] h-9">
-              <SelectValue placeholder="全部数据源" />
+              <SelectValue placeholder={t("k_ae6802c77c")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部数据源</SelectItem>
+              <SelectItem value="all">{t("k_ae6802c77c")}</SelectItem>
               {datasources.map((ds) => (
                 <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Input
-            placeholder="搜索表名"
+            placeholder={t("k_17a019127d")}
             value={searchTable}
             onChange={(e) => setSearchTable(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doSearch()}
             className="w-[160px]"
           />
           <Input
-            placeholder="搜索字段名"
+            placeholder={t("k_04e0947134")}
             value={searchColumn}
             onChange={(e) => setSearchColumn(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doSearch()}
@@ -809,18 +814,18 @@ function ColumnMetadataTab() {
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">数据源</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">表名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">字段</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">类型</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">字段注释</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">业务描述</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a3ccf702c5")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_584c112b78")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_77a49f2c38")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_e4e46c7235")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_6a61acba62")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_581778ce60")}</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
-                    <span className="flex items-center gap-1">检索关键词 <KeywordsHelp items={COL_KEYWORDS_HELP} /></span>
+                    <span className="flex items-center gap-1">{t("k_035664a01b")} <KeywordsHelp items={COL_KEYWORDS_HELP} /></span>
                   </th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">主键</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">操作</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_502fce2b8d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -848,7 +853,7 @@ function ColumnMetadataTab() {
                         <Input
                           size={20}
                           value={editValues.business_desc}
-                          placeholder="完整业务描述"
+                          placeholder={t("k_9d7c52435a")}
                           onChange={(e) => setEditValues({ ...editValues, business_desc: e.target.value })}
                         />
                       ) : (
@@ -860,7 +865,7 @@ function ColumnMetadataTab() {
                         <Input
                           size={20}
                           value={editValues.keywords}
-                          placeholder="检索关键词"
+                          placeholder={t("k_035664a01b")}
                           onChange={(e) => setEditValues({ ...editValues, keywords: e.target.value })}
                         />
                       ) : (
@@ -879,8 +884,8 @@ function ColumnMetadataTab() {
                     <td className="p-4 align-middle">
                       {editingId === row.id ? (
                         <div className="flex items-center gap-2">
-                          <Button size="sm" onClick={saveEdit}>保存</Button>
-                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>取消</Button>
+                          <Button size="sm" onClick={saveEdit}>{t("k_fadf24dbc5")}</Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>{t("k_4d0b4688c7")}</Button>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1">
@@ -915,7 +920,7 @@ function ColumnMetadataTab() {
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-[560px]">
           <DialogHeader>
-            <DialogTitle>手动添加字段元数据</DialogTitle>
+            <DialogTitle>{t("k_725edc307d")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -938,7 +943,7 @@ function ColumnMetadataTab() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>数据类型</Label>
+                <Label>{t("k_b031dc9a85")}</Label>
                 <Input
                   placeholder="如: VARCHAR(255)"
                   value={formValues.data_type || ''}
@@ -946,16 +951,16 @@ function ColumnMetadataTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>数据源</Label>
+                <Label>{t("k_a3ccf702c5")}</Label>
                 <Select
                   value={String(formValues.datasource_id || 0)}
                   onValueChange={(v) => setFormValues({ ...formValues, datasource_id: Number(v) })}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="选择数据源（可选）" />
+                    <SelectValue placeholder={t("k_8a5f5aed02")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="0">不指定</SelectItem>
+                    <SelectItem value="0">{t("k_1aad39c63a")}</SelectItem>
                     {datasources.map((ds) => (
                       <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
                     ))}
@@ -964,17 +969,17 @@ function ColumnMetadataTab() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>字段注释</Label>
+              <Label>{t("k_6a61acba62")}</Label>
               <Input
-                placeholder="字段的中文注释"
+                placeholder={t("k_9ba0843858")}
                 value={formValues.column_comment || ''}
                 onChange={(e) => setFormValues({ ...formValues, column_comment: e.target.value })}
               />
             </div>
             <div className="space-y-2">
-              <Label>业务描述</Label>
+              <Label>{t("k_581778ce60")}</Label>
               <Textarea
-                placeholder="便于 AI 理解的字段含义"
+                placeholder={t("k_fffc8dfcf9")}
                 rows={2}
                 value={formValues.business_desc || ''}
                 onChange={(e) => setFormValues({ ...formValues, business_desc: e.target.value })}
@@ -982,18 +987,18 @@ function ColumnMetadataTab() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Label>检索关键词</Label>
+                <Label>{t("k_035664a01b")}</Label>
                 <KeywordsHelp items={COL_KEYWORDS_HELP} />
               </div>
               <Input
-                placeholder="精简关键词，用于向量检索匹配"
+                placeholder={t("k_b2a133b593")}
                 value={formValues.keywords || ''}
                 onChange={(e) => setFormValues({ ...formValues, keywords: e.target.value })}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>是否主键</Label>
+                <Label>{t("k_395fd29b92")}</Label>
                 <Select
                   value={formValues.is_key || 'false'}
                   onValueChange={(v) => setFormValues({ ...formValues, is_key: v })}
@@ -1002,13 +1007,13 @@ function ColumnMetadataTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="false">否</SelectItem>
-                    <SelectItem value="true">是</SelectItem>
+                    <SelectItem value="false">{t("k_8bf5c10ad9")}</SelectItem>
+                    <SelectItem value="true">{t("k_30160a21b9")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>是否可空</Label>
+                <Label>{t("k_2323793e51")}</Label>
                 <Select
                   value={formValues.is_nullable || 'true'}
                   onValueChange={(v) => setFormValues({ ...formValues, is_nullable: v })}
@@ -1017,8 +1022,8 @@ function ColumnMetadataTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="true">是</SelectItem>
-                    <SelectItem value="false">否</SelectItem>
+                    <SelectItem value="true">{t("k_30160a21b9")}</SelectItem>
+                    <SelectItem value="false">{t("k_8bf5c10ad9")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1028,12 +1033,12 @@ function ColumnMetadataTab() {
                 checked={formValues.is_active !== false}
                 onCheckedChange={(v) => setFormValues({ ...formValues, is_active: v })}
               />
-              <Label>启用</Label>
+              <Label>{t("k_d4e9ca3dd4")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
-            <Button onClick={handleCreate}>添加</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleCreate}>{t("k_94191ce210")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1044,11 +1049,12 @@ function ColumnMetadataTab() {
 // ── Metadata Tab (combined) ───────────────────────────────────────────
 
 function MetadataTab() {
+  const { t } = useTranslation('ui');
   return (
     <Tabs defaultValue="table-info">
       <TabsList>
-        <TabsTrigger value="table-info">表信息</TabsTrigger>
-        <TabsTrigger value="columns">字段元数据</TabsTrigger>
+        <TabsTrigger value="table-info">{t("k_c48cadc8f1")}</TabsTrigger>
+        <TabsTrigger value="columns">{t("k_596b3a5adf")}</TabsTrigger>
       </TabsList>
       <TabsContent value="table-info">
         <TableInfoTab />
@@ -1063,6 +1069,7 @@ function MetadataTab() {
 // ── Terms Tab ──────────────────────────────────────────────────────────
 
 function TermsTab() {
+  const { t } = useTranslation('ui');
   const { data, total, page, size, loading, setPage, setSize, setSearch, load } = usePagedData('/admin/terms');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
@@ -1120,7 +1127,7 @@ function TermsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Input
-          placeholder="搜索术语名称或别名"
+          placeholder={t("k_7e5a71727f")}
           className="w-[280px]"
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -1146,17 +1153,17 @@ function TermsTab() {
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">中文名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">英文名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">别名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">类型</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">目标表</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">目标字段</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">计算公式</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">描述</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">使用次数</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">操作</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_d085e83eec")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_decc83f773")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_ec537c546d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_e4e46c7235")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_442be9c497")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_167c3f094d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a2330638a0")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_412f54dc38")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_2d7d18da79")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1225,7 +1232,7 @@ function TermsTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>英文名</Label>
+                <Label>{t("k_decc83f773")}</Label>
                 <Input
                   placeholder="如: case"
                   value={formValues.term_en || ''}
@@ -1234,7 +1241,7 @@ function TermsTab() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>别名（逗号分隔）</Label>
+              <Label>{t("k_5816a023d3")}</Label>
               <Input
                 placeholder="如: case_code,诊断,检查"
                 value={formValues.term_aliases || ''}
@@ -1248,14 +1255,14 @@ function TermsTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="dimension">维度</SelectItem>
-                  <SelectItem value="metric">指标</SelectItem>
+                  <SelectItem value="dimension">{t("k_72fa9ecdc4")}</SelectItem>
+                  <SelectItem value="metric">{t("k_1dfc810a7b")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>目标表</Label>
+                <Label>{t("k_442be9c497")}</Label>
                 <Input
                   placeholder="如: dim_case"
                   value={formValues.target_table || ''}
@@ -1263,7 +1270,7 @@ function TermsTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>目标字段</Label>
+                <Label>{t("k_167c3f094d")}</Label>
                 <Input
                   placeholder="如: case_code"
                   value={formValues.target_column || ''}
@@ -1272,7 +1279,7 @@ function TermsTab() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>计算公式（指标类型填写）</Label>
+              <Label>{t("k_b434ec47f3")}</Label>
               <Input
                 placeholder="如: COUNT(*)"
                 className="font-mono"
@@ -1281,9 +1288,9 @@ function TermsTab() {
               />
             </div>
             <div className="space-y-2">
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Textarea
-                placeholder="术语含义说明"
+                placeholder={t("k_2c6b7e5670")}
                 rows={2}
                 value={formValues.description || ''}
                 onChange={(e) => setFormValues({ ...formValues, description: e.target.value })}
@@ -1291,8 +1298,8 @@ function TermsTab() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
-            <Button onClick={handleSave}>保存</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleSave}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1398,7 +1405,7 @@ function EsTagField({ label, placeholder, values, hint, onChange }: {
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
           placeholder={placeholder}
         />
-        <Button type="button" size="sm" variant="outline" onClick={add}>添加</Button>
+        <Button type="button" size="sm" variant="outline" onClick={add}>{t("k_94191ce210")}</Button>
       </div>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
@@ -1417,16 +1424,16 @@ function QueryGateFields({ values, onPatch }: { values: any; onPatch: (patch: Re
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
-          <Label>最大并发查询数</Label>
+          <Label>{t("k_22fc0012af")}</Label>
           <Input
             type="number" min={1} max={64}
             value={values.gate_max_concurrency}
             onChange={(e) => onPatch({ gate_max_concurrency: e.target.value })}
-            placeholder="默认 8，按源体量收紧或放宽"
+            placeholder={t("k_4e08cb8aa3")}
           />
         </div>
         <div className="space-y-2">
-          <Label>排队等待上限（秒）</Label>
+          <Label>{t("k_5d8b46babe")}</Label>
           <Input
             type="number" min={0} max={120}
             value={values.gate_queue_wait_sec}
@@ -1445,6 +1452,7 @@ function QueryGateFields({ values, onPatch }: { values: any; onPatch: (patch: Re
 
 // 导出供用例直接验证 ES 型表单（extra_config 往返与 fail-closed 护栏），不必从整页导航进入
 export function DatasourceTab() {
+  const { t } = useTranslation('ui');
   const [datasources, setDatasources] = useState<any[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1656,14 +1664,14 @@ export function DatasourceTab() {
   return (
     <Tabs defaultValue="sources" className="space-y-4">
       <TabsList>
-        <TabsTrigger value="sources"><Database className="h-4 w-4 mr-2" />数据源</TabsTrigger>
-        <TabsTrigger value="sites"><Globe className="h-4 w-4 mr-2" />站点管理</TabsTrigger>
+        <TabsTrigger value="sources"><Database className="h-4 w-4 mr-2" />{t("k_a3ccf702c5")}</TabsTrigger>
+        <TabsTrigger value="sites"><Globe className="h-4 w-4 mr-2" />{t("k_f40b79d76f")}</TabsTrigger>
       </TabsList>
       <TabsContent value="sources">
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">数据源管理</h3>
+          <h3 className="text-lg font-semibold">{t("k_2bb6501b4f")}</h3>
           <p className="text-sm text-muted-foreground">管理数据库连接，支持 MySQL、Apache Doris、PostgreSQL、SLS(PG协议)、Elasticsearch</p>
         </div>
         <Button onClick={openCreate}>
@@ -1679,8 +1687,8 @@ export function DatasourceTab() {
       ) : datasources.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <Database className="h-14 w-14 mx-auto mb-4 opacity-30" />
-          <p className="text-lg font-medium mb-1">暂无数据源</p>
-          <p className="text-sm mb-6">添加数据源以连接您的数据库</p>
+          <p className="text-lg font-medium mb-1">{t("k_bb6750d7bc")}</p>
+          <p className="text-sm mb-6">{t("k_6d26d3e88e")}</p>
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4 mr-2" />
             添加第一个数据源
@@ -1701,7 +1709,7 @@ export function DatasourceTab() {
                   <span className="text-xs text-muted-foreground">{cat.desc}</span>
                 </div>
                 {items.length === 0 ? (
-                  <p className="text-sm text-muted-foreground py-4">该分类下暂无数据源</p>
+                  <p className="text-sm text-muted-foreground py-4">{t("k_405fcd685c")}</p>
                 ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {items.map((ds) => {
@@ -1730,7 +1738,7 @@ export function DatasourceTab() {
                       </div>
                     </div>
                     {ds.is_default ? (
-                      <Badge variant="default" className="text-xs">默认</Badge>
+                      <Badge variant="default" className="text-xs">{t("k_c8d09cf955")}</Badge>
                     ) : null}
                   </div>
 
@@ -1818,7 +1826,7 @@ export function DatasourceTab() {
               <Input
                 value={formValues.name}
                 onChange={(e) => setFormValues({ ...formValues, name: e.target.value })}
-                placeholder="如：生产环境 MySQL"
+                placeholder={t("k_bd20d81092")}
               />
             </div>
 
@@ -1907,7 +1915,7 @@ export function DatasourceTab() {
                   hint="别名是集群侧的索引集合名，与策略/敏感登记用的表名同一套名字；不向集群展开具体索引。"
                 />
                 <EsTagField
-                  label="索引模式（可选）"
+                  label={t("k_1312376ae7")}
                   placeholder="如：t-t_equipment_warning_log*"
                   values={formValues.es_patterns || []}
                   onChange={(v) => setFormValues({ ...formValues, es_patterns: v })}
@@ -1915,30 +1923,30 @@ export function DatasourceTab() {
                 />
                 <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
-                    <Label>查询超时（秒）</Label>
+                    <Label>{t("k_c9a694a3d0")}</Label>
                     <Input
                       type="number" min={1} max={300}
                       value={formValues.es_timeout_sec}
                       onChange={(e) => setFormValues({ ...formValues, es_timeout_sec: e.target.value })}
-                      placeholder="留空用平台默认 20"
+                      placeholder={t("k_601f811175")}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>单次最大行数</Label>
+                    <Label>{t("k_1bb6b96c43")}</Label>
                     <Input
                       type="number" min={1}
                       value={formValues.es_max_rows}
                       onChange={(e) => setFormValues({ ...formValues, es_max_rows: e.target.value })}
-                      placeholder="留空用平台默认 1000"
+                      placeholder={t("k_4a4d717dac")}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>连接池数量</Label>
+                    <Label>{t("k_c2a8930585")}</Label>
                     <Input
                       type="number" min={1} max={64}
                       value={formValues.es_pool_size}
                       onChange={(e) => setFormValues({ ...formValues, es_pool_size: e.target.value })}
-                      placeholder="留空用默认 10"
+                      placeholder={t("k_08abec272d")}
                     />
                   </div>
                 </div>
@@ -1959,31 +1967,31 @@ export function DatasourceTab() {
             ) : (
               <>
                 <div className="space-y-2">
-                  <Label>数据库名称</Label>
+                  <Label>{t("k_9b26d2cb8b")}</Label>
                   <Input
                     value={formValues.database_name}
                     onChange={(e) => setFormValues({ ...formValues, database_name: e.target.value })}
-                    placeholder="数据库名"
+                    placeholder={t("k_8a98ff0618")}
                   />
                 </div>
                 {/* 高级配置：这两个预算过去写死在代码里（不同源要给不同预算只能改代码），现按数据源可配 */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>连接超时（秒）</Label>
+                    <Label>{t("k_6a7f252fd9")}</Label>
                     <Input
                       type="number" min={1} max={120}
                       value={formValues.sql_connect_timeout_sec}
                       onChange={(e) => setFormValues({ ...formValues, sql_connect_timeout_sec: e.target.value })}
-                      placeholder="留空用默认 10"
+                      placeholder={t("k_08abec272d")}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>查询超时（秒）</Label>
+                    <Label>{t("k_c9a694a3d0")}</Label>
                     <Input
                       type="number" min={1} max={600}
                       value={formValues.sql_read_timeout_sec}
                       onChange={(e) => setFormValues({ ...formValues, sql_read_timeout_sec: e.target.value })}
-                      placeholder="留空用默认 30"
+                      placeholder={t("k_a956e3f1c4")}
                     />
                   </div>
                 </div>
@@ -2001,23 +2009,23 @@ export function DatasourceTab() {
 
             {/* 站点归属：决定该源在哪个查询站点下可被选中（聊天站点选择器/本体适用站点路由） */}
             <div className="space-y-2">
-              <Label>归属站点</Label>
+              <Label>{t("k_0ca3301e7e")}</Label>
               <Select
                 value={formValues.site_code || '__none__'}
                 onValueChange={(v) => setFormValues({ ...formValues, site_code: v === '__none__' ? '' : v })}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择站点" />
+                  <SelectValue placeholder={t("k_94d1041dc4")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__none__">未站点化（平台库/单站部署）</SelectItem>
+                  <SelectItem value="__none__">{t("k_39562424c8")}</SelectItem>
                   {concreteSites(sites).map((s) => (
                     <SelectItem key={s.site_code} value={s.site_code}>{s.display_name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {sites.length === 0 && (
-                <p className="text-xs text-muted-foreground">站点清单未加载，请先在「站点管理」维护后重试。</p>
+                <p className="text-xs text-muted-foreground">{t("k_9ed4ad4db3")}</p>
               )}
             </div>
 
@@ -2026,11 +2034,11 @@ export function DatasourceTab() {
                 checked={formValues.is_default}
                 onCheckedChange={(v) => setFormValues({ ...formValues, is_default: v })}
               />
-              <Label>设为默认数据源</Label>
+              <Label>{t("k_32f03c2a60")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>
               {editing ? '更新' : '创建'}
             </Button>
@@ -2062,6 +2070,7 @@ const STATUS_LABELS: Record<string, { label: string; variant: 'default' | 'destr
 };
 
 function UsersTab() {
+  const { t } = useTranslation('ui');
   const [users, setUsers] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -2211,7 +2220,7 @@ function UsersTab() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <Input
-            placeholder="搜索用户名/姓名"
+            placeholder={t("k_801b0a1216")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doSearch()}
@@ -2219,10 +2228,10 @@ function UsersTab() {
           />
           <Select value={filterRole || 'all'} onValueChange={(v) => { setFilterRole(v === 'all' ? '' : v); setPage(1); }}>
             <SelectTrigger className="w-[130px] h-9">
-              <SelectValue placeholder="全部角色" />
+              <SelectValue placeholder={t("k_9adaf88c6d")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部角色</SelectItem>
+              <SelectItem value="all">{t("k_9adaf88c6d")}</SelectItem>
               {roles.map((r) => (
                 <SelectItem key={r.name} value={r.name}>{r.display_name || r.name}</SelectItem>
               ))}
@@ -2247,18 +2256,18 @@ function UsersTab() {
           </div>
         ) : (
           <ScrollArea className="h-[600px]">
-            <table className="w-full" aria-label="用户列表">
+            <table className="w-full" aria-label={t("k_b3d9235f92")}>
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">用户名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">姓名</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">邮箱</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">手机</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">角色</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">最后登录</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">创建时间</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">操作</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a1aaf352cb")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_be4c2616b1")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_9ed627bcf6")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_9c01ad0911")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_6b26695e4d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_12f998a88f")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_84e3802f60")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2286,10 +2295,10 @@ function UsersTab() {
                     </td>
                     <td className="p-4 align-middle">
                       <div className="flex items-center gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(user)} title="编辑">
+                        <Button size="sm" variant="ghost" onClick={() => openEdit(user)} title={t("k_a7f814c0a4")}>
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => openResetPwd(user)} title="重置密码">
+                        <Button size="sm" variant="ghost" onClick={() => openResetPwd(user)} title={t("k_7e422146dd")}>
                           <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                             <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
@@ -2313,7 +2322,7 @@ function UsersTab() {
                             </svg>
                           )}
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => openDelete(user)} title="删除">
+                        <Button size="sm" variant="ghost" onClick={() => openDelete(user)} title={t("k_3755f56f2f")}>
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </div>
@@ -2347,22 +2356,22 @@ function UsersTab() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>添加用户</DialogTitle>
+            <DialogTitle>{t("k_4f965d4969")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>用户名 *</Label>
                 <Input
-                  placeholder="登录账号，如 kangxiaolong"
+                  placeholder={t("k_57553a09bb")}
                   value={createForm.username || ''}
                   onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <Label>用户姓名</Label>
+                <Label>{t("k_500d9eb940")}</Label>
                 <Input
-                  placeholder="如：康小龙"
+                  placeholder={t("k_51158d12b6")}
                   value={createForm.display_name || ''}
                   onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
                 />
@@ -2372,14 +2381,14 @@ function UsersTab() {
               <Label>密码 *</Label>
               <Input
                 type="password"
-                placeholder="至少8位，包含字母和数字"
+                placeholder={t("k_31273e6ecf")}
                 value={createForm.password || ''}
                 onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>邮箱（可用于登录）</Label>
+                <Label>{t("k_ce48cbb709")}</Label>
                 <Input
                   type="email"
                   placeholder="user@example.com"
@@ -2388,16 +2397,16 @@ function UsersTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>手机</Label>
+                <Label>{t("k_9c01ad0911")}</Label>
                 <Input
-                  placeholder="手机号码"
+                  placeholder={t("k_9f6834dc95")}
                   value={createForm.phone || ''}
                   onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label>角色</Label>
+              <Label>{t("k_6b26695e4d")}</Label>
               <Select value={createForm.role || 'viewer'} onValueChange={(v) => setCreateForm({ ...createForm, role: v })}>
                 <SelectTrigger>
                   <SelectValue />
@@ -2411,8 +2420,8 @@ function UsersTab() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button onClick={handleCreate}>创建</Button>
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleCreate}>{t("k_fcbd093292")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2421,21 +2430,21 @@ function UsersTab() {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>编辑用户</DialogTitle>
+            <DialogTitle>{t("k_2b8f00100b")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>用户名</Label>
+                <Label>{t("k_a1aaf352cb")}</Label>
                 <Input
                   value={editForm.username || ''}
                   onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <Label>用户姓名</Label>
+                <Label>{t("k_500d9eb940")}</Label>
                 <Input
-                  placeholder="如：康小龙"
+                  placeholder={t("k_51158d12b6")}
                   value={editForm.display_name || ''}
                   onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })}
                 />
@@ -2443,7 +2452,7 @@ function UsersTab() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>邮箱（可用于登录）</Label>
+                <Label>{t("k_ce48cbb709")}</Label>
                 <Input
                   type="email"
                   value={editForm.email || ''}
@@ -2451,7 +2460,7 @@ function UsersTab() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>手机</Label>
+                <Label>{t("k_9c01ad0911")}</Label>
                 <Input
                   value={editForm.phone || ''}
                   onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
@@ -2459,7 +2468,7 @@ function UsersTab() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>角色</Label>
+              <Label>{t("k_6b26695e4d")}</Label>
               <Select value={editForm.role || 'viewer'} onValueChange={(v) => setEditForm({ ...editForm, role: v })}>
                 <SelectTrigger>
                   <SelectValue />
@@ -2473,8 +2482,8 @@ function UsersTab() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditOpen(false)}>取消</Button>
-            <Button onClick={handleEdit}>保存</Button>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleEdit}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2483,7 +2492,7 @@ function UsersTab() {
       <Dialog open={resetPwdOpen} onOpenChange={setResetPwdOpen}>
         <DialogContent className="max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>重置密码</DialogTitle>
+            <DialogTitle>{t("k_7e422146dd")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
@@ -2493,15 +2502,15 @@ function UsersTab() {
               <Label>新密码 *</Label>
               <Input
                 type="password"
-                placeholder="至少8位，包含字母和数字"
+                placeholder={t("k_31273e6ecf")}
                 value={resetPwdForm.new_password || ''}
                 onChange={(e) => setResetPwdForm({ ...resetPwdForm, new_password: e.target.value })}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResetPwdOpen(false)}>取消</Button>
-            <Button onClick={handleResetPwd}>确认重置</Button>
+            <Button variant="outline" onClick={() => setResetPwdOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleResetPwd}>{t("k_30a6079ce3")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2510,14 +2519,14 @@ function UsersTab() {
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent className="max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             确定要删除用户 <strong>{selectedUser?.username}</strong> 吗？此操作不可撤销。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteOpen(false)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>确认删除</Button>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3c06abe116")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2528,6 +2537,7 @@ function UsersTab() {
 // ── Brand Settings Tab ─────────────────────────────────────────────────
 
 function BrandSettingsTab() {
+  const { t } = useTranslation('ui');
   const [brand, setBrand] = useState<BrandSettings>(DEFAULT_BRAND);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -2588,8 +2598,8 @@ function BrandSettingsTab() {
   return (
     <div className="space-y-6 max-w-[560px]">
       <div>
-        <h3 className="text-lg font-semibold">品牌设置</h3>
-        <p className="text-sm text-muted-foreground">配置应用左上角与登录页显示的名称、标语和图标；未上传图标时，浏览器标签页图标自动跟随当前主题主色，与左上角方块同一画风</p>
+        <h3 className="text-lg font-semibold">{t("k_645d9daf0b")}</h3>
+        <p className="text-sm text-muted-foreground">{t("k_2c4cee2e80")}</p>
       </div>
 
       {/* Logo preview */}
@@ -2600,12 +2610,12 @@ function BrandSettingsTab() {
           nameClassName="text-xl leading-tight"
           taglineClassName="text-xs leading-tight"
         />
-        <span className="text-xs text-muted-foreground ml-auto shrink-0">预览效果</span>
+        <span className="text-xs text-muted-foreground ml-auto shrink-0">{t("k_953f44ecac")}</span>
       </div>
 
       {/* App name */}
       <div className="space-y-2">
-        <Label>应用名称</Label>
+        <Label>{t("k_2d87d51825")}</Label>
         <Input
           value={brand.app_name}
           onChange={(e) => setBrand({ ...brand, app_name: e.target.value })}
@@ -2616,19 +2626,19 @@ function BrandSettingsTab() {
 
       {/* Tagline */}
       <div className="space-y-2">
-        <Label>品牌标语</Label>
+        <Label>{t("k_90943311b6")}</Label>
         <Input
           value={brand.tagline}
           onChange={(e) => setBrand({ ...brand, tagline: e.target.value })}
           placeholder={DEFAULT_TAGLINE}
           maxLength={60}
         />
-        <p className="text-xs text-muted-foreground">显示在登录页品牌名称下方那一行；留空则登录页不显示标语。不影响浏览器标签页标题（它固定用上方「应用名称」拼接）</p>
+        <p className="text-xs text-muted-foreground">{t("k_6f7ea0f666")}</p>
       </div>
 
       {/* Logo upload */}
       <div className="space-y-2">
-        <Label>应用图标</Label>
+        <Label>{t("k_f93d423da3")}</Label>
         <div className="flex items-center gap-3">
           <input
             ref={fileInputRef}
@@ -2655,7 +2665,7 @@ function BrandSettingsTab() {
         {brand.logo_url && (
           <div className="flex items-center gap-2 mt-2">
             <img src={brand.logo_url} alt="Logo preview" className="h-10 w-10 rounded border object-contain bg-white" />
-            <span className="text-xs text-muted-foreground">已上传图标</span>
+            <span className="text-xs text-muted-foreground">{t("k_0b2b879cd7")}</span>
           </div>
         )}
         <p className="text-xs text-muted-foreground">支持 PNG/SVG/JPG，建议 64×64 或 128×128，不超过 512KB</p>
@@ -2663,24 +2673,24 @@ function BrandSettingsTab() {
 
       {/* Display options */}
       <div className="space-y-3">
-        <Label>显示选项</Label>
-        <p className="text-xs text-muted-foreground">对左上角、登录页等页内品牌标同时生效（浏览器标签页图标不受「显示图标」影响）</p>
+        <Label>{t("k_6ccda90dfe")}</Label>
+        <p className="text-xs text-muted-foreground">{t("k_4662a85b62")}</p>
         <div className="flex items-center gap-3">
           <Switch
             checked={brand.show_icon}
             onCheckedChange={(v) => setBrand({ ...brand, show_icon: v })}
           />
-          <span className="text-sm">显示图标</span>
+          <span className="text-sm">{t("k_e3320fc239")}</span>
         </div>
         <div className="flex items-center gap-3">
           <Switch
             checked={brand.show_text}
             onCheckedChange={(v) => setBrand({ ...brand, show_text: v })}
           />
-          <span className="text-sm">显示文字</span>
+          <span className="text-sm">{t("k_6f95d47739")}</span>
         </div>
         {!brand.show_icon && !brand.show_text && (
-          <p className="text-xs text-destructive">图标和文字至少显示一项</p>
+          <p className="text-xs text-destructive">{t("k_e039653171")}</p>
         )}
       </div>
 
@@ -2701,6 +2711,7 @@ function BrandSettingsTab() {
 // ── Relations Tab ──────────────────────────────────────────────────────
 
 function RelationsTab() {
+  const { t } = useTranslation('ui');
   const { data, total, page, size, loading, setPage, setSize, load } = usePagedData('/admin/relations');
   const [syncing, setSyncing] = useState(false);
   const [datasources, setDatasources] = useState<any[]>([]);
@@ -2819,10 +2830,10 @@ function RelationsTab() {
             }}
           >
             <SelectTrigger className="w-[180px] h-9">
-              <SelectValue placeholder="全部数据源" />
+              <SelectValue placeholder={t("k_ae6802c77c")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部数据源</SelectItem>
+              <SelectItem value="all">{t("k_ae6802c77c")}</SelectItem>
               {datasources.map((ds: any) => (
                 <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
               ))}
@@ -2832,7 +2843,7 @@ function RelationsTab() {
         <div className="flex items-center gap-2">
           <Select value={String(syncDsId)} onValueChange={(v) => setSyncDsId(Number(v))}>
             <SelectTrigger className="w-[180px] h-9">
-              <SelectValue placeholder="选择数据源" />
+              <SelectValue placeholder={t("k_422b9e314a")} />
             </SelectTrigger>
             <SelectContent>
               {datasources.map((ds: any) => (
@@ -2874,7 +2885,7 @@ function RelationsTab() {
           <div className="flex items-center justify-between px-4 py-2 border-b bg-card shrink-0">
             <div className="flex items-center gap-2">
               <Link className="h-5 w-5 text-primary" />
-              <span className="font-semibold">ER 关系图 — 全屏编辑</span>
+              <span className="font-semibold">{t("k_e7753971eb")}</span>
             </div>
             <Button variant="outline" size="sm" onClick={() => setErFullscreen(false)}>
               <Minimize2 className="h-4 w-4 mr-2" />
@@ -2904,17 +2915,17 @@ function RelationsTab() {
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">数据源</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">源表</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">源字段</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">关联</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">目标表</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">目标字段</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">关系类型</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">JOIN 类型</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">描述</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">操作</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a3ccf702c5")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_294b663c77")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_8e32143204")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_dc91aa56fb")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_442be9c497")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_167c3f094d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_9d0d00b8f5")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_308a012113")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_412f54dc38")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2973,6 +2984,7 @@ function RelationsTab() {
 
 
 export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
+  const { t } = useTranslation('ui');
   // If embeddedTab is provided, show only that tab content
   if (embeddedTab) {
     const tabContents: Record<string, React.ReactNode> = {
@@ -2986,8 +2998,8 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
       'integration': (
         <Tabs defaultValue="apps">
           <TabsList>
-            <TabsTrigger value="apps">应用管理</TabsTrigger>
-            <TabsTrigger value="logs">调用日志</TabsTrigger>
+            <TabsTrigger value="apps">{t("k_52fa962ab3")}</TabsTrigger>
+            <TabsTrigger value="logs">{t("k_d7c73dd777")}</TabsTrigger>
           </TabsList>
           <TabsContent value="apps">
             <IntegrationApps />
@@ -3003,7 +3015,7 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
 
   return (
     <div className="h-full overflow-auto">
-      <h1 className="text-2xl font-bold mb-6">系统设置</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("k_e976eab5d8")}</h1>
       <Tabs defaultValue="users">
         <TabsList>
           <TabsTrigger value="users">
@@ -3028,8 +3040,8 @@ export default function Admin({ embeddedTab }: { embeddedTab?: string } = {}) {
         <TabsContent value="integration">
           <Tabs defaultValue="apps">
             <TabsList>
-              <TabsTrigger value="apps">应用管理</TabsTrigger>
-              <TabsTrigger value="logs">调用日志</TabsTrigger>
+              <TabsTrigger value="apps">{t("k_52fa962ab3")}</TabsTrigger>
+              <TabsTrigger value="logs">{t("k_d7c73dd777")}</TabsTrigger>
             </TabsList>
             <TabsContent value="apps">
               <IntegrationApps />
@@ -3073,6 +3085,7 @@ function emptyModelForm() {
 }
 
 function ModelConfigTab() {
+  const { t } = useTranslation('ui');
   const [models, setModels] = useState<LLMModelRow[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<LLMModelRow | null>(null);
@@ -3143,7 +3156,7 @@ function ModelConfigTab() {
       <div className="rounded-lg border bg-card">
         <div className="flex items-center justify-between p-4 border-b">
           <div>
-            <h3 className="text-lg font-medium">大模型配置</h3>
+            <h3 className="text-lg font-medium">{t("k_dc95e4a9f8")}</h3>
             {/* 排序口径写在使用现场：管理员不会猜“为什么旗舰在第七行”，也不会误以为顶行就是最强 */}
             <p className="mt-1 text-xs text-muted-foreground">
               列表按「能力序」排序（1=最强，数字越大越弱越省）；99 为未定档，会沉到底部。
@@ -3158,15 +3171,15 @@ function ModelConfigTab() {
           <table className="w-full">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">能力序</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">能力标签</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">名称</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">提供商</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">模型</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">API 地址</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">思考模式</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">状态</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">操作</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_3cb4ed7d9f")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_315a11512f")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_1be7ae4fc2")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_219c099b6e")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_98fd0cbd9c")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_acd8a50431")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_2daaba9438")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
               </tr>
             </thead>
             <tbody>
@@ -3179,7 +3192,7 @@ function ModelConfigTab() {
                       const rank = m.capability_rank;
                       return typeof rank === 'number' && rank <= 90
                         ? <span className="font-mono tabular-nums" title="1=最强，数字越大越弱/越省">{rank}</span>
-                        : <Badge variant="outline" className="text-muted-foreground" title="未定档：排序沉底，请在此行「编辑」里填能力序">未定档</Badge>;
+                        : <Badge variant="outline" className="text-muted-foreground" title={t("k_87834c9795")}>{t("k_18f6424c02")}</Badge>;
                     })()}
                   </td>
                   <td className="px-4 py-2">
@@ -3199,7 +3212,7 @@ function ModelConfigTab() {
                   <td className="px-4 py-2 text-sm font-mono max-w-[200px] truncate">{m.base_url}</td>
                   <td className="px-4 py-2 text-sm">{m.supports_thinking ? '✅' : '❌'}</td>
                   <td className="px-4 py-2">
-                    {m.is_default ? <Badge className="bg-primary">默认</Badge> : <span className="text-xs text-muted-foreground">-</span>}
+                    {m.is_default ? <Badge className="bg-primary">{t("k_c8d09cf955")}</Badge> : <span className="text-xs text-muted-foreground">-</span>}
                   </td>
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-1">
@@ -3231,31 +3244,31 @@ function ModelConfigTab() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>显示名称</Label>
+              <Label>{t("k_75ae6a8a7d")}</Label>
               <Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="如: GPT-4o 旗舰版" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>提供商</Label>
+                <Label>{t("k_219c099b6e")}</Label>
                 <Select value={form.provider || 'openai'} onValueChange={(v) => setForm({ ...form, provider: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="openai">OpenAI</SelectItem>
                     <SelectItem value="deepseek">DeepSeek</SelectItem>
-                    <SelectItem value="zhipu">智谱</SelectItem>
-                    <SelectItem value="other">其他</SelectItem>
+                    <SelectItem value="zhipu">{t("k_90fd8f044d")}</SelectItem>
+                    <SelectItem value="other">{t("k_1a26edf94a")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>模型名称</Label>
+                <Label>{t("k_38719c9968")}</Label>
                 <Input value={form.model_name || ''} onChange={(e) => setForm({ ...form, model_name: e.target.value })}
                   placeholder="gpt-4o-2024-05-13" />
               </div>
             </div>
             <div className="space-y-2">
-              <Label>API 地址</Label>
+              <Label>{t("k_acd8a50431")}</Label>
               <Input value={form.base_url || ''} onChange={(e) => setForm({ ...form, base_url: e.target.value })}
                 placeholder="https://api.openai.com/v1" />
             </div>
@@ -3271,7 +3284,7 @@ function ModelConfigTab() {
                   onChange={(e) => setForm({ ...form, max_tokens: parseInt(e.target.value) || 4096 })} />
               </div>
               <div className="space-y-2">
-                <Label>能力序 <span className="text-muted-foreground">(1=最强，99=未定档)</span></Label>
+                <Label>{t("k_3cb4ed7d9f")} <span className="text-muted-foreground">(1=最强，99=未定档)</span></Label>
                 <Input type="number" value={form.capability_rank ?? 99}
                   onChange={(e) => setForm({ ...form, capability_rank: parseInt(e.target.value) || 99 })} />
               </div>
@@ -3280,28 +3293,28 @@ function ModelConfigTab() {
               <div className="flex items-center gap-2">
                 <Switch checked={form.supports_thinking !== false}
                   onCheckedChange={(v) => setForm({ ...form, supports_thinking: v })} />
-                <Label>支持思考链</Label>
+                <Label>{t("k_cbbe1c0087")}</Label>
               </div>
               {/* 多模态不拿默认值当“支持”：没实测过就选不上（实测脚本见 logs/probe_vision.py 口径） */}
               <div className="flex items-center gap-2">
                 <Switch checked={form.supports_vision === true || form.supports_vision === 1}
                   onCheckedChange={(v) => setForm({ ...form, supports_vision: v })} />
-                <Label>支持图片输入（多模态）</Label>
+                <Label>{t("k_b3f4b869f5")}</Label>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label>输入单价 <span className="text-muted-foreground">/1K tok</span></Label>
+                <Label>{t("k_a00bd919df")} <span className="text-muted-foreground">/1K tok</span></Label>
                 <Input type="number" step="0.0001" value={form.input_price_per_1k ?? ''}
                   onChange={(e) => setForm({ ...form, input_price_per_1k: e.target.value === '' ? null : Number(e.target.value) })} />
               </div>
               <div className="space-y-2">
-                <Label>输出单价 <span className="text-muted-foreground">/1K tok</span></Label>
+                <Label>{t("k_c69f558c79")} <span className="text-muted-foreground">/1K tok</span></Label>
                 <Input type="number" step="0.0001" value={form.output_price_per_1k ?? ''}
                   onChange={(e) => setForm({ ...form, output_price_per_1k: e.target.value === '' ? null : Number(e.target.value) })} />
               </div>
               <div className="space-y-2">
-                <Label>币种</Label>
+                <Label>{t("k_a81ab5e100")}</Label>
                 <Input value={form.currency || 'USD'} onChange={(e) => setForm({ ...form, currency: e.target.value })}
                   placeholder="USD / CNY" />
               </div>
@@ -3311,8 +3324,8 @@ function ModelConfigTab() {
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
-            <Button onClick={handleSave}>保存</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={handleSave}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -259,3 +259,91 @@ def test_reply_language_directive_is_compact():
     """本段每回合都发：超过这个尺寸就是在往常驻段堆长句（预算护栏既有红，只准更紧）。"""
     text = i18n.reply_language_directive(*i18n.resolve_reply_language("sales", "en-US"))
     assert len(text) < 260, f"「回复语言」段 {len(text)} 字符，超出锁定尺寸 {text!r}"
+
+
+# ═════════════════════════════════════════════════════════════
+# 双语内容元数据体系 · 回复语言 vs 产出语言解耦（plan §Test Plan 明列）
+#
+# 上一轮锁的是**回复语言**：用户提问语言优先、界面语言兜底。
+# 本轮锁的是**产出语言**：界面语言优先、提问语言兜底 —— **两条链优先级相反**，
+# 若被合并成一处，英文界面里问中文会连交付物一起翻成英文（用户看不到本要发布的
+# 中文版）。plan §P1/§P4 把两者解耦，这里就是那条护栏。
+# ═════════════════════════════════════════════════════════════
+def test_reply_and_output_language_are_decoupled_in_priority():
+    """用户**提问是中文、界面是英文**：回复用中文（提问优先），产出用英文（界面优先）。"""
+    from backend.common import i18n
+    # 回复：提问语言赢
+    reply_locale, reply_basis = i18n.resolve_reply_language(
+        question="今年推送成功率是多少", ui_locale="en-US")
+    assert reply_locale == "zh-CN"
+    # basis 是人话标签（会原样注入 prompt 让用户看得见），不断言英文常量
+    assert "提问" in reply_basis or "question" in reply_basis.lower()
+    # 产出：界面语言赢
+    out_locale, out_basis = i18n.resolve_output_language(
+        "", ui_locale="en-US", question="今年推送成功率是多少")
+    assert out_locale == "en-US"
+    # basis 是人话标签；关键是它属于"界面"这一档、不是"用户确认"或"提问语言"
+    assert "界面" in out_basis or "ui" in out_basis.lower() or "interface" in out_basis.lower()
+    # 两条链结论**必须相反** —— 一旦被合并成同一函数就会一致
+    assert reply_locale != out_locale, "回复语言与产出语言被合并（回归：plan §P1 解耦失效）"
+
+
+def test_explicit_output_choice_wins_over_ui_locale():
+    """用户显式选「中英都要」→ 界面/提问语言都要让位（plan §P4：默认档只在用户没说时才生效）。"""
+    from backend.common import i18n
+    loc, basis = i18n.resolve_output_language("双语", ui_locale="zh-CN", question="Coverage report please")
+    assert loc == i18n.OUTPUT_BOTH
+    # 用户显式选择必须赢过界面（zh-CN）与提问（英文）；basis 应显式说是"用户确认"
+    assert "用户" in basis or "user" in basis.lower(), basis
+
+
+def test_output_language_directive_is_distinct_from_reply_directive():
+    """两条指令不能一字冲抵：产出语言指令必须显式讲"交付物"，回复语言指令讲"对话"。"""
+    from backend.common import i18n
+    reply = i18n.reply_language_directive("en-US", "question")
+    output = i18n.output_language_directive("en-US", "ui_locale")
+    # 语义必须不同 —— 直接对字符串比会因措辞调整而脆，这里判**关键词有无**
+    assert "回复" in reply or "reply" in reply.lower(), reply[:60]
+    assert "产出" in output or "交付" in output or "artifact" in output.lower() or "deliverable" in output.lower(), output[:60]
+
+
+# ── 交付物技能语言确认段（plan §P4：只有 content-writer/report-delivery/screen-builder 三家要问）──
+_DELIVERY_SKILLS = ("content-writer", "report-delivery", "screen-builder")
+_NON_DELIVERY_SKILLS = ("data-analysis", "knowledge-qa", "metadata-manager",
+                        "ontology-builder", "pro-analysis", "arms-observability")
+
+
+def test_delivery_skills_have_output_language_confirmation_section():
+    """3 个交付物技能的 SKILL.md 必须含"产出语言"段：未确认不得动手做交付物。"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "backend/modules/mind/config/skills"
+    for name in _DELIVERY_SKILLS:
+        text = (root / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "产出语言" in text, f"{name}: 交付物技能缺『产出语言』确认段"
+        # 段里必须显式提到 ask_user 三档（不能只写"考虑语言"含糊过去）
+        assert "ask_user" in text, f"{name}: 缺 ask_user 询问动作"
+        # 中英各一份 / 双语 之类的第三条路径要可见
+        has_both = ("中英" in text) or ("both" in text.lower())
+        assert has_both, f"{name}: 缺『中英各一份』这一档"
+
+
+def test_non_delivery_skills_do_not_have_output_language_section():
+    """其余 6 个技能**不得**出现"产出语言"段：只答疑、不交付文件，问了就是打扰（plan §P4 明列"防打扰扩散"）。"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "backend/modules/mind/config/skills"
+    for name in _NON_DELIVERY_SKILLS:
+        text = (root / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "产出语言" not in text, f"{name}: 非交付物技能不该有产出语言确认段（防打扰扩散）"
+
+
+def test_content_writer_dual_output_creates_two_articles():
+    """content-writer「中英都要」→ 落地上必须是**两次** create_article（各带不同 lang），
+    不能"一份带双语切换"（plan §关键假设 1 + §P4 明列）。"""
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1]
+            / "backend/modules/mind/config/skills/content-writer/SKILL.md").read_text(encoding="utf-8")
+    # 静态护栏：正文里必须明说两条独立条目 + lang 不同 + translation_group 同
+    assert ("translation_group" in text) or ("译文关联" in text), \
+        "content-writer 未讲清「两条独立条目通过 translation_group 关联」"
+    assert ("zh-CN" in text and "en-US" in text), \
+        "content-writer 未讲清「中文条目 lang=zh-CN，英文条目 lang=en-US」"

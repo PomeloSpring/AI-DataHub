@@ -216,11 +216,23 @@ def create_app() -> FastAPI:
 
         在 call_next 前设置 contextvar,使其传播到端点与流式生成器(子 task 拷贝上下文);
         实际 recorder 由各入口(chat/playground/agent)按身份创建。
+
+        同一处把 Accept-Language 落进请求级语言上下文（backend/common/i18n.py），
+        消费面元数据（看板名/图表标题/字模/AS-BOT/栏目/场景）就按它取双语列。
+        解析失败不阻断请求（i18n.set_ui_locale 内部会兜底到默认语言）。
         """
+        from backend.common import i18n
+
         trace_id = observability.set_trace_id()
-        response = await call_next(request)
+        locale_token = i18n.set_ui_locale(
+            i18n.parse_accept_language(request.headers.get("accept-language")))
+        try:
+            response = await call_next(request)
+        finally:
+            i18n.reset_ui_locale(locale_token)
         try:
             response.headers["X-Trace-Id"] = trace_id
+            response.headers["Content-Language"] = i18n.current_locale()
         except Exception:  # noqa: BLE001
             pass
         return response

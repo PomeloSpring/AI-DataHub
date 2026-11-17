@@ -1,7 +1,8 @@
 /**
  * i18next 类型安全：t() 的 key 编译期校验 + 自动补全。
- * 以 zh-CN 语言包为类型源（en-US 同构靠语言包同批维护）。
- * 新增命名空间时在此登记资源类型（与 locales 目录同步）。
+ *
+ * `ui` 命名空间是批量 i18n 迁移产物（1900+ hash key），逐字 enum 会让 tsc 慢且脆，
+ * 故放宽为 index signature；其他命名空间保持严格类型（enum + 编译期 key 校验）。
  */
 import type common from './locales/zh-CN/common.json';
 import type menu from './locales/zh-CN/menu.json';
@@ -22,6 +23,7 @@ declare module 'i18next' {
       dashboard: typeof dashboard;
       data: typeof data;
       report: typeof report;
+      ui: { [key: string]: string };
     };
   }
 }

@@ -21,6 +21,7 @@ import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import client from '../api/client';
+import { useTranslation } from 'react-i18next';
 
 interface ChartConfigPanelProps {
   open: boolean;
@@ -39,7 +40,10 @@ const CHART_COLORS = [
 ];
 
 export default function ChartConfigPanel({ open, chart, onClose, onSave }: ChartConfigPanelProps) {
+  const { t } = useTranslation(['ui', 'ui']);
   const [config, setConfig] = useState<any>({});
+  // 双语：只覆盖图表标题（英文界面的中文标题回落由后端 localize_display 处理，不静默换语言）
+  const [i18nTitleEn, setI18nTitleEn] = useState<string>('');
   const semantic = chart?.query_source === 'semantic' || !!chart?.semantic_query;
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
@@ -76,8 +80,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
   useEffect(() => {
     if (open) {
       const chartConfig = chart?.config || {};
-
       setConfig(chartConfig);
+      // 双语：读 chart.i18n.config.en-US.title（后端 localize_display 已展开 config 深合并覆盖层）
+      setI18nTitleEn(String(chart?.i18n?.config?.['en-US']?.title || ''));
       setDatasetId(String(chart?.source_type) === 'dataset' ? Number(chart?.source_id || 0) : 0);
       // 上一张图的样本不能跟着面板“留着”，否则看起来像这张图的数据
       setPreview(null);
@@ -160,12 +165,19 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
     saveLock.current = true; setSaving(true);
     try {
       const updates: any = { ...config, _chart_type: config.chartType || chart?.chart_type };
+      // 双语：把英文标题走 `_i18n` 顶层键上送（父层拼进 chart.i18n.config['en-US'].title，
+      // 与后端 `merge_overlay` 深合并契约一致；不动中文标题 config.title 事实源）
+      if (i18nTitleEn.trim()) {
+        updates._i18n = { config: { 'en-US': { title: i18nTitleEn.trim() } } };
+      } else {
+        updates._i18n = {};
+      }
       if (!semantic) updates._dataset_id = datasetId;
       await onSave(updates);
       onClose();
     } catch { toast.error('保存失败，配置已保留，请重试'); }
     finally { saveLock.current = false; setSaving(false); }
-  }, [config, chart, semantic, datasetId, datasetsLoading, datasetsError, onSave, onClose]);
+  }, [config, i18nTitleEn, chart, semantic, datasetId, datasetsLoading, datasetsError, onSave, onClose]);
 
   const updateConfig = useCallback((key: string, value: any) => {
     setConfig((prev: any) => ({ ...prev, [key]: value }));
@@ -190,24 +202,38 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
         <ScrollArea className="h-[500px] pr-4">
           <Tabs defaultValue="basic">
             <TabsList className="w-full">
-              <TabsTrigger value="basic" className="flex-1">基础设置</TabsTrigger>
-              <TabsTrigger value="style" className="flex-1">样式设置</TabsTrigger>
-              <TabsTrigger value="axis" className="flex-1">坐标轴</TabsTrigger>
-              {!semantic && <TabsTrigger value="datasource" className="flex-1">数据</TabsTrigger>}
+              <TabsTrigger value="basic" className="flex-1">{t("k_35ff770597")}</TabsTrigger>
+              <TabsTrigger value="style" className="flex-1">{t("k_8b52bd0a4b")}</TabsTrigger>
+              <TabsTrigger value="axis" className="flex-1">{t("k_65a010caba")}</TabsTrigger>
+              {!semantic && <TabsTrigger value="datasource" className="flex-1">{t("k_54b8a90b3c")}</TabsTrigger>}
             </TabsList>
 
             <TabsContent value="basic" className="space-y-4 mt-4">
               <div className="space-y-2">
-                <Label>图表标题</Label>
+                <Label>{t("k_63177e26b4")}</Label>
                 <Input
-                  placeholder="输入图表标题"
+                  placeholder={t("k_4219032f89")}
                   value={config.title || ''}
                   onChange={e => updateConfig('title', e.target.value)}
                 />
+                {/* 双语：English 输入位；留空 = 英文界面回落到中文标题（后端 localize_display 记 fallback） */}
+                <Label className="text-xs text-muted-foreground">{t("k_57b3889daf")}</Label>
+                <Input
+                  placeholder="Chart title in English (optional)"
+                  value={i18nTitleEn}
+                  onChange={e => setI18nTitleEn(e.target.value)}
+                  aria-label={t("k_57b3889daf")}
+                  data-testid="chart-title-en"
+                />
+                {!i18nTitleEn && (
+                  <p className="text-[11px] text-muted-foreground" data-testid="chart-title-en-empty">
+                    留空 = 英文界面回落中文；填写后英文界面看到的就是这一份。
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
-                <Label>图表类型</Label>
+                <Label>{t("k_e891b46dbb")}</Label>
                 <Select value={config.chartType || chart.chart_type || 'bar'} onValueChange={v => updateConfig('chartType', v)}>
                   <SelectTrigger>
                     <SelectValue />
@@ -227,17 +253,17 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>X轴列</Label>
+                  <Label>{t("k_dab17c496b")}</Label>
                   <Input
-                    placeholder="自动选择"
+                    placeholder={t("k_9741bc8c5f")}
                     value={config.xCol || ''}
                     onChange={e => updateConfig('xCol', e.target.value)}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Y轴列</Label>
+                  <Label>{t("k_eb8f80e661")}</Label>
                   <Input
-                    placeholder="自动选择"
+                    placeholder={t("k_9741bc8c5f")}
                     value={config.yCol || ''}
                     onChange={e => updateConfig('yCol', e.target.value)}
                   />
@@ -245,9 +271,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
               </div>
 
               <div className="space-y-2">
-                <Label>分组列</Label>
+                <Label>{t("k_8b9d1d4bf1")}</Label>
                 <Input
-                  placeholder="自动检测（如站点、类别等）"
+                  placeholder={t("k_faf4815232")}
                   value={config.groupCol || ''}
                   onChange={e => updateConfig('groupCol', e.target.value)}
                 />
@@ -260,13 +286,13 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   默认分组：堆叠会把几个系列挤进同一根柱，读不出谁是谁。 */}
               {['bar', 'timeseries_bar'].includes(config.chartType || chart.chart_type || 'bar') && (
                 <div className="space-y-2">
-                  <Label>多系列排布</Label>
+                  <Label>{t("k_071b744711")}</Label>
                   <Select value={config.seriesLayout === 'stack' ? 'stack' : 'group'}
                     onValueChange={v => updateConfig('seriesLayout', v)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="group">分组（每个系列一根柱，颜色区分）</SelectItem>
-                      <SelectItem value="stack">堆叠（看部分与整体累计）</SelectItem>
+                      <SelectItem value="group">{t("k_e41f53e4ea")}</SelectItem>
+                      <SelectItem value="stack">{t("k_d7ecd74e90")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -277,9 +303,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                 <>
                   <Separator />
                   <div className="space-y-4">
-                    <h4 className="font-medium">表值图设置</h4>
+                    <h4 className="font-medium">{t("k_298ab87836")}</h4>
                     <div className="space-y-2">
-                      <Label>每页行数</Label>
+                      <Label>{t("k_0e9360663f")}</Label>
                       <Select
                         value={String(pageSizeOf(config))}
                         onValueChange={v => updateConfig('pageSize', parseInt(v))}
@@ -310,14 +336,14 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         checked={config.showIndex !== false}
                         onCheckedChange={v => updateConfig('showIndex', v)}
                       />
-                      <Label>显示行号</Label>
+                      <Label>{t("k_4c8bcf0684")}</Label>
                     </div>
                     <div className="flex items-center gap-2">
                       <Switch
                         checked={config.striped !== false}
                         onCheckedChange={v => updateConfig('striped', v)}
                       />
-                      <Label>斑马纹</Label>
+                      <Label>{t("k_5fb5c8dcd7")}</Label>
                     </div>
                     <Separator />
                     <div className="flex items-center gap-2">
@@ -325,7 +351,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         checked={config.enablePagination !== false}
                         onCheckedChange={v => updateConfig('enablePagination', v)}
                       />
-                      <Label>行数超出时显示分页条</Label>
+                      <Label>{t("k_1c393c94dc")}</Label>
                     </div>
                     <p className="text-xs text-muted-foreground">
                       只影响不支持分页的数据集（整页返回的统计结果）。明细表走服务端真分页时
@@ -367,7 +393,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
 
                         <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1">
-                            <Label className="text-xs">链接列</Label>
+                            <Label className="text-xs">{t("k_0c3e2b0642")}</Label>
                             <Select
                               value={link.column || ''}
                               onValueChange={v => {
@@ -376,7 +402,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                                 updateConfig('links', newLinks);
                               }}
                             >
-                              <SelectTrigger><SelectValue placeholder="选择列" /></SelectTrigger>
+                              <SelectTrigger><SelectValue placeholder={t("k_a2af586862")} /></SelectTrigger>
                               <SelectContent>
                                 {columnOptions.map((col: string) => (
                                   <SelectItem key={col} value={col}>{col}</SelectItem>
@@ -386,7 +412,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                           </div>
 
                           <div className="space-y-1">
-                            <Label className="text-xs">目标页面</Label>
+                            <Label className="text-xs">{t("k_66b732c0ef")}</Label>
                             <Select
                               value={String(link.target_page_id || '')}
                               onValueChange={v => {
@@ -395,7 +421,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                                 updateConfig('links', newLinks);
                               }}
                             >
-                              <SelectTrigger><SelectValue placeholder="选择页面" /></SelectTrigger>
+                              <SelectTrigger><SelectValue placeholder={t("k_246b83cd0d")} /></SelectTrigger>
                               <SelectContent>
                                 {dashboardsList.map((d: any) => (
                                   <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
@@ -406,7 +432,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         </div>
 
                         <div className="space-y-1">
-                          <Label className="text-xs">打开方式</Label>
+                          <Label className="text-xs">{t("k_b3c3dc49cf")}</Label>
                           <Select
                             value={link.open_mode || 'modal'}
                             onValueChange={v => {
@@ -417,15 +443,15 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                           >
                             <SelectTrigger><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="modal">弹窗打开</SelectItem>
-                              <SelectItem value="new_page">新页面打开</SelectItem>
-                              <SelectItem value="same_page">当前页面参数</SelectItem>
+                              <SelectItem value="modal">{t("k_2d1c465a47")}</SelectItem>
+                              <SelectItem value="new_page">{t("k_2c0e7c71e5")}</SelectItem>
+                              <SelectItem value="same_page">{t("k_994057f8e1")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
 
                         <div className="space-y-1">
-                          <Label className="text-xs">参数映射</Label>
+                          <Label className="text-xs">{t("k_27c80de0b1")}</Label>
                           <p className="text-[10px] text-muted-foreground">格式：目标参数名=源列名，每行一个</p>
                           <Textarea
                             className="h-16 text-xs font-mono"
@@ -472,9 +498,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                 <>
                   <Separator />
                   <div className="space-y-4">
-                    <h4 className="font-medium">文本展示设置</h4>
+                    <h4 className="font-medium">{t("k_32d1a20960")}</h4>
                     <div className="space-y-2">
-                      <Label>数值格式</Label>
+                      <Label>{t("k_6316757fb0")}</Label>
                       <Select value={config.valueFormat || 'number'} onValueChange={v => updateConfig('valueFormat', v)}>
                         <SelectTrigger>
                           <SelectValue />
@@ -483,12 +509,12 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                           <SelectItem value="number">数字 (1,234)</SelectItem>
                           <SelectItem value="percent">百分比 (12.3%)</SelectItem>
                           <SelectItem value="currency">货币 (¥1,234)</SelectItem>
-                          <SelectItem value="raw">原始值</SelectItem>
+                          <SelectItem value="raw">{t("k_17f8695a7e")}</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <Label>前缀</Label>
+                      <Label>{t("k_969de5da02")}</Label>
                       <Input
                         placeholder="如 ¥、#、总量："
                         value={config.valuePrefix || ''}
@@ -496,9 +522,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>后缀</Label>
+                      <Label>{t("k_c48993524e")}</Label>
                       <Input
-                        placeholder="如 个、次、%"
+                        placeholder={t("k_8ec722b973")}
                         value={config.valueSuffix || ''}
                         onChange={e => updateConfig('valueSuffix', e.target.value)}
                       />
@@ -508,12 +534,12 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         checked={config.showComparison !== false}
                         onCheckedChange={v => updateConfig('showComparison', v)}
                       />
-                      <Label>显示同比/环比</Label>
+                      <Label>{t("k_03ad550dfa")}</Label>
                     </div>
                     <div className="space-y-2">
-                      <Label>同比基准列</Label>
+                      <Label>{t("k_244a08afd5")}</Label>
                       <Input
-                        placeholder="去年同月数据列名"
+                        placeholder={t("k_787f50e0fc")}
                         value={config.yoyColumn || ''}
                         onChange={e => updateConfig('yoyColumn', e.target.value)}
                       />
@@ -522,9 +548,9 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                       </p>
                     </div>
                     <div className="space-y-2">
-                      <Label>环比基准列</Label>
+                      <Label>{t("k_f18a0a153e")}</Label>
                       <Input
-                        placeholder="上月数据列名"
+                        placeholder={t("k_08ae9be93e")}
                         value={config.momColumn || ''}
                         onChange={e => updateConfig('momColumn', e.target.value)}
                       />
@@ -548,19 +574,19 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
               <Separator />
 
               <div className="space-y-4">
-                <h4 className="font-medium">时间聚合</h4>
+                <h4 className="font-medium">{t("k_d01968d876")}</h4>
 
                 <div className="flex items-center gap-2">
                   <Switch
                     checked={config.enableTimeAgg || false}
                     onCheckedChange={v => updateConfig('enableTimeAgg', v)}
                   />
-                  <Label>启用时间聚合</Label>
+                  <Label>{t("k_612dc6af99")}</Label>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>时间粒度</Label>
+                    <Label>{t("k_924f63b2f6")}</Label>
                     <Select
                       value={config.timeGranularity || 'auto'}
                       onValueChange={v => updateConfig('timeGranularity', v)}
@@ -569,17 +595,17 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="auto">自动检测</SelectItem>
-                        <SelectItem value="hour">按小时</SelectItem>
-                        <SelectItem value="day">按天</SelectItem>
-                        <SelectItem value="week">按周</SelectItem>
-                        <SelectItem value="month">按月</SelectItem>
-                        <SelectItem value="year">按年</SelectItem>
+                        <SelectItem value="auto">{t("k_00ab1b8858")}</SelectItem>
+                        <SelectItem value="hour">{t("k_3ae9822387")}</SelectItem>
+                        <SelectItem value="day">{t("k_6a0d40d657")}</SelectItem>
+                        <SelectItem value="week">{t("k_6ccceba5c4")}</SelectItem>
+                        <SelectItem value="month">{t("k_7bae1e0954")}</SelectItem>
+                        <SelectItem value="year">{t("k_a55dd3bc11")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>聚合方式</Label>
+                    <Label>{t("k_fa3207b98d")}</Label>
                     <Select
                       value={config.aggMethod || 'sum'}
                       onValueChange={v => updateConfig('aggMethod', v)}
@@ -588,11 +614,11 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="sum">求和</SelectItem>
-                        <SelectItem value="avg">平均值</SelectItem>
-                        <SelectItem value="max">最大值</SelectItem>
-                        <SelectItem value="min">最小值</SelectItem>
-                        <SelectItem value="count">计数</SelectItem>
+                        <SelectItem value="sum">{t("k_1609bae691")}</SelectItem>
+                        <SelectItem value="avg">{t("k_0d47be0685")}</SelectItem>
+                        <SelectItem value="max">{t("k_01821997b7")}</SelectItem>
+                        <SelectItem value="min">{t("k_c3d641f190")}</SelectItem>
+                        <SelectItem value="count">{t("k_37802b1dfc")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -606,7 +632,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
 
             <TabsContent value="style" className="space-y-4 mt-4">
               <div className="space-y-2">
-                <Label>颜色方案</Label>
+                <Label>{t("k_aa036b50bf")}</Label>
                 <div className="flex flex-wrap gap-2">
                   {CHART_COLORS.map((color, index) => (
                     <div
@@ -654,7 +680,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   checked={config.showXAxis !== false}
                   onCheckedChange={v => updateConfig('showXAxis', v)}
                 />
-                <Label>显示X轴</Label>
+                <Label>{t("k_0a431d2d54")}</Label>
               </div>
 
               <div className="space-y-2">
@@ -676,13 +702,13 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   checked={config.showYAxis !== false}
                   onCheckedChange={v => updateConfig('showYAxis', v)}
                 />
-                <Label>显示Y轴</Label>
+                <Label>{t("k_d07a390700")}</Label>
               </div>
 
               <div className="space-y-2">
-                <Label>Y轴名称</Label>
+                <Label>{t("k_deac0a9bb8")}</Label>
                 <Input
-                  placeholder="Y轴名称"
+                  placeholder={t("k_deac0a9bb8")}
                   value={config.yAxisName || ''}
                   onChange={e => updateConfig('yAxisName', e.target.value)}
                 />
@@ -693,7 +719,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   checked={config.showGrid !== false}
                   onCheckedChange={v => updateConfig('showGrid', v)}
                 />
-                <Label>显示网格线</Label>
+                <Label>{t("k_a887b6163f")}</Label>
               </div>
             </TabsContent>
 
@@ -732,7 +758,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                   <div className="flex items-center gap-2 text-xs text-destructive">
                     <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
                     <span className="flex-1">{datasetsError}</span>
-                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>重试</Button>
+                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={loadDatasets}>{t("k_e2d53a6d3a")}</Button>
                   </div>
                 )}
                 {!datasetsLoading && !datasetsError && datasets.length === 0 && (
@@ -758,7 +784,7 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                       onValueChange={v => updateConfig('datasource', v === '__auto__' ? undefined : v)}>
                       <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__auto__">自动（服务端定源）</SelectItem>
+                        <SelectItem value="__auto__">{t("k_cacd6fa0e0")}</SelectItem>
                         {sourceScope.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -787,11 +813,11 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                       <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
                       <span className="flex-1">{previewError}</span>
                       <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={runPreview}
-                        disabled={previewLoading}>重试</Button>
+                        disabled={previewLoading}>{t("k_e2d53a6d3a")}</Button>
                     </div>
                   )}
                   {preview && (preview.columns.length === 0
-                    ? <p className="text-xs text-muted-foreground">本次预览没有返回行列（口径可能命中空集）。</p>
+                    ? <p className="text-xs text-muted-foreground">{t("k_8add2abbfc")}</p>
                     : (
                       <div className="max-h-52 overflow-auto rounded-md border">
                         <table className="w-full text-[11px]">
@@ -824,24 +850,24 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
 
               {/* Chart info（资源引用一律显示业务名，不裸显内部 id） */}
               <div className="p-4 bg-muted rounded-lg space-y-2">
-                <h4 className="font-medium mb-2">图表信息</h4>
+                <h4 className="font-medium mb-2">{t("k_3ae8d76297")}</h4>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div>
-                    <span className="text-muted-foreground">当前数据集：</span>
+                    <span className="text-muted-foreground">{t("k_e4909bc299")}</span>
                     {selectedDataset?.name
                       || (boundDataset ? '不在当前角色清单内（可能已撤权/停用，请重新选择）' : '尚未绑定')}
                   </div>
-                  <div><span className="text-muted-foreground">图表类型：</span>
+                  <div><span className="text-muted-foreground">{t("k_72f9128b0a")}</span>
                     {CHART_TYPES.find(t => t.value === (config.chartType || chart.chart_type))?.label || chart.chart_type}
                   </div>
                   <div>
-                    <span className="text-muted-foreground">执行数据源：</span>
+                    <span className="text-muted-foreground">{t("k_f3b396877e")}</span>
                     {pinnedSource
                       || selectedDataset?.datasource_name
                       || (boundDataset ? '按查看者角色定源' : '未绑定')}
-                    {pinnedSource && <span className="ml-1 text-[11px] text-muted-foreground">（本图钉选）</span>}
+                    {pinnedSource && <span className="ml-1 text-[11px] text-muted-foreground">{t("k_413ac44623")}</span>}
                   </div>
-                  <div><span className="text-muted-foreground">更新时间：</span>
+                  <div><span className="text-muted-foreground">{t("k_4668a1aee4")}</span>
                     {chart.updated_at ? new Date(chart.updated_at).toLocaleString('zh-CN') : '-'}
                   </div>
                 </div>
@@ -857,18 +883,18 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                 <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-xs flex items-start gap-2">
                   <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
                   <div className="space-y-1">
-                    <p className="font-medium">该图表仍携带旧版直写 SQL（该取数通道已下线）</p>
-                    <p>选一个数据集后保存即可改挂；口径本体请到「数据集」页重新定义，图表不再展示与编辑 SQL。</p>
+                    <p className="font-medium">{t("k_557f92dfd2")}</p>
+                    <p>{t("k_84ffb8f8c2")}</p>
                   </div>
                 </div>
               )}
             </TabsContent>}
           </Tabs>
-          {semantic && <p className="mt-4 text-xs text-muted-foreground">此图表使用声明式语义查询。可调整字段映射与外观，不展示或修改生成 SQL。</p>}
+          {semantic && <p className="mt-4 text-xs text-muted-foreground">{t("k_5d6762a9ea")}</p>}
         </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" disabled={saving} onClick={onClose}>取消</Button>
+          <Button variant="outline" disabled={saving} onClick={onClose}>{t("k_4d0b4688c7")}</Button>
           <Button disabled={saving} onClick={handleSave}>{saving ? '保存中…' : '保存'}</Button>
         </DialogFooter>
       </DialogContent>

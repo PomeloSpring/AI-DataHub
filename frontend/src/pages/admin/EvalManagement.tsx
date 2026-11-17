@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { t } from '@/i18n/runtime';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -33,6 +34,7 @@ import {
   type CapabilityMeta, type CoverageCell, type EvalCase, type EvalRun,
   type PrecheckPayload, type SuiteMeta,
 } from './eval/shared';
+import { useTranslation } from 'react-i18next';
 
 /** 接口返回结构异常的显式暴露：代理漏配会被 SPA 兑底成 HTML，不能当成空数据。 */
 function expectObject(payload: any, key: string, what: string): any {
@@ -43,6 +45,7 @@ function expectObject(payload: any, key: string, what: string): any {
 }
 
 export default function EvalManagement() {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState('overview');
   const [suites, setSuites] = useState<SuiteMeta[]>([]);
   const [capabilities, setCapabilities] = useState<CapabilityMeta[]>([]);
@@ -158,7 +161,7 @@ export default function EvalManagement() {
     <div className="p-6 space-y-4">
       <div className="flex items-center gap-2">
         <FlaskConical className="h-5 w-5" />
-        <h1 className="text-lg font-semibold">评测中心</h1>
+        <h1 className="text-lg font-semibold">{t("k_7ef657c48e")}</h1>
         <Badge variant="outline" className="text-[10px]">层 × 能力契约 · 双口径门禁</Badge>
         <div className="flex-1" />
         <Link to="/system/evolution">
@@ -172,21 +175,21 @@ export default function EvalManagement() {
       </div>
 
       <p className="text-xs text-muted-foreground leading-relaxed">
-        四个被测层：<b>L1 编译规则</b>（跑 mock 目录，只验 planner 规则回归，
-        <b>不反映真实本体与治理</b>）、<b>L2 真实语义</b>（真实 binding/字典/敏感与 RLS 基线，
-        intent→闸门改写，<b>不下发数据源</b>）、<b>L3 真实检索</b>、
-        <b>L4 端到端行为</b>（trace=自录回放 / handler=真实工具 / live=真实模型）。
+        四个被测层：<b>{t("k_74dab54146")}</b>（跑 mock 目录，只验 planner 规则回归，
+        <b>{t("k_c4aa974b5b")}</b>）、<b>{t("k_1cc9c0c911")}</b>（真实 binding/字典/敏感与 RLS 基线，
+        intent→闸门改写，<b>{t("k_f80c1d9fec")}</b>）、<b>{t("k_84ab44bf9a")}</b>、
+        <b>{t("k_7a043aa209")}</b>（trace=自录回放 / handler=真实工具 / live=真实模型）。
         通过与否由确定性断言决定，LLM 评分只辅助评价解释质量；
         发布结论看 <b>release_ok</b>（相对未回退 AND 达绝对下限）。
       </p>
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="grid grid-cols-5 w-full max-w-2xl">
-          <TabsTrigger value="overview"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />概览</TabsTrigger>
-          <TabsTrigger value="cases"><Plus className="h-3.5 w-3.5 mr-1" />用例</TabsTrigger>
-          <TabsTrigger value="runs"><RefreshCw className="h-3.5 w-3.5 mr-1" />运行</TabsTrigger>
-          <TabsTrigger value="compare"><GitCompare className="h-3.5 w-3.5 mr-1" />对比</TabsTrigger>
-          <TabsTrigger value="gate"><Settings2 className="h-3.5 w-3.5 mr-1" />门禁</TabsTrigger>
+          <TabsTrigger value="overview"><LayoutDashboard className="h-3.5 w-3.5 mr-1" />{t("k_5060421d15")}</TabsTrigger>
+          <TabsTrigger value="cases"><Plus className="h-3.5 w-3.5 mr-1" />{t("k_024dad9fb0")}</TabsTrigger>
+          <TabsTrigger value="runs"><RefreshCw className="h-3.5 w-3.5 mr-1" />{t("k_0c3acd446f")}</TabsTrigger>
+          <TabsTrigger value="compare"><GitCompare className="h-3.5 w-3.5 mr-1" />{t("k_ef765015fe")}</TabsTrigger>
+          <TabsTrigger value="gate"><Settings2 className="h-3.5 w-3.5 mr-1" />{t("k_a0d14adcf1")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -215,24 +218,24 @@ export default function EvalManagement() {
           <div className="border rounded-md p-3 space-y-2">
             <div className="flex items-center gap-2">
               <Settings2 className="h-4 w-4" />
-              <b className="text-sm">绝对下限策略</b>
-              <Badge variant="outline" className="text-[10px]">与相对回退判定正交</Badge>
+              <b className="text-sm">{t("k_b83074c5e8")}</b>
+              <Badge variant="outline" className="text-[10px]">{t("k_a2f1012ebd")}</Badge>
             </div>
             <p className="text-[11px] text-muted-foreground">
               每条策略同时卡两件事：正确率不得低于 <code>floor_accuracy</code>，
               活跃用例数不得低于 <code>min_cases</code>（后者专拦"删/退役难用例刷通过率"）。
-              某层没有任何启用策略时按<b>门禁失效</b>处理，不会当作通过。
+              某层没有任何启用策略时按<b>{t("k_ea6a4c3883")}</b>处理，不会当作通过。
               阈值不由 AI 放宽：权限码 <code>eval:gate</code> 为 ai_access=none。
             </p>
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40">
-                  <TableHead className="text-xs">层</TableHead>
-                  <TableHead className="text-xs">能力契约</TableHead>
-                  <TableHead className="text-xs">正确率下限</TableHead>
-                  <TableHead className="text-xs">用例数下界</TableHead>
-                  <TableHead className="text-xs">启用</TableHead>
-                  <TableHead className="text-xs w-[90px]">操作</TableHead>
+                  <TableHead className="text-xs">{t("k_7895e237ab")}</TableHead>
+                  <TableHead className="text-xs">{t("k_b13ab1ec69")}</TableHead>
+                  <TableHead className="text-xs">{t("k_849b6fc6d8")}</TableHead>
+                  <TableHead className="text-xs">{t("k_7097daeee3")}</TableHead>
+                  <TableHead className="text-xs">{t("k_d4e9ca3dd4")}</TableHead>
+                  <TableHead className="text-xs w-[90px]">{t("k_f3ea6d345e")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -276,7 +279,7 @@ function GateRow({ row, capabilities, suites, onSave }: {
       <TableCell className="text-xs p-2">
         {draft.capability
           ? (capabilities.find(c => c.key === draft.capability)?.label || draft.capability)
-          : <span className="text-muted-foreground">该层整体</span>}
+          : <span className="text-muted-foreground">{t("k_caea821078")}</span>}
       </TableCell>
       <TableCell className="p-1.5">
         <Input className="h-7 text-xs w-24" type="number" step="0.01" min="0" max="1"

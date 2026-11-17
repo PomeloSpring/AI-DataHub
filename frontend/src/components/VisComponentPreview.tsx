@@ -5,6 +5,7 @@ import { enterClass, enterStaggerStyle, motionCssVars, sanitizeMotion } from '@/
 import { cn } from '@/lib/utils';
 import { CHART_TYPES, areaFadeStops } from './DashboardChart';
 import { FileText, Map } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 const FALLBACK = ['#334155', '#64748b', '#94a3b8'];
 const colorsOf = (value: unknown): string[] => {
@@ -38,6 +39,7 @@ function AreaFadeDefs({ id, color, stops }: { id: string; color: string; stops: 
 
 // 轻量、不挂 G2 的形状预览: 让 line/pie/radar/gauge/funnel 等不再都显示成柱状图。
 export function ShapePreview({ type, palette, cfg }: { type: string; palette: string[]; cfg: any }) {
+  const { t } = useTranslation('ui');
   const gid = `areafade-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   palette = colorsOf(palette);
   const c = (i: number) => palette[i % palette.length];
@@ -112,7 +114,7 @@ export function ShapePreview({ type, palette, cfg }: { type: string; palette: st
     case 'table_value': case 'table':
       return <div className="grid h-16 grid-cols-3 gap-px overflow-hidden rounded border text-center text-[9px]" style={{ color: c(0) }}>{['维度', '指标', '占比', '华东', '128', '48%', '华南', '96', '36%'].map((v, i) => <span key={i} className="border-b p-1" style={{ background: i < 3 ? `${c(0)}18` : undefined }}>{v}</span>)}</div>;
     case 'text_display': case 'big_number_trend':
-      return <div className="flex h-16 items-center justify-around text-xs" style={{ color: cfg.valueColor || c(0) }}><div><small>核心指标</small><strong className="block text-xl">1,234</strong></div>{type === 'big_number_trend' && <svg viewBox="0 0 100 40" className="h-10 w-1/2"><polyline points={line} fill="none" stroke={c(0)} strokeWidth="3" /></svg>}</div>;
+      return <div className="flex h-16 items-center justify-around text-xs" style={{ color: cfg.valueColor || c(0) }}><div><small>{t("k_ffe630cac3")}</small><strong className="block text-xl">1,234</strong></div>{type === 'big_number_trend' && <svg viewBox="0 0 100 40" className="h-10 w-1/2"><polyline points={line} fill="none" stroke={c(0)} strokeWidth="3" /></svg>}</div>;
     case 'china_map': case 'world_map':
       return <svg viewBox="0 0 100 50" className="h-16 w-full"><path d={type === 'china_map' ? 'M6 15 L18 12 24 5 33 14 42 13 47 18 60 13 71 4 82 8 93 4 90 17 78 22 81 29 69 35 62 43 50 39 42 44 30 37 24 27 12 29 Z' : 'M3 10 L25 4 40 12 32 23 21 20 18 28 8 22 Z M26 27 L42 31 38 44 31 48 Z M48 10 L67 4 95 12 89 23 73 24 65 17 57 23 49 20 Z M51 25 L67 25 64 41 55 43 Z M79 35 L94 33 98 42 83 45 Z'} fill={c(0)} fillOpacity="0.65" stroke={c(1)} /></svg>;
     case 'bar': case 'timeseries_bar':
@@ -148,6 +150,7 @@ export function ShapePreview({ type, palette, cfg }: { type: string; palette: st
 }
 
 export default function VisComponentPreview({ c }: { c: VisComponent }) {
+  const { t } = useTranslation('ui');
   const sc = sanitizeStyle(c.style_config), cfg = sc.config || {};
   const palette = colorsOf(sc.palette || cfg.colorScheme);
   if (c.category === 'theme_pack') {
@@ -165,7 +168,7 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
   }} />;
   if (c.category === 'kpi_card') return <div className="flex h-16 flex-col justify-center rounded-md border px-3" style={{
     background: cfg.cardBg, border: cfg.cardBorder, boxShadow: cfg.glow, borderRadius: cfg.cardRadius ?? cfg.borderRadius,
-  }}><span className="text-[10px]" style={{ color: cfg.labelColor }}>核心指标</span><strong style={{ color: cfg.valueColor }}>1,234</strong></div>;
+  }}><span className="text-[10px]" style={{ color: cfg.labelColor }}>{t("k_ffe630cac3")}</span><strong style={{ color: cfg.valueColor }}>1,234</strong></div>;
   if (c.category === 'widget_style') {
     // 控件样式预览与 DashboardChart 控件分支同源：同一批 widgetStyle 键（背景/描边/圆角/内距/字号/高度/行高），
     // 预览与真实渲染不一致就属样式缺陷（ui-vis-library-style.md §2）。
@@ -187,7 +190,7 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
       <span className="shrink-0 truncate leading-none" style={{
         width: ws.labelWidth ? Math.min(ws.labelWidth, 48) : undefined,
         color: ws.textColor, fontSize: Math.max((ws.fontSize ?? 12) - 1, 9),
-      }}>标签</span>
+      }}>{t("k_ae0a7afece")}</span>
       <span style={{ ...box, flex: grow ? '1 1 auto' : '0 0 58%', minWidth: 0 }}>{text}</span>
     </div>;
     return <div data-preview-type="widget_style"
@@ -203,7 +206,7 @@ export default function VisComponentPreview({ c }: { c: VisComponent }) {
   if (c.category === 'decoration_frame') return <div className="flex h-16 items-center rounded-md border px-3 text-xs" style={{
     background: cfg.titleBarBg, border: cfg.borderStyle, color: cfg.titleColor,
     borderBottom: cfg.showUnderline ? `2px solid ${cfg.underlineColor}` : undefined,
-  }}>标题与边框</div>;
+  }}>{t("k_6c694994c7")}</div>;
   if (c.category === 'report_template') {
     const fmt = (c.style_config as any)?.format || 'markdown';
     return <div className="flex h-16 flex-col items-center justify-center rounded-md border p-2 text-xs text-muted-foreground">

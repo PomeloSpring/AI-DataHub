@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, CalendarClock, ExternalLink, FileText, MessageSquareQuote } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { t } from '@/i18n/runtime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -127,9 +128,9 @@ export default function ArticleReader({
         {article && (
           <article>
             {/* 面包屑：栏目用业务名，不显示 category_id；内嵌视图不回首页 */}
-            <nav aria-label="面包屑" className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <nav aria-label={t("k_5b8edc5dfb")} className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
               {showHomeCrumb && (
-                <a href="/" className="hover:text-primary">首页</a>
+                <a href="/" className="hover:text-primary">{t("k_ff93ad0e4e")}</a>
               )}
               {showHomeCrumb && <span>·</span>}
               <span>{article.category_label || '栏目未知'}</span>
@@ -140,7 +141,7 @@ export default function ArticleReader({
             <header className="border-b pb-4">
               <div className="flex flex-wrap items-center gap-1.5">
                 <CategoryBadge category={cat} />
-                {article.pinned ? <span className="rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-medium text-primary">置顶</span> : null}
+                {article.pinned ? <span className="rounded-md bg-primary/12 px-1.5 py-0.5 text-[11px] font-medium text-primary">{t("k_7bcf18641f")}</span> : null}
                 {(article.viewing_release ?? article.release) > 0 && (
                   <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400"
                     title={article.release_count > 1 ? `本篇共 ${article.release_count} 期` : undefined}>
@@ -173,11 +174,53 @@ export default function ArticleReader({
               </div>
             </header>
 
+            {/* 双语条目：同 translation_group 有英文在线版就给一键切换；
+                当前看的是中文、界面上又倾向英文（或用户显式在找英文版）时，
+                必须**显式**说「暂无英文版」而不是静默回落 —— no-silent-degradation。 */}
+            {(() => {
+              const tr = article.translation || {};
+              const en = tr.en || {};
+              const zh = tr.zh || {};
+              const cur = article.lang || 'zh-CN';
+              const target: { slug: string; label: string; to: 'en-US' | 'zh-CN' } | null =
+                cur !== 'en-US' && en.available && en.slug
+                  ? { slug: en.slug, label: 'Read in English', to: 'en-US' }
+                  : cur !== 'zh-CN' && zh.available && zh.slug
+                    ? { slug: zh.slug, label: '切到中文版', to: 'zh-CN' }
+                    : null;
+              const missingEn = cur === 'zh-CN' && !en.available;
+              if (!target && !missingEn) return null;
+              return (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px]" data-testid="article-lang-bar">
+                  {target && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-[11.5px]"
+                      data-testid={`article-lang-switch-${target.to}`}
+                      onClick={() => onOpenArticle(target.slug)}
+                    >
+                      {target.label}
+                    </Button>
+                  )}
+                  {!target && missingEn && (
+                    <span
+                      className="rounded-md border border-dashed px-2 py-0.5 text-muted-foreground"
+                      data-testid="article-lang-missing-en"
+                      title="This article has not been translated yet; the Chinese version is shown instead of silently switching."
+                    >
+                      该篇暂无英文版 · No English version yet
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
             {releases.length > 1 && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>历史期次</span>
+                <span>{t("k_1d71660347")}</span>
                 <Select value={String(release)} onValueChange={onPickRelease}>
-                  <SelectTrigger className="w-[240px]" aria-label="选择要阅读的历史期次">
+                  <SelectTrigger className="w-[240px]" aria-label={t("k_fa62b17149")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -229,7 +272,7 @@ export default function ArticleReader({
                     ? <div className={reveal} style={cssVars}><HtmlArticle html={article.body} className="text-sm leading-7" /></div>
                     : <HtmlArticle html={article.body} className="text-sm leading-7" />)
                   : <MarkdownWithCharts text={article.body} className="text-sm leading-7" reveal />)
-                : <p className="text-center text-sm text-muted-foreground">这篇没有站内正文，内容以附件或原文形式提供。</p>}
+                : <p className="text-center text-sm text-muted-foreground">{t("k_2c1a2d30cb")}</p>}
             </div>
 
             {!!article.files?.length && (
@@ -251,7 +294,7 @@ export default function ArticleReader({
                 <h2 className="mb-1.5 flex items-center gap-1.5 text-sm font-medium">
                   <FileText className="h-4 w-4" />引用出处
                 </h2>
-                <p className="mb-2 text-[11px] text-muted-foreground">文中数值以原文为准；外部数字必须有出处才能发布。</p>
+                <p className="mb-2 text-[11px] text-muted-foreground">{t("k_6ffe478471")}</p>
                 <ol className="list-decimal space-y-1 pl-5 text-xs">
                   {article.refs.map((r, i) => (
                     <li key={`${r.url}-${i}`}>
@@ -275,7 +318,7 @@ export default function ArticleReader({
 
             {!!related.length && (
               <section className="mt-8">
-                <h2 className="mb-2.5 text-sm font-medium">同栏目其它内容</h2>
+                <h2 className="mb-2.5 text-sm font-medium">{t("k_b5ab51f558")}</h2>
                 <div className="grid gap-2.5 sm:grid-cols-2">
                   {related.map(r => (
                     <button

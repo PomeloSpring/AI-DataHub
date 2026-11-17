@@ -211,14 +211,14 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>模板名称</TableHead>
-            <TableHead>格式</TableHead>
-            {kind === 'email' && <TableHead>邮件主题</TableHead>}
-            <TableHead>用到变量</TableHead>
-            <TableHead className="text-right">被渠道引用</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>更新时间</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>{"模板名称"}</TableHead>
+            <TableHead>{"格式"}</TableHead>
+            {kind === 'email' && <TableHead>{"邮件主题"}</TableHead>}
+            <TableHead>{"用到变量"}</TableHead>
+            <TableHead className="text-right">{"被渠道引用"}</TableHead>
+            <TableHead>{"状态"}</TableHead>
+            <TableHead>{"更新时间"}</TableHead>
+            <TableHead className="text-right">{"操作"}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -238,7 +238,7 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
               <TableCell>
                 <div className="flex items-center gap-1.5 font-medium">
                   {t.name}
-                  {!!t.is_builtin && <Lock className="h-3 w-3 text-muted-foreground" aria-label="内置模板" />}
+                  {!!t.is_builtin && <Lock className="h-3 w-3 text-muted-foreground" aria-label={"内置模板"} />}
                 </div>
                 {t.description && (
                   <div className="text-xs text-muted-foreground max-w-[360px] truncate">{t.description}</div>
@@ -256,7 +256,7 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
                 <div className="flex flex-wrap gap-1">
                   {t.variables?.length
                     ? t.variables.map(v => <code key={v} className="var-code">{`{{${v}}}`}</code>)
-                    : <span className="text-xs text-muted-foreground">无变量（固定文案）</span>}
+                    : <span className="text-xs text-muted-foreground">{"无变量（固定文案）"}</span>}
                   {!!t.unregistered_variables?.length && (
                     // 发不出去的变量必须列得出来：发送时原样留字面量，不标出来就是"通知里凭空出现 {{xxx}}"
                     <Badge variant="outline" className="border-destructive/40 text-destructive gap-1"
@@ -274,7 +274,7 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
                       {t.used_count} 个渠道
                     </Badge>
                   )
-                  : <span className="text-muted-foreground text-xs">未引用</span>}
+                  : <span className="text-muted-foreground text-xs">{"未引用"}</span>}
               </TableCell>
               <TableCell>
                 <Badge variant="outline" className={Number(t.is_active) ? 'text-green-500' : 'text-gray-500'}>
@@ -290,7 +290,7 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
                     <Edit className="h-3.5 w-3.5 mr-1" />{canEdit(t) ? '编辑' : '只读'}
                   </Button>
                   <Button variant="ghost" size="sm" disabled={!canEdit(t)} onClick={() => setDeleteTarget(t)}
-                    className="text-destructive" aria-label="删除">
+                    className="text-destructive" aria-label={"删除"}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -311,11 +311,11 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>模板名称</Label>
-              <Input value={name} onChange={e => setName(e.target.value)} placeholder="如：任务完成通知（运维群）" />
+              <Label>{"模板名称"}</Label>
+              <Input value={name} onChange={e => setName(e.target.value)} placeholder={"如：任务完成通知（运维群）"} />
             </div>
             <div className="space-y-1.5">
-              <Label>消息格式</Label>
+              <Label>{"消息格式"}</Label>
               <Select value={format} onValueChange={setFormat}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -330,14 +330,14 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
 
           {kind === 'email' && (
             <div className="space-y-1.5">
-              <Label>邮件主题</Label>
+              <Label>{"邮件主题"}</Label>
               <Input value={subject} onChange={e => setSubject(e.target.value)}
                 placeholder="分析报告已生成（{{date}}）" />
             </div>
           )}
 
           <div className="space-y-1.5">
-            <Label>可用变量</Label>
+            <Label>{"可用变量"}</Label>
             <div className="flex flex-wrap gap-1 text-xs">
               {(meta?.variables || []).map(v => (
                 <button key={v.name} type="button" className="var-code" title={`示例值：${v.sample}`}
@@ -346,11 +346,11 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
                 </button>
               ))}
             </div>
-            {!meta && <p className="text-xs text-muted-foreground">变量清单加载中…</p>}
+            {!meta && <p className="text-xs text-muted-foreground">{"变量清单加载中…"}</p>}
           </div>
 
           <div className="space-y-1.5">
-            <Label>模板正文</Label>
+            <Label>{"模板正文"}</Label>
             <Textarea id={bodyFieldId} value={content} onChange={e => setContent(e.target.value)}
               rows={7} className="font-mono text-sm"
               placeholder={'📅 {{date}} {{time}}\n状态：{{status}}（成功 {{succeeded}} / 共 {{total}}，失败 {{failed}}）\n🔗 查看完整报告：{{report_link}}'} />
@@ -363,20 +363,20 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>描述</Label>
-              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="适用场景说明（可选）" />
+              <Label>{"描述"}</Label>
+              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder={"适用场景说明（可选）"} />
             </div>
             {editItem && (
               <div className="flex items-end gap-2 pb-1.5">
                 <Switch checked={isActive} onCheckedChange={setIsActive} />
-                <Label>启用（下架后渠道选不到，已引用的渠道按默认文案发送并显式告警）</Label>
+                <Label>{"启用（下架后渠道选不到，已引用的渠道按默认文案发送并显式告警）"}</Label>
               </div>
             )}
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label>效果预览</Label>
+              <Label>{"效果预览"}</Label>
               <Button variant="outline" size="sm" className="h-8 text-xs" onClick={showPreview} disabled={previewing}>
                 {previewing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Eye className="h-3.5 w-3.5 mr-1" />}
                 按示例值预览
@@ -400,15 +400,15 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
                   </p>
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">点「按示例值预览」看展开后的文案（与真实发送同一个渲染函数）。</p>
+                <p className="text-sm text-muted-foreground">{"点「按示例值预览」看展开后的文案（与真实发送同一个渲染函数）。"}</p>
               )}
             </div>
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{"取消"}</Button>
             <Button onClick={handleSave} disabled={saving}>
-              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />保存中…</> : editItem ? '更新' : '创建'}
+              {saving ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" />{"保存中…"}</> : editItem ? '更新' : '创建'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -421,8 +421,8 @@ export default function MessageTemplatePanel({ kind }: { kind: string }) {
           </DialogDescription></DialogHeader>
           <p className="text-sm text-muted-foreground">将删除「{deleteTarget?.name}」。</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>确认删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{"取消"}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{"确认删除"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

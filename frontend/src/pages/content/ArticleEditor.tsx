@@ -198,33 +198,33 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="ce-title">标题</Label>
-              <Input id="ce-title" value={form.title} onChange={e => patch({ title: e.target.value })} placeholder="会同时作为门户卡片与详情页的标题" />
+              <Label htmlFor="ce-title">{"标题"}</Label>
+              <Input id="ce-title" value={form.title} onChange={e => patch({ title: e.target.value })} placeholder={"会同时作为门户卡片与详情页的标题"} />
             </div>
 
             <div className="space-y-1.5">
-              <Label>栏目</Label>
+              <Label>{"栏目"}</Label>
               <Select value={form.category} onValueChange={v => patch({ category: v })}>
-                <SelectTrigger aria-label="选择栏目"><SelectValue placeholder="选择栏目" /></SelectTrigger>
+                <SelectTrigger aria-label={"选择栏目"}><SelectValue placeholder={"选择栏目"} /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NONE}>请选择…</SelectItem>
+                  <SelectItem value={NONE}>{"请选择…"}</SelectItem>
                   {categories.map(c => (
                     <SelectItem key={c.key} value={c.key}>{c.icon ? `${c.icon} ` : ''}{c.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-[11px] text-muted-foreground">栏目清单来自「栏目与标签」页，这里不硬编码。</p>
+              <p className="text-[11px] text-muted-foreground">{"栏目清单来自「栏目与标签」页，这里不硬编码。"}</p>
             </div>
 
             <div className="space-y-1.5">
-              <Label>内容形态</Label>
+              <Label>{"内容形态"}</Label>
               <Select value={form.kind} onValueChange={v => patch({ kind: v as DraftForm['kind'] })}>
-                <SelectTrigger aria-label="选择内容形态"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label={"选择内容形态"}><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="markdown">站内正文</SelectItem>
-                  <SelectItem value="html">HTML 版式（时间轴/卡片这类富排版）</SelectItem>
-                  <SelectItem value="link">外链（原文在外部站点）</SelectItem>
-                  <SelectItem value="file">附件（Word / PPT / Excel / PDF / HTML）</SelectItem>
+                  <SelectItem value="markdown">{"站内正文"}</SelectItem>
+                  <SelectItem value="html">{"HTML 版式（时间轴/卡片这类富排版）"}</SelectItem>
+                  <SelectItem value="link">{"外链（原文在外部站点）"}</SelectItem>
+                  <SelectItem value="file">{"附件（Word / PPT / Excel / PDF / HTML）"}</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
@@ -234,9 +234,9 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>版本策略（历史期次给不给读者看）</Label>
+              <Label>{"版本策略（历史期次给不给读者看）"}</Label>
               <Select value={form.versioning} onValueChange={v => patch({ versioning: v as DraftForm['versioning'] })}>
-                <SelectTrigger id="ce-versioning" aria-label="选择版本策略"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="ce-versioning" aria-label={"选择版本策略"}><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {(Object.keys(VERSIONING_LABELS) as ArticleVersioning[]).map(v => (
                     <SelectItem key={v} value={v}>{VERSIONING_LABELS[v]}</SelectItem>
@@ -252,19 +252,19 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
             </div>
 
             <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="ce-summary">摘要</Label>
-              <Textarea id="ce-summary" rows={2} value={form.summary} onChange={e => patch({ summary: e.target.value })} placeholder="一两句说清这篇讲什么，卡片上只显示这段" />
+              <Label htmlFor="ce-summary">{"摘要"}</Label>
+              <Textarea id="ce-summary" rows={2} value={form.summary} onChange={e => patch({ summary: e.target.value })} placeholder={"一两句说清这篇讲什么，卡片上只显示这段"} />
             </div>
 
             {form.kind === 'link' && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label htmlFor="ce-link">原文地址</Label>
+                  <Label htmlFor="ce-link">{"原文地址"}</Label>
                   <Input id="ce-link" value={form.link_url} onChange={e => patch({ link_url: e.target.value })} placeholder="https://…" />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="ce-link-label">按钮文案</Label>
-                  <Input id="ce-link-label" value={form.link_label} onChange={e => patch({ link_label: e.target.value })} placeholder="如「前往厂商发布页」" />
+                  <Label htmlFor="ce-link-label">{"按钮文案"}</Label>
+                  <Input id="ce-link-label" value={form.link_label} onChange={e => patch({ link_label: e.target.value })} placeholder={"如「前往厂商发布页」"} />
                 </div>
               </div>
             )}
@@ -306,9 +306,9 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <Label>标签（从受控词表选择，不支持自由输入）</Label>
+              <Label>{"标签（从受控词表选择，不支持自由输入）"}</Label>
               <div className="flex flex-wrap gap-1.5">
-                {vocab.length === 0 && <p className="text-xs text-muted-foreground">词表还是空的，请先去「栏目与标签」建标签。</p>}
+                {vocab.length === 0 && <p className="text-xs text-muted-foreground">{"词表还是空的，请先去「栏目与标签」建标签。"}</p>}
                 {vocab.map(t => (
                   <button
                     key={t.tag}
@@ -322,7 +322,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                       ${!t.is_active ? 'line-through opacity-60' : ''}`}
                   >
                     {t.tag}
-                    {!t.is_active && <span className="ml-1 text-[10px] text-muted-foreground">已停用</span>}
+                    {!t.is_active && <span className="ml-1 text-[10px] text-muted-foreground">{"已停用"}</span>}
                   </button>
                 ))}
               </div>
@@ -330,7 +330,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
 
             <div className="space-y-2 sm:col-span-2">
               <div className="flex items-center justify-between">
-                <Label>引用出处</Label>
+                <Label>{"引用出处"}</Label>
                 <Button size="sm" variant="outline" onClick={() => patch({ refs: [...form.refs, { title: '', url: '' }] })}>
                   <Plus className="mr-1 h-3.5 w-3.5" />加一条
                 </Button>
@@ -344,7 +344,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                 {form.refs.map((r, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <Input
-                      className="flex-1" value={r.title} placeholder="文献/标准名称"
+                      className="flex-1" value={r.title} placeholder={"文献/标准名称"}
                       onChange={e => patch({ refs: form.refs.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })}
                     />
                     <Input
@@ -368,7 +368,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                 <Switch checked={form.featured} onCheckedChange={v => patch({ featured: v })} />首页推荐
               </label>
               <div className="space-y-1.5">
-                <Label htmlFor="ce-review">建议复核日</Label>
+                <Label htmlFor="ce-review">{"建议复核日"}</Label>
                 <Input id="ce-review" type="date" value={form.review_by} onChange={e => patch({ review_by: e.target.value })} />
               </div>
             </div>
@@ -396,7 +396,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                           第 {r.release} 期{r.release_label ? `·${r.release_label}` : ''}
                         </span>
                       )}
-                      {r.is_live && <span className="rounded bg-emerald-500/15 px-1.5 text-emerald-600">线上</span>}
+                      {r.is_live && <span className="rounded bg-emerald-500/15 px-1.5 text-emerald-600">{"线上"}</span>}
                     </li>
                   );
                   return (
@@ -411,7 +411,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
                       )}
                       {!!drafts.length && (
                         <div>
-                          <p className="text-[11px] font-medium text-muted-foreground">编辑历史（未发布的改稿痕迹）</p>
+                          <p className="text-[11px] font-medium text-muted-foreground">{"编辑历史（未发布的改稿痕迹）"}</p>
                           <ul className="mt-1 space-y-1 text-xs">{drafts.map(r => row(r, false))}</ul>
                         </div>
                       )}
@@ -430,7 +430,7 @@ export default function ArticleEditor({ open, slug, onOpenChange, onSaved }: {
         </div>
 
         <DialogFooter className="gap-2 sm:space-x-0">
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>{"取消"}</Button>
           <Button variant="outline" onClick={() => save(false)} disabled={saving || loading}>
             <Save className="mr-1.5 h-4 w-4" />{saving ? '保存中' : '保存草稿'}
           </Button>

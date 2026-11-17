@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -225,7 +226,7 @@ export default function EvalCasesPanel({
       </td>
       <td className="p-2">
         <div className="flex gap-1">
-          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={() => openEdit(c)}>编辑</Button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={() => openEdit(c)}>{t("k_a7f814c0a4")}</Button>
           <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" onClick={() => toggleActive(c)}>
             {c.is_active ? '停用' : '启用'}
           </Button>
@@ -240,34 +241,34 @@ export default function EvalCasesPanel({
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
-        <Label className="text-xs">评测层</Label>
+        <Label className="text-xs">{t("k_0e8e7b44a1")}</Label>
         <Select value={suiteFilter || 'all'} onValueChange={v => { setPage(0); onSuiteFilter(v === 'all' ? '' : v); }}>
           <SelectTrigger className="w-[190px] h-8"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部</SelectItem>
+            <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
             {suites.map(s => <SelectItem key={s.suite} value={s.suite}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Input
           value={search} className="h-8 text-xs w-[240px]"
           onChange={e => { setSearch(e.target.value); setPage(0); }}
-          placeholder="搜索问句 / 标识 / 标签 / 契约"
+          placeholder={t("k_6f79f0520c")}
         />
         <Badge variant="outline" className="text-[10px]">
           {filtered.length} / {cases.length} 条
         </Badge>
         <div className="flex-1" />
-        <Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5 mr-1" />新增用例</Button>
+        <Button size="sm" onClick={openCreate}><Plus className="h-3.5 w-3.5 mr-1" />{t("k_bd0f17d872")}</Button>
       </div>
 
-      {loading && <div className="text-xs text-muted-foreground p-4">加载中…</div>}
+      {loading && <div className="text-xs text-muted-foreground p-4">{t("k_300ee3dee4")}</div>}
       {!loading && error && (
         <div className="text-xs text-destructive p-4 border border-destructive/40 rounded">
           加载失败：{error}
         </div>
       )}
       {!loading && !error && filtered.length === 0 && (
-        <div className="text-xs text-muted-foreground p-4 border rounded text-center">无用例</div>
+        <div className="text-xs text-muted-foreground p-4 border rounded text-center">{t("k_d8ffbc4277")}</div>
       )}
 
       {grouped.map(([cap, list]) => {
@@ -293,12 +294,12 @@ export default function EvalCasesPanel({
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-left border-t">
-                      <th className="p-2">标识</th>
-                      <th className="p-2">层</th>
-                      <th className="p-2">问题 / 覆盖意图</th>
-                      <th className="p-2">标签</th>
-                      <th className="p-2">状态</th>
-                      <th className="p-2 w-[170px]">操作</th>
+                      <th className="p-2">{t("k_3537d5ef90")}</th>
+                      <th className="p-2">{t("k_7895e237ab")}</th>
+                      <th className="p-2">{t("k_658c372969")}</th>
+                      <th className="p-2">{t("k_ae0a7afece")}</th>
+                      <th className="p-2">{t("k_62e951a692")}</th>
+                      <th className="p-2 w-[170px]">{t("k_f3ea6d345e")}</th>
                     </tr>
                   </thead>
                   <tbody>{pageRows(list).map(Row)}</tbody>
@@ -326,19 +327,19 @@ export default function EvalCasesPanel({
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="mb-1 block" htmlFor="f-case-key">用例标识（版本对比对齐用，勿随意改）</Label>
+                <Label className="mb-1 block" htmlFor="f-case-key">{t("k_a4c5678ffd")}</Label>
                 <Input id="f-case-key" value={form.case_key} disabled={!!editing}
                   onChange={e => setForm({ ...form, case_key: e.target.value })}
                   placeholder="如 sem_gov_mask_applies_to_admin" />
               </div>
               <div>
-                <Label className="mb-1 block" htmlFor="f-question">问题（golden question）</Label>
+                <Label className="mb-1 block" htmlFor="f-question">{t("k_6b8161bae7")}</Label>
                 <Input id="f-question" value={form.question} onChange={e => setForm({ ...form, question: e.target.value })} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="mb-1 block" htmlFor="f-suite">被测层</Label>
+                <Label className="mb-1 block" htmlFor="f-suite">{t("k_92c584cc52")}</Label>
                 <Select value={form.suite} onValueChange={v => applyTemplate(v, form.capability)}>
                   <SelectTrigger id="f-suite"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -352,10 +353,10 @@ export default function EvalCasesPanel({
                 )}
               </div>
               <div>
-                <Label className="mb-1 block" htmlFor="f-capability">能力契约组（必填）</Label>
+                <Label className="mb-1 block" htmlFor="f-capability">{t("k_dd80fe4b59")}</Label>
                 <Select value={form.capability || undefined}
                   onValueChange={v => applyTemplate(form.suite, v)}>
-                  <SelectTrigger id="f-capability"><SelectValue placeholder="选一个能力契约组" /></SelectTrigger>
+                  <SelectTrigger id="f-capability"><SelectValue placeholder={t("k_85e7b2efd1")} /></SelectTrigger>
                   <SelectContent>
                     {capabilities.map(c => <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>)}
                   </SelectContent>
@@ -364,7 +365,7 @@ export default function EvalCasesPanel({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="mb-1 block" htmlFor="f-status">用例状态</Label>
+                <Label className="mb-1 block" htmlFor="f-status">{t("k_33740fa0c8")}</Label>
                 <Select value={form.case_status}
                   onValueChange={v => setForm({ ...form, case_status: v as CaseStatus })}>
                   <SelectTrigger id="f-status"><SelectValue /></SelectTrigger>
@@ -376,7 +377,7 @@ export default function EvalCasesPanel({
                 </Select>
               </div>
               <div>
-                <Label className="mb-1 block" htmlFor="f-tags">标签（逗号分隔，用于分桶报告）</Label>
+                <Label className="mb-1 block" htmlFor="f-tags">{t("k_cc22c8c7e5")}</Label>
                 <Input id="f-tags" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })}
                   placeholder="如 governance,sensitive_block" />
               </div>
@@ -389,7 +390,7 @@ export default function EvalCasesPanel({
                 </Label>
                 <Textarea id="f-status-note" rows={2} value={form.status_note}
                   onChange={e => setForm({ ...form, status_note: e.target.value })}
-                  placeholder="例：断言的形态已不存在 / 图种子抽取契约缺失，影响哪条链路" />
+                  placeholder={t("k_3f8d74f329")} />
                 {form.case_status === 'retired' && (
                   <p className="mt-1 text-[10px] text-amber-600">
                     退役后不再跑、不计入门禁分母；条数与原因会在发布前检查里常驻展示。
@@ -401,7 +402,7 @@ export default function EvalCasesPanel({
             {/* 结构化入口：按层+契约预填骨架，人只改值 */}
             <div className="border rounded p-2 space-y-2 bg-muted/20">
               <div className="flex items-center gap-2">
-                <b className="text-xs">用例内容</b>
+                <b className="text-xs">{t("k_462eca3f03")}</b>
                 <Badge variant="outline" className="text-[10px]">
                   {templateFor(form.suite, form.capability) ? '已按层+契约预填模板' : '该组合暂无模板，请手写'}
                 </Badge>
@@ -419,7 +420,7 @@ export default function EvalCasesPanel({
               {advanced && (
                 <>
                   <div>
-                    <Label className="mb-1 block" htmlFor="f-payload">payload（适配器入参 JSON）</Label>
+                    <Label className="mb-1 block" htmlFor="f-payload">{t("k_ef533aff3f")}</Label>
                     <Textarea id="f-payload" rows={6} className="font-mono text-[11px]"
                       value={form.payload}
                       onChange={e => { setPristine(false); setForm({ ...form, payload: e.target.value }); }} />
@@ -440,7 +441,7 @@ export default function EvalCasesPanel({
             </div>
 
             <div>
-              <Label className="mb-1 block" htmlFor="f-note">覆盖意图说明（为什么要有这条用例）</Label>
+              <Label className="mb-1 block" htmlFor="f-note">{t("k_af58f3a06a")}</Label>
               <Input id="f-note" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} />
             </div>
             <p id="f-no-self-proof" className="text-[10px] text-muted-foreground">
@@ -449,7 +450,7 @@ export default function EvalCasesPanel({
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={saveCase} disabled={saving}>{saving ? '保存中…' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>

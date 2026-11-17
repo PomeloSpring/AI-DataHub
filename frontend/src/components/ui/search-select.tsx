@@ -4,6 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "./popover"
 import { Input } from "./input"
 import { Button } from "./button"
 import { cn } from "@/lib/utils"
+import { t } from '@/i18n/runtime';
 
 export interface SearchSelectOption {
   value: string
@@ -41,7 +42,7 @@ const MAX_VISIBLE = 200
  */
 export function SearchSelect({
   value, onValueChange, options,
-  placeholder = "搜索并选择", searchPlaceholder = "输入关键词过滤…",
+  placeholder="搜索并选择", searchPlaceholder = "输入关键词过滤…",
   emptyText = "暂无可选项",
   loading = false, error = null, onRetry,
   disabled = false, className, ariaLabel,
@@ -109,7 +110,7 @@ export function SearchSelect({
           }}
         />
         {loading ? (
-          <div className="py-4 text-center text-sm text-muted-foreground">加载中…</div>
+          <div className="py-4 text-center text-sm text-muted-foreground">{t("k_300ee3dee4")}</div>
         ) : error ? (
           <div className="space-y-2 py-2">
             <p className="text-sm text-destructive">{error}</p>

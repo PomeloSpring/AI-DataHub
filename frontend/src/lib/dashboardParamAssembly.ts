@@ -149,11 +149,13 @@ export function shapeOfControl(control: string): ParamShape {
  */
 export function placeholderOfShape(shape: ParamShape, label: string): string {
   const suffix = String(label || '').trim() ? ` ${String(label).trim()}` : '';
+  // 显式 string 标注打断 i18next 深层类型推断（ui 命名空间放宽后触发 TS2589 的兜底）
+  const t = (k: string): string => String(i18n.t(k as never, { suffix } as never));
   switch (shape) {
-    case 'select': return i18n.t('dashboard:params.placeholder.select', { suffix });
-    case 'date': return i18n.t('dashboard:params.placeholder.date', { suffix });
-    case 'date_range': return i18n.t('dashboard:params.placeholder.dateRange', { suffix });
-    default: return i18n.t('dashboard:params.placeholder.input', { suffix });
+    case 'select': return t('dashboard:params.placeholder.select');
+    case 'date': return t('dashboard:params.placeholder.date');
+    case 'date_range': return t('dashboard:params.placeholder.dateRange');
+    default: return t('dashboard:params.placeholder.input');
   }
 }
 
@@ -442,8 +444,8 @@ export function paramDiagnosticHint(diag?: {
     ? unbound.filter(u => filled.includes(u.key) || (u.vars || []).some(v => filled.includes(v)))
     : unbound;
   if (!hit.length) return null;      // 没给值 = 按数据集自身口径出全量，是预期态，不挂告警
-  const names = hit.map(u => i18n.t('dashboard:diag.nameQuote', { name: ctx?.nameOf?.(u) || u.label || u.key }))
-    .join(i18n.t('dashboard:diag.nameSeparator'));
+  const names = hit.map(u => (i18n.t as any)('dashboard:diag.nameQuote', { name: ctx?.nameOf?.(u) || u.label || u.key }))
+    .join((i18n.t as any)('dashboard:diag.nameSeparator'));
   const partial = hit.some(u => u.partial);
   const title = partial
     ? i18n.t('dashboard:diag.partialTitle', { names })

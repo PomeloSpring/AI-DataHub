@@ -72,6 +72,13 @@ export interface Dashboard {
   updated_at: string;
   /** 服务端裁决: 仅看板属主/管理员可写; 角色授予的可见权不含编辑权(缺省=不可写) */
   editable?: boolean;
+  /** 双语：{field: {locale: text}}；编辑页 English 输入位绑这里，中文事实源仍走 name/description */
+  i18n?: Record<string, Record<string, string>>;
+  /** 英文界面下后端把中文事实源挪到 *_zh，避免英文界面保存把英文写进中文列（不可逆污染） */
+  name_zh?: string;
+  description_zh?: string;
+  /** 英文界面下未命中的字段清单（编辑页据此标『待补英文』） */
+  i18n_fallback_fields?: string[];
 }
 
 export const DASHBOARD_STATUS_MAP: Record<DashboardStatus, { label: string; color: string }> = {
@@ -184,7 +191,7 @@ interface DashboardState {
   reset: () => void;
   loadDashboards: (workspaceId?: number) => Promise<void>;
   setCurrent: (id: number | null) => void;
-  createDashboard: (name: string, workspaceId?: number) => Promise<number>;
+  createDashboard: (name: string, workspaceId?: number, extra?: { description?: string; i18n?: Record<string, Record<string, string>> }) => Promise<number>;
   updateDashboard: (id: number, data: Partial<Dashboard>, deferReload?: boolean) => Promise<void>;
   deleteDashboard: (id: number) => Promise<void>;
   copyDashboard: (id: number) => Promise<void>;
@@ -326,9 +333,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     });
   },
 
-  createDashboard: async (name, workspaceId) => {
+  createDashboard: async (name, workspaceId, extra) => {
     const wsId = workspaceId || get().currentWorkspaceId || 0;
-    const { data } = await client.post('/dashboard/', { name, workspace_id: wsId });
+    const body: Record<string, any> = { name, workspace_id: wsId };
+    // 双语：只有非空才带上（避免把空串写进 description/i18n 覆盖已有值）
+    if (extra?.description) body.description = extra.description;
+    if (extra?.i18n && Object.keys(extra.i18n).length) body.i18n = extra.i18n;
+    const { data } = await client.post('/dashboard/', body);
     invalidateCatalogCache();
     await get().loadDashboards(wsId);
     get().setCurrent(data.id);

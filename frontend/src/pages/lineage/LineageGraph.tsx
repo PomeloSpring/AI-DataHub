@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   ReactFlow,
   Background,
@@ -335,7 +336,7 @@ function NodeDetailPanel({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground italic">暂无字段级映射</p>
+                  <p className="text-xs text-muted-foreground italic">{t("k_712fad70aa")}</p>
                 )}
               </div>
             </>

@@ -54,8 +54,9 @@ def _normalize(row: dict) -> dict:
     """DB 行 → AS-BOT 配置(persona/tools/mcp_server_ids/knowledge_base_ids/skills 解析；
     数据源范围不属 AS-BOT 配置，始终由工作空间绑定∩用户角色权限决定)."""
     from backend.modules.mind.execution.tool_policy import normalize_tools
+    from backend.common import i18n
     tools = normalize_tools(row.get("tools"))
-    return {
+    out = {
         "id": row.get("id"),
         "as_bot_key": row.get("as_bot_key"),
         "name": row.get("name") or row.get("as_bot_key"),
@@ -76,7 +77,15 @@ def _normalize(row: dict) -> dict:
         "permission_mode": row.get("permission_mode") or "inherit",
         "workspace_id": row.get("workspace_id") or 0,
         "is_default": bool(row.get("is_default", 0)),
+        "i18n": _parse_json(row.get("i18n"), {}),
     }
+    # display_name/description 按请求语言下发；无英文时回落中文并在 `i18n_fallback_fields`
+    # 显式记账（不静默）。persona/system_prompt 是给模型的作业指令，中文一份就是事实源，
+    # 回复语言由「回复语言」段处理，不在此双语。
+    missing = i18n.localize_display(out, fields=("display_name", "description"))
+    if missing:
+        out["i18n_fallback_fields"] = missing
+    return out
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict]:

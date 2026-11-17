@@ -11,6 +11,7 @@ import {
 import { toast } from '@/lib/toast';
 import { RefreshCw, FunctionSquare, Search, Copy, Eye, Link2 } from 'lucide-react';
 import { udfApi, type Udf } from '@/api/udf';
+import { useTranslation } from 'react-i18next';
 
 // UDF 目录页（只读）：查看同步任务 / SQL 任务 / DAG 可引用的可用 UDF。
 // UDF 的上传与编辑暂不开放（由平台侧预置注册，adh_udfs 多版本管理）。
@@ -25,6 +26,7 @@ function refExample(udf: Udf): string {
 }
 
 export default function UdfManagement() {
+  const { t } = useTranslation('ui');
   const [udfs, setUdfs] = useState<Udf[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
@@ -72,7 +74,7 @@ export default function UdfManagement() {
         <div className="flex gap-2">
           <div className="relative">
             <Search className="w-4 h-4 absolute left-2.5 top-2.5 text-muted-foreground" />
-            <Input className="pl-8 w-[220px]" placeholder="搜索名称 / 说明 / 表达式"
+            <Input className="pl-8 w-[220px]" placeholder={t("k_8bebd245af")}
               value={keyword} onChange={e => setKeyword(e.target.value)} />
           </div>
           <Button variant="outline" size="sm" onClick={load}>
@@ -85,14 +87,14 @@ export default function UdfManagement() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead>表达式</TableHead>
-              <TableHead>参数</TableHead>
-              <TableHead>返回类型</TableHead>
-              <TableHead>版本</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>引用次数</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead>{t("k_1be7ae4fc2")}</TableHead>
+              <TableHead>{t("k_513c1c6355")}</TableHead>
+              <TableHead>{t("k_749d765242")}</TableHead>
+              <TableHead>{t("k_f9d641e510")}</TableHead>
+              <TableHead>{t("k_989d1affa0")}</TableHead>
+              <TableHead>{t("k_62e951a692")}</TableHead>
+              <TableHead>{t("k_43d027bab3")}</TableHead>
+              <TableHead className="text-right">{t("k_f3ea6d345e")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -120,23 +122,23 @@ export default function UdfManagement() {
                     {(udf.params || []).map(p => (
                       <Badge key={p.name} variant="outline" className="text-[10px]">{p.name}:{p.type || 'any'}</Badge>
                     ))}
-                    {(udf.params || []).length === 0 && <span className="text-xs text-muted-foreground">无参数</span>}
+                    {(udf.params || []).length === 0 && <span className="text-xs text-muted-foreground">{t("k_2f1ce71d41")}</span>}
                   </div>
                 </TableCell>
                 <TableCell className="text-muted-foreground">{udf.return_type || 'auto'}</TableCell>
                 <TableCell>v{udf.version}</TableCell>
                 <TableCell>
                   {udf.is_active
-                    ? <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">可用</Badge>
-                    : <Badge variant="outline" className="bg-gray-500/10 text-gray-500 border-gray-500/20">已停用</Badge>}
+                    ? <Badge variant="outline" className="bg-green-500/10 text-green-500 border-green-500/20">{t("k_e91365cf9e")}</Badge>
+                    : <Badge variant="outline" className="bg-gray-500/10 text-gray-500 border-gray-500/20">{t("k_6c7dcbb73a")}</Badge>}
                 </TableCell>
                 <TableCell>{udf.usage_count ?? 0}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
-                    <Button variant="ghost" size="sm" title="用法详情" onClick={() => setDetail(udf)}>
+                    <Button variant="ghost" size="sm" title={t("k_f4ecd6e748")} onClick={() => setDetail(udf)}>
                       <Eye className="w-4 h-4" />
                     </Button>
-                    <Button variant="ghost" size="sm" title="复制调用示例"
+                    <Button variant="ghost" size="sm" title={t("k_f2b90f5a7f")}
                       onClick={() => copy(usageExample(udf))}>
                       <Copy className="w-4 h-4" />
                     </Button>
@@ -160,8 +162,8 @@ export default function UdfManagement() {
               <FunctionSquare className="w-4 h-4" />{detail?.name}
               {detail && <Badge variant="outline" className="text-xs">v{detail.version}</Badge>}
               {detail && (detail.is_active
-                ? <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20">可用</Badge>
-                : <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-500 border-gray-500/20">已停用</Badge>)}
+                ? <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20">{t("k_e91365cf9e")}</Badge>
+                : <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-500 border-gray-500/20">{t("k_6c7dcbb73a")}</Badge>)}
             </DialogTitle>
           </DialogHeader>
           {detail && (
@@ -169,7 +171,7 @@ export default function UdfManagement() {
               {detail.description && <p className="text-muted-foreground">{detail.description}</p>}
 
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">定义表达式</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">{t("k_155a5f0a77")}</p>
                 <div className="flex items-start gap-2">
                   <code className="flex-1 bg-muted px-3 py-2 rounded text-xs whitespace-pre-wrap">{detail.expression}</code>
                   <Button variant="outline" size="sm" onClick={() => copy(detail.expression)}>
@@ -179,18 +181,18 @@ export default function UdfManagement() {
               </div>
 
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">参数签名</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">{t("k_90c24ec8da")}</p>
                 <div className="flex flex-wrap gap-1">
                   {(detail.params || []).map(p => (
                     <Badge key={p.name} variant="secondary" className="text-xs">{p.name}:{p.type || 'any'}</Badge>
                   ))}
-                  {(detail.params || []).length === 0 && <span className="text-xs text-muted-foreground">无参数</span>}
+                  {(detail.params || []).length === 0 && <span className="text-xs text-muted-foreground">{t("k_2f1ce71d41")}</span>}
                   <Badge variant="outline" className="text-xs">返回 {detail.return_type || 'auto'}</Badge>
                 </div>
               </div>
 
               <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">调用示例（转换 SQL / SQL 任务）</p>
+                <p className="text-xs font-medium text-muted-foreground mb-1">{t("k_6acbccafe6")}</p>
                 <div className="flex items-start gap-2">
                   <code className="flex-1 bg-muted px-3 py-2 rounded text-xs whitespace-pre-wrap">
                     {usageExample(detail)}

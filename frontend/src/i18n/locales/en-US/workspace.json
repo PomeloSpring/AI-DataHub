@@ -52,7 +52,8 @@
       "scheduledTasks": "Scheduled tasks",
       "dagWorkflows": "Workflows",
       "savedQueries": "Saved queries / datasets"
-    }
+    },
+    "itemCount": "item(s)"
   },
   "assets": {
     "loadShapeError": "Unexpected asset list response (not a list); check the frontend proxy configuration or service logs",
@@ -502,5 +503,19 @@
       "transitionValue": "{{effect}} · {{duration}}ms",
       "revealNone": "Appear at once (current behavior)"
     }
-  }
+  },
+  "contentDraftsTitle": "My Drafts",
+  "contentManageTitle": "Content Management",
+  "contentSearchPlaceholder": "Search title or summary, Enter to query",
+  "contentSearchAria": "Search content",
+  "filterByStatus": "Filter by status",
+  "filterByCategory": "Filter by category",
+  "filterByKind": "Filter by format",
+  "filterByLang": "Filter by language",
+  "allCategories": "All categories",
+  "allKinds": "All formats",
+  "allLanguages": "All languages",
+  "langZhBody": "Chinese body",
+  "langEnBody": "English body",
+  "createArticle": "New article"
 }

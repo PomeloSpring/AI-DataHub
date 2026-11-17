@@ -1861,8 +1861,11 @@ def _build_where(filters: list[dict]) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def _references(dataset_id: int) -> list[dict]:
+    # dashboard_id 必须回带：数据集页「引用」用它拼看板编辑/预览链接，
+    # 缺了前端会跳到 /dashboard/editor/undefined 而报「看板不存在」。
     return execute_query(
-        "SELECT c.id AS chart_id, c.name AS chart_name, d.name AS dashboard_name "
+        "SELECT c.id AS chart_id, c.name AS chart_name, "
+        "c.dashboard_id, d.name AS dashboard_name "
         "FROM adh_charts c JOIN adh_dashboards d ON d.id = c.dashboard_id "
         "WHERE c.source_type = 'dataset' AND c.source_id = %s",
         (dataset_id,)) or []

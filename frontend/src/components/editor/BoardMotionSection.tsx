@@ -9,6 +9,7 @@ import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { boardMotionRef, useMotion } from '@/hooks/useMotion';
 import { applyScreenComponent, removeScreenComponent } from '@/lib/dashboardDesign';
 import { cn } from '@/lib/utils';
+import { t } from '@/i18n/runtime';
 import {
   enterClass, enterStaggerStyle, motionSummary, type MotionEnter, type MotionOverride, type MotionSpec,
 } from '@/lib/motion';
@@ -90,11 +91,11 @@ export default function BoardMotionSection({ filters, onFiltersChange, onReplay 
           不挂载则跟随观看者。动效与主题配色互不影响。
         </p>
         <div className="space-y-1">
-          <Label className="text-xs" htmlFor="board-motion-preset">动效预设</Label>
+          <Label className="text-xs" htmlFor="board-motion-preset">{t("k_4529f7a8b3")}</Label>
           <Select value={mountedCode || UNMOUNT} onValueChange={choose}>
             <SelectTrigger id="board-motion-preset" className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value={UNMOUNT} className="text-xs">不挂载（跟随观看者偏好）</SelectItem>
+              <SelectItem value={UNMOUNT} className="text-xs">{t("k_fb1296a9cd")}</SelectItem>
               {presets.map(p => <SelectItem key={p.code} value={p.code} className="text-xs" title={p.code}>{p.name}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -135,14 +136,14 @@ export default function BoardMotionSection({ filters, onFiltersChange, onReplay 
             </div>
           );
         })}
-        {origin === 'reduced' && <p className="text-[10px] text-muted-foreground">系统已开启「减少动态效果」，本看板的调整暂时不可用。</p>}
+        {origin === 'reduced' && <p className="text-[10px] text-muted-foreground">{t("k_ef2ebf2db8")}</p>}
 
         {/* 预览与真实渲染同源：同一套 class + CSS 变量（globals.css 只读变量） */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
-            <Label className="text-[10px] text-muted-foreground">入场预览</Label>
+            <Label className="text-[10px] text-muted-foreground">{t("k_5fa0221bc6")}</Label>
             <Button variant="outline" size="sm" className="h-5 text-[10px]"
-              onClick={() => { setPreviewKey(k => k + 1); onReplay?.(); }}>重新播放</Button>
+              onClick={() => { setPreviewKey(k => k + 1); onReplay?.(); }}>{t("k_a1215cafb9")}</Button>
           </div>
           <div key={previewKey} style={cssVars as React.CSSProperties} className="flex items-end gap-1.5 rounded-md border bg-muted/20 p-2">
             {[0, 1, 2].map(i => <div key={i} className={cn('h-7 flex-1 rounded bg-primary/70', enterClass(motion.enter))}
@@ -158,7 +159,7 @@ export default function BoardMotionSection({ filters, onFiltersChange, onReplay 
             </div>
           ))}
         </dl>
-        <p className="text-[10px] text-muted-foreground">只改草稿，点击「保存」后在阅读页与大屏播放生效。</p>
+        <p className="text-[10px] text-muted-foreground">{t("k_a06eaf5564")}</p>
       </div>
     </>
   );

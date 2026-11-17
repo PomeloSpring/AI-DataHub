@@ -14,11 +14,13 @@ import type { AsBotMessage } from '../../stores/asBotStore';
 import { useThemeStore, applyTheme } from '../../stores/themeStore';
 import { hasPerm } from '../../stores/permissionStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useTranslation } from 'react-i18next';
 
 /**
  * AS-BOT 聊天面板 — 抽屉(variant=drawer)与全屏独立标签页(fullscreen)复用同一实现.
  */
 export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolean }) {
+  const { t } = useTranslation('ui');
   const {
     panelOpen, messages, loading, loadingStep, stopping,
     sendMessage, cancelMessage,
@@ -100,7 +102,7 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center gap-2 text-muted-foreground bg-background">
         <Bot className="h-10 w-10 opacity-30" />
-        <p className="text-sm">当前账号无权访问 AS-BOT</p>
+        <p className="text-sm">{t("k_00c914423d")}</p>
       </div>
     );
   }
@@ -115,7 +117,7 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
       <div className="flex items-center justify-between px-4 h-14 border-b shrink-0">
         <div className="flex items-center gap-2">
           <BotAvatar size={28} active={loading || stopping} />
-          <span className="font-semibold text-sm">AS-BOT 系统助手</span>
+          <span className="font-semibold text-sm">{t("k_73af8f3acd")}</span>
         </div>
         <div className="flex items-center gap-1">
           <Tooltip>
@@ -124,7 +126,7 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
                 <Plus className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>新对话</TooltipContent>
+            <TooltipContent>{t("k_1b7abf96f8")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -133,17 +135,17 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
                 <History className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>历史记录</TooltipContent>
+            <TooltipContent>{t("k_19e0e3f3df")}</TooltipContent>
           </Tooltip>
           {!fullscreen && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label="在工作空间中打开该会话"
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" aria-label={t("k_f7c613c346")}
                   onClick={jumpToWorkspaceConversation}>
                   <ExternalLink className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>在工作空间中打开该会话</TooltipContent>
+              <TooltipContent>{t("k_f7c613c346")}</TooltipContent>
             </Tooltip>
           )}
           {!fullscreen && (
@@ -158,11 +160,11 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
       {showHistory && (
         <div className="border-b bg-muted/30 px-3 py-2 max-h-56 overflow-y-auto">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-xs font-medium text-muted-foreground">历史对话</span>
-            <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowHistory(false)}>收起</button>
+            <span className="text-xs font-medium text-muted-foreground">{t("k_68387cc3de")}</span>
+            <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowHistory(false)}>{t("k_5d5815647c")}</button>
           </div>
           {conversations.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-2">暂无历史记录</p>
+            <p className="text-xs text-muted-foreground py-2">{t("k_77cf867de7")}</p>
           ) : (
             <div className="space-y-1">
               {conversations.map(c => (
@@ -172,14 +174,14 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
                   <Bot className="h-3.5 w-3.5 shrink-0 opacity-60" />
                   <span className="flex-1 truncate">{c.title || '未命名'}</span>
                   {runningTasks.some((t) => t.conversation_id === c.id) && (
-                    <span title="后台任务执行中" className="shrink-0 text-primary">
+                    <span title={t("k_38dea8158e")} className="shrink-0 text-primary">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     </span>
                   )}
                   <span className="text-[10px] text-muted-foreground shrink-0">{new Date(c.updated_at).toLocaleDateString()}</span>
                   <button
                     className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive shrink-0"
-                    title="删除" aria-label="删除对话"
+                    title={t("k_3755f56f2f")} aria-label={t("k_3559dc2da3")}
                     onClick={(e) => { e.stopPropagation(); void deleteConversation(c.id); }}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -203,7 +205,7 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
               </span>
             </button>
           ))}
-          <div className="text-[11px] text-muted-foreground">任务在服务端后台执行，关闭本面板或离开页面不会中止。</div>
+          <div className="text-[11px] text-muted-foreground">{t("k_da36f6a15b")}</div>
           {tasksError && (
             <div className="text-[11px] text-amber-600">任务状态刷新失败：{tasksError}（下方进度可能不是最新）</div>
           )}
@@ -217,9 +219,9 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
             <div className="text-center text-muted-foreground py-12 space-y-3">
               <BotAvatar size={56} className="mx-auto" />
               <div className="space-y-1">
-                <p className="text-sm font-medium">AS-BOT 系统助手</p>
-                <p className="text-xs">我可以帮您构建本体模型、管理元数据、了解系统能力。</p>
-                <p className="text-xs text-muted-foreground/70">所有写操作都会经过您的审批确认。</p>
+                <p className="text-sm font-medium">{t("k_73af8f3acd")}</p>
+                <p className="text-xs">{t("k_d850c2ef5d")}</p>
+                <p className="text-xs text-muted-foreground/70">{t("k_1a002a2df9")}</p>
               </div>
               <div className="flex flex-wrap gap-2 justify-center pt-2">
                 {['帮我构建本体模型', '查看系统能力', '列出已有本体'].map(q => (

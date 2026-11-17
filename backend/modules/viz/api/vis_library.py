@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from backend.common.auth import get_current_user
+from backend.common import i18n
 from backend.modules.viz.services.vis_library_service import (
     VisLibraryService,
     BuiltinProtectedError,
@@ -19,6 +20,37 @@ from backend.modules.viz.services.vis_library_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _service = VisLibraryService()
+
+
+# 字模双语在**响应组装层**做，不在 service 读路径做（有意口径）：
+# `sdk_tools/screen_tools.py` 会把字模 `style_config.config` 合进图表 config，
+# `report_service` 也会拿它生成报表体——若 service 直接回本地化后的行，
+# 英文样式文案就会被写进存量图表配置（污染不可逆）。所以：service 永远回原始行，
+# 只有面向人的响应才按语言改写。
+_TEXT_FIELDS = ("name", "description")
+_OVERLAY_FIELDS = ("style_config",)
+
+
+def _display(row):
+    """单行展示体本地化（命中译文时保留 `*_zh` 供编辑页回填中文事实源）。"""
+    if not isinstance(row, dict):
+        return row
+    out = dict(row)
+    missing = i18n.localize_display(out, fields=_TEXT_FIELDS, overlays=_OVERLAY_FIELDS)
+    if missing:
+        out["i18n_fallback_fields"] = missing
+    return out
+
+
+def _display_rows(rows):
+    return [_display(r) for r in (rows or [])]
+
+
+def _display_page(payload):
+    """分页返回体（{items,total,...}）只本地化 items，total 等计数口径不动。"""
+    if not isinstance(payload, dict):
+        return payload
+    return {**payload, "items": _display_rows(payload.get("items"))}
 
 
 class ComponentUpsert(BaseModel):
@@ -32,6 +64,8 @@ class ComponentUpsert(BaseModel):
     is_builtin: Optional[bool] = False
     workspace_id: Optional[int] = 0
     sort_order: Optional[int] = 0
+    # 双语层（{field: {locale: text}} + style_config 覆盖层），创建时可一并带入
+    i18n: Optional[dict] = None
 
 
 class ComponentEnabled(BaseModel):
@@ -49,6 +83,7 @@ class ComponentUpdate(BaseModel):
     sort_order: Optional[int] = None
     is_active: Optional[int] = None
     is_enabled: Optional[int] = None
+    i18n: Optional[dict] = None
 
 
 @router.get("/categories")
@@ -77,10 +112,10 @@ def list_components(
     """
     try:
         if page_size is not None:
-            return _service.list_components_page(
+            return _display_page(_service.list_components_page(
                 category, include_inactive, include_disabled, q, page, page_size,
-            )
-        return _service.list_components(category, include_inactive, include_disabled)
+            ))
+        return _display_rows(_service.list_components(category, include_inactive, include_disabled))
     except Exception as e:
         logger.exception("Failed to list vis components")
         raise HTTPException(status_code=500, detail=str(e))
@@ -91,7 +126,7 @@ def get_component(component_id: int, user: dict = Depends(get_current_user)):
     row = _service.get_component(component_id)
     if not row:
         raise HTTPException(status_code=404, detail="字模不存在")
-    return row
+    return _display(row)
 
 
 @router.post("/components")

@@ -12,6 +12,7 @@ import {
 import { toast } from '@/lib/toast';
 import { Plus, Pencil, Trash2, Terminal, Radar, Wrench, RefreshCw } from 'lucide-react';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 // 可走 SDK 安全执行链的 CLI 后端（与后端 manager.build_adapter 的接受集一致）
 const SDK_CLI_NAMES = ['qoder', 'claude'];
@@ -99,6 +100,7 @@ const MAX_TOOL_ROUNDS_MIN = 1;
 const MAX_TOOL_ROUNDS_MAX = 200;
 
 export default function ExecutionLayers() {
+  const { t } = useTranslation('ui');
   const [layers, setLayers] = useState<ExecutionLayer[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ExecutionLayer | null>(null);
@@ -368,7 +370,7 @@ export default function ExecutionLayers() {
       {/* Discovered CLIs */}
       {discovered.length > 0 && (
         <div className="border border-border rounded-xl p-3 space-y-2">
-          <div className="text-sm font-medium">本机发现的 CLI 工具</div>
+          <div className="text-sm font-medium">{t("k_0b776f7c2d")}</div>
           {discovered.map(c => (
             <div key={c.name} className="flex items-center justify-between text-sm">
               <div>
@@ -376,7 +378,7 @@ export default function ExecutionLayers() {
                 <span className="ml-2 text-xs text-muted-foreground">{c.path}</span>
                 {c.version && <span className="ml-2 text-xs text-muted-foreground">({c.version})</span>}
               </div>
-              <Button size="sm" variant="outline" onClick={() => applyDiscovered(c)}>添加为 Harness</Button>
+              <Button size="sm" variant="outline" onClick={() => applyDiscovered(c)}>{t("k_9c0e0fae01")}</Button>
             </div>
           ))}
         </div>
@@ -394,31 +396,31 @@ export default function ExecutionLayers() {
               <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="cli-qoder" />
             </div>
             <div className="space-y-1.5">
-              <Label>显示名称</Label>
+              <Label>{t("k_75ae6a8a7d")}</Label>
               <Input value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} placeholder="Qoder CLI" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>Harness 类型</Label>
+              <Label>{t("k_2d1d9296a2")}</Label>
               <Select value={form.layer_type} onValueChange={v => setForm({ ...form, layer_type: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="cli">CLI 进程</SelectItem>
-                  <SelectItem value="builtin">内置 Harness</SelectItem>
+                  <SelectItem value="cli">{t("k_02f293ca82")}</SelectItem>
+                  <SelectItem value="builtin">{t("k_0b2fe2af7d")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>描述</Label>
-              <Input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="用于深度数据分析的本地 CLI" />
+              <Label>{t("k_412f54dc38")}</Label>
+              <Input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder={t("k_70149d990e")} />
             </div>
           </div>
           {form.layer_type === 'cli' && (
             <>
               <div className={`grid ${SDK_CLI_NAMES.includes(form.cli_name) ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
                 <div className="space-y-1.5">
-                  <Label>CLI 类型</Label>
+                  <Label>{t("k_79d4f92c73")}</Label>
                   <Select value={form.cli_name} onValueChange={v => {
                     // 换后端时调用方式跟着重置：两种 SDK 后端默认走 SDK 安全执行链，
                     // 子进程模式对它们不可用（AS-BOT 只接受 mode=sdk）。
@@ -426,16 +428,16 @@ export default function ExecutionLayers() {
                       mode: SDK_CLI_NAMES.includes(v) ? 'sdk' : 'process' });
                     loadModels(v);
                   }}>
-                    <SelectTrigger><SelectValue placeholder="选择 CLI" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={t("k_f6a947d44d")} /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="qoder">Qoder CLI</SelectItem>
-                      <SelectItem value="claude">Claude Agent SDK（供应商直连）</SelectItem>
+                      <SelectItem value="claude">{t("k_470438a766")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 {SDK_CLI_NAMES.includes(form.cli_name) && (
                   <div className="space-y-1.5">
-                    <Label>调用方式</Label>
+                    <Label>{t("k_dd9ed0ac54")}</Label>
                     <Select value={form.mode} onValueChange={v => setForm({ ...form, mode: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -444,7 +446,7 @@ export default function ExecutionLayers() {
                       </SelectContent>
                     </Select>
                     {form.mode !== 'sdk' && (
-                      <p className="text-xs text-destructive">AS-BOT 安全执行链仅接受 SDK 方式；选子进程时该层不会被问答使用。</p>
+                      <p className="text-xs text-destructive">{t("k_43f776163a")}</p>
                     )}
                   </div>
                 )}
@@ -476,7 +478,7 @@ export default function ExecutionLayers() {
                   <Label>单轮工具调用上限(次)</Label>
                   <Input type="number" min={MAX_TOOL_ROUNDS_MIN} max={MAX_TOOL_ROUNDS_MAX}
                     value={form.max_turns} onChange={e => setForm({ ...form, max_turns: e.target.value })}
-                    placeholder="默认 20" />
+                    placeholder={t("k_0aae128334")} />
                   <p className="text-xs text-muted-foreground">
                     留空沿用默认 20 次；建议 ≤ 超时秒数 × 0.8 ÷ 单次取数耗时，调大超时时同步上调。
                   </p>
@@ -525,11 +527,11 @@ export default function ExecutionLayers() {
           </div>
           <div className="flex items-center gap-2">
             <Switch checked={form.status === 'active'} onCheckedChange={v => setForm({ ...form, status: v ? 'active' : 'inactive' })} />
-            <span className="text-sm">启用</span>
+            <span className="text-sm">{t("k_d4e9ca3dd4")}</span>
           </div>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={closeForm}>取消</Button>
-            <Button size="sm" onClick={handleSave}>保存</Button>
+            <Button size="sm" variant="ghost" onClick={closeForm}>{t("k_4d0b4688c7")}</Button>
+            <Button size="sm" onClick={handleSave}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -546,14 +548,14 @@ export default function ExecutionLayers() {
                 <div className="font-medium text-sm">
                   {l.display_name || l.name}
                   <span className="ml-2 text-xs text-muted-foreground">({LAYER_TYPE_LABELS[l.layer_type] || l.layer_type})</span>
-                  {l.source === 'self' && <Badge variant="secondary" className="ml-2 text-[10px] font-normal">自注册</Badge>}
+                  {l.source === 'self' && <Badge variant="secondary" className="ml-2 text-[10px] font-normal">{t("k_e4bcc0de36")}</Badge>}
                   {l.status !== 'active'
                     ? <span className="ml-2 text-xs text-destructive">● 已停用</span>
                     : healthy
                       ? <span className="ml-2 text-xs text-green-600">● 在线</span>
                       : <span className="ml-2 text-xs text-amber-600">● 心跳超时</span>}
                   {l.is_default ? (
-                    <Badge variant="secondary" className="ml-2 text-[10px] font-normal">默认 Harness</Badge>
+                    <Badge variant="secondary" className="ml-2 text-[10px] font-normal">{t("k_f2cf3337e4")}</Badge>
                   ) : null}
                   {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'success' && <span className="ml-2 text-xs text-green-600">✅ 连通</span>}
                   {l.source !== 'self' && l.status === 'active' && l.last_test_status === 'failed' && <span className="ml-2 text-xs text-destructive">❌ 不可用</span>}
@@ -608,7 +610,7 @@ export default function ExecutionLayers() {
                   size="sm"
                   variant={expanded === l.id ? 'secondary' : 'ghost'}
                   onClick={() => setExpanded(expanded === l.id ? null : l.id)}
-                  title="工具目录"
+                  title={t("k_1b79d171a2")}
                 >
                   <Wrench className="h-4 w-4" />
                   {toolCount > 0 && <span className="ml-1 text-xs">{toolCount}</span>}

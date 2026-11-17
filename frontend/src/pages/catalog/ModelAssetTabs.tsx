@@ -23,6 +23,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Network, Tag as TagIcon, Maximize2, Minimize2, X, Plus, Pencil, Trash2, AlertTriangle } from 'lucide-react';
 import { findObjectIndex, normalizeDocObjects, writeObjectField } from '@/lib/ontologyObjects';
+import { useTranslation } from 'react-i18next';
+import { t } from '@/i18n/runtime';
 
 // 视图已收敛为后端 GraphType.UNIFIED 单图(分域组装 总览+业务知识+物理层/血缘),
 // 不再拆四视图切换; singleView 传入时仍锁定旧单视图(系统助手/图谱页兼容)。
@@ -39,6 +41,7 @@ import { findObjectIndex, normalizeDocObjects, writeObjectField } from '@/lib/on
  * 配置过的只在所选站点可用（取数时未部署的站点直接拒查，不拿别站数据充数）。
  */
 export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly?: boolean }) {
+  const { t } = useTranslation('ui');
   const [sites, setSites] = useState<import('@/api/ontology').ModelSiteRow[]>([]);
   const [objects, setObjects] = useState<import('@/api/ontology').ContractObjectRow[]>([]);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
@@ -195,7 +198,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                   />
                   <span className="text-sm font-medium">{s.display_name}</span>
                   {!enabled[s.site_code] && (
-                    <Badge variant="outline" className="text-xs text-muted-foreground">不适用</Badge>
+                    <Badge variant="outline" className="text-xs text-muted-foreground">{t("k_eec46c136f")}</Badge>
                   )}
                 </div>
                 {enabled[s.site_code] && (
@@ -221,7 +224,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                 <Button size="sm" onClick={save} disabled={!dirty || saving}>
                   {saving ? '保存中…' : '保存站点部署'}
                 </Button>
-                {!dirty && <span className="text-xs text-muted-foreground">无变更</span>}
+                {!dirty && <span className="text-xs text-muted-foreground">{t("k_38f5c9d9d7")}</span>}
               </div>
             )}
           </div>
@@ -232,7 +235,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
             对象契约清单（共 {objects.length} 个对象，其中 {Object.keys(objRules).length} 个已限定站点；
             每对象只登记一份形状描述，站点由上方声明展开）
           </div>
-          {!objects.length && <div className="text-sm text-muted-foreground">暂无已绑定的对象</div>}
+          {!objects.length && <div className="text-sm text-muted-foreground">{t("k_2aa068ab63")}</div>}
           {!!objects.length && !!enabledCodes.length && !readonly && (
             <div className="text-[11px] text-muted-foreground mb-2">
               「适用站点」列默认全部点亮 = 未收紧（上方勾选的站点都可用）；点灰某个站点 = 该对象在此站没有这张表。
@@ -243,13 +246,13 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-muted-foreground border-b">
-                  <th className="py-1.5 pr-2 font-medium">对象</th>
-                  <th className="py-1.5 pr-2 font-medium" title="契约主源：对象绑定（建模页）登记的那一份，不随站点变">契约源</th>
-                  <th className="py-1.5 pr-2 font-medium">物理表</th>
-                  <th className="py-1.5 pr-2 font-medium">列映射</th>
-                  <th className="py-1.5 pr-2 font-medium">绑定类型</th>
-                  <th className="py-1.5 pr-2 font-medium">同步状态</th>
-                  <th className="py-1.5 font-medium whitespace-nowrap">适用站点</th>
+                  <th className="py-1.5 pr-2 font-medium">{t("k_539cb3b0a6")}</th>
+                  <th className="py-1.5 pr-2 font-medium" title={t("k_b438e67399")}>{t("k_046c1af41a")}</th>
+                  <th className="py-1.5 pr-2 font-medium">{t("k_1b729397db")}</th>
+                  <th className="py-1.5 pr-2 font-medium">{t("k_46262d23fe")}</th>
+                  <th className="py-1.5 pr-2 font-medium">{t("k_cdc0e8f21e")}</th>
+                  <th className="py-1.5 pr-2 font-medium">{t("k_0150205d5c")}</th>
+                  <th className="py-1.5 font-medium whitespace-nowrap">{t("k_f5984fbcfa")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -270,7 +273,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                     </td>
                     <td className="py-1.5">
                       {!enabledCodes.length ? (
-                        <span className="text-muted-foreground">上方未勾选站点</span>
+                        <span className="text-muted-foreground">{t("k_b868ba9a4b")}</span>
                       ) : (
                         <div className="flex flex-wrap items-center gap-1">
                           {enabledCodes.map((code) => {
@@ -298,7 +301,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
                               type="button"
                               onClick={() => releaseObject(r.object_key)}
                               className="text-[11px] text-primary whitespace-nowrap"
-                              title="取消该对象的站点限制（回到全部勾选站点可用）"
+                              title={t("k_761cfb40f1")}
                             >
                               不限
                             </button>
@@ -379,9 +382,9 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
       : 'h-[68vh] flex flex-col border rounded-lg overflow-hidden'}>
       <div className="flex items-center gap-1 px-2 py-1.5 border-b bg-muted/30 shrink-0">
         {unified ? (
-          <span className="text-xs font-medium text-muted-foreground px-1">统一大图（语义主干 · 物理骨架 · 血缘桥接）</span>
+          <span className="text-xs font-medium text-muted-foreground px-1">{t("k_bcbd70917c")}</span>
         ) : (
-          <span className="text-xs font-medium text-muted-foreground px-1">本体总览（对象为点 · Link 为名边）</span>
+          <span className="text-xs font-medium text-muted-foreground px-1">{t("k_2bebeeaab5")}</span>
         )}
         {unified && (
           <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none">
@@ -391,7 +394,7 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
         )}
         {isBusiness && !!modelId && (
           <label className="flex items-center gap-1.5 pl-2 text-[11px] text-muted-foreground cursor-pointer select-none"
-            title="业务本体共享一张聚合图；默认只加载当前选中模型，打开后看全部业务模型的合并大图">
+            title={t("k_d5bf58dd5f")}>
             <Switch checked={showAllBusiness} onCheckedChange={setShowAllBusiness} />
             看全业务图
           </label>
@@ -402,7 +405,7 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
             : kind === 'source' ? `源本体·数据源 #${datasourceId}`
             : singleView ? 'AS-BOT 系统能力本体' : `数据源 #${datasourceId}`} · {loading ? '加载中…' : `${graphData?.nodes.length ?? 0} 节点 / ${graphData?.edges.length ?? 0} 边 · 可拖拽布局, ↻ 一键还原`}
         </span>
-        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={load}>刷新</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={load}>{t("k_38108eaa1d")}</Button>
         <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={fullscreen ? '退出全屏' : '全屏'}
           onClick={() => setFullscreen((f) => !f)}>
           {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -458,6 +461,7 @@ interface TagDef { id: number; name: string; color?: string; entity_type?: strin
 interface TagValue { entity_id: string; value?: string }
 
 export function ObjectTagsTab({ objects }: { objects: { key: string; display_name?: string; primary_table?: string }[] }) {
+  const { t } = useTranslation('ui');
   const [tags, setTags] = useState<TagDef[]>([]);
   const [values, setValues] = useState<Record<number, TagValue[]>>({});
   const [loading, setLoading] = useState(false);
@@ -528,7 +532,7 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
               </div>
             );
           })}
-          {!objects.length && <div className="text-sm text-muted-foreground">模型暂无对象</div>}
+          {!objects.length && <div className="text-sm text-muted-foreground">{t("k_27d5e9e589")}</div>}
         </div>
       </ScrollArea>
       {unusedTags.length > 0 && (
@@ -619,7 +623,7 @@ export function SyncBadges({ modelId, refreshKey, kind }: {
     <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1" title={gTip}>
         {dot(gOk, gWarn)}图谱 {gLabel}
-        {gNeedRebuild && <span className="text-amber-600">· 需重建</span>}
+        {gNeedRebuild && <span className="text-amber-600">{t("k_10faa62c5c")}</span>}
       </span>
       <span className="flex items-center gap-1" title={kTip}>
         {dot(kOk, kWarn)}知识库 {kLabel}
@@ -750,16 +754,16 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
 
   return (
     <div className="space-y-3">
-      <Field label="路由模式">
+      <Field label={t("k_ddea5353a7")}>
         <Select value={value.mode} onValueChange={(v) => onChange({ ...value, mode: v as RouteValue['mode'] })}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="source">选源（问题指向整个数据源/站点）</SelectItem>
+            <SelectItem value="source">{t("k_a0b36e2428")}</SelectItem>
             <SelectItem value="object_filter">选对象+过滤（问题落在源内对象/维度）</SelectItem>
           </SelectContent>
         </Select>
       </Field>
-      <Field label="目标源本体（选择框，名称为稳定键）">
+      <Field label={t("k_5444af3edb")}>
         <Select value={value.source_ontology || undefined}
           onValueChange={(v) => onChange({ ...value, source_ontology: v, object_key: undefined })}>
           <SelectTrigger><SelectValue placeholder={sources.length ? '选择源本体' : '暂无 active 源本体'} /></SelectTrigger>
@@ -769,7 +773,7 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
         </Select>
       </Field>
       {value.mode === 'object_filter' && (
-        <Field label="目标源对象（来自所选源本体）">
+        <Field label={t("k_6092a35eee")}>
           <Select value={value.object_key || undefined}
             onValueChange={(v) => onChange({ ...value, object_key: v })}>
             <SelectTrigger><SelectValue placeholder={value.source_ontology ? (srcObjects.length ? '选择源对象' : '加载中/源本体无对象') : '请先选源本体'} /></SelectTrigger>
@@ -782,11 +786,11 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
       <Field label="源内过滤提示（可选；如 站点=日本/美国，是维度过滤、不是选源）">
         {hints.map((h, i) => (
           <div key={i} className="flex gap-2 mb-1">
-            <Input placeholder="维度名，如 站点" value={h.dimension}
+            <Input placeholder={t("k_0551151d1e")} value={h.dimension}
               onChange={(e) => { const next = [...hints]; next[i] = { ...h, dimension: e.target.value }; setHints(next); }} />
-            <Input placeholder="例子，逗号分隔" value={(h.examples || []).join(',')}
+            <Input placeholder={t("k_039e26f365")} value={(h.examples || []).join(',')}
               onChange={(e) => { const next = [...hints]; next[i] = { ...h, examples: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) }; setHints(next); }} />
-            <Button variant="outline" size="sm" onClick={() => setHints(hints.filter((_, j) => j !== i))}>删</Button>
+            <Button variant="outline" size="sm" onClick={() => setHints(hints.filter((_, j) => j !== i))}>{t("k_38cadf487e")}</Button>
           </div>
         ))}
         <Button variant="outline" size="sm"
@@ -799,10 +803,10 @@ function RouteEditor({ value, onChange }: { value: RouteValue; onChange: (v: Rou
 function ItemOps({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return (
     <div className="flex items-center gap-1 ml-auto shrink-0">
-      <Button variant="ghost" size="icon" className="h-7 w-7" title="编辑" onClick={onEdit}>
+      <Button variant="ghost" size="icon" className="h-7 w-7" title={t("k_a7f814c0a4")} onClick={onEdit}>
         <Pencil className="h-3.5 w-3.5" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" title="删除" onClick={onDelete}>
+      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" title={t("k_3755f56f2f")} onClick={onDelete}>
         <Trash2 className="h-3.5 w-3.5" />
       </Button>
     </div>
@@ -900,7 +904,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title="M2 行为" count={totalActs} unit="个分析/操作行为"
+        <TabToolbar title={t("k_eb4d32abb7")} count={totalActs} unit="个分析/操作行为"
           createLabel="新建行为"
           onCreate={() => setEditing({
             mode: 'create', objectKey: objects[0]?.key || '', key: '', label: '',
@@ -923,7 +927,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                     <span className={a.read_only ? 'text-muted-foreground' : 'text-amber-600'}>
                       {a.read_only ? '·只读' : `·写${a.risk ? `(${a.risk})` : ''}`}
                     </span>
-                    <button className="text-muted-foreground hover:text-foreground" title="编辑"
+                    <button className="text-muted-foreground hover:text-foreground" title={t("k_a7f814c0a4")}
                       onClick={() => setEditing({
                         mode: 'edit', origKey: a.key, objectKey: obj.key || '', key: a.key || '',
                         label: a.label || '', effect: a.effect || '', read_only: !!a.read_only,
@@ -931,7 +935,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                       })}>
                       <Pencil className="h-3 w-3" />
                     </button>
-                    <button className="text-muted-foreground hover:text-destructive" title="删除"
+                    <button className="text-muted-foreground hover:text-destructive" title={t("k_3755f56f2f")}
                       onClick={() => remove(obj.key || '', a.key || '')}>
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -950,10 +954,10 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
           </DialogHeader>
           {editing && (
             <div className="space-y-3">
-              <Field label="所属对象">
+              <Field label={t("k_36c16b14cf")}>
                 <Select value={editing.objectKey} disabled={editing.mode === 'edit'}
                   onValueChange={(v) => setEditing({ ...editing, objectKey: v })}>
-                  <SelectTrigger><SelectValue placeholder="选择对象" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("k_0d14cc5e65")} /></SelectTrigger>
                   <SelectContent>
                     {objects.map((o) => (
                       <SelectItem key={o.key} value={o.key || ''}>
@@ -967,34 +971,34 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                 <Input value={editing.key} disabled={editing.mode === 'edit'}
                   onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
               </Field>
-              <Field label="展示名">
-                <Input value={editing.label} placeholder="如：趋势分析"
+              <Field label={t("k_e73713fb32")}>
+                <Input value={editing.label} placeholder={t("k_46fb65f0fa")}
                   onChange={(e) => setEditing({ ...editing, label: e.target.value })} />
               </Field>
-              <Field label="效果说明">
-                <Input value={editing.effect} placeholder="如：按时间粒度观察指标走势"
+              <Field label={t("k_13e31f54fe")}>
+                <Input value={editing.effect} placeholder={t("k_3122d42622")}
                   onChange={(e) => setEditing({ ...editing, effect: e.target.value })} />
               </Field>
               <div className="flex items-center justify-between">
-                <Label className="text-xs">只读分析行为（不进审批通道）</Label>
+                <Label className="text-xs">{t("k_1951bd2fb2")}</Label>
                 <Switch checked={editing.read_only}
                   onCheckedChange={(v) => setEditing({ ...editing, read_only: v })} />
               </div>
               {!editing.read_only && (
                 <>
-                  <Field label="风险级别">
+                  <Field label={t("k_276ce067ea")}>
                     <Select value={editing.risk}
                       onValueChange={(v) => setEditing({ ...editing, risk: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="low">low（低）</SelectItem>
-                        <SelectItem value="medium">medium（中）</SelectItem>
-                        <SelectItem value="high">high（高）</SelectItem>
+                        <SelectItem value="low">{t("k_1c121d6121")}</SelectItem>
+                        <SelectItem value="medium">{t("k_83cb9543a4")}</SelectItem>
+                        <SelectItem value="high">{t("k_6f6801eb9d")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </Field>
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs">需人工审批</Label>
+                    <Label className="text-xs">{t("k_7d8d066be1")}</Label>
                     <Switch checked={editing.requires_approval}
                       onCheckedChange={(v) => setEditing({ ...editing, requires_approval: v })} />
                   </div>
@@ -1003,8 +1007,8 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditing(null)}>取消</Button>
-            <Button onClick={submit} disabled={!editing?.key.trim()}>保存</Button>
+            <Button variant="outline" onClick={() => setEditing(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={submit} disabled={!editing?.key.trim()}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1057,7 +1061,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title="M3 规则" count={rules.length} unit="条约束/口径"
+        <TabToolbar title={t("k_9f21293dc9")} count={rules.length} unit="条约束/口径"
           createLabel="新建规则"
           onCreate={() => setEditing({
             mode: 'create', key: '', type: 'business_constraint', statement: '', source: '',
@@ -1106,23 +1110,23 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                 <Input value={editing.key} disabled={editing.mode === 'edit'}
                   onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
               </Field>
-              <Field label="规则类型">
+              <Field label={t("k_7655f477f1")}>
                 <Select value={editing.type} disabled={editing.mode === 'edit'}
                   onValueChange={(v) => setEditing({ ...editing, type: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="business_constraint">业务约束</SelectItem>
-                    <SelectItem value="metric_constraint">口径规则</SelectItem>
-                    <SelectItem value="quality">质量规则</SelectItem>
-                    <SelectItem value="permission">权限规则</SelectItem>
+                    <SelectItem value="business_constraint">{t("k_705ff04956")}</SelectItem>
+                    <SelectItem value="metric_constraint">{t("k_3402b1c79a")}</SelectItem>
+                    <SelectItem value="quality">{t("k_e974beee2d")}</SelectItem>
+                    <SelectItem value="permission">{t("k_95f4519aab")}</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="规则说明（人话，可上云）">
-                <Textarea rows={2} value={editing.statement} placeholder="如：业务口径一律排除已删除记录"
+              <Field label={t("k_e2b75130ec")}>
+                <Textarea rows={2} value={editing.statement} placeholder={t("k_8373a77eff")}
                   onChange={(e) => setEditing({ ...editing, statement: e.target.value })} />
               </Field>
-              <Field label="依据（来源/出处，可选）">
+              <Field label={t("k_b88fdb4275")}>
                 <Input value={editing.source} placeholder="如：业务约定 / ontology-modeling §3"
                   onChange={(e) => setEditing({ ...editing, source: e.target.value })} />
               </Field>
@@ -1136,20 +1140,20 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                     <Input value={editing.action} placeholder="*"
                       onChange={(e) => setEditing({ ...editing, action: e.target.value })} />
                   </Field>
-                  <Field label="授权级别">
+                  <Field label={t("k_3682923533")}>
                     <Select value={editing.level}
                       onValueChange={(v) => setEditing({ ...editing, level: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="allow">allow（允许）</SelectItem>
+                        <SelectItem value="allow">{t("k_f687b1634f")}</SelectItem>
                         <SelectItem value="require_approval">require_approval（需审批）</SelectItem>
-                        <SelectItem value="deny">deny（拒绝）</SelectItem>
+                        <SelectItem value="deny">{t("k_d93d771421")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </Field>
                 </>
               ) : (
-                <Field label="适用对象">
+                <Field label={t("k_c763413aa1")}>
                   <CheckList options={objOptions} value={editing.applies_to} empty="本模型暂无对象"
                     onChange={(v) => setEditing({ ...editing, applies_to: v })} />
                 </Field>
@@ -1157,8 +1161,8 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditing(null)}>取消</Button>
-            <Button onClick={submit} disabled={!editing?.key.trim()}>保存</Button>
+            <Button variant="outline" onClick={() => setEditing(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={submit} disabled={!editing?.key.trim()}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1235,7 +1239,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
-        <TabToolbar title="M4 场景" count={scenarios.length} unit="个使用场景"
+        <TabToolbar title={t("k_b1d78e638d")} count={scenarios.length} unit="个使用场景"
           createLabel="新建场景"
           onCreate={() => setEditing({
             mode: 'create', key: '', title: '', goal: '',
@@ -1302,50 +1306,50 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
                   <Input value={editing.key} disabled={editing.mode === 'edit'}
                     onChange={(e) => setEditing({ ...editing, key: e.target.value })} />
                 </Field>
-                <Field label="场景标题">
-                  <Input value={editing.title} placeholder="如：案例趋势分析"
+                <Field label={t("k_bb3094d4f8")}>
+                  <Input value={editing.title} placeholder={t("k_1c83c57183")}
                     onChange={(e) => setEditing({ ...editing, title: e.target.value })} />
                 </Field>
               </div>
-              <Field label="目标">
-                <Input value={editing.goal} placeholder="如：观察案例量走势与周期性变化"
+              <Field label={t("k_941f08313a")}>
+                <Input value={editing.goal} placeholder={t("k_81f799fe01")}
                   onChange={(e) => setEditing({ ...editing, goal: e.target.value })} />
               </Field>
-              <FormSection title="涉及范围" hint="勾选本场景用到的对象 / 行为 / 规则">
-                <Field label="涉及对象">
+              <FormSection title={t("k_55ef356fe5")} hint="勾选本场景用到的对象 / 行为 / 规则">
+                <Field label={t("k_a25c9c51df")}>
                   <CheckList options={objOptions} value={editing.uses_objects} empty="本模型暂无对象"
                     onChange={(v) => setEditing({ ...editing, uses_objects: v })} />
                 </Field>
-                <Field label="涉及行为">
+                <Field label={t("k_fe49fdf2be")}>
                   <CheckList options={actOptions} value={editing.uses_actions} empty="本模型暂无行为声明"
                     onChange={(v) => setEditing({ ...editing, uses_actions: v })} />
                 </Field>
-                <Field label="涉及规则">
+                <Field label={t("k_fedd386c5c")}>
                   <CheckList options={ruleOptions} value={editing.uses_rules} empty="本模型暂无规则声明"
                     onChange={(v) => setEditing({ ...editing, uses_rules: v })} />
                 </Field>
               </FormSection>
-              <FormSection title="评测种子" hint="eval 用例来源，每行一个自然语言问题">
-                <Field label="典型问题（每行一个）">
+              <FormSection title={t("k_37f8e66df7")} hint="eval 用例来源，每行一个自然语言问题">
+                <Field label={t("k_059c632309")}>
                   <Textarea rows={3} value={editing.eval_seed} placeholder={"最近30天案例量趋势如何？"}
                     onChange={(e) => setEditing({ ...editing, eval_seed: e.target.value })} />
                 </Field>
               </FormSection>
-              <FormSection title="跨源路由" hint="数据去哪个源本体查；单源场景可不填">
-                <Field label="路由源（跨源场景可多选）">
+              <FormSection title={t("k_73785c79b8")} hint="数据去哪个源本体查；单源场景可不填">
+                <Field label={t("k_1704ee052c")}>
                   <CheckList options={srcOptions} value={editing.route_sources} empty="暂无 active 源本体"
                     onChange={(v) => setEditing({ ...editing, route_sources: v })} />
                 </Field>
                 <Field label="跨源关联说明（join_hint，人话口径，不含物理 JOIN）">
-                  <Input value={editing.join_hint} placeholder="如：按公司编码关联两源的客户主数据"
+                  <Input value={editing.join_hint} placeholder={t("k_bdce2e1691")}
                     onChange={(e) => setEditing({ ...editing, join_hint: e.target.value })} />
                 </Field>
               </FormSection>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditing(null)}>取消</Button>
-            <Button onClick={submit} disabled={!editing?.key.trim()}>保存</Button>
+            <Button variant="outline" onClick={() => setEditing(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={submit} disabled={!editing?.key.trim()}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1432,7 +1436,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
     <div className="rounded-md border p-2">
       <div className="flex items-center gap-1.5 text-xs font-medium mb-1">
         属性列映射（{properties.length}）
-        <span className="text-[11px] font-normal text-muted-foreground">物理列名，仅建模使用</span>
+        <span className="text-[11px] font-normal text-muted-foreground">{t("k_827281b669")}</span>
       </div>
       {drift.length > 0 && (
         <div className="mb-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700">
@@ -1448,7 +1452,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
         </div>
       )}
       {loading && (
-        <div className="text-[11px] text-muted-foreground py-1">实存列候选加载中…</div>
+        <div className="text-[11px] text-muted-foreground py-1">{t("k_244918077d")}</div>
       )}
       {error && (
         <div className="mb-1.5 rounded border border-red-500/30 bg-red-500/5 px-2 py-1 text-[11px] text-red-600">
@@ -1481,7 +1485,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
                   ? null : (v === NONE_COLUMN_VALUE ? '' : v))}>
                   <SelectTrigger aria-label={`${String(p?.name || raw)} 的物理列`}
                     className={`h-7 flex-1 text-[11px] font-mono ${bad && edited === undefined ? 'border-red-400 text-red-600' : ''}`}>
-                    <SelectValue placeholder="选择实存列" />
+                    <SelectValue placeholder={t("k_62a91b82a0")} />
                   </SelectTrigger>
                   <SelectContent>
                     {!names.includes(cur) && (
@@ -1491,7 +1495,7 @@ function PropertyColumnEditor({ modelId, objectKey, table, properties, drift, ed
                     )}
                     {bad && (
                       <SelectItem value={NONE_COLUMN_VALUE} className="text-[11px]">
-                        <span className="text-amber-600">不绑定物理列（该表没有这个概念）</span>
+                        <span className="text-amber-600">{t("k_bde30433cd")}</span>
                       </SelectItem>
                     )}
                     {cols.map((c) => (
@@ -1599,17 +1603,17 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className={isBusiness ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden' : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
           <DialogHeader>
-            <DialogTitle>新建业务对象</DialogTitle>
+            <DialogTitle>{t("k_4897a8af7d")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <Field label="对象 key（唯一，snake_case，如 order_item）">
               <Input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} />
             </Field>
-            <Field label="业务显示名">
-              <Input value={form.display_name} placeholder="如：订单明细"
+            <Field label={t("k_c35a132911")}>
+              <Input value={form.display_name} placeholder={t("k_992c065229")}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
             </Field>
-            <Field label="业务描述">
+            <Field label={t("k_581778ce60")}>
               <Textarea rows={2} value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
@@ -1624,8 +1628,8 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
             </Field>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-            <Button onClick={submit} disabled={!form.key.trim()}>创建</Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={submit} disabled={!form.key.trim()}>{t("k_fcbd093292")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1759,18 +1763,18 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
             <DialogTitle>编辑对象 · {target.display_name || target.key}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <Field label="对象 key（唯一标识，不可改）">
+            <Field label={t("k_90675ca431")}>
               <Input value={target.key} readOnly disabled />
             </Field>
-            <Field label="业务显示名">
-              <Input value={form.display_name} placeholder="如：订单明细"
+            <Field label={t("k_c35a132911")}>
+              <Input value={form.display_name} placeholder={t("k_992c065229")}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
             </Field>
-            <Field label="业务别名（逗号分隔；语义查询按别名解析）">
+            <Field label={t("k_e1ddcc8f96")}>
               <Input value={form.aliases} placeholder="如：用户, 客户, 账号"
                 onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
             </Field>
-            <Field label="业务描述">
+            <Field label={t("k_581778ce60")}>
               <Textarea rows={2} value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
@@ -1796,8 +1800,8 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-            <Button onClick={submit}>保存为草案</Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{t("k_4d0b4688c7")}</Button>
+            <Button onClick={submit}>{t("k_7cacf6d9ea")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

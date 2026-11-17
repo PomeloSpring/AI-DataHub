@@ -20,6 +20,7 @@ import DagDataflowView from './DagDataflowView';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import { useTranslation } from 'react-i18next';
 
 const STATUS_MAP: Record<string, { label: string; className: string; dot: string }> = {
   queued: { label: '排队中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dot: 'bg-blue-500' },
@@ -60,6 +61,7 @@ function RunNode({ data }: { data: any }) {
 const nodeTypes = { runNode: RunNode };
 
 export default function DagRunDetail() {
+  const { t } = useTranslation('ui');
   const { runId } = useParams();
   const navigate = useNavigate();
   const [run, setRun] = useState<DagRun | null>(null);
@@ -156,7 +158,7 @@ export default function DagRunDetail() {
             <Button variant="ghost" size="sm" onClick={() => navigate('/data/sync/dag')}>
               <ArrowLeft className="w-4 h-4 mr-1" />返回
             </Button>
-            <h1 className="text-xl font-bold">运行详情</h1>
+            <h1 className="text-xl font-bold">{t("k_a939e999ca")}</h1>
             {run && <StatusBadge status={run.status} />}
           </div>
           <p className="text-sm text-muted-foreground mt-1">
@@ -168,7 +170,7 @@ export default function DagRunDetail() {
             <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
             自动刷新 (5s)
           </label>
-          <Button variant="outline" size="sm" onClick={load}><RefreshCw className="w-4 h-4 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" onClick={load}><RefreshCw className="w-4 h-4 mr-1" />{t("k_38108eaa1d")}</Button>
           {run && ['queued', 'running'].includes(run.status) && (
             <Button variant="outline" size="sm" onClick={async () => {
               await dagApi.stopRun(run.id); toast.success('已请求停止'); load();
@@ -211,8 +213,8 @@ export default function DagRunDetail() {
       {/* DAG 图（运行状态 / 数据流双视图） */}
       <Tabs defaultValue="run" className="flex-1 min-h-[380px] flex flex-col">
         <TabsList className="self-start">
-          <TabsTrigger value="run">运行状态</TabsTrigger>
-          <TabsTrigger value="flow">数据流</TabsTrigger>
+          <TabsTrigger value="run">{t("k_2a4080ad9f")}</TabsTrigger>
+          <TabsTrigger value="flow">{t("k_b2047f645e")}</TabsTrigger>
         </TabsList>
         <TabsContent value="run" className="flex-1 min-h-[320px] mt-2 data-[state=active]:flex">
           <div className="border rounded-lg flex-1 min-h-[320px] w-full">
@@ -234,20 +236,20 @@ export default function DagRunDetail() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>节点</TableHead>
-              <TableHead>类型</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>尝试</TableHead>
-              <TableHead>读取</TableHead>
-              <TableHead>写入</TableHead>
-              <TableHead>耗时</TableHead>
-              <TableHead>结束</TableHead>
-              <TableHead className="text-right">结果</TableHead>
+              <TableHead>{t("k_e840cd6f1e")}</TableHead>
+              <TableHead>{t("k_e4e46c7235")}</TableHead>
+              <TableHead>{t("k_62e951a692")}</TableHead>
+              <TableHead>{t("k_31d1e44656")}</TableHead>
+              <TableHead>{t("k_b6b97ac60d")}</TableHead>
+              <TableHead>{t("k_9e93bdccb2")}</TableHead>
+              <TableHead>{t("k_a9704e1997")}</TableHead>
+              <TableHead>{t("k_76b9880829")}</TableHead>
+              <TableHead className="text-right">{t("k_0a2c91cec6")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {nodeRuns.length === 0 ? (
-              <TableRow><TableCell colSpan={9} className="text-center p-6 text-muted-foreground">暂无节点执行记录</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="text-center p-6 text-muted-foreground">{t("k_db576e80fb")}</TableCell></TableRow>
             ) : nodeRuns.map(nr => (
               <TableRow key={nr.id}>
                 <TableCell className="font-medium">{nr.node_key}</TableCell>
@@ -260,7 +262,7 @@ export default function DagRunDetail() {
                 <TableCell className="text-xs">{fmtTime(nr.finished_at)}</TableCell>
                 <TableCell className="text-right">
                   {nr.error_message ? (
-                    <Button variant="ghost" size="sm" className="text-red-500" onClick={() => setErrorDetail(nr)}>查看错误</Button>
+                    <Button variant="ghost" size="sm" className="text-red-500" onClick={() => setErrorDetail(nr)}>{t("k_8b0f6c2374")}</Button>
                   ) : '—'}
                 </TableCell>
               </TableRow>
@@ -278,7 +280,7 @@ export default function DagRunDetail() {
               <span className="text-xs text-muted-foreground">第 {errorDetail?.attempt} 次尝试</span>
             </div>
             <p className="text-muted-foreground whitespace-pre-wrap">{errorDetail?.error_message}</p>
-            <p className="text-xs text-muted-foreground">详细堆栈仅保留在服务端日志中（不含连接凭据与数据行）。</p>
+            <p className="text-xs text-muted-foreground">{t("k_4253c252a3")}</p>
           </div>
         </DialogContent>
       </Dialog>

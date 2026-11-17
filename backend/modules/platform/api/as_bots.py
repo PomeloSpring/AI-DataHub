@@ -52,6 +52,8 @@ class AsBotPayload(BaseModel):
     permission_mode: str = "inherit"
     workspace_id: int = 0
     is_active: bool = True
+    # 双语：{field: {locale: text}}；仅 display_name/description 支持 en-US
+    i18n: dict = {}
 
 
 class AsBotUpdate(BaseModel):
@@ -71,6 +73,8 @@ class AsBotUpdate(BaseModel):
     permission_mode: Optional[str] = None
     workspace_id: Optional[int] = None
     is_active: Optional[bool] = None
+    # 双语覆盖层（更新时不合并、直接替换：编辑器提交的就是当前完整值）
+    i18n: Optional[dict] = None
 
 
 
@@ -299,8 +303,8 @@ def create_as_bot(req: AsBotPayload):
                (as_bot_key, name, display_name, description, category, system_prompt,
                 persona, tools, mcp_server_ids, knowledge_base_ids, skills, models,
                 execution_layer_id, chart_enabled,
-                permission_mode, is_active, workspace_id, created_at, updated_at, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'admin')""",
+                permission_mode, is_active, workspace_id, i18n, created_at, updated_at, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'admin')""",
             (
                 key, req.name or key, req.display_name, req.description, req.category,
                 req.system_prompt,
@@ -314,7 +318,9 @@ def create_as_bot(req: AsBotPayload):
                 1 if req.chart_enabled else 0,
                 req.permission_mode,
                 1 if req.is_active else 0,
-                req.workspace_id or 0, now, now,
+                req.workspace_id or 0,
+                json.dumps(req.i18n or {}, ensure_ascii=False),
+                now, now,
             ),
         )
         _invalidate_config_cache(f"create_as_bot key={key} id={as_bot_id}")
@@ -352,7 +358,8 @@ def update_as_bot(as_bot_id: int, req: AsBotUpdate, user: dict = Depends(get_cur
         _check_execution_layer(data["execution_layer_id"])
         updates.append("execution_layer_id = %s")
         params.append(int(data["execution_layer_id"] or 0) or None)
-    for field in ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models"):
+    for field in ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models",
+                  "i18n"):
         if field in data:
             updates.append(f"{field} = %s")
             params.append(json.dumps(data[field], ensure_ascii=False))

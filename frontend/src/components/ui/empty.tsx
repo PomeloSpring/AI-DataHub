@@ -11,7 +11,7 @@ interface EmptyProps {
 
 export function Empty({
   icon,
-  title = "暂无数据",
+  title="暂无数据",
   description,
   action,
   className,

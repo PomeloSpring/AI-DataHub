@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { t } from '@/i18n/runtime';
 import {
   Plus, Layers, Code2, Trash2, Eye, Loader2, Check,
   RefreshCw, BarChart3, Square, CheckSquare, Database, AlertTriangle,
@@ -22,6 +23,7 @@ import { CHART_TYPES } from '../../components/DashboardChart';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { useClientPagination } from '@/hooks/useClientPagination';
 import DatasetBatchSourceDialog from './DatasetBatchSourceDialog';
+import { useTranslation } from 'react-i18next';
 
 interface Dataset {
   id: number;
@@ -68,6 +70,7 @@ const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
  */
 
 export default function Datasets() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const [items, setItems] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -235,7 +238,7 @@ export default function Datasets() {
 
       <div className="flex gap-2 mb-4 flex-wrap shrink-0">
         <Input
-          placeholder="搜索数据集名称 / 描述"
+          placeholder={t("k_b05ef3f713")}
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           className="max-w-xs"
@@ -244,11 +247,11 @@ export default function Datasets() {
           value={sourceFilter}
           onValueChange={setSourceFilter}
         >
-          <SelectTrigger className="w-56 h-9" aria-label="按数据源筛选数据集">
-            <SelectValue placeholder="全部来源" />
+          <SelectTrigger className="w-56 h-9" aria-label={t("k_3a38ce0110")}>
+            <SelectValue placeholder={t("k_f8d22fd22e")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="0">全部来源</SelectItem>
+            <SelectItem value="0">{t("k_f8d22fd22e")}</SelectItem>
             {/* 只留「数据源」一个维度：“ES 取数通道”那组已撤（与按 ES 源筛重复且词容易误读，
                 理由见文首 ES 通道注释）；数据源清单回源 `/datasources/`，不写死。 */}
             {datasources.map((d: any) => (
@@ -266,9 +269,9 @@ export default function Datasets() {
             本页全选
           </Button>
           {selected.length > 0 && (
-            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={clearSelection}>清空选择</Button>
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={clearSelection}>{t("k_a6d3de0e86")}</Button>
           )}
-          <span className="text-sm text-muted-foreground">已选 <b className="text-foreground">{selected.length}</b> 个</span>
+          <span className="text-sm text-muted-foreground">{t("k_f24ddc2bef")} <b className="text-foreground">{selected.length}</b> {t("k_f7b2a6ee68")}</span>
           <div className="flex-1" />
           <Button size="sm" variant="outline" onClick={() => setBatchSourceOpen(true)} disabled={batchBusy || selected.length === 0}>
             <Database className="h-4 w-4 mr-1" /> 批量改数据源
@@ -327,7 +330,7 @@ export default function Datasets() {
                 {/* 执行通道位只从服务端 `is_es` 读：这一位与其他源同一个治理口（列级/行级策略已编译进 SQL） */}
                 {ds.is_es && (
                   <Badge variant="secondary" className="text-[10px]"
-                    title="正文执行在 ES 型数据源上：与其他数据源同一取数口，列级/行级策略编译进待执行 SQL">
+                    title={t("k_e7f2685f92")}>
                     ES 通道
                   </Badge>
                 )}
@@ -417,7 +420,7 @@ export default function Datasets() {
             )}
           </div>
           <DialogFooter>
-            <Button onClick={() => setBatchResult(null)}>知道了</Button>
+            <Button onClick={() => setBatchResult(null)}>{t("k_cb63c62e50")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -426,16 +429,16 @@ export default function Datasets() {
       <Dialog open={!!syncResult} onOpenChange={() => setSyncResult(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>业务本体同步结果</DialogTitle>
+            <DialogTitle>{t("k_890dc420e5")}</DialogTitle>
             <DialogDescription>
               数据集已作为业务本体路由节点一并生成（save_draft/activate 级联）
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 text-sm">
-            <div>生成对象数：<b>{syncResult?.object_count ?? 0}</b></div>
+            <div>{t("k_fc9650fcc3")}<b>{syncResult?.object_count ?? 0}</b></div>
             {(syncResult?.notes || []).length > 0 && (
               <div className="border rounded-md p-2.5 bg-amber-50 dark:bg-amber-950/30 space-y-1">
-                <div className="text-xs font-medium text-amber-700 dark:text-amber-400">告警（治理数据未对齐项）</div>
+                <div className="text-xs font-medium text-amber-700 dark:text-amber-400">{t("k_32f6a5a468")}</div>
                 {(syncResult.notes || []).map((n: string, i: number) => (
                   <div key={i} className="text-xs text-amber-700 dark:text-amber-400">· {n}</div>
                 ))}
@@ -443,7 +446,7 @@ export default function Datasets() {
             )}
           </div>
           <DialogFooter>
-            <Button onClick={() => setSyncResult(null)}>知道了</Button>
+            <Button onClick={() => setSyncResult(null)}>{t("k_cb63c62e50")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -536,7 +539,7 @@ function CreateDatasetDialog({
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>新建数据集</DialogTitle>
+          <DialogTitle>{t("k_e78bd5fabb")}</DialogTitle>
           <DialogDescription>
             执行 SQL 负责取数，经统一治理入口；看板、报告与 Chat 共用同一口径
           </DialogDescription>
@@ -545,24 +548,24 @@ function CreateDatasetDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>名称 *</Label>
-              <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="如：案件分析数据集" />
+              <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder={t("k_ab0883f179")} />
             </div>
             <div className="space-y-1.5">
-              <Label>数据源</Label>
+              <Label>{t("k_a3ccf702c5")}</Label>
               <Select
                 value={form.datasource_id ? String(form.datasource_id) : '0'}
                 onValueChange={v => setForm({ ...form, datasource_id: Number(v) })}
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">默认引擎</SelectItem>
+                  <SelectItem value="0">{t("k_4c3c25802e")}</SelectItem>
                   {datasources.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>描述</Label>
+            <Label>{t("k_412f54dc38")}</Label>
             <Textarea rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           </div>
 
@@ -588,7 +591,7 @@ function CreateDatasetDialog({
             />
             {inferredFields.length > 0 && (
               <div className="border rounded-lg p-2.5 text-xs space-y-1">
-                <div className="font-medium mb-1">推断字段（详情页可调整角色/别名）</div>
+                <div className="font-medium mb-1">{t("k_aa8f49841f")}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {inferredFields.map((f: any) => (
                     <Badge key={f.field} variant="outline" className="text-[10px]">
@@ -604,13 +607,13 @@ function CreateDatasetDialog({
           <div className="border rounded-lg p-3 space-y-2">
             <div className="flex items-center gap-1.5 text-sm font-medium">
               <BarChart3 className="h-4 w-4" /> 图表预设
-              <Badge variant="outline" className="text-[10px]">可选 · 引入看板时一键生成</Badge>
+              <Badge variant="outline" className="text-[10px]">{t("k_c026ada3ad")}</Badge>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>图表类型</Label>
+                <Label>{t("k_e891b46dbb")}</Label>
                 <Select value={form.chart_type} onValueChange={v => setForm({ ...form, chart_type: v })}>
-                  <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
                   <SelectContent>
                     {PRESET_CHART_TYPES.map(t => (
                       <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
@@ -619,27 +622,27 @@ function CreateDatasetDialog({
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>X 轴列</Label>
+                <Label>{t("k_6bd074681b")}</Label>
                 <Select value={preset.xCol} onValueChange={v => setPreset({ ...preset, xCol: v })}>
-                  <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
                   <SelectContent>
                     {presetColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Y 轴列</Label>
+                <Label>{t("k_55f83922dd")}</Label>
                 <Select value={preset.yCol} onValueChange={v => setPreset({ ...preset, yCol: v })}>
-                  <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
                   <SelectContent>
                     {presetColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>分组列</Label>
+                <Label>{t("k_8b9d1d4bf1")}</Label>
                 <Select value={preset.groupCol} onValueChange={v => setPreset({ ...preset, groupCol: v })}>
-                  <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
                   <SelectContent>
                     {presetColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                   </SelectContent>
@@ -652,7 +655,7 @@ function CreateDatasetDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={handleSave} disabled={saving}>{saving ? '创建中…' : '创建'}</Button>
         </DialogFooter>
       </DialogContent>

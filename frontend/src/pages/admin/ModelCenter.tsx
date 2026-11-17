@@ -2,13 +2,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Cpu, Terminal } from 'lucide-react';
 import Admin from '../Admin';
 import ExecutionLayers from './ExecutionLayers';
+import { useTranslation } from 'react-i18next';
 
 export default function ModelCenter() {
+  const { t } = useTranslation('ui');
   return (
     <div className="h-full overflow-auto">
       <Tabs defaultValue="execution-layers" className="h-full">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold mb-4">模型中心</h1>
+          <h1 className="text-2xl font-bold mb-4">{t("k_d19fa346f8")}</h1>
           <TabsList>
             <TabsTrigger value="execution-layers">
               <Terminal className="h-4 w-4 mr-2" />

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
@@ -13,6 +14,7 @@ import { Plus, Edit, Trash2, Layers, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, 
 import client from '@/api/client';
 import { useDashboardStore } from '@/stores/dashboardStore';
 import { invalidateCatalogCache } from '@/lib/dashboardCatalog';
+import { useTranslation } from 'react-i18next';
 
 // 看板组合(仪表盘组)管理: 把若干看板编排为一个组合并按角色分配。
 // 组只做目录/轮播编排, 不授予看板可见性(可见性仍由角色看板授权 fail-closed 裁决)。
@@ -30,6 +32,7 @@ interface Group {
 }
 
 export default function DashboardGroupsAdmin() {
+  const { t } = useTranslation('ui');
   const [groups, setGroups] = useState<Group[]>([]);
   const [roles, setRoles] = useState<Array<{ id: number; display_name: string }>>([]);
   const [edit, setEdit] = useState<Group | 'new' | null>(null);
@@ -142,13 +145,13 @@ export default function DashboardGroupsAdmin() {
     <section className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h2 className="font-semibold flex items-center gap-2"><Layers className="h-4 w-4" />看板组合</h2>
+          <h2 className="font-semibold flex items-center gap-2"><Layers className="h-4 w-4" />{t("k_da398d5bd4")}</h2>
           <p className="text-xs text-muted-foreground">
             把若干看板编排为一个组合并按角色分配；用户在「数据看板」按组合切换浏览/轮播（组内看板仍受角色可见性裁决）。
             卡片顺序与组内看板顺序都是编排结果：上移/下移立即决定用户看到的次序与轮播次序。
           </p>
         </div>
-        <Button size="sm" onClick={() => openEdit('new')}><Plus className="h-4 w-4 mr-1" />新建组合</Button>
+        <Button size="sm" onClick={() => openEdit('new')}><Plus className="h-4 w-4 mr-1" />{t("k_bca7a2827e")}</Button>
       </div>
 
       {groups.length === 0 ? (
@@ -175,10 +178,10 @@ export default function DashboardGroupsAdmin() {
                     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted/40 text-muted-foreground"><Layers className="h-4 w-4" /></span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge variant="outline" title="在「数据看板」里的展示次序">第 {gi + 1} 位</Badge>
+                    <Badge variant="outline" title={t("k_1eff6804ec")}>第 {gi + 1} 位</Badge>
                     <Badge variant="secondary">{items.length} 个看板</Badge>
                     {owners.length === 0 ? (
-                      <Badge variant="destructive" className="text-xs">未绑角色，用户看不到</Badge>
+                      <Badge variant="destructive" className="text-xs">{t("k_5d093663c7")}</Badge>
                     ) : (
                       <Badge variant="outline">{owners.length} 个角色</Badge>
                     )}
@@ -219,7 +222,7 @@ export default function DashboardGroupsAdmin() {
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{edit === 'new' ? '新建看板组合' : '编辑看板组合'}</DialogTitle>
-            <DialogDescription>选择组合内的看板（并给它们排序）与可看到该组合的角色。</DialogDescription>
+            <DialogDescription>{t("k_409e47000c")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -227,11 +230,11 @@ export default function DashboardGroupsAdmin() {
               <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="如: 经营日报" />
             </div>
             <div className="space-y-2">
-              <Label>说明</Label>
+              <Label>{t("k_26670dda42")}</Label>
               <Textarea rows={2} value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
             </div>
             <div className="space-y-2">
-              <Label>组合内看板</Label>
+              <Label>{t("k_ca4d7c1b49")}</Label>
               <p className="text-xs text-muted-foreground">
                 左列选中后用 <ArrowRight className="inline h-3 w-3" /> 加入右列（可多选、Shift 连选、双击直接加入），右列拖动或 ↑↓ 调位；
                 排在第 1 位的那块 = 用户点组合卡先进入的看板，同时也是大屏轮播的首块板。
@@ -242,10 +245,10 @@ export default function DashboardGroupsAdmin() {
                 selected={form.dashboard_ids}
                 onChange={dashboard_ids => setForm(f => ({ ...f, dashboard_ids }))}
               />
-              <p className="text-xs text-muted-foreground">浏览/轮播仅展示状态为「启用」的看板；设计中/已关闭的看板入组后不会出现在数据看板页。</p>
+              <p className="text-xs text-muted-foreground">{t("k_fcf2cbe364")}</p>
             </div>
             <div className="space-y-2">
-              <Label>可看到该组合的角色</Label>
+              <Label>{t("k_f787316d67")}</Label>
               <div className="max-h-32 overflow-y-auto border rounded p-2 space-y-1">
                 {roles.map(r => (
                   <label key={r.id} className="flex items-center gap-2 text-sm cursor-pointer">
@@ -257,12 +260,12 @@ export default function DashboardGroupsAdmin() {
                     {r.display_name}
                   </label>
                 ))}
-                {roles.length === 0 && <p className="text-xs text-muted-foreground">暂无角色</p>}
+                {roles.length === 0 && <p className="text-xs text-muted-foreground">{t("k_6103376362")}</p>}
               </div>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEdit(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setEdit(null)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={save} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -271,11 +274,11 @@ export default function DashboardGroupsAdmin() {
       {/* 删除确认 */}
       <Dialog open={!!deleteTarget} onOpenChange={open => { if (!open) setDeleteTarget(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>确认删除组合</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_0c8932bcdc")}</DialogTitle></DialogHeader>
           <p className="text-sm">删除 "{deleteTarget?.name}" 不会删除其中的看板。</p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={remove}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={remove}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -373,12 +376,12 @@ function BoardShuttle({ boards, selected, onChange }: {
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
           {/* 改筛法时清掉左列选中：“选了又摘掉过滤条件”看不见的高亮会让 → 搬出意外内容 */}
-          <Input aria-label="搜索可选看板" placeholder="搜索看板名称…" className="h-8 pl-7 text-xs"
+          <Input aria-label={t("k_c651bd6856")} placeholder={t("k_0c71ce79c2")} className="h-8 pl-7 text-xs"
             value={query} onChange={e => { setQuery(e.target.value); setLeftSel([]); }} />
         </div>
         <p className="text-[11px] text-muted-foreground">可选 {available.length} 个·已选 {selected.length} 个</p>
       </div>
-      <ul role="group" aria-label="可选看板" className={PANE_BODY_CLS}>
+      <ul role="group" aria-label={t("k_de3404b26d")} className={PANE_BODY_CLS}>
         {available.map(b => <li key={b.id} className={ROW_CLS} onDoubleClick={() => onChange([...selected, b.id])}>
           <button type="button" className={pickCls(leftSel.includes(b.id))} title={b.name}
             aria-pressed={leftSel.includes(b.id)} aria-label={`选择看板 ${b.name}`}
@@ -396,10 +399,10 @@ function BoardShuttle({ boards, selected, onChange }: {
     <div className="flex shrink-0 flex-row items-center justify-center gap-2 sm:flex-col">
       <Button type="button" size="sm" variant="outline" className="h-8 w-9 p-0" disabled={!leftSel.length}
         title={leftSel.length ? `加入右列（已选 ${leftSel.length} 个）` : '先在左列选中看板'}
-        aria-label="把左列选中的看板加入组合" onClick={addPicked}><ArrowRight className="h-4 w-4" /></Button>
+        aria-label={t("k_fdaa2fe587")} onClick={addPicked}><ArrowRight className="h-4 w-4" /></Button>
       <Button type="button" size="sm" variant="outline" className="h-8 w-9 p-0" disabled={!rightSel.length}
         title={rightSel.length ? `移出组合（已选 ${rightSel.length} 个）` : '先在右列选中看板'}
-        aria-label="把右列选中的看板移出组合" onClick={removePicked}><ArrowLeft className="h-4 w-4" /></Button>
+        aria-label={t("k_43b8c5a02f")} onClick={removePicked}><ArrowLeft className="h-4 w-4" /></Button>
     </div>
 
     <div className={PANE_CLS}>
@@ -408,7 +411,7 @@ function BoardShuttle({ boards, selected, onChange }: {
         <p className="text-[11px] text-muted-foreground">第 1 位 = 用户点组合卡先进入的看板</p>
       </div>
       {/* 容器兼作“落到末尾”的接盘区（行上的 dragover 会 stopPropagation, 漏到容器就是“拖到列表下方”） */}
-      <ul role="group" aria-label="组合内看板顺序" className={PANE_BODY_CLS}
+      <ul role="group" aria-label={t("k_affe3ac687")} className={PANE_BODY_CLS}
         onDragOver={e => { if (drag) { e.preventDefault(); setDrag(d => (d ? { ...d, over: selected.length } : d)); } }}
         onDrop={e => { if (drag) { e.preventDefault(); dropAt(selected.length); } }}>
         {selected.map((id, i) => <Fragment key={id}>
@@ -417,7 +420,7 @@ function BoardShuttle({ boards, selected, onChange }: {
             onDragOver={e => { if (!drag) return; e.preventDefault(); e.stopPropagation(); setDrag(d => (d ? { ...d, over: i } : d)); }}
             onDrop={e => { e.preventDefault(); e.stopPropagation(); dropAt(i); }}
             onDoubleClick={() => onChange([...selected.filter(x => x !== id), id])}>
-            <span draggable className="shrink-0 cursor-grab active:cursor-grabbing" title="拖动调位"
+            <span draggable className="shrink-0 cursor-grab active:cursor-grabbing" title={t("k_44543eb8ae")}
               onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); setDrag({ from: i, over: i }); }}
               onDragEnd={() => setDrag(null)}>
               <GripVertical className="h-4 w-4 text-muted-foreground" />
@@ -427,11 +430,11 @@ function BoardShuttle({ boards, selected, onChange }: {
               onClick={e => toggleSel(id, e.shiftKey, selected, rightSel, setRightSel)}>
               <span className="text-xs text-muted-foreground">{i + 1}.</span> {label(id)}
             </button>
-            {i === 0 && <Badge variant="outline" className="shrink-0 text-[10px]">先看</Badge>}
+            {i === 0 && <Badge variant="outline" className="shrink-0 text-[10px]">{t("k_6917886695")}</Badge>}
             {info(id)?.status && info(id)!.status !== 'enabled' && <Badge variant="outline" className="shrink-0 text-[10px]">{info(id)!.status === 'designing' ? '设计中' : '已关闭'}</Badge>}
-            <button type="button" className={ICON_BTN_CLS} title="上移" disabled={i === 0}
+            <button type="button" className={ICON_BTN_CLS} title={t("k_8a0c839791")} disabled={i === 0}
               aria-label={`上移看板 ${label(id)}`} onClick={() => move(i, -1)}><ArrowUp className="h-3.5 w-3.5" /></button>
-            <button type="button" className={ICON_BTN_CLS} title="下移" disabled={i === selected.length - 1}
+            <button type="button" className={ICON_BTN_CLS} title={t("k_05c46fa3b7")} disabled={i === selected.length - 1}
               aria-label={`下移看板 ${label(id)}`} onClick={() => move(i, 1)}><ArrowDown className="h-3.5 w-3.5" /></button>
           </li>
         </Fragment>)}

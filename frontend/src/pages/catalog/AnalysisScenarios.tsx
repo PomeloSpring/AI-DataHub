@@ -15,6 +15,7 @@ import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Edit, Trash2, Workflow, Search, BookX } from 'lucide-react';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ const splitTriggers = (s: string): string[] =>
   s.split(/[,，]/).map(t => t.trim()).filter(Boolean);
 
 export default function AnalysisScenarios() {
+  const { t } = useTranslation('ui');
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -308,21 +310,21 @@ export default function AnalysisScenarios() {
       ) : items.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">
           <BookX className="h-10 w-10 mx-auto mb-3 opacity-30" />
-          <p className="text-sm">暂无分析场景</p>
-          <p className="text-xs mt-1">点击上方按钮创建，命中触发词后将方案注入 AI 上下文</p>
+          <p className="text-sm">{t("k_dc1a608775")}</p>
+          <p className="text-xs mt-1">{t("k_0697d54ecb")}</p>
         </div>
       ) : (
         <div className="rounded-lg border bg-card">
           <table className="w-full">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">场景名称</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">主体（可见范围）</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[90px]">优先级</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[80px]">启用</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[70px]">命中</th>
-                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[160px]">更新时间</th>
-                <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground w-[90px]">操作</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_7b345ebc76")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_4731a17e52")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[90px]">{t("k_7cabe771eb")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[80px]">{t("k_d4e9ca3dd4")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[70px]">{t("k_7a130d7fde")}</th>
+                <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground w-[160px]">{t("k_093dea88c9")}</th>
+                <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground w-[90px]">{t("k_f3ea6d345e")}</th>
               </tr>
             </thead>
             <tbody>
@@ -338,12 +340,12 @@ export default function AnalysisScenarios() {
                         <span className="text-sm font-medium truncate" title={item.title}>{item.title}</span>
                       </div>
                       {noTrigger && (
-                        <p className="mt-0.5 pl-5 text-xs text-amber-600">未配置触发词，该场景不会被命中</p>
+                        <p className="mt-0.5 pl-5 text-xs text-amber-600">{t("k_acf7bde256")}</p>
                       )}
                       {/* 绑了哪个报告模板属于配置事实，要能在清单里扫到（不然只能逐条开弹窗看） */}
                       {item.metadata?.report_template && (
                         <p className="mt-0.5 pl-5 text-xs text-muted-foreground"
-                          title="命中该场景时按此模板的版式出报告">
+                          title={t("k_3aeb0a262d")}>
                           报告模板：{item.metadata.report_template}
                         </p>
                       )}
@@ -359,16 +361,16 @@ export default function AnalysisScenarios() {
                     <td className="px-4 py-2">
                       <Switch checked={!!item.is_active} onCheckedChange={() => handleToggle(item)} />
                     </td>
-                    <td className="px-4 py-2 text-sm tabular-nums text-muted-foreground" title="命中次数（服务端按触发词命中累加）">
+                    <td className="px-4 py-2 text-sm tabular-nums text-muted-foreground" title={t("k_728e7f3434")}>
                       {item.usage_count}
                     </td>
                     <td className="px-4 py-2 text-xs text-muted-foreground">{item.updated_at}</td>
                     <td className="px-4 py-2">
                       <div className="flex items-center justify-end gap-1">
-                        <Button variant="ghost" size="sm" title="编辑（含触发词与查询步骤正文）" onClick={() => openEdit(item)}>
+                        <Button variant="ghost" size="sm" title={t("k_1958a21d26")} onClick={() => openEdit(item)}>
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" title="删除该场景" onClick={() => setDeleteTarget(item)}>
+                        <Button variant="ghost" size="sm" title={t("k_aa8aa282e6")} onClick={() => setDeleteTarget(item)}>
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </div>
@@ -419,18 +421,18 @@ export default function AnalysisScenarios() {
                 onChange={e => setForm(f => ({ ...f, triggers: e.target.value }))}
                 placeholder="如: 销售额, GMV, 成交金额"
               />
-              <p className="text-xs text-muted-foreground mt-1">用户问题命中任一触发词即套用本场景步骤</p>
+              <p className="text-xs text-muted-foreground mt-1">{t("k_1d107b19d6")}</p>
             </div>
             <div>
-              <Label>适用场景</Label>
+              <Label>{t("k_3b05370cd8")}</Label>
               <Input
                 value={form.scenario}
                 onChange={e => setForm(f => ({ ...f, scenario: e.target.value }))}
-                placeholder="简述这类问题何时出现（可选）"
+                placeholder={t("k_9a95855d69")}
               />
             </div>
             <div>
-              <Label>报告模板（可选）</Label>
+              <Label>{t("k_2f531daf33")}</Label>
               {/* 场景绑定模板 = 命中该场景时按模板版式出报告。选择框只给业务名（候选走本域接口），
                   不让人手填字模 id：id 随环境漂移，“绑了个读不到的模板”最后会变成问答里的
                   静默回落（管理员看见“已绑定”，用户看见“没套用”）。 */}
@@ -438,25 +440,25 @@ export default function AnalysisScenarios() {
                 <div className="mt-1 flex items-center gap-2 text-xs text-destructive">
                   {reportTemplatesError}
                   <Button variant="outline" size="sm" className="h-6 text-xs"
-                    onClick={loadReportTemplates}>重试</Button>
+                    onClick={loadReportTemplates}>{t("k_e2d53a6d3a")}</Button>
                 </div>
               ) : (
                 <Select value={form.report_template || NO_TEMPLATE}
                   onValueChange={v => setForm(f => ({
                     ...f, report_template: v === NO_TEMPLATE ? '' : v,
                   }))}>
-                  <SelectTrigger className="mt-1 w-full" aria-label="报告模板">
-                    <SelectValue placeholder="不绑定（按通用报告骨架出稿）" />
+                  <SelectTrigger className="mt-1 w-full" aria-label={t("k_e7d5880a37")}>
+                    <SelectValue placeholder={t("k_71a045b6fc")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NO_TEMPLATE}>不绑定（按通用报告骨架出稿）</SelectItem>
+                    <SelectItem value={NO_TEMPLATE}>{t("k_71a045b6fc")}</SelectItem>
                     {reportTemplates.map(t => (
                       <SelectItem key={t.name} value={t.name}>
                         {t.name}{t.usable ? '' : '（未登记版式，只有示例正文）'}
                       </SelectItem>
                     ))}
                     {reportTemplates.length === 0 && (
-                      <SelectItem value="__empty__" disabled>没有可用模板（可先到「报告模板」配置页新建）</SelectItem>
+                      <SelectItem value="__empty__" disabled>{t("k_2f831213c2")}</SelectItem>
                     )}
                   </SelectContent>
                 </Select>
@@ -478,7 +480,7 @@ export default function AnalysisScenarios() {
               <div className="mt-1 flex items-center gap-2">
                 <Switch checked={form.subject_all}
                   onCheckedChange={v => setForm(f => ({ ...f, subject_all: v, subjects: v ? [] : f.subjects }))} />
-                <Label className="text-xs font-normal">不限主体（所有角色都能命中该场景）</Label>
+                <Label className="text-xs font-normal">{t("k_51607eff2b")}</Label>
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 勾选下方主体 = 只有拿到该数据源权限的角色能用这个场景；选「不限主体」是显式扩权，
@@ -488,7 +490,7 @@ export default function AnalysisScenarios() {
                 subjectsError ? (
                   <div className="mt-2 flex items-center gap-2 text-xs text-destructive">
                     {subjectsError}
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={loadSubjects}>重试</Button>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={loadSubjects}>{t("k_e2d53a6d3a")}</Button>
                   </div>
                 ) : (
                   <div className="mt-2 flex flex-wrap gap-2 max-h-[150px] overflow-y-auto">
@@ -506,7 +508,7 @@ export default function AnalysisScenarios() {
                       );
                     })}
                     {subjects.length === 0 && (
-                      <span className="text-xs text-muted-foreground">未获取到主体清单（请先到「本体建模」建好对象）</span>
+                      <span className="text-xs text-muted-foreground">{t("k_44adf77702")}</span>
                     )}
                   </div>
                 )
@@ -517,12 +519,12 @@ export default function AnalysisScenarios() {
               <Textarea
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                placeholder="告诉 AI 该如何查询：涉及的表/对象、口径、推荐步骤、示例 SQL 或查询条件"
+                placeholder={t("k_05c06b56ba")}
                 rows={5}
               />
             </div>
             <div>
-              <Label>关联表名</Label>
+              <Label>{t("k_342aa303e4")}</Label>
               <Input
                 value={form.related_tables}
                 onChange={e => setForm(f => ({ ...f, related_tables: e.target.value }))}
@@ -530,25 +532,25 @@ export default function AnalysisScenarios() {
               />
             </div>
             <div>
-              <Label>优先级</Label>
+              <Label>{t("k_7cabe771eb")}</Label>
               <Input
                 type="number"
                 value={form.priority}
                 onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
                 placeholder="0"
               />
-              <p className="text-xs text-muted-foreground mt-1">命中同级时越高越优先注入</p>
+              <p className="text-xs text-muted-foreground mt-1">{t("k_c472cf8e19")}</p>
             </div>
             <div className="flex items-center gap-2">
               <Switch
                 checked={form.is_active}
                 onCheckedChange={v => setForm(f => ({ ...f, is_active: v }))}
               />
-              <Label>启用</Label>
+              <Label>{t("k_d4e9ca3dd4")}</Label>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving ? '保存中...' : '保存'}
             </Button>
@@ -560,14 +562,14 @@ export default function AnalysisScenarios() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除 "{deleteTarget?.title}" 吗？此操作不可撤销。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

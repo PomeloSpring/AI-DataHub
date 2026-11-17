@@ -19,6 +19,7 @@ import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { RefreshCw, Search } from 'lucide-react';
 import { syncApi, type SyncLog, type SyncTask } from '@/api/sync';
+import { useTranslation } from 'react-i18next';
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   success: { label: '成功', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
@@ -34,6 +35,7 @@ const TRIGGER_MAP: Record<string, string> = {
 };
 
 export default function SyncLogs() {
+  const { t } = useTranslation('ui');
   const [logs, setLogs] = useState<SyncLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -81,8 +83,8 @@ export default function SyncLogs() {
     <div className="flex flex-col h-full gap-4">
       <div className="flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-2xl font-bold">同步日志</h1>
-          <p className="text-muted-foreground text-sm mt-1">查看数据同步执行记录</p>
+          <h1 className="text-2xl font-bold">{t("k_75772ede80")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_1791ce6567")}</p>
         </div>
         <Button variant="outline" size="sm" onClick={loadLogs}>
           <RefreshCw className="w-4 h-4 mr-1" />
@@ -94,10 +96,10 @@ export default function SyncLogs() {
       <div className="flex items-center gap-3 flex-wrap shrink-0">
         <Select value={taskIdFilter || 'all'} onValueChange={v => setTaskIdFilter(v === 'all' ? '' : v)}>
           <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="全部任务" />
+            <SelectValue placeholder={t("k_e12f5f8e8c")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部任务</SelectItem>
+            <SelectItem value="all">{t("k_e12f5f8e8c")}</SelectItem>
             {taskOptions.map(t => (
               <SelectItem key={t.id} value={String(t.id)}>{t.name || `任务 ${t.id}`}</SelectItem>
             ))}
@@ -105,14 +107,14 @@ export default function SyncLogs() {
         </Select>
         <Select value={statusFilter || 'all'} onValueChange={v => setStatusFilter(v === 'all' ? '' : v)}>
           <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="全部状态" />
+            <SelectValue placeholder={t("k_1a4c26d92d")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部状态</SelectItem>
-            <SelectItem value="success">成功</SelectItem>
-            <SelectItem value="failed">失败</SelectItem>
-            <SelectItem value="running">运行中</SelectItem>
-            <SelectItem value="partial">部分成功</SelectItem>
+            <SelectItem value="all">{t("k_1a4c26d92d")}</SelectItem>
+            <SelectItem value="success">{t("k_51991a5d11")}</SelectItem>
+            <SelectItem value="failed">{t("k_3e3c8068bb")}</SelectItem>
+            <SelectItem value="running">{t("k_5942497005")}</SelectItem>
+            <SelectItem value="partial">{t("k_2f2b7e05e3")}</SelectItem>
           </SelectContent>
         </Select>
         <Input
@@ -138,15 +140,15 @@ export default function SyncLogs() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">任务名称</th>
-              <th className="text-left p-3 font-medium">状态</th>
-              <th className="text-left p-3 font-medium">触发方式</th>
-              <th className="text-right p-3 font-medium">读取行数</th>
-              <th className="text-right p-3 font-medium">写入行数</th>
-              <th className="text-right p-3 font-medium">失败行数</th>
-              <th className="text-left p-3 font-medium">耗时</th>
-              <th className="text-left p-3 font-medium">开始时间</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t("k_2e30469899")}</th>
+              <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+              <th className="text-left p-3 font-medium">{t("k_f67f1852d8")}</th>
+              <th className="text-right p-3 font-medium">{t("k_3634f29fb1")}</th>
+              <th className="text-right p-3 font-medium">{t("k_44b75fa528")}</th>
+              <th className="text-right p-3 font-medium">{t("k_9085659645")}</th>
+              <th className="text-left p-3 font-medium">{t("k_a9704e1997")}</th>
+              <th className="text-left p-3 font-medium">{t("k_e8868af6eb")}</th>
+              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -218,47 +220,47 @@ export default function SyncLogs() {
       <Dialog open={!!expandedLog} onOpenChange={() => setExpandedLog(null)}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>执行详情</DialogTitle>
+            <DialogTitle>{t("k_8d0204b083")}</DialogTitle>
           </DialogHeader>
           {expandedLog && (
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <span className="text-muted-foreground">任务名称：</span>
+                  <span className="text-muted-foreground">{t("k_0e6b3399a6")}</span>
                   {expandedLog.task_name || `任务 #${expandedLog.sync_task_id}`}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">状态：</span>
+                  <span className="text-muted-foreground">{t("k_bf0ac89783")}</span>
                   <Badge variant="outline" className={STATUS_MAP[expandedLog.status]?.color}>
                     {STATUS_MAP[expandedLog.status]?.label || expandedLog.status}
                   </Badge>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">触发方式：</span>
+                  <span className="text-muted-foreground">{t("k_b576c74e33")}</span>
                   {TRIGGER_MAP[expandedLog.trigger_type] || expandedLog.trigger_type}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">耗时：</span>
+                  <span className="text-muted-foreground">{t("k_c8b22316eb")}</span>
                   {expandedLog.elapsed_ms != null ? `${(expandedLog.elapsed_ms / 1000).toFixed(1)}s` : '-'}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">开始时间：</span>
+                  <span className="text-muted-foreground">{t("k_68bf8fa2d4")}</span>
                   {new Date(expandedLog.started_at).toLocaleString()}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">结束时间：</span>
+                  <span className="text-muted-foreground">{t("k_c57df104eb")}</span>
                   {expandedLog.finished_at ? new Date(expandedLog.finished_at).toLocaleString() : '-'}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">读取行数：</span>
+                  <span className="text-muted-foreground">{t("k_03264a4670")}</span>
                   {expandedLog.rows_read?.toLocaleString() ?? '-'}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">写入行数：</span>
+                  <span className="text-muted-foreground">{t("k_d144ecea54")}</span>
                   {expandedLog.rows_written?.toLocaleString() ?? '-'}
                 </div>
                 <div>
-                  <span className="text-muted-foreground">失败行数：</span>
+                  <span className="text-muted-foreground">{t("k_a25ddc0d72")}</span>
                   <span className={expandedLog.rows_failed > 0 ? 'text-red-500' : ''}>
                     {expandedLog.rows_failed?.toLocaleString() ?? '-'}
                   </span>
@@ -266,7 +268,7 @@ export default function SyncLogs() {
               </div>
               {expandedLog.error_message && (
                 <div>
-                  <span className="text-muted-foreground text-red-500">错误信息：</span>
+                  <span className="text-muted-foreground text-red-500">{t("k_2c9c72a7f9")}</span>
                   <pre className="mt-1 p-2 bg-red-500/10 rounded text-xs whitespace-pre-wrap text-red-500">
                     {expandedLog.error_message}
                   </pre>

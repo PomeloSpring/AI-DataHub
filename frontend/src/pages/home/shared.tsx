@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Eye, ExternalLink, FileText } from 'lucide-react';
 import type { ContentArticle, ContentCategory } from '@/api/content';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 首页资讯区与阅读页共用的口径件。
@@ -107,9 +108,10 @@ export function ReleaseChip({ article }: { article: Pick<ContentArticle, 'releas
  * 入参一律由 `categoryOfArticle` 解析得出，消费点不要自己按 label/id 拼查找。
  */
 export function CategoryBadge({ category, withIcon = true }: { category?: ContentCategory; withIcon?: boolean }) {
+  const { t } = useTranslation('ui');
   if (!category) {
     // 栏目被删/未加载完时不得回退成裸 id 或空串（ui-resource-display §1）
-    return <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">栏目未知</span>;
+    return <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t("k_ab6318298c")}</span>;
   }
   return (
     <span
@@ -124,6 +126,7 @@ export function CategoryBadge({ category, withIcon = true }: { category?: Conten
 
 /** 阅读数 + 未读点：未读点是"有新东西"的唯一提示，读完即消失 */
 export function ReadMeta({ article, unread }: { article: ContentArticle; unread: boolean }) {
+  const { t } = useTranslation('ui');
   return (
     <span className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1">
@@ -131,7 +134,7 @@ export function ReadMeta({ article, unread }: { article: ContentArticle; unread:
       </span>
       <span>·</span>
       <span>{relTime(article.published_at || article.updated_at)}</span>
-      {unread && <span className="ml-auto size-1.5 rounded-full bg-primary" title="未读" aria-label="未读" />}
+      {unread && <span className="ml-auto size-1.5 rounded-full bg-primary" title={t("k_1e230aa201")} aria-label={t("k_1e230aa201")} />}
     </span>
   );
 }

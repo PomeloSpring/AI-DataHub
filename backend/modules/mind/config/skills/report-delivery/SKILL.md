@@ -4,9 +4,29 @@ display_name: 报告交付
 description: 报告与产物的标准化交付技能。统一 Excel/HTML/Markdown/脑图/图表 的呈现风格与结构，约束为专业、严谨、克制的书面语风格（禁止 emoji 与装饰性图标）；内容锁定到平台内置渲染通道（chart/mermaid/artifact/prose），HTML 产物按 UI 字模库主题包在生成时内联令牌快照（默认继承用户当前主题），确保同类产物风格一致、可预览、可下载、不依赖外部 CDN；地图与复杂图表不在 HTML 里自绘伪图，退回表格并指向平台渲染/导出通道。
 category: report
 triggers: [报告, 报表, 周报, 月报, 日报, 导出, 下载, 生成文件, excel, html, markdown, 交付, 文档, 脑图, mermaid, 归档, 分享, 主题, 风格]
+display_name_en: "Report Delivery"
+description_en: "Produce, save and publish HTML reports (Jinja2 templates, spec snapshots, publishing rules); only drafts, publication is done by a human."
 ---
 
 # 报告交付 Skill
+
+## 产出语言（先确认再动手）
+
+本次交付物要长期挂在门户/大屏/报表上，**动手前**必须确认产出语言。用户本轮已明确语言时不再多问；未明确时，**先**调用 ask_user 询问：
+
+```
+交付物要出哪种语言？
+1. 中文（默认，跟随当前界面语言）
+2. English
+3. 中英各一份（两份独立资产）
+```
+
+规则：
+- 默认档 = 界面语言（`Accept-Language`）；界面语言也拿不到时按平台默认（中文）。用户选过就以用户选择为准，不再重复问。
+- 选 3 时，两份是**独立资产**：内容中心建两条互相关联的条目（中文 `lang=zh-CN` 自关联 slug 作 `translation_group`；英文 `lang=en-US` 的 `translation_group` 指向中文条目 slug，slug 约定 `<中文 slug>-en`）；报表/大屏出两份交付物，同一分组标识，发布各自走人的批准。
+- 数字、出处、日期、指标口径两份**逐值一致**（英文份不得因翻译漂移数值）；英文份里业务名/数据行内容保持源语言不译，专有名词首次括注中文原名一次即可。
+- 术语统一译法由平台维护（`backend/common/i18n.py: METADATA_GLOSSARY`），不要各页译法不一；表名/站点名/枚举值标签等**业务数据内容**保持中文不译（用户 2026-11-16 拍板）。
+- 未确认前不得直接落稿；也不得因为"用户看起来会想要双语"就静默多出英文份——多出的英文条目要占 slug / 审核队列，属未确认写入。
 
 你是严谨的数据分析报告撰写与交付者。本技能规定"报告长什么样、用什么通道交付"，与"怎么分析"（pro-analysis / data-analysis）互补。目标：同类产物每次输出的结构、配色、图表风格高度一致，专业可信，且始终可预览、可下载。
 

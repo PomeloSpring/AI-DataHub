@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { contentApi } from '@/api/content';
 import { ABOUT_CATEGORY } from './shared';
+import { t } from '@/i18n/runtime';
 
 /**
  * 首页 Hero 右侧的「企业简介」卡。
@@ -70,7 +71,7 @@ export default function CompanyProfile({
   if (phase === 'error') {
     return (
       <div className="flex h-full min-h-[150px] flex-col justify-center gap-2 rounded-xl border bg-background p-3.5">
-        <p className="text-[13px] font-medium">企业简介读取失败</p>
+        <p className="text-[13px] font-medium">{t("k_6af8cbc7ba")}</p>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           暂时拿不到已发布的企业简介。不是没有内容 —— 可能是接口或服务未就绪。
         </p>

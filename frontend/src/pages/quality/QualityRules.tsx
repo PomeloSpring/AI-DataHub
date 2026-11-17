@@ -32,6 +32,7 @@ import {
   Search,
   Filter,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface QualityRule {
   id: number;
@@ -104,6 +105,7 @@ const EMPTY_FORM = {
 };
 
 export default function QualityRules() {
+  const { t } = useTranslation('ui');
   // 质量域为全局共享（工作空间概念已退役，不再按工作空间隔离/选择）；
   // API 的 workspace 参数固定 0，后端按 IN (ws, 0) 兼容全局行。
   const [rules, setRules] = useState<QualityRule[]>([]);
@@ -267,7 +269,7 @@ export default function QualityRules() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">质量规则</h1>
+          <h1 className="text-2xl font-bold">{t("k_e974beee2d")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
             管理数据质量检查规则，配置检查项和严重等级
           </p>
@@ -301,10 +303,10 @@ export default function QualityRules() {
         </div>
         <Select value={filterType} onValueChange={setFilterType}>
           <SelectTrigger className="h-8 w-36">
-            <SelectValue placeholder="规则类型" />
+            <SelectValue placeholder={t("k_7655f477f1")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部类型</SelectItem>
+            <SelectItem value="all">{t("k_fa6968d9f0")}</SelectItem>
             {RULE_TYPE_OPTIONS.map(opt => (
               <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
             ))}
@@ -312,10 +314,10 @@ export default function QualityRules() {
         </Select>
         <Select value={filterSeverity} onValueChange={setFilterSeverity}>
           <SelectTrigger className="h-8 w-32">
-            <SelectValue placeholder="严重度" />
+            <SelectValue placeholder={t("k_9272e8abe5")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部严重度</SelectItem>
+            <SelectItem value="all">{t("k_e4c55a6de8")}</SelectItem>
             {SEVERITY_OPTIONS.map(opt => (
               <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
             ))}
@@ -344,14 +346,14 @@ export default function QualityRules() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">规则名称</th>
-              <th className="text-left p-3 font-medium">类型</th>
-              <th className="text-left p-3 font-medium">目标表</th>
-              <th className="text-center p-3 font-medium">严重度</th>
-              <th className="text-center p-3 font-medium">状态</th>
-              <th className="text-left p-3 font-medium">上次检查</th>
-              <th className="text-center p-3 font-medium">启用</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t("k_1937bcb105")}</th>
+              <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+              <th className="text-left p-3 font-medium">{t("k_442be9c497")}</th>
+              <th className="text-center p-3 font-medium">{t("k_9272e8abe5")}</th>
+              <th className="text-center p-3 font-medium">{t("k_62e951a692")}</th>
+              <th className="text-left p-3 font-medium">{t("k_6e85a9405c")}</th>
+              <th className="text-center p-3 font-medium">{t("k_d4e9ca3dd4")}</th>
+              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -404,7 +406,7 @@ export default function QualityRules() {
                         {STATUS_MAP[rule.last_check_status]?.label || rule.last_check_status}
                       </Badge>
                     ) : (
-                      <span className="text-xs text-muted-foreground">未检查</span>
+                      <span className="text-xs text-muted-foreground">{t("k_ed9ec8188c")}</span>
                     )}
                   </td>
                   <td className="p-3 text-xs text-muted-foreground">
@@ -422,7 +424,7 @@ export default function QualityRules() {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleExecute(rule)}
-                        title="执行检查"
+                        title={t("k_5d04b393de")}
                       >
                         <Play className="w-4 h-4" />
                       </Button>
@@ -430,7 +432,7 @@ export default function QualityRules() {
                         variant="ghost"
                         size="sm"
                         onClick={() => openEdit(rule)}
-                        title="编辑"
+                        title={t("k_a7f814c0a4")}
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
@@ -438,7 +440,7 @@ export default function QualityRules() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setDeleteTarget(rule)}
-                        title="删除"
+                        title={t("k_3755f56f2f")}
                       >
                         <Trash2 className="w-4 h-4 text-destructive" />
                       </Button>
@@ -476,15 +478,15 @@ export default function QualityRules() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>规则名称 <span className="text-destructive">*</span></Label>
+                <Label>{t("k_1937bcb105")} <span className="text-destructive">*</span></Label>
                 <Input
                   value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                  placeholder="如：订单金额非空检查"
+                  placeholder={t("k_33c6febbf7")}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>规则类型</Label>
+                <Label>{t("k_7655f477f1")}</Label>
                 <Select
                   value={form.rule_type}
                   onValueChange={v => setForm(f => ({ ...f, rule_type: v }))}
@@ -500,21 +502,21 @@ export default function QualityRules() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Input
                 value={form.description}
                 onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="规则用途说明（可选）"
+                placeholder={t("k_115e97951a")}
               />
             </div>
 
             <div className="space-y-1.5">
-              <Label>目标数据源 <span className="text-destructive">*</span></Label>
+              <Label>{t("k_6daeb016b3")} <span className="text-destructive">*</span></Label>
               <Select
                 value={form.target_datasource_id}
                 onValueChange={v => setForm(f => ({ ...f, target_datasource_id: v }))}
               >
-                <SelectTrigger><SelectValue placeholder="选择数据源" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder={t("k_422b9e314a")} /></SelectTrigger>
                 <SelectContent>
                   {datasources.map(ds => (
                     <SelectItem key={ds.id} value={String(ds.id)}>{ds.name}</SelectItem>
@@ -525,25 +527,25 @@ export default function QualityRules() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>目标表 <span className="text-destructive">*</span></Label>
+                <Label>{t("k_442be9c497")} <span className="text-destructive">*</span></Label>
                 <Input
                   value={form.target_table}
                   onChange={e => setForm(f => ({ ...f, target_table: e.target.value }))}
-                  placeholder="如：orders"
+                  placeholder={t("k_6531f78b41")}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>目标列</Label>
+                <Label>{t("k_38556b027f")}</Label>
                 <Input
                   value={form.target_column}
                   onChange={e => setForm(f => ({ ...f, target_column: e.target.value }))}
-                  placeholder="如：amount（可选）"
+                  placeholder={t("k_4dfe2afd3b")}
                 />
               </div>
             </div>
 
             <div className="space-y-1.5">
-              <Label>严重等级</Label>
+              <Label>{t("k_a0681bd805")}</Label>
               <Select
                 value={form.severity}
                 onValueChange={v => setForm(f => ({ ...f, severity: v }))}
@@ -592,14 +594,14 @@ export default function QualityRules() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除质量规则「{deleteTarget?.name}」吗？相关检查结果也将被清除。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

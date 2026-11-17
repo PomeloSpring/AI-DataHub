@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -252,17 +253,17 @@ export default function EvalRunsPanel({
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-muted/40 text-left">
-              <th className="p-2">运行</th>
-              <th className="p-2">评测层</th>
-              <th className="p-2">触发</th>
-              <th className="p-2">状态</th>
-              <th className="p-2">通过</th>
-              <th className="p-2">正确率</th>
-              <th className="p-2">门禁</th>
-              <th className="p-2">分母构成</th>
-              <th className="p-2">完成时间</th>
-              <th className="p-2">发起人</th>
-              <th className="p-2 w-[80px]">操作</th>
+              <th className="p-2">{t("k_0c3acd446f")}</th>
+              <th className="p-2">{t("k_0e8e7b44a1")}</th>
+              <th className="p-2">{t("k_27eccf9785")}</th>
+              <th className="p-2">{t("k_62e951a692")}</th>
+              <th className="p-2">{t("k_dcc4233255")}</th>
+              <th className="p-2">{t("k_8dc159502e")}</th>
+              <th className="p-2">{t("k_a0d14adcf1")}</th>
+              <th className="p-2">{t("k_4384c934af")}</th>
+              <th className="p-2">{t("k_754a8a2e2d")}</th>
+              <th className="p-2">{t("k_89d282d2fa")}</th>
+              <th className="p-2 w-[80px]">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -329,7 +330,7 @@ export default function EvalRunsPanel({
               </Button>
             </div>
 
-            {detailLoading && <div className="p-4 text-xs text-muted-foreground">加载中…</div>}
+            {detailLoading && <div className="p-4 text-xs text-muted-foreground">{t("k_300ee3dee4")}</div>}
 
             <div className="p-4 space-y-4">
               {detail.results.some(r => !r.passed) && (
@@ -354,7 +355,7 @@ export default function EvalRunsPanel({
                                 {capabilities.find(c => c.key === r.capability)?.label || r.capability || '契约未登记'}
                               </span>
                               {r.case_status === 'known_defect' && (
-                                <Badge variant="outline" className="text-[9px] text-amber-600">已登记缺陷</Badge>
+                                <Badge variant="outline" className="text-[9px] text-amber-600">{t("k_118cea0e7c")}</Badge>
                               )}
                               <div className="flex-1" />
                               <Button size="sm" variant="outline" className="h-6 text-[11px]"
@@ -416,7 +417,7 @@ export default function EvalRunsPanel({
               )}
               {triage.kind === 'candidate' ? (
                 <>
-                  <Label className="block">业务词（留空则用整条问句；不要填物理表/列名）</Label>
+                  <Label className="block">{t("k_e03d438b86")}</Label>
                   <Textarea rows={2} value={note} onChange={e => setNote(e.target.value)}
                     placeholder="例：企业省份 / activation_rate —— 只写业务说法" />
                   <p className="text-[11px] text-muted-foreground">
@@ -426,7 +427,7 @@ export default function EvalRunsPanel({
                 </>
               ) : (
                 <>
-                  <Label className="block">原因（退役/已知缺陷必填）</Label>
+                  <Label className="block">{t("k_de9a5d4387")}</Label>
                   <Textarea rows={3} value={note} onChange={e => setNote(e.target.value)}
                     placeholder="例：实测 rag_source=ontology_traversal:no_seed，关键词未被抽成图种子" />
                   <p className="text-[11px] text-muted-foreground">
@@ -438,7 +439,7 @@ export default function EvalRunsPanel({
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setTriage(null); setNote(''); }}>取消</Button>
+            <Button variant="outline" onClick={() => { setTriage(null); setNote(''); }}>{t("k_4d0b4688c7")}</Button>
             {triageFooter()}
           </DialogFooter>
         </DialogContent>

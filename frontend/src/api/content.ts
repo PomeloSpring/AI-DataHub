@@ -66,6 +66,10 @@ export interface ContentCategory {
   sort: number;
   is_active: number;
   count?: number;
+  // 双语：i18n 是覆盖层 {field: {locale: text}}；英文界面下 *_zh 保留中文事实源（后端 localize_display）
+  i18n?: Record<string, Record<string, string>>;
+  label_zh?: string;
+  description_zh?: string;
 }
 
 export interface ContentTag {
@@ -74,6 +78,8 @@ export interface ContentTag {
   sort: number;
   is_active: number;
   count: number;
+  // 双语：tag 是中文事实源；i18n.tag.en-US 是英文界面下的显示值
+  i18n?: Record<string, Record<string, string>>;
 }
 
 export interface ContentRef {
@@ -186,6 +192,17 @@ export interface ContentArticle {
   files?: ContentFile[];
   /** 知识库语料同步状态：服务端由水位线算出，未同步过是 null（不是“已同步但空”） */
   kb_sync?: KbSyncState | null;
+  // ── 双语条目（后端 content_service._article_out / _attach_translations 下发）──
+  // `lang` 是**本篇正文**的语言（zh-CN / en-US），不是界面语言；界面语言只影响 title/summary 的本地化取值。
+  lang?: string;
+  translation_group?: string;
+  i18n?: Record<string, Record<string, string>>;
+  // 同一 translation_group 下的中英兄弟条目（供阅读页顶部语言切换与"暂无英文版"提示）；
+  // available=live_revision_id!=0（未发布不广告，避免点了 404）。
+  translation?: {
+    en?: { slug?: string; available?: boolean };
+    zh?: { slug?: string; available?: boolean };
+  };
   // ── 审核视图附加 ──
   gate_hard?: GateItem[];
   gate_warnings?: GateItem[];
@@ -347,6 +364,8 @@ export interface ArticleQuery {
   expired?: boolean;
   /** 服务端只接受这三个值（latest/hot/rec），写错会被直接拒而不是默默换默认 */
   sort?: 'latest' | 'hot' | 'rec';
+  /** 按正文语言筛（服务端 normalize_locale 受控清单：zh-CN / en-US，未知值 400 拒） */
+  lang?: '' | 'zh-CN' | 'en-US';
   page?: number;
   page_size?: number;
 }
@@ -471,9 +490,9 @@ export const contentApi = {
     client.put<ContentCategory>(`/content/categories/${id}`, data),
   removeCategory: (id: number) =>
     client.delete<{ success: boolean }>(`/content/categories/${id}`),
-  createTag: (data: { tag: string; sort?: number; is_active?: number }) =>
+  createTag: (data: { tag: string; sort?: number; is_active?: number; i18n?: Record<string, Record<string, string>> }) =>
     client.post<ContentTag>('/content/tags', data),
-  updateTag: (id: number, data: { tag?: string; sort?: number; is_active?: number }) =>
+  updateTag: (id: number, data: { tag?: string; sort?: number; is_active?: number; i18n?: Record<string, Record<string, string>> }) =>
     client.put<ContentTag>(`/content/tags/${id}`, data),
   removeTag: (id: number) =>
     client.delete<{ success: boolean }>(`/content/tags/${id}`),

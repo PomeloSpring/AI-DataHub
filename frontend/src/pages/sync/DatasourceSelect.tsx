@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -29,7 +30,7 @@ export function DatasourceSelect({
     <Select value={value || (allowEmpty ? '__none__' : '')} onValueChange={v => onChange(v === '__none__' ? '' : v)}>
       <SelectTrigger><SelectValue placeholder={placeholder} /></SelectTrigger>
       <SelectContent>
-        {allowEmpty && <SelectItem value="__none__">不写入</SelectItem>}
+        {allowEmpty && <SelectItem value="__none__">{t("k_d8722d4f6d")}</SelectItem>}
         {options.map(opt => (
           <SelectItem key={opt.name} value={opt.name}>
             {opt.name}{opt.db_type ? ` (${opt.db_type})` : ''}

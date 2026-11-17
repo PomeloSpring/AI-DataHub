@@ -27,6 +27,7 @@ import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import ThemeMenuItems from './ThemeMenuItems';
 import LanguageMenu from './LanguageMenu';
+import { useTranslation } from 'react-i18next';
 
 /** 将路由 key 转换为 menu_key: '/data/ontology' → 'data:ontology' */
 function toMenuKey(routeKey: string): string {
@@ -71,6 +72,7 @@ const DATA_PLATFORM_MENU_ITEMS = [
 const MENU_SKELETON_ROWS = DATA_PLATFORM_MENU_ITEMS.filter(item => 'key' in item).length;
 
 export default function DataPlatformLayout() {
+  const { t } = useTranslation('ui');
   const [collapsed, setCollapsed] = useState(false);
   const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -101,14 +103,14 @@ export default function DataPlatformLayout() {
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
           <BrandLogo brand={brand} size={24} />
           {!collapsed && (
-            <span className="font-bold text-sm text-sidebar-foreground truncate">数据中台</span>
+            <span className="font-bold text-sm text-sidebar-foreground truncate">{t("k_4779f75f79")}</span>
           )}
         </div>
 
         {/* Menu */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
-            <nav className="space-y-1 px-2" role="navigation" aria-label="数据中台导航">
+            <nav className="space-y-1 px-2" role="navigation" aria-label={t("k_ad4b924576")}>
               {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} collapsed={collapsed} />}
               {visibleMenu.map((item, idx) => {
                 if ('section' in item) {
@@ -168,7 +170,7 @@ export default function DataPlatformLayout() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
           <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col">
             <div className="h-12 flex items-center justify-between px-4 border-b border-sidebar-border">
-              <span className="font-bold text-lg text-sidebar-foreground">数据中台</span>
+              <span className="font-bold text-lg text-sidebar-foreground">{t("k_4779f75f79")}</span>
               <Button variant="ghost" size="sm" className="h-9 w-9 p-0" onClick={() => setMobileMenuOpen(false)}>
                 <X className="h-5 w-5" />
               </Button>
@@ -227,12 +229,12 @@ export default function DataPlatformLayout() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label={t("k_297ca007c9")} data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
-                <TooltipContent>主题风格</TooltipContent>
+                <TooltipContent>{t("k_297ca007c9")}</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
                 <ThemeMenuItems />
@@ -242,7 +244,7 @@ export default function DataPlatformLayout() {
             <LanguageMenu />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label={t("k_a375a2cf71")} data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>

@@ -14,6 +14,7 @@ import { toast } from '@/lib/toast';
 import { Pencil, Bot, Lock, Eye, ChevronDown, ChevronRight } from 'lucide-react';
 import client from '@/api/client';
 import { useAuthStore } from '../../stores/authStore';
+import { useTranslation } from 'react-i18next';
 
 // ── 常量:与后端 sdk_tools 工具组 / tool_catalog 标准工具 / 图表类型对齐 ──
 // 工具权限采用"逐个工具"粒度:每个进程内 MCP server 的工具可单独勾选。
@@ -124,6 +125,7 @@ const emptyAsBot = (): AsBot => ({
 });
 
 export default function AsBotManager() {
+  const { t } = useTranslation('ui');
   const [asBots, setAsBots] = useState<AsBot[]>([]);
   const [mcpServers, setMcpServers] = useState<any[]>([]);
   const [toolGroups, setToolGroups] = useState<typeof MCP_TOOL_GROUPS>([]);
@@ -265,14 +267,14 @@ export default function AsBotManager() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Bot className="h-6 w-6 text-primary" />AS-BOT 配置</h1>
+          <h1 className="text-2xl font-bold flex items-center gap-2"><Bot className="h-6 w-6 text-primary" />{t("k_6446c15db1")}</h1>
           <p className="text-muted-foreground text-sm mt-1">角色化智能体的配置编辑(角色创建时自动创建同名 AS-BOT)</p>
         </div>
       </div>
 
       <Tabs defaultValue="asBots">
         <TabsList>
-          <TabsTrigger value="asBots">AS-BOT 定义</TabsTrigger>
+          <TabsTrigger value="asBots">{t("k_9bc2af27c4")}</TabsTrigger>
         </TabsList>
 
         {/* ── AS-BOT 列表 ── */}
@@ -293,9 +295,9 @@ export default function AsBotManager() {
                       <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
                         {w.display_name || w.name}
                         <span className="text-xs text-muted-foreground">({w.name})</span>
-                        {!!w.is_builtin && <Badge variant="secondary" className="text-xs"><Lock className="h-2.5 w-2.5 mr-0.5 inline" />系统内置</Badge>}
-                        {w.chart_enabled && <Badge variant="outline" className="text-xs">图表</Badge>}
-                        {!w.is_active && <span className="text-xs text-destructive">已禁用</span>}
+                        {!!w.is_builtin && <Badge variant="secondary" className="text-xs"><Lock className="h-2.5 w-2.5 mr-0.5 inline" />{t("k_ae8da0a608")}</Badge>}
+                        {w.chart_enabled && <Badge variant="outline" className="text-xs">{t("k_a66b71e29e")}</Badge>}
+                        {!w.is_active && <span className="text-xs text-destructive">{t("k_0fe5a98e9f")}</span>}
                       </div>
                       <div className="text-xs text-muted-foreground truncate">{w.description}</div>
                       <button
@@ -336,7 +338,7 @@ export default function AsBotManager() {
                         <span key={`s${sk}`} className="text-xs bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded">技能: {sk}</span>
                       ))}
                       {capabilityCount === 0 && (
-                        <span className="text-xs text-muted-foreground">未配置任何能力</span>
+                        <span className="text-xs text-muted-foreground">{t("k_28fc8a5ff0")}</span>
                       )}
                     </div>
                   )}
@@ -344,7 +346,7 @@ export default function AsBotManager() {
               );
             })}
             {!loading && asBots.length === 0 && (
-              <div className="text-sm text-muted-foreground text-center py-12">暂无 AS-BOT，请先创建角色</div>
+              <div className="text-sm text-muted-foreground text-center py-12">{t("k_95955874e7")}</div>
             )}
           </div>
         </TabsContent>
@@ -356,7 +358,7 @@ export default function AsBotManager() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {isReadOnly ? '查看 AS-BOT 配置' : '编辑 AS-BOT'}
-              {isReadOnly && <Badge variant="secondary" className="text-xs"><Lock className="h-3 w-3 mr-1" />系统内置 · 不可编辑</Badge>}
+              {isReadOnly && <Badge variant="secondary" className="text-xs"><Lock className="h-3 w-3 mr-1" />{t("k_f2ed07bc58")}</Badge>}
             </DialogTitle>
             <DialogDescription>{isReadOnly ? '该 AS-BOT 为系统内置配置，仅支持查看' : '定义角色化智能体的人格、工具、技能与资源引用'}</DialogDescription>
           </DialogHeader>
@@ -366,13 +368,13 @@ export default function AsBotManager() {
               <Field label="标识 (as_bot_key)">
                 <Input value={form.as_bot_key} disabled={!!editing} onChange={(e) => setForm({ ...form, as_bot_key: e.target.value })} placeholder="data_analyst" />
               </Field>
-              <Field label="名称">
+              <Field label={t("k_1be7ae4fc2")}>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="data_analyst" />
               </Field>
-              <Field label="显示名称">
-                <Input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} placeholder="数据分析师" />
+              <Field label={t("k_75ae6a8a7d")}>
+                <Input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} placeholder={t("k_a13c6b88bd")} />
               </Field>
-              <Field label="分类">
+              <Field label={t("k_435c5259e4")}>
                 <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{CATEGORIES.map((c) => (<SelectItem key={c} value={c}>{c}</SelectItem>))}</SelectContent>
@@ -380,8 +382,8 @@ export default function AsBotManager() {
               </Field>
             </div>
 
-            <Field label="描述">
-              <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="这个 AS-BOT 的职责概述" />
+            <Field label={t("k_412f54dc38")}>
+              <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder={t("k_47822cc724")} />
             </Field>
 
             <Field label="系统提示词 (角色设定)">
@@ -389,14 +391,14 @@ export default function AsBotManager() {
             </Field>
 
             <div className="grid grid-cols-3 gap-4">
-              <Field label="职责"><Textarea rows={2} value={form.persona?.responsibility || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, responsibility: e.target.value } })} /></Field>
-              <Field label="风格"><Textarea rows={2} value={form.persona?.style || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, style: e.target.value } })} /></Field>
-              <Field label="边界"><Textarea rows={2} value={form.persona?.boundary || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, boundary: e.target.value } })} /></Field>
+              <Field label={t("k_db181821a1")}><Textarea rows={2} value={form.persona?.responsibility || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, responsibility: e.target.value } })} /></Field>
+              <Field label={t("k_a4ce420c69")}><Textarea rows={2} value={form.persona?.style || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, style: e.target.value } })} /></Field>
+              <Field label={t("k_b90609d07d")}><Textarea rows={2} value={form.persona?.boundary || ''} onChange={(e) => setForm({ ...form, persona: { ...form.persona, boundary: e.target.value } })} /></Field>
             </div>
 
             <Field label="工具权限 (逐工具粒度 — 未勾选的工具不会注册，LLM 无从调用)">
               <p className="text-sm text-muted-foreground">空配置＝无工具权限。实际可用能力还需通过工作空间、Harness 与用户权限校验。</p>
-              <p className="text-xs text-destructive">子任务隔离尚未完成，配置会保留但不会注册执行，并在会话权限中显示不可用原因。</p>
+              <p className="text-xs text-destructive">{t("k_8ee6487a9b")}</p>
               
               <div className="space-y-3">
                 {toolGroups.map((g) => {
@@ -440,7 +442,7 @@ export default function AsBotManager() {
                 能不能用由角色权限与功能的 AI 级别决定，改级别请到「角色权限 → 菜单与功能」。
               </p>
               {functionActions.length === 0 ? (
-                <p className="text-xs text-muted-foreground py-1">当前角色未继承任何功能能力</p>
+                <p className="text-xs text-muted-foreground py-1">{t("k_51f23243a9")}</p>
               ) : (
                 <div className="space-y-1 max-h-[180px] overflow-y-auto">
                   {functionActions.map((a) => {
@@ -474,7 +476,7 @@ export default function AsBotManager() {
                             </code>
                           </label>
                           {!a.available && (
-                            <Badge variant="outline" className="text-[9px] flex-shrink-0">不可用</Badge>
+                            <Badge variant="outline" className="text-[9px] flex-shrink-0">{t("k_beff4a1cd1")}</Badge>
                           )}
                         </div>
                         {a.desc && <p className="text-[10px] text-muted-foreground pl-6">{a.desc}</p>}
@@ -489,7 +491,7 @@ export default function AsBotManager() {
             </Field>
 
             <Field label="标准工具白名单 (当前会话沙箱)">
-              <p className="text-xs text-muted-foreground">命令执行必须同时授权读取；未授权写入或编辑时目录只读。子任务隔离未验证前会明确拒绝启用。</p>
+              <p className="text-xs text-muted-foreground">{t("k_ba82234b4d")}</p>
               <div className="flex flex-wrap gap-2">
                 {standardTools.map((t) => {
                   const active = (form.tools?.standard || []).includes(t.name);
@@ -504,8 +506,8 @@ export default function AsBotManager() {
             </Field>
 
             <div className="grid grid-cols-2 gap-4">
-              <Field label="引用 MCP 服务">
-                <p className="mb-2 text-xs text-muted-foreground">在此绑定服务并逐工具授权，无需再关联工作空间。空绑定不开放任何外部 MCP。</p>
+              <Field label={t("k_6fbd803d2a")}>
+                <p className="mb-2 text-xs text-muted-foreground">{t("k_0c6608c435")}</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {mcpServers.filter((s) => s.is_active).map((s) => {
                     const active = (form.mcp_server_ids || []).includes(s.id);
@@ -513,11 +515,11 @@ export default function AsBotManager() {
                       <Badge key={s.id} variant={active ? 'default' : 'outline'} className="cursor-pointer"
                         onClick={() => setForm({ ...form, mcp_server_ids: toggleArr(form.mcp_server_ids || [], s.id) as number[] })}>
                         {s.label || s.name}
-                        {s.builtin ? <span className="ml-1 text-[10px] opacity-70">内置</span> : null}
+                        {s.builtin ? <span className="ml-1 text-[10px] opacity-70">{t("k_09ceea7644")}</span> : null}
                       </Badge>
                     );
                   })}
-                  {mcpServers.filter((s) => s.is_active).length === 0 && <span className="text-xs text-muted-foreground">无可用 MCP</span>}
+                  {mcpServers.filter((s) => s.is_active).length === 0 && <span className="text-xs text-muted-foreground">{t("k_c6bdf555e8")}</span>}
                 </div>
                 {(form.mcp_server_ids || []).map(id => {
                   const srv = mcpServers.find(s => s.id === id);
@@ -529,11 +531,11 @@ export default function AsBotManager() {
                     {srv?.builtin || srv?.transport === 'builtin' ? (
                       // 内置服务在会话进程内直接执行（带真实身份与出站守卫），
                       // 不得套用远程 MCP 的“当前禁止执行”文案误导管理员。
-                      <p className="text-muted-foreground">平台内置服务：会话内直接执行；连接配置与可查范围由部署侧托管，不在此页面显示。</p>
+                      <p className="text-muted-foreground">{t("k_7a7cc0b761")}</p>
                     ) : (
-                      <p className="text-destructive">HTTP/SSE 远程 MCP 尚缺可信身份和数据治理契约，当前禁止执行；stdio 仅在只读、禁网沙箱内运行，且须显式授权读取。</p>
+                      <p className="text-destructive">{t("k_5c5f7a6c7b")}</p>
                     )}
-                    {tools.length === 0 && <p className="text-destructive">缺少工具目录，请先在 MCP 管理中完成工具发现；不会默认授权全部工具。</p>}
+                    {tools.length === 0 && <p className="text-destructive">{t("k_8c5175298a")}</p>}
                     <div className="flex flex-wrap gap-1 mt-1">{tools.map((t: any) => <Badge key={t.name}
                       title={t.description || t.name} className="cursor-pointer"
                       variant={selected.includes(t.name) ? 'default' : 'outline'}
@@ -542,7 +544,7 @@ export default function AsBotManager() {
                   </div>;
                 })}
               </Field>
-              <Field label="引用知识库">
+              <Field label={t("k_8625efdd21")}>
                 <p className="mb-2 text-xs text-muted-foreground">知识库使用范围以当前 AS-BOT 的显式绑定为准，无需再关联工作空间；空绑定不允许知识库检索。已绑定多个库时服务端会并行检索全部库并跨源归并，不靠绑定顺序选库。</p>
                 <div className="flex flex-wrap gap-2 max-h-[140px] overflow-y-auto">
                   {knowledgeBases.map((kb) => {
@@ -560,7 +562,7 @@ export default function AsBotManager() {
                       </Badge>
                     );
                   })}
-                  {knowledgeBases.length === 0 && <span className="text-xs text-muted-foreground">无可用知识库</span>}
+                  {knowledgeBases.length === 0 && <span className="text-xs text-muted-foreground">{t("k_a4e921d64b")}</span>}
                 </div>
               </Field>
             </div>
@@ -595,7 +597,7 @@ export default function AsBotManager() {
                 }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">默认（跟随工作空间默认 Harness）</SelectItem>
+                  <SelectItem value="0">{t("k_eda5dce5f9")}</SelectItem>
                   {cliLayers.map((l: any) => (
                     <SelectItem key={l.id} value={String(l.id)}>
                       {l.display_name || l.name}{l.status !== 'active' ? ' ·已停用' : ''}
@@ -627,7 +629,7 @@ export default function AsBotManager() {
                   });
                 })()}
                 {modelOptions.length === 0 && (form.models || []).length === 0 && (
-                  <span className="text-xs text-muted-foreground">未获取到 Harness 模型列表（将按默认优先级取模型）</span>
+                  <span className="text-xs text-muted-foreground">{t("k_ed92120798")}</span>
                 )}
               </div>
             </Field>
@@ -635,18 +637,18 @@ export default function AsBotManager() {
             <div className="grid grid-cols-2 gap-4 items-end">
               <div className="flex items-center gap-2">
                 <Switch checked={!!form.chart_enabled} onCheckedChange={(v) => setForm({ ...form, chart_enabled: v })} />
-                <span className="text-sm">注入图表契约</span>
+                <span className="text-sm">{t("k_6041d6d363")}</span>
               </div>
               <div className="flex items-center gap-2">
                 <Switch checked={!!form.is_active} onCheckedChange={(v) => setForm({ ...form, is_active: v })} />
-                <span className="text-sm">启用</span>
+                <span className="text-sm">{t("k_d4e9ca3dd4")}</span>
               </div>
             </div>
           </div>
 
           <DialogFooter>
             <Button variant="ghost" onClick={() => setFormOpen(false)}>{isReadOnly ? '关闭' : '取消'}</Button>
-            {!isReadOnly && <Button onClick={handleSave}>保存</Button>}
+            {!isReadOnly && <Button onClick={handleSave}>{t("k_fadf24dbc5")}</Button>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -25,6 +25,7 @@ import {
   CUSTOM_PRESET, enabledPresets, effectiveGranularity, formatTime,
   fromInputValue, maxEndFor, presetLabel, resolvePreset, toInputValue, type TimeGranularity,
 } from '@/lib/timePresets';
+import { useTranslation } from 'react-i18next';
 
 // Lucide icon map for chart types
 const CHART_ICON_MAP: Record<string, React.ComponentType<any>> = {
@@ -1657,6 +1658,7 @@ function reasonOf(e: unknown): string {
 }
 
 function DashboardChartInner({ chartType, data, config, style, loading, chartId, dashboardId, chartName, visual, draft = false, onDrill, motionAnimate }: Props) {
+  const { t } = useTranslation('ui');
   // 依赖 theme(主题 id)而非 isDark: 同明暗主题切换(dark→tech)也需重建图表以读取新令牌色
   const theme = useThemeStore(s => s.theme);
   const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
@@ -2184,7 +2186,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
               }}
               style={presetStyle}>
               {presets.map(p => <option key={p.key} value={p.key}>{presetLabel(p)}</option>)}
-              <option value={CUSTOM_PRESET}>自由选择</option>
+              <option value={CUSTOM_PRESET}>{t("k_a466412e0a")}</option>
             </select>}
           </div>
         </div>
@@ -2463,7 +2465,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
               e.stopPropagation();
               useDashboardStore.getState().refreshSingleChart(chartId!, { dashboardId, chartName });
             }}
-            title="刷新此图表"
+            title={t("k_a6ce897c8e")}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
               style={isLoading ? { animation: 'spin 1s linear infinite' } : undefined}>
@@ -2571,7 +2573,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
                 style={btnStyle(false, currentPage <= 1)}
                 onClick={() => goPage(currentPage - 1)}
                 disabled={currentPage <= 1}
-                title="上一页"
+                title={t("k_b41561d807")}
               >‹</button>
               {pageNumbers.map((p, idx) =>
                 p === '...'
@@ -2641,7 +2643,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
             e.stopPropagation();
             useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName });
           }}
-          title="刷新此图表"
+          title={t("k_a6ce897c8e")}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
             style={isLoading ? { animation: 'spin 1s linear infinite' } : undefined}>
@@ -2675,7 +2677,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
           color: '#b45309', fontSize: 12, lineHeight: 1.6,
         }}>
           <span>{chartName ? `「${chartName}」` : '该图表'}渲染失败：{renderError}</span>
-          <span style={{ color: '#999' }}>可换个图型重试，或在「明细」页看原始数据。</span>
+          <span style={{ color: '#999' }}>{t("k_f3286ee9f5")}</span>
         </div>
       )}
     </div>

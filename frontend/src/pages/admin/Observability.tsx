@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -28,6 +29,7 @@ import {
   type SessionRow, type TraceRow, type TraceDetail, type CommonFilters, type QuotaInfo,
 } from '@/api/observability';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 const fmt = (n: number | null | undefined, digits = 0) =>
   n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: digits });
@@ -141,6 +143,7 @@ function TextBlock({ label, text }: { label: string; text: string | null | undef
 }
 
 export default function Observability() {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState('overview');
   const [filters, setFilters] = useState<CommonFilters>(() => ({ ...presetRange('1h') }));
   const [entrypoint, setEntrypoint] = useState('all');
@@ -256,68 +259,68 @@ export default function Observability() {
     <div className="space-y-4 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold flex items-center gap-2"><Activity className="h-5 w-5" /> LLM 交互可观测</h1>
-          <p className="text-sm text-muted-foreground">Session 清单 / 用户与模型用量 / 对话执行 Trace / 工具与 SQL 产物（受控管理员视图）</p>
+          <h1 className="text-xl font-semibold flex items-center gap-2"><Activity className="h-5 w-5" /> {t("k_d07aac91df")}</h1>
+          <p className="text-sm text-muted-foreground">{t("k_032c8a6427")}</p>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> 刷新</Button>
+        <Button variant="outline" size="sm" onClick={refresh}><RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} /> {t("k_38108eaa1d")}</Button>
       </div>
 
       {/* 过滤条 */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-3">
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">入口</label>
+          <label className="text-xs text-muted-foreground">{t("k_38e9cd1ffb")}</label>
           <Select value={entrypoint} onValueChange={setEntrypoint}>
             <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
             <SelectContent>{ENTRYPOINTS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">状态</label>
+          <label className="text-xs text-muted-foreground">{t("k_62e951a692")}</label>
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
-              <SelectItem value="success">成功</SelectItem>
-              <SelectItem value="error">错误</SelectItem>
+              <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
+              <SelectItem value="success">{t("k_51991a5d11")}</SelectItem>
+              <SelectItem value="error">{t("k_b859c7be75")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">处理方式</label>
+          <label className="text-xs text-muted-foreground">{t("k_8085ebce1a")}</label>
           <Select value={handledBy} onValueChange={setHandledBy}>
             <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
-              <SelectItem value="agent">模型（Harness）</SelectItem>
-              <SelectItem value="intent_gate">前置意图层直答</SelectItem>
+              <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
+              <SelectItem value="agent">{t("k_d5b5ef9f7f")}</SelectItem>
+              <SelectItem value="intent_gate">{t("k_7ee49dad6c")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">模型通道</label>
+          <label className="text-xs text-muted-foreground">{t("k_6df119c076")}</label>
           <Select value={channel} onValueChange={setChannel}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部通道</SelectItem>
-              <SelectItem value="qoder-gateway">Qoder 网关（按 Credit）</SelectItem>
-              <SelectItem value="anthropic-direct">供应商直连（按 Token）</SelectItem>
-              <SelectItem value="not-executed">未走 Harness（前置拦截）</SelectItem>
-              <SelectItem value="unrecorded">未记录（当时未落库）</SelectItem>
+              <SelectItem value="all">{t("k_25f2a403bc")}</SelectItem>
+              <SelectItem value="qoder-gateway">{t("k_63999d32e9")}</SelectItem>
+              <SelectItem value="anthropic-direct">{t("k_7fecb86f77")}</SelectItem>
+              <SelectItem value="not-executed">{t("k_21a4b5456d")}</SelectItem>
+              <SelectItem value="unrecorded">{t("k_1c028f5541")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">模型</label>
+          <label className="text-xs text-muted-foreground">{t("k_98fd0cbd9c")}</label>
           <Select value={modelRef} onValueChange={setModelRef}>
-            <SelectTrigger className="w-52"><SelectValue placeholder="全部模型" /></SelectTrigger>
+            <SelectTrigger className="w-52"><SelectValue placeholder={t("k_688facc5f5")} /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部模型</SelectItem>
+              <SelectItem value="all">{t("k_688facc5f5")}</SelectItem>
               {modelOptions.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">时间范围（本地时间）</label>
+          <label className="text-xs text-muted-foreground">{t("k_438e783e45")}</label>
           <div className="flex items-center gap-1">
             {RANGE_PRESETS.map(p => (
               <Button key={p.key} size="sm" variant={rangePreset === p.key ? 'default' : 'outline'}
@@ -333,47 +336,47 @@ export default function Observability() {
               </PopoverTrigger>
               <PopoverContent align="start" className="w-64 space-y-3">
                 <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">起</label>
+                  <label className="text-xs text-muted-foreground">{t("k_29195326fd")}</label>
                   <Input type="datetime-local" value={toInputDT(start)}
                     onChange={e => { setRangePreset('custom'); setStart(toApiDT(e.target.value)); }} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">止</label>
+                  <label className="text-xs text-muted-foreground">{t("k_bc30bf6b96")}</label>
                   <Input type="datetime-local" value={toInputDT(end)}
                     onChange={e => { setRangePreset('custom'); setEnd(toApiDT(e.target.value)); }} />
                 </div>
-                <Button size="sm" className="w-full" onClick={() => { setRangeOpen(false); applyFilters(); }}>应用</Button>
+                <Button size="sm" className="w-full" onClick={() => { setRangeOpen(false); applyFilters(); }}>{t("k_4562024dde")}</Button>
               </PopoverContent>
             </Popover>
           </div>
         </div>
-        <Button size="sm" onClick={applyFilters}>应用</Button>
+        <Button size="sm" onClick={applyFilters}>{t("k_4562024dde")}</Button>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="overview"><Activity className="h-4 w-4 mr-1" />概览</TabsTrigger>
-          <TabsTrigger value="funnel"><Filter className="h-4 w-4 mr-1" />意图漏斗</TabsTrigger>
-          <TabsTrigger value="sessions"><MessagesSquare className="h-4 w-4 mr-1" />会话清单</TabsTrigger>
+          <TabsTrigger value="overview"><Activity className="h-4 w-4 mr-1" />{t("k_5060421d15")}</TabsTrigger>
+          <TabsTrigger value="funnel"><Filter className="h-4 w-4 mr-1" />{t("k_5f5b05bffd")}</TabsTrigger>
+          <TabsTrigger value="sessions"><MessagesSquare className="h-4 w-4 mr-1" />{t("k_007b266214")}</TabsTrigger>
           <TabsTrigger value="traces"><GitBranch className="h-4 w-4 mr-1" />Trace</TabsTrigger>
-          <TabsTrigger value="models"><Sparkles className="h-4 w-4 mr-1" />模型用量</TabsTrigger>
-          <TabsTrigger value="users"><UsersIcon className="h-4 w-4 mr-1" />用户用量</TabsTrigger>
-          <TabsTrigger value="query_history"><HistoryIcon className="h-4 w-4 mr-1" />查询历史</TabsTrigger>
+          <TabsTrigger value="models"><Sparkles className="h-4 w-4 mr-1" />{t("k_5510a8f0bf")}</TabsTrigger>
+          <TabsTrigger value="users"><UsersIcon className="h-4 w-4 mr-1" />{t("k_5022606e4f")}</TabsTrigger>
+          <TabsTrigger value="query_history"><HistoryIcon className="h-4 w-4 mr-1" />{t("k_6079f66ae4")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard icon={MessagesSquare} label="会话数" value={fmt(s?.sessions)} />
-            <StatCard icon={GitBranch} label="回合数" value={fmt(s?.turns)} hint={`用户 ${fmt(s?.users)}`} />
-            <StatCard icon={Sparkles} label="模型请求" value={fmt(s?.llm_calls)} hint={`平均耗时 ${fmt(s?.avg_duration_ms)}ms`} />
-            <StatCard icon={AlertCircle} label="错误" value={fmt(s?.errors)} />
-            <StatCard icon={Activity} label="总 Token" value={fmt(s?.total_tokens)}
+            <StatCard icon={MessagesSquare} label={t("k_4d72abd2e9")} value={fmt(s?.sessions)} />
+            <StatCard icon={GitBranch} label={t("k_e4197d757a")} value={fmt(s?.turns)} hint={`用户 ${fmt(s?.users)}`} />
+            <StatCard icon={Sparkles} label={t("k_890ceb1b84")} value={fmt(s?.llm_calls)} hint={`平均耗时 ${fmt(s?.avg_duration_ms)}ms`} />
+            <StatCard icon={AlertCircle} label={t("k_b859c7be75")} value={fmt(s?.errors)} />
+            <StatCard icon={Activity} label={t("k_2d5ae33603")} value={fmt(s?.total_tokens)}
               hint="仅供应商直连通道回报；Qoder 网关不回报 token" />
-            <StatCard icon={Activity} label="Credit（主口径）" value={fmt(s?.credits, 4)}
+            <StatCard icon={Activity} label={t("k_58e95fffe1")} value={fmt(s?.credits, 4)}
               hint="仅 Qoder 网关通道；直连不产生 Credit" />
             {/* 成本按币种分别显示：Qoder 通道是按资源包单价折算的 CNY、直连是供应商上报的 USD，
                 历史实现把两者直接相加再挂一个“MAX 出来的币种”，是假数字。 */}
-            <StatCard icon={Activity} label="成本（估算）"
+            <StatCard icon={Activity} label={t("k_eb9c6ad937")}
               value={(s?.cost_by_currency?.length)
                 ? '≈ ' + s.cost_by_currency.map(c => fmtCost(c.amount, c.currency)).join(' + ')
                 : '—'}
@@ -381,15 +384,15 @@ export default function Observability() {
                 ? `分币种统计：${s.cost_by_currency.map(c => `${(c.currency || '?').toUpperCase()} ${fmt(c.turns)} 回合`).join('，')}；均为估算非账单值`
                 : '按币种分别统计；均为估算非账单值'}
             />
-            <StatCard icon={ThumbsUp} label="满意率" value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
+            <StatCard icon={ThumbsUp} label={t("k_06aa7bd1ca")} value={satRate === null ? '—' : satRate + '%'} hint={`👍${fmt(s?.thumbs_up)} 👎${fmt(s?.thumbs_down)}`} />
             {/* 前置意图漏斗：拦截掉的回合不起子进程、不烧 credit */}
             <StatCard
-              icon={Filter} label="前置拦截率"
+              icon={Filter} label={t("k_26bf0fbfdc")}
               value={s?.intercept_rate != null ? Math.round(s.intercept_rate * 1000) / 10 + '%' : '—'}
               hint={`本地直答 ${fmt(s?.intercepted)} / 回合 ${fmt(s?.turns)}`}
             />
             <StatCard
-              icon={Activity} label="节省 Credit（估算）"
+              icon={Activity} label={t("k_dfe182df6e")}
               value={fmt(s?.estimated_saved_credits, 2)}
               hint="拦截回合数 × agent 回合均值 credit；Qoder 不回报单回合实测成本"
             />
@@ -397,13 +400,13 @@ export default function Observability() {
           {/* 模型通道分桶：credit 与 token 是两个不可互推的量（Qoder 不报 token、直连没有 credit），
               混在一行里就会得出“直连什么都没花”的错结论。 */}
           <div className="rounded-lg border bg-card p-4">
-            <div className="text-sm font-medium mb-2">模型通道</div>
+            <div className="text-sm font-medium mb-2">{t("k_6df119c076")}</div>
             {s?.by_channel?.length ? (
               <table className="w-full text-sm">
                 <thead><tr className="text-muted-foreground text-xs border-b">
-                  <th className="text-left py-1">通道</th><th className="text-right">回合</th>
-                  <th className="text-right">模型请求</th><th className="text-right">Token</th>
-                  <th className="text-right">Credit</th><th className="text-right">成本（估算）</th>
+                  <th className="text-left py-1">{t("k_f3c5b9d1e6")}</th><th className="text-right">{t("k_52d27a21f8")}</th>
+                  <th className="text-right">{t("k_890ceb1b84")}</th><th className="text-right">Token</th>
+                  <th className="text-right">Credit</th><th className="text-right">{t("k_eb9c6ad937")}</th>
                 </tr></thead>
                 <tbody>
                   {s.by_channel.map(c => {
@@ -431,28 +434,28 @@ export default function Observability() {
                 </tbody>
               </table>
             ) : (
-              <div className="text-sm text-muted-foreground">当前时间窗内没有 Harness 回合</div>
+              <div className="text-sm text-muted-foreground">{t("k_451c95d1e9")}</div>
             )}
             {!!s?.direct_turns && (
               <p className="mt-2 text-xs text-muted-foreground">
                 本窗口有 {fmt(s.direct_turns)} 个回合走供应商直连：它们的成本由百炼等服务商按 Token 结算，
-                <span className="font-medium text-foreground">不消耗也不会出现在下方 Qoder Credit 配额里</span>。
+                <span className="font-medium text-foreground">{t("k_c0f27b46f9")}</span>。
               </p>
             )}
             {/* 估算依据必须写清来源：这两个数字都不是账单，且币种不同不能相加 */}
             <p className="mt-2 text-xs text-muted-foreground">
-              成本均为<span className="font-medium text-foreground">估算值，非账单金额</span>：
+              成本均为<span className="font-medium text-foreground">{t("k_220cc0a6c3")}</span>：
               Qoder 网关 = credit × 资源包官方单价折算（CNY，Qoder 不回报账单成本）；
               供应商直连 = CLI 自报成本（USD，属价格表估算）。两者币种不同，不能相加。
             </p>
           </div>
           <QuotaPanel />
           <div className="rounded-lg border bg-card p-4">
-            <div className="text-sm font-medium mb-2">按日趋势</div>
+            <div className="text-sm font-medium mb-2">{t("k_ffb8802b1a")}</div>
             {summary?.daily?.length ? (
               <table className="w-full text-sm">
                 <thead><tr className="text-muted-foreground text-xs border-b">
-                  <th className="text-left py-1">日期</th><th className="text-right">回合</th><th className="text-right">Token</th><th className="text-right">Credit</th><th className="text-right">错误</th>
+                  <th className="text-left py-1">{t("k_b6fed9af83")}</th><th className="text-right">{t("k_52d27a21f8")}</th><th className="text-right">Token</th><th className="text-right">Credit</th><th className="text-right">{t("k_b859c7be75")}</th>
                 </tr></thead>
                 <tbody>{summary.daily.map(d => (
                   <tr key={d.dt} className="border-b last:border-0">
@@ -477,7 +480,7 @@ export default function Observability() {
               `${r.username}(${r.user_id})`,
               r.datasource_id ? (dsNames[r.datasource_id] || '数据源已删除') : '未绑定',
               fmt(r.turns), fmt(r.total_tokens), fmt(r.credits, 2), fmt(r.errors), fmtTime(r.last_active),
-              <Button size="sm" variant="ghost" onClick={() => { setConvFilter(r.conversation_id); setTab('traces'); }}>查看 Trace</Button>,
+              <Button size="sm" variant="ghost" onClick={() => { setConvFilter(r.conversation_id); setTab('traces'); }}>{t("k_3d8532c4ea")}</Button>,
             ])}
             total={sessions.total} page={sessPage} pageSize={obsPageSize} onPage={setSessPage}
             onPageSizeChange={(n) => { setObsPageSize(n); setSessPage(1); }}
@@ -488,7 +491,7 @@ export default function Observability() {
           {convFilter > 0 && (
             <div className="mb-2 flex items-center gap-2 text-sm">
               <Badge variant="secondary">会话 #{convFilter}</Badge>
-              <button className="text-muted-foreground hover:text-foreground" onClick={() => setConvFilter(0)}>清除会话过滤</button>
+              <button className="text-muted-foreground hover:text-foreground" onClick={() => setConvFilter(0)}>{t("k_e469cba0a5")}</button>
             </div>
           )}
           <DataTable
@@ -514,7 +517,7 @@ export default function Observability() {
                 : (r.handled_by === 'intent_gate' ? '—' : '不回报'),
               `${fmt(r.duration_ms)}ms`,
               r.feedback_satisfied === 1 ? <ThumbsUp className="h-4 w-4 text-green-600" /> : r.feedback_satisfied === 0 ? <ThumbsDown className="h-4 w-4 text-red-500" /> : '—',
-              <Button size="sm" variant="ghost" onClick={() => openTrace(r.trace_id)}>详情</Button>,
+              <Button size="sm" variant="ghost" onClick={() => openTrace(r.trace_id)}>{t("k_4f55ee1e68")}</Button>,
             ])}
             total={traces.total} page={tracePage} pageSize={obsPageSize} onPage={setTracePage}
             onPageSizeChange={(n) => { setObsPageSize(n); setTracePage(1); }}
@@ -551,8 +554,8 @@ export default function Observability() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               Trace 详情
-              {detail?.trace.feedback_satisfied === 1 && <Badge className="bg-green-600"><ThumbsUp className="h-3 w-3 mr-1" />满意</Badge>}
-              {detail?.trace.feedback_satisfied === 0 && <Badge variant="destructive"><ThumbsDown className="h-3 w-3 mr-1" />不满意</Badge>}
+              {detail?.trace.feedback_satisfied === 1 && <Badge className="bg-green-600"><ThumbsUp className="h-3 w-3 mr-1" />{t("k_fda7539bde")}</Badge>}
+              {detail?.trace.feedback_satisfied === 0 && <Badge variant="destructive"><ThumbsDown className="h-3 w-3 mr-1" />{t("k_f497cad99f")}</Badge>}
             </DialogTitle>
             <DialogDescription className="font-mono text-xs">{detail?.trace.trace_id}</DialogDescription>
           </DialogHeader>
@@ -572,9 +575,9 @@ export default function Observability() {
                 <KV k="耗时" v={`${fmt(detail.trace.duration_ms)}ms`} />
               </div>
               <TextBlock label={`问题（${detail.trace.question?.length || 0} 字）`} text={detail.trace.question} />
-              <TextBlock label="最终回答" text={detail.trace.final_answer} />
-              {detail.trace.error_message ? <TextBlock label="错误" text={detail.trace.error_message} /> : null}
-              {detail.trace.feedback_reason ? <TextBlock label="反馈原因" text={detail.trace.feedback_reason} /> : null}
+              <TextBlock label={t("k_5af5d02385")} text={detail.trace.final_answer} />
+              {detail.trace.error_message ? <TextBlock label={t("k_b859c7be75")} text={detail.trace.error_message} /> : null}
+              {detail.trace.feedback_reason ? <TextBlock label={t("k_05dda3d34e")} text={detail.trace.feedback_reason} /> : null}
               <div>
                 <div className="font-medium mb-1">执行步骤 / 产物（{detail.spans.length}）</div>
                 <p className="text-xs text-muted-foreground mb-2">
@@ -597,10 +600,10 @@ export default function Observability() {
                       </div>
                       <TextBlock label="输入 (input)" text={sp.input_text} />
                       <TextBlock label="输出 (output / SQL / 产物)" text={sp.output_text} />
-                      {sp.error_text ? <TextBlock label="错误" text={sp.error_text} /> : null}
+                      {sp.error_text ? <TextBlock label={t("k_b859c7be75")} text={sp.error_text} /> : null}
                     </div>
                   ))}
-                  {detail.spans.length === 0 && <div className="text-muted-foreground text-xs">该 trace 无 span 明细。</div>}
+                  {detail.spans.length === 0 && <div className="text-muted-foreground text-xs">{t("k_bf4da70cf6")}</div>}
                 </div>
               </div>
             </div>
@@ -619,6 +622,7 @@ export default function Observability() {
  * 读取要起一次执行层 CLI（服务端带 TTL 缓存），故独立于概览刷新节律自己加载。
  */
 function QuotaPanel() {
+  const { t } = useTranslation('ui');
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -646,7 +650,7 @@ function QuotaPanel() {
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Gauge className="h-4 w-4" /> Qoder Credit 配额（账号级真实消耗）
-          {quota?.is_quota_exceeded && <Badge variant="destructive">配额已耗尽</Badge>}
+          {quota?.is_quota_exceeded && <Badge variant="destructive">{t("k_707faf6f86")}</Badge>}
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {quota?.available && (
@@ -661,7 +665,7 @@ function QuotaPanel() {
         </div>
       </div>
 
-      {!quota && <div className="text-sm text-muted-foreground">正在读取账号 credit 配额…（需起一次 Harness CLI）</div>}
+      {!quota && <div className="text-sm text-muted-foreground">{t("k_7ee48fba36")}</div>}
       {quota && !quota.available && (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -714,7 +718,7 @@ function DataTable({ head, rows, total, page, pageSize, onPage, onPageSizeChange
             <tr key={i} className="border-b last:border-0 hover:bg-muted/40">
               {r.map((c, j) => <td key={j} className="px-3 py-2 align-top">{c}</td>)}
             </tr>
-          )) : <tr><td colSpan={head.length} className="px-3 py-8 text-center text-muted-foreground">暂无数据</td></tr>}
+          )) : <tr><td colSpan={head.length} className="px-3 py-8 text-center text-muted-foreground">{t("k_b246458f20")}</td></tr>}
         </tbody>
       </table>
       {onPage && total !== undefined && (
@@ -741,6 +745,7 @@ function DataTable({ head, rows, total, page, pageSize, onPage, onPageSizeChange
  * 不给一张"看起来正常"的空表（no-silent-degradation）。
  */
 function FunnelPanel({ filters }: { filters: CommonFilters }) {
+  const { t } = useTranslation('ui');
   const [stats, setStats] = useState<FunnelStats | null>(null);
   const [rows, setRows] = useState<{ items: InterceptRow[]; total: number }>({ items: [], total: 0 });
   const [decision, setDecision] = useState('all');
@@ -800,22 +805,22 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard icon={Filter} label="本轮判定数" value={fmt(o?.judged)} hint={loading ? '加载中…' : undefined} />
-        <StatCard icon={CheckCircle2} label="已本地直答" value={fmt(o?.local)}
+        <StatCard icon={Filter} label={t("k_5a44f31020")} value={fmt(o?.judged)} hint={loading ? '加载中…' : undefined} />
+        <StatCard icon={CheckCircle2} label={t("k_6d448faeaf")} value={fmt(o?.local)}
           hint={stats ? `拦截率 ${stats.intercept_rate != null ? Math.round((stats.intercept_rate || 0) * 1000) / 10 : 0}%` : undefined} />
-        <StatCard icon={Gauge} label="判定可拦（shadow）" value={fmt(o?.shadow_local)}
+        <StatCard icon={Gauge} label={t("k_40dfb51013")} value={fmt(o?.shadow_local)}
           hint={stats ? `可拦比例 ${stats.eligible_rate != null ? Math.round((stats.eligible_rate || 0) * 1000) / 10 : 0}%` : undefined} />
-        <StatCard icon={AlertCircle} label="网关异常/超预算放行" value={fmt(o?.gate_errors)}
+        <StatCard icon={AlertCircle} label={t("k_bd425797e5")} value={fmt(o?.gate_errors)}
           hint={`主动转深度分析 ${fmt(o?.forced_agent)}；平均判定 ${fmt(o?.avg_latency_ms)}ms`} />
       </div>
 
       {stats?.by_label?.length ? (
         <div className="rounded-lg border bg-card p-4">
-          <div className="text-sm font-medium mb-2">按判定标签分布</div>
+          <div className="text-sm font-medium mb-2">{t("k_1ffa34d68b")}</div>
           <table className="w-full text-sm">
             <thead><tr className="text-muted-foreground text-xs border-b">
-              <th className="text-left py-1">标签</th><th className="text-left">去向</th>
-              <th className="text-right">条数</th><th className="text-right">平均判定耗时</th>
+              <th className="text-left py-1">{t("k_ae0a7afece")}</th><th className="text-left">{t("k_1056c8860d")}</th>
+              <th className="text-right">{t("k_d67cef510f")}</th><th className="text-right">{t("k_283649ee16")}</th>
             </tr></thead>
             <tbody>{stats.by_label.map((b, i) => (
               <tr key={i} className="border-b last:border-0">
@@ -834,21 +839,21 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-3">
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">去向</label>
+          <label className="text-xs text-muted-foreground">{t("k_1056c8860d")}</label>
           <Select value={decision} onValueChange={v => { setDecision(v); setPage(1); }}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
               {Object.entries(DECISION_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">判定标签</label>
+          <label className="text-xs text-muted-foreground">{t("k_fedb9a2370")}</label>
           <Select value={label} onValueChange={v => { setLabel(v); setPage(1); }}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
               {labels.map(l => <SelectItem key={l} value={l}>{LABEL_LABELS[l] || l}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -882,13 +887,13 @@ function FunnelPanel({ filters }: { filters: CommonFilters }) {
           `${fmt(r.latency_ms)}ms`,
           r.reviewed
             ? <span className="text-xs text-muted-foreground">{r.review_note || '已标注'}</span>
-            : <span className="text-xs text-muted-foreground">未标注</span>,
+            : <span className="text-xs text-muted-foreground">{t("k_86f9195e25")}</span>,
           <div className="flex gap-1">
-            <Button size="sm" variant="ghost" title="判定成立（这条确实不需要模型）"
+            <Button size="sm" variant="ghost" title={t("k_556b48dcdb")}
               onClick={() => void markReview(r, true)}>
               <CheckCircle2 className="h-3.5 w-3.5" />
             </Button>
-            <Button size="sm" variant="ghost" title="误拦：这条应该交给模型"
+            <Button size="sm" variant="ghost" title={t("k_b71d4e1640")}
               onClick={() => void markReview(r, false)}>
               <Undo2 className="h-3.5 w-3.5" />
             </Button>

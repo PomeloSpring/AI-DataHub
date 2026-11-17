@@ -11,6 +11,8 @@ import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import client from '../../api/client';
+import { useTranslation } from 'react-i18next';
+import { t } from '@/i18n/runtime';
 
 interface Application {
   id: number;
@@ -91,8 +93,8 @@ function MultiSelect({
             />
           </div>
           <div className="flex gap-1 px-2 py-1 border-b">
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={selectAll}>全选</Button>
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearAll}>清空</Button>
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={selectAll}>{t("k_3e44b2a933")}</Button>
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearAll}>{t("k_84fcd70d42")}</Button>
           </div>
           <ScrollArea className="max-h-48">
             {filtered.map(opt => (
@@ -108,7 +110,7 @@ function MultiSelect({
               </div>
             ))}
             {filtered.length === 0 && (
-              <div className="px-2 py-3 text-sm text-muted-foreground text-center">无匹配项</div>
+              <div className="px-2 py-3 text-sm text-muted-foreground text-center">{t("k_79b78dfab0")}</div>
             )}
           </ScrollArea>
         </div>
@@ -120,6 +122,7 @@ function MultiSelect({
 // ── Main Component ────────────────────────────────────────────────
 
 export default function IntegrationApps() {
+  const { t } = useTranslation('ui');
   const [apps, setApps] = useState<Application[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -332,13 +335,13 @@ export default function IntegrationApps() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="p-3 text-left">应用名称</th>
-                <th className="p-3 text-left">状态</th>
+                <th className="p-3 text-left">{t("k_2d87d51825")}</th>
+                <th className="p-3 text-left">{t("k_62e951a692")}</th>
                 <th className="p-3 text-left">API Key</th>
-                <th className="p-3 text-left">功能</th>
-                <th className="p-3 text-left">可访问仪表盘</th>
-                <th className="p-3 text-left">频率限制</th>
-                <th className="p-3 text-left">操作</th>
+                <th className="p-3 text-left">{t("k_4e1ff3eb77")}</th>
+                <th className="p-3 text-left">{t("k_75409eded9")}</th>
+                <th className="p-3 text-left">{t("k_cad33537ae")}</th>
+                <th className="p-3 text-left">{t("k_f3ea6d345e")}</th>
               </tr>
             </thead>
             <tbody>
@@ -363,14 +366,14 @@ export default function IntegrationApps() {
                     </td>
                     <td className="p-3 text-xs">
                       <div className="flex flex-wrap gap-1">
-                        {app.enable_chat && <Badge variant="default">Chat分析</Badge>}
+                        {app.enable_chat && <Badge variant="default">{t("k_0e5e0c32d1")}</Badge>}
                         {dashIds.length > 0 && <Badge variant="secondary">Dashboard</Badge>}
-                        {!app.enable_chat && dashIds.length === 0 && <Badge variant="outline">未配置</Badge>}
+                        {!app.enable_chat && dashIds.length === 0 && <Badge variant="outline">{t("k_63595e95b7")}</Badge>}
                       </div>
                     </td>
                     <td className="p-3 text-xs">
                       {dashIds.length === 0
-                        ? <Badge variant="outline">全部</Badge>
+                        ? <Badge variant="outline">{t("k_778fc8f994")}</Badge>
                         : dashIds.map(id => {
                             const d = allDashboards.find(x => x.id === id);
                             return <Badge key={id} variant="secondary" className="mr-1 mb-0.5">{d?.name || id}</Badge>;
@@ -380,19 +383,19 @@ export default function IntegrationApps() {
                     <td className="p-3">{app.rate_limit}次/分</td>
                     <td className="p-3">
                       <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => openEdit(app)} title="编辑">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(app)} title={t("k_a7f814c0a4")}>
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleRotateKey(app.id)} title="轮换Key">
+                        <Button variant="ghost" size="sm" onClick={() => handleRotateKey(app.id)} title={t("k_0e7ba9d312")}>
                           <Key className="h-4 w-4" />
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => handleToggleStatus(app)} title={app.status === 'active' ? '禁用' : '启用'}>
                           <Shield className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handlePreview(app)} title="预览集成效果">
+                        <Button variant="ghost" size="sm" onClick={() => handlePreview(app)} title={t("k_3a5a1f5a8b")}>
                           <ExternalLink className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleDelete(app)} title="删除" className="text-destructive hover:text-destructive">
+                        <Button variant="ghost" size="sm" onClick={() => handleDelete(app)} title={t("k_3755f56f2f")} className="text-destructive hover:text-destructive">
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -401,7 +404,7 @@ export default function IntegrationApps() {
                 );
               })}
               {apps.length === 0 && (
-                <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无应用</td></tr>
+                <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_b0bcd19036")}</td></tr>
 
               )}
             </tbody>
@@ -428,21 +431,21 @@ export default function IntegrationApps() {
           <div className="space-y-4 py-4">
             <div>
               <Label>应用名称 *</Label>
-              <Input value={formValues.name} onChange={(e) => setFormValues(v => ({ ...v, name: e.target.value }))} placeholder="如：OA系统BI模块" />
+              <Input value={formValues.name} onChange={(e) => setFormValues(v => ({ ...v, name: e.target.value }))} placeholder={t("k_1d3d40d3b8")} />
             </div>
             <div>
-              <Label>描述</Label>
-              <Input value={formValues.description} onChange={(e) => setFormValues(v => ({ ...v, description: e.target.value }))} placeholder="应用用途说明" />
+              <Label>{t("k_412f54dc38")}</Label>
+              <Input value={formValues.description} onChange={(e) => setFormValues(v => ({ ...v, description: e.target.value }))} placeholder={t("k_aa717b4149")} />
             </div>
             <div className="flex items-center justify-between">
-              <Label>启用 Chat 数据分析</Label>
+              <Label>{t("k_74155d36e6")}</Label>
               <Switch
                 checked={formValues.enable_chat}
                 onCheckedChange={(checked) => setFormValues(v => ({ ...v, enable_chat: checked }))}
               />
             </div>
             <div>
-              <Label>频率限制（次/分钟）</Label>
+              <Label>{t("k_0024bee0b2")}</Label>
               <Input type="number" value={formValues.rate_limit} onChange={(e) => setFormValues(v => ({ ...v, rate_limit: Number(e.target.value) }))} />
             </div>
             <div>
@@ -451,7 +454,7 @@ export default function IntegrationApps() {
                 options={dashboardOptions}
                 selected={selectedDashboards}
                 onChange={setSelectedDashboards}
-                placeholder="全部仪表盘"
+                placeholder={t("k_6029cc532a")}
               />
             </div>
             <div>
@@ -460,12 +463,12 @@ export default function IntegrationApps() {
                 options={tableOptions}
                 selected={selectedTables}
                 onChange={setSelectedTables}
-                placeholder="不限制"
+                placeholder={t("k_204f25ffa1")}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>{editingApp ? '保存' : '创建'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -490,7 +493,7 @@ export default function IntegrationApps() {
               </div>
             </div>
             <div>
-              <Label>接入示例</Label>
+              <Label>{t("k_e87b289be9")}</Label>
               <pre className="p-3 bg-muted rounded text-xs overflow-auto mt-1">
 {`<script src="https://your-chatbi-host/sdk/v1/chatbi-sdk.min.js"></script>
 <chatbi-chat

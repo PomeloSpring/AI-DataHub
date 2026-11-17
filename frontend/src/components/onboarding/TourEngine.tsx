@@ -9,6 +9,7 @@ import { GUIDE_ALL_KEY, guideKey } from '@/api/releaseNotes';
 import { useGuideStore } from '@/stores/guideStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { toast } from '@/lib/toast';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 分步引导引擎(自建，不引第三方 tour 库)。
@@ -42,6 +43,7 @@ function findTarget(target: string): HTMLElement | null {
 }
 
 export default function TourEngine({ guideId }: { guideId: string }) {
+  const { t } = useTranslation('ui');
   const guide = GUIDES[guideId];
   const navigate = useNavigate();
   const { workspaceId } = useParams();
@@ -201,7 +203,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
           <div className="text-sm font-semibold text-card-foreground">{step.title}</div>
           <Button
             variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground"
-            aria-label="跳过本引导（Esc）" onClick={skipGuide}
+            aria-label={t("k_47a3242c89")} onClick={skipGuide}
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -216,7 +218,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
           <span className="text-[11px] text-muted-foreground">第 {index + 1}/{steps.length} 步</span>
           <div className="flex items-center gap-1.5">
             <Button variant="outline" size="sm" className="h-7 px-2 text-xs"
-              disabled={index === 0} onClick={() => setIndex(i => Math.max(0, i - 1))}>上一步</Button>
+              disabled={index === 0} onClick={() => setIndex(i => Math.max(0, i - 1))}>{t("k_75ef1241c0")}</Button>
             <Button size="sm" className="h-7 px-2.5 text-xs" onClick={next}>
               {isLast ? '完成' : '下一步'}
             </Button>
@@ -232,7 +234,7 @@ export default function TourEngine({ guideId }: { guideId: string }) {
             跳过本引导
           </button>
           <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground"
-            onClick={muteAll} title="之后不再自动弹出，可随时从用户菜单手动重看">
+            onClick={muteAll} title={t("k_4eb018fa60")}>
             不再自动弹出
           </button>
         </div>

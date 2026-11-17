@@ -27,6 +27,7 @@ import { detectGeoColumns, isNum, unwrapLongitudes } from '../lib/geoColumns';
 import { detectPlaceColumn, resolvePlacePoints } from '../lib/geoPoints';
 import { readTileCache, writeTileCache, isTileCacheFresh, tileUrlOf, tileZoomOf, isUsableTile, isDefaultTile, probeTile, pickReachableTile, type TileCacheEntry } from '../lib/mapTileCache';
 import { Button } from '@/components/ui/button';
+import { useTranslation } from 'react-i18next';
 
 // 列识别为纯函数,抽在 lib/(单测不拉 leaflet);这里转出便于就近引用
 export { detectGeoColumns } from '../lib/geoColumns';
@@ -128,6 +129,7 @@ function heatRGB(t: number): [number, number, number] {
 }
 
 export default function MapHeatmap({ data, height = 360, config, scope = 'auto' }: Props) {
+  const { t } = useTranslation('ui');
   const columns = data?.columns || [];
   const rows = data?.rows || [];
 
@@ -359,9 +361,9 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
     // 落到静态文件里只剩几行没有上下文的下拉标签（历史缺陷：导出文件里出现
     // 「瓦片 高德地图标准（默认） 地区 省份 权重 企业数」这样的残句）。
     <div className="flex items-center gap-2 flex-wrap text-xs" data-export-strip>
-      <span className="text-muted-foreground">瓦片</span>
+      <span className="text-muted-foreground">{t("k_a62a871bbe")}</span>
       <Select value={tileId != null ? String(tileId) : '__none__'} onValueChange={(v) => setTileId(v === '__none__' ? null : Number(v))}>
-        <SelectTrigger className="w-[160px] h-7 text-xs"><SelectValue placeholder="选择地图瓦片" /></SelectTrigger>
+        <SelectTrigger className="w-[160px] h-7 text-xs"><SelectValue placeholder={t("k_017ca06bc0")} /></SelectTrigger>
         <SelectContent>
           {tiles.map(t => (
             <SelectItem key={t.id} value={String(t.id)} disabled={!isUsableTile(t)}>
@@ -370,7 +372,7 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
           ))}
         </SelectContent>
       </Select>
-      <span className="text-muted-foreground">地区</span>
+      <span className="text-muted-foreground">{t("k_e87af3019f")}</span>
       <Select value={placeCol || '__none__'} onValueChange={(v) => setPlaceCol(v === '__none__' ? '' : v)}>
         <SelectTrigger className="w-[120px] h-7 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent>
@@ -380,25 +382,25 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
       </Select>
       {!usePlace && (
         <>
-          <span className="text-muted-foreground">纬度</span>
+          <span className="text-muted-foreground">{t("k_7e9f778711")}</span>
           <Select value={latCol || '__none__'} onValueChange={(v) => { setLatCol(v === '__none__' ? '' : v); setCoordSource('manual'); }}>
             <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="__none__">请选择</SelectItem>
+              <SelectItem value="__none__">{t("k_382f4b5559")}</SelectItem>
               {columns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
-          <span className="text-muted-foreground">经度</span>
+          <span className="text-muted-foreground">{t("k_7cfa2fed10")}</span>
           <Select value={lngCol || '__none__'} onValueChange={(v) => { setLngCol(v === '__none__' ? '' : v); setCoordSource('manual'); }}>
             <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="__none__">请选择</SelectItem>
+              <SelectItem value="__none__">{t("k_382f4b5559")}</SelectItem>
               {columns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
         </>
       )}
-      <span className="text-muted-foreground">权重</span>
+      <span className="text-muted-foreground">{t("k_5b7bfdcd1e")}</span>
       <Select value={valueCol || '__none__'} onValueChange={(v) => setValueCol(v === '__none__' ? '' : v)}>
         <SelectTrigger className="w-[110px] h-7 text-xs"><SelectValue /></SelectTrigger>
         <SelectContent>
@@ -464,7 +466,7 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
       {!usePlace && (!latCol || !lngCol) && (
         <div className="mt-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground flex items-start gap-2">
           <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-          <span>未能从结果列中识别定位列，请在上方「地区」（国家/省份/城市名）或「纬度/经度」选择框中指定。</span>
+          <span>{t("k_06143287cd")}</span>
         </div>
       )}
 
@@ -478,7 +480,7 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
             请在上方「地区」选地名列（国家/省份/城市），或改选真实的纬度/经度列。
           </span>
           <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]"
-            onClick={() => setCoordSource('manual')}>确认这两列就是经纬度</Button>
+            onClick={() => setCoordSource('manual')}>{t("k_0bb851205c")}</Button>
         </div>
       )}
 
@@ -538,9 +540,9 @@ export default function MapHeatmap({ data, height = 360, config, scope = 'auto' 
             {/* 热力图例 */}
             {points.length > 0 && tile && (
               <div className="absolute bottom-2 left-2 rounded bg-card/90 border px-2 py-1 flex items-center gap-1.5 text-[10px] text-muted-foreground" style={{ zIndex: Z_BADGE }}>
-                <span>低</span>
+                <span>{t("k_b9ee259b7f")}</span>
                 <span className="h-2 w-24 rounded-sm" style={{ background: 'linear-gradient(90deg,#286eff,#00d2dc,#5adc3c,#ffd228,#ff4628)' }} />
-                <span>高</span>
+                <span>{t("k_b096b3f5ac")}</span>
               </div>
             )}
             {/* 点数提示 */}

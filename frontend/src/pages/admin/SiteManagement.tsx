@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import client from '../../api/client';
 import { listSites, saveSite, removeSite, type Site } from '../../api/sites';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 站点管理（多站点部署拓扑清单）。
@@ -19,6 +20,7 @@ import { listSites, saveSite, removeSite, type Site } from '../../api/sites';
  * 可查站点由角色数据源授权**派生**，此处不做授权（避免第二套裁决）。
  */
 export default function SiteManagement() {
+  const { t } = useTranslation('ui');
   const [sites, setSites] = useState<Site[]>([]);
   const [dsBySite, setDsBySite] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(false);
@@ -120,7 +122,7 @@ export default function SiteManagement() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">站点管理</h3>
+          <h3 className="text-lg font-semibold">{t("k_f40b79d76f")}</h3>
           <p className="text-sm text-muted-foreground">
             多站点部署拓扑的取值域：数据源在此声明的站点上归属，业务本体按站点声明适用范围。
           </p>
@@ -140,11 +142,11 @@ export default function SiteManagement() {
       {!loading && error && (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           {error}
-          <Button variant="link" size="sm" className="ml-2 h-auto p-0" onClick={load}>重试</Button>
+          <Button variant="link" size="sm" className="ml-2 h-auto p-0" onClick={load}>{t("k_e2d53a6d3a")}</Button>
         </div>
       )}
       {!loading && !error && sites.length === 0 && (
-        <p className="text-sm text-muted-foreground py-8 text-center">暂无站点，请先新增</p>
+        <p className="text-sm text-muted-foreground py-8 text-center">{t("k_e711f9c93e")}</p>
       )}
 
       {!loading && !!sites.length && (
@@ -163,16 +165,16 @@ export default function SiteManagement() {
                     <div className="min-w-0">
                       <h4 className="font-medium truncate">{s.display_name}</h4>
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {s.is_aggregate ? <Badge variant="secondary" className="text-xs">聚合态</Badge> : null}
-                        {!s.is_active ? <Badge variant="outline" className="text-xs">已停用</Badge> : null}
+                        {s.is_aggregate ? <Badge variant="secondary" className="text-xs">{t("k_b3f3d7c8bf")}</Badge> : null}
+                        {!s.is_active ? <Badge variant="outline" className="text-xs">{t("k_6c7dcbb73a")}</Badge> : null}
                       </div>
                     </div>
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="编辑" onClick={() => openEdit(s)}>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={t("k_a7f814c0a4")} onClick={() => openEdit(s)}>
                       <Edit className="h-3.5 w-3.5" />
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="删除" onClick={() => handleDelete(s)}>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={t("k_3755f56f2f")} onClick={() => handleDelete(s)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
@@ -207,10 +209,10 @@ export default function SiteManagement() {
                 value={form.site_code || ''}
                 disabled={!!editing}
                 onChange={(e) => setForm({ ...form, site_code: e.target.value })}
-                placeholder="如：cn / eu / jp"
+                placeholder={t("k_4e79e58b04")}
               />
               {editing && (
-                <p className="text-xs text-muted-foreground">代码已被数据源与本体引用，不可改名。</p>
+                <p className="text-xs text-muted-foreground">{t("k_c87f87255f")}</p>
               )}
             </div>
             <div className="space-y-2">
@@ -218,12 +220,12 @@ export default function SiteManagement() {
               <Input
                 value={form.display_name || ''}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-                placeholder="如：中国站点"
+                placeholder={t("k_e199ba2a7f")}
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>排序</Label>
+                <Label>{t("k_dc35af8d69")}</Label>
                 <Input
                   type="number"
                   value={form.sort_order ?? 0}
@@ -235,7 +237,7 @@ export default function SiteManagement() {
                   checked={!!form.is_active}
                   onCheckedChange={(v) => setForm({ ...form, is_active: v ? 1 : 0 })}
                 />
-                <Label>启用</Label>
+                <Label>{t("k_d4e9ca3dd4")}</Label>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -243,10 +245,10 @@ export default function SiteManagement() {
                 checked={!!form.is_aggregate}
                 onCheckedChange={(v) => setForm({ ...form, is_aggregate: v ? 1 : 0 })}
               />
-              <Label>聚合态（如「全部站点」：跨站汇总，不挂具体数据源）</Label>
+              <Label>{t("k_b7887d30b9")}</Label>
             </div>
             <div className="space-y-2">
-              <Label>字段取值映射</Label>
+              <Label>{t("k_02095fbcee")}</Label>
               <p className="text-xs text-muted-foreground">
                 同一个站点不同业务字段上写法可以不同，看板选本站点时按字段换成这里的值
                 （实测：新加坡站点在业务表 site 列写 global，在日志侧 region 列写 en）。
@@ -256,13 +258,13 @@ export default function SiteManagement() {
                 <div key={i} className="flex items-center gap-2">
                   <Input
                     className="flex-1"
-                    placeholder="字段名，如 site / region"
+                    placeholder={t("k_bd86378ec9")}
                     value={row.field}
                     onChange={(e) => setFvRows(fvRows.map((r, j) => (j === i ? { ...r, field: e.target.value } : r)))}
                   />
                   <Input
                     className="flex-1"
-                    placeholder="本站点在此字段的取值"
+                    placeholder={t("k_07aad17194")}
                     value={row.value}
                     onChange={(e) => setFvRows(fvRows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
                   />
@@ -270,7 +272,7 @@ export default function SiteManagement() {
                     size="sm"
                     variant="ghost"
                     className="h-8 w-8 p-0 shrink-0"
-                    title="删除该字段"
+                    title={t("k_699f4b779c")}
                     onClick={() => setFvRows(fvRows.filter((_, j) => j !== i))}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -284,7 +286,7 @@ export default function SiteManagement() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setModalOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>{editing ? '更新' : '创建'}</Button>
           </DialogFooter>
         </DialogContent>

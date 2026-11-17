@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   Plus, Edit2, Trash2, Database, Cloud, Folder,
   RefreshCw, Sparkles, Plug,
@@ -19,6 +20,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 
 import client from '../../api/client';
+import { useTranslation } from 'react-i18next';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -85,6 +87,7 @@ const KB_TYPES = [
 // ── Main Component ─────────────────────────────────────────────────
 
 export default function KnowledgeBase() {
+  const { t } = useTranslation('ui');
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -209,7 +212,7 @@ export default function KnowledgeBase() {
     <div className="p-6 w-full">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">知识库管理</h1>
+          <h1 className="text-2xl font-bold">{t("k_053fc4ecbf")}</h1>
           <p className="text-muted-foreground mt-1">
             管理多个知识库，支持从 Qoder QMind 检索导入，以及本地目录、向量数据库、云厂商 RAG 等数据源
           </p>
@@ -234,7 +237,7 @@ export default function KnowledgeBase() {
       ) : knowledgeBases.length === 0 ? (
         <div className="border rounded-lg p-12 text-center">
           <Database className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-          <h3 className="text-lg font-medium mb-2">暂无知识库</h3>
+          <h3 className="text-lg font-medium mb-2">{t("k_1674dc8d7c")}</h3>
           <p className="text-muted-foreground mb-4">
             创建知识库来管理您的业务知识，支持多种数据源类型
           </p>
@@ -245,16 +248,16 @@ export default function KnowledgeBase() {
         </div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
-          <p className="p-3 text-sm text-muted-foreground">知识库使用范围统一在 AS-BOT 中绑定，无需关联工作空间。</p>
+          <p className="p-3 text-sm text-muted-foreground">{t("k_1f06c0cd08")}</p>
           <table className="w-full">
             <thead className="bg-muted/50">
               <tr>
-                <th className="text-left p-3 font-medium">名称</th>
-                <th className="text-left p-3 font-medium">类型</th>
-                <th className="text-left p-3 font-medium">状态</th>
-                <th className="text-left p-3 font-medium">文档数</th>
-                <th className="text-left p-3 font-medium">最后同步</th>
-                <th className="text-right p-3 font-medium">操作</th>
+                <th className="text-left p-3 font-medium">{t("k_1be7ae4fc2")}</th>
+                <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+                <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                <th className="text-left p-3 font-medium">{t("k_f1da3be14b")}</th>
+                <th className="text-left p-3 font-medium">{t("k_d4845b4b39")}</th>
+                <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
               </tr>
             </thead>
             <tbody>
@@ -318,7 +321,7 @@ export default function KnowledgeBase() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleSync(kb)}
-                          title="同步"
+                          title={t("k_e88ab5ba61")}
                         >
                           <RefreshCw className="h-4 w-4" />
                         </Button>
@@ -326,7 +329,7 @@ export default function KnowledgeBase() {
                           variant="ghost"
                           size="sm"
                           onClick={() => setEditingKB(kb)}
-                          title="编辑"
+                          title={t("k_a7f814c0a4")}
                         >
                           <Edit2 className="h-4 w-4" />
                         </Button>
@@ -334,7 +337,7 @@ export default function KnowledgeBase() {
                           variant="ghost"
                           size="sm"
                           onClick={() => setShowDeleteDialog(kb)}
-                          title="删除"
+                          title={t("k_3755f56f2f")}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -374,7 +377,7 @@ export default function KnowledgeBase() {
       <Dialog open={!!showDeleteDialog} onOpenChange={() => setShowDeleteDialog(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除知识库 "{showDeleteDialog?.name}" 吗？此操作不可撤销，
               该知识库下的所有文档和向量索引都将被删除。
@@ -395,7 +398,7 @@ export default function KnowledgeBase() {
       <Dialog open={showQmindDialog} onOpenChange={(v) => { if (!v) setShowQmindDialog(false); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>从 Qoder QMind 检索知识库</DialogTitle>
+            <DialogTitle>{t("k_8024647e78")}</DialogTitle>
             <DialogDescription>
               列出当前账号下的 Qoder QMind 笔记本(notebook)，勾选后导入为知识库，可在 AS-BOT 中绑定检索
             </DialogDescription>
@@ -408,14 +411,14 @@ export default function KnowledgeBase() {
           ) : !qmindAvailable ? (
             <div className="border rounded-lg p-8 text-center">
               <Sparkles className="h-10 w-10 mx-auto mb-3 text-muted-foreground" />
-              <h3 className="text-base font-medium mb-1">未能检索到 Qoder 知识库</h3>
+              <h3 className="text-base font-medium mb-1">{t("k_ee3dbb5ab0")}</h3>
               <p className="text-sm text-muted-foreground">
                 请确认服务器已安装并登录 <code>qmind</code> CLI（<code>qmind login</code>），稍后重试。
               </p>
             </div>
           ) : qmindNotebooks.length === 0 ? (
             <div className="border rounded-lg p-8 text-center">
-              <p className="text-sm text-muted-foreground">当前账号下没有可用的 QMind 笔记本</p>
+              <p className="text-sm text-muted-foreground">{t("k_43f85f89b4")}</p>
             </div>
           ) : (
             <div className="space-y-2 max-h-[50vh] overflow-y-auto py-2">
@@ -437,7 +440,7 @@ export default function KnowledgeBase() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-medium">{nb.title}</span>
-                        {nb.imported && <Badge variant="secondary">已导入</Badge>}
+                        {nb.imported && <Badge variant="secondary">{t("k_5c5b7cfb12")}</Badge>}
                       </div>
                       {nb.description && (
                         <div className="text-xs text-muted-foreground truncate">{nb.description}</div>
@@ -451,7 +454,7 @@ export default function KnowledgeBase() {
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowQmindDialog(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setShowQmindDialog(false)}>{t("k_4d0b4688c7")}</Button>
             <Button
               onClick={importQmind}
               disabled={qmindLoading || !qmindAvailable || qmindSelected.length === 0 || qmindImporting}
@@ -512,7 +515,7 @@ function CreateKnowledgeBaseDialog({
     <Dialog open={open} onOpenChange={(v) => { if (!v) { onClose(); setStep('type'); } }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>新建知识库</DialogTitle>
+          <DialogTitle>{t("k_f93ee39a94")}</DialogTitle>
           <DialogDescription>
             选择知识库类型并配置数据源
           </DialogDescription>
@@ -521,23 +524,23 @@ function CreateKnowledgeBaseDialog({
         {step === 'type' ? (
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>知识库名称</Label>
+              <Label>{t("k_82e28f0dc2")}</Label>
               <Input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="输入知识库名称"
+                placeholder={t("k_df96327e71")}
               />
             </div>
             <div className="space-y-2">
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Textarea
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
-                placeholder="输入知识库描述（可选）"
+                placeholder={t("k_08cf9a7631")}
               />
             </div>
             <div className="space-y-2">
-              <Label>选择类型</Label>
+              <Label>{t("k_baeb7cc9ba")}</Label>
               <div className="grid grid-cols-3 gap-3">
                 {KB_TYPES.map((type) => {
                   const Icon = type.icon;
@@ -630,13 +633,13 @@ function SourceConfigForm({
             value={config.notebook_id || ''}
             readOnly
             className="font-mono bg-muted/40"
-            placeholder="由导入自动填充"
+            placeholder={t("k_9fca6dc36a")}
           />
-          <p className="text-xs text-muted-foreground">Qoder QMind 笔记本唯一标识，导入时自动写入，请勿手动修改</p>
+          <p className="text-xs text-muted-foreground">{t("k_a8dcab3794")}</p>
         </div>
         {config.org_id && (
           <div className="space-y-2">
-            <Label>组织 ID</Label>
+            <Label>{t("k_0f322223f6")}</Label>
             <Input value={config.org_id} readOnly className="font-mono bg-muted/40" />
           </div>
         )}
@@ -658,13 +661,13 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-blue-50 rounded-lg">
           <p className="text-sm text-blue-800">
-            <span className="font-medium">本地目录：</span>支持 .md/.txt/.pdf/.docx 等格式。
+            <span className="font-medium">{t("k_43b839d78e")}</span>支持 .md/.txt/.pdf/.docx 等格式。
             检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT
             （绑定校验会直接拒绝并说明原因）。
           </p>
         </div>
         <div className="space-y-2">
-          <Label>目录路径</Label>
+          <Label>{t("k_d9dea994c9")}</Label>
           <Input
             value={config.directory_path || ''}
             onChange={(e) => onChange({ ...config, directory_path: e.target.value })}
@@ -672,16 +675,16 @@ function SourceConfigForm({
           />
         </div>
         <div className="space-y-2">
-          <Label>文件类型过滤</Label>
+          <Label>{t("k_01b2ab2a85")}</Label>
           <Input
             value={config.file_extensions || ''}
             onChange={(e) => onChange({ ...config, file_extensions: e.target.value })}
             placeholder=".md,.txt,.pdf,.docx"
           />
-          <p className="text-xs text-muted-foreground">多个扩展名用逗号分隔，留空表示所有文件</p>
+          <p className="text-xs text-muted-foreground">{t("k_db81f2fe02")}</p>
         </div>
         <div className="space-y-2">
-          <Label>递归扫描子目录</Label>
+          <Label>{t("k_793b43b660")}</Label>
           <Select
             value={config.recursive ? 'true' : 'false'}
             onValueChange={(v) => onChange({ ...config, recursive: v === 'true' })}
@@ -690,8 +693,8 @@ function SourceConfigForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="true">是</SelectItem>
-              <SelectItem value="false">否</SelectItem>
+              <SelectItem value="true">{t("k_30160a21b9")}</SelectItem>
+              <SelectItem value="false">{t("k_8bf5c10ad9")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -704,18 +707,18 @@ function SourceConfigForm({
       <div className="space-y-4">
         <div className="p-4 bg-green-50 rounded-lg">
           <p className="text-sm text-green-800">
-            <span className="font-medium">向量数据库：</span>可登记 Doris、Milvus、Pinecone、Qdrant 等连接信息。
+            <span className="font-medium">{t("k_6f66e3eb36")}</span>可登记 Doris、Milvus、Pinecone、Qdrant 等连接信息。
             检索通道本批未接入：登记在这里不会被 AS-BOT 检索到，也不要绑进 AS-BOT。
           </p>
         </div>
         <div className="space-y-2">
-          <Label>数据库类型</Label>
+          <Label>{t("k_32faaa6d1f")}</Label>
           <Select
             value={config.db_type || ''}
             onValueChange={(v) => onChange({ ...config, db_type: v })}
           >
             <SelectTrigger>
-              <SelectValue placeholder="选择数据库类型" />
+              <SelectValue placeholder={t("k_6d58cccb14")} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="doris">Apache Doris</SelectItem>
@@ -729,7 +732,7 @@ function SourceConfigForm({
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label>主机地址</Label>
+            <Label>{t("k_c5db6b99f1")}</Label>
             <Input
               value={config.host || ''}
               onChange={(e) => onChange({ ...config, host: e.target.value })}
@@ -737,7 +740,7 @@ function SourceConfigForm({
             />
           </div>
           <div className="space-y-2">
-            <Label>端口</Label>
+            <Label>{t("k_6cbb7335b5")}</Label>
             <Input
               value={config.port || ''}
               onChange={(e) => onChange({ ...config, port: e.target.value })}
@@ -747,7 +750,7 @@ function SourceConfigForm({
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label>用户名</Label>
+            <Label>{t("k_a1aaf352cb")}</Label>
             <Input
               value={config.username || ''}
               onChange={(e) => onChange({ ...config, username: e.target.value })}
@@ -769,7 +772,7 @@ function SourceConfigForm({
           </div>
         </div>
         <div className="space-y-2">
-          <Label>数据库名</Label>
+          <Label>{t("k_8a98ff0618")}</Label>
           <Input
             value={config.database || ''}
             onChange={(e) => onChange({ ...config, database: e.target.value })}
@@ -777,7 +780,7 @@ function SourceConfigForm({
           />
         </div>
         <div className="space-y-2">
-          <Label>集合/表名</Label>
+          <Label>{t("k_a24a449c29")}</Label>
           <Input
             value={config.collection || ''}
             onChange={(e) => onChange({ ...config, collection: e.target.value })}
@@ -803,20 +806,20 @@ function SourceConfigForm({
           </p>
         </div>
         <div className="space-y-2">
-          <Label>云厂商</Label>
+          <Label>{t("k_bd17c79b28")}</Label>
           <Select
             value={config.provider || ''}
             onValueChange={(v) => onChange({ ...config, provider: v })}
           >
             <SelectTrigger>
-              <SelectValue placeholder="选择云厂商" />
+              <SelectValue placeholder={t("k_d60227698a")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="aliyun">阿里云百炼（已接入，只读检索）</SelectItem>
-              <SelectItem value="tencent">腾讯云混元（本批未接入）</SelectItem>
-              <SelectItem value="baidu">百度千帆（本批未接入）</SelectItem>
-              <SelectItem value="zhipu">智谱 AI（本批未接入）</SelectItem>
-              <SelectItem value="custom">自定义 API（本批未接入）</SelectItem>
+              <SelectItem value="aliyun">{t("k_84c0bb2d76")}</SelectItem>
+              <SelectItem value="tencent">{t("k_8ff9750345")}</SelectItem>
+              <SelectItem value="baidu">{t("k_6d972ddb35")}</SelectItem>
+              <SelectItem value="zhipu">{t("k_5bfa2ad8c7")}</SelectItem>
+              <SelectItem value="custom">{t("k_04813d8238")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -839,7 +842,7 @@ function SourceConfigForm({
             <Input
               value={config.index_id || ''}
               onChange={(e) => onChange({ ...config, index_id: e.target.value })}
-              placeholder="百炼控制台的知识库 ID"
+              placeholder={t("k_8762f607c4")}
             />
             {/* 外部系统标识：本系统没有可枚举的清单，按例外允许手输（原因必须写在这里，
                 否则用户不知道该填库名还是 ID）；接入 ListIndices 后升级为可搜索选择框。 */}
@@ -852,9 +855,9 @@ function SourceConfigForm({
             <Input
               value={config.workspace_id || ''}
               onChange={(e) => onChange({ ...config, workspace_id: e.target.value })}
-              placeholder="可选，百炼业务空间 ID"
+              placeholder={t("k_4dbe085916")}
             />
-            <p className="text-xs text-muted-foreground">同样是外部标识，按需在百炼控制台查看。</p>
+            <p className="text-xs text-muted-foreground">{t("k_3407763ec0")}</p>
           </div>
         </div>
         <div className="space-y-2">
@@ -919,7 +922,7 @@ function EditKnowledgeBaseDialog({
     <Dialog open={true} onOpenChange={onClose}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>编辑知识库</DialogTitle>
+          <DialogTitle>{t("k_f8cf989d71")}</DialogTitle>
           <DialogDescription>
             修改 "{knowledgeBase.name}" 的配置
           </DialogDescription>
@@ -927,14 +930,14 @@ function EditKnowledgeBaseDialog({
 
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <Label>名称</Label>
+            <Label>{t("k_1be7ae4fc2")}</Label>
             <Input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </div>
           <div className="space-y-2">
-            <Label>描述</Label>
+            <Label>{t("k_412f54dc38")}</Label>
             <Textarea
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}

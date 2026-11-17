@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageSquare, Database, Settings, Sparkles, ArrowRight, Palette, UserCircle, LogOut, Brain,
@@ -75,6 +76,7 @@ const DEFAULT_BG = {
  * 不在这里硬编码"恒可见"，也不拿前端权限当裁决（服务端仍是唯一门）。
  */
 export default function Home() {
+  const { t } = useTranslation(['ui', 'menu']);
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const { brand, fetchBrand } = useBrandStore();
@@ -212,7 +214,7 @@ export default function Home() {
         <div className="flex items-center gap-2.5">
           <BrandLogo brand={brand} size={28} />
           {brand.show_text && <span className="text-lg font-semibold tracking-tight">{appName}</span>}
-          <span className="hidden text-sm text-muted-foreground sm:inline">· 首页</span>
+          <span className="hidden text-sm text-muted-foreground sm:inline">{t("ui:k_5b6aa8ffd7")}</span>
         </div>
         <div className="flex items-center gap-1.5">
           {/* 版本公告在模块切换左侧(与三套布局一致), 首页也保留同一组锚点供引导命中 */}
@@ -220,7 +222,7 @@ export default function Home() {
           <SectionSwitcher current="home" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换主题" title="切换主题" data-tour={TOUR.headerTheme}>
+              <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label={t("ui:k_5107e4082c")} title={t("ui:k_5107e4082c")} data-tour={TOUR.headerTheme}>
                 <Palette className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -232,7 +234,7 @@ export default function Home() {
           <LanguageMenu />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex min-h-[36px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted">
+              <button aria-label={t("ui:k_a375a2cf71")} data-tour={TOUR.headerUser} className="flex min-h-[36px] items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                 </Avatar>
@@ -313,7 +315,7 @@ export default function Home() {
               <LayoutDashboard className="h-3.5 w-3.5 text-primary" />
               <span>{dateText}</span>
               <span className="text-border">·</span>
-              <span>欢迎回到工作台</span>
+              <span>{t("ui:k_288bd8ca99")}</span>
             </div>
             <h1 className="mt-1.5 text-[22px] font-semibold leading-tight tracking-tight">
               {greetingOf()}，{user?.username || '用户'}
@@ -327,8 +329,8 @@ export default function Home() {
                   value={draft}
                   onChange={e => setDraft(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') ask(draft); }}
-                  placeholder="想查什么？直接问，例如：上个月各站点的活跃装机数同比"
-                  aria-label="向智能问数提问"
+                  placeholder={t("ui:k_f9b57c4f73")}
+                  aria-label={t("ui:k_d44908c901")}
                   className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none placeholder:text-muted-foreground"
                 />
                 <kbd className="hidden flex-none rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">Enter</kbd>
@@ -339,7 +341,7 @@ export default function Home() {
             </div>
             {!!questions.length && (
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11.5px] text-muted-foreground">试试这样问</span>
+                <span className="text-[11.5px] text-muted-foreground">{t("ui:k_612e396f44")}</span>
                 {questions.map(q => (
                   <button
                     key={q}
@@ -379,7 +381,7 @@ export default function Home() {
 
         {/* ③ 底部一行模块入口 */}
         {!!mods.length && (
-          <nav data-tour={TOUR.homeQuick} aria-label="模块入口"
+          <nav data-tour={TOUR.homeQuick} aria-label={t("switcher.label")}
             className="mt-5 grid gap-2.5 rounded-2xl border bg-card/70 p-3 sm:grid-cols-2 lg:grid-cols-4">
             {mods.map(m => {
               const Icon = m.icon;

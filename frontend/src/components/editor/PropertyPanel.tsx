@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { DEFAULT_PAGE_GAP, PAGE_COLUMNS, PAGE_GAP_MAX, PAGE_GAP_MIN, PAGE_LABELS, PAGE_ROW, pageColumnPx, pageGap, pageMinHeight, pagePixelRect, pageRows, type PageBreakpoint, type PageGaps } from '@/lib/dashboardPageLayout';
 import { minReadableWidth, naturalSizeOf, type Rect } from '@/lib/dashboardDesign';
 import { TEMPLATE_DEMO_KEY } from '@/lib/dashboardDemo';
+import { t } from '@/i18n/runtime';
 import {
   Settings, BarChart3, Move, Paintbrush, Monitor, Grid3x3, Palette, PanelRightClose,
 } from 'lucide-react';
@@ -50,6 +51,8 @@ interface Props {
   onPropertyChange: (chartId: number, field: string, value: any) => void;
   onPositionChange: (chartId: number, axis: 'x' | 'y' | 'w' | 'h', value: number) => void;
   onWidgetConfigChange: (chartId: number, key: string, value: any) => void;
+  /** 双语：写 chart.i18n.config['en-US'][key]（覆盖层，供 widget_label 等控件的英文输入位使用） */
+  onWidgetI18nChange?: (chartId: number, key: string, enValue: string) => void;
   onDelete: (chart: any) => void;
   onChartConfig: (chart: any) => void;
   tab: string;
@@ -72,7 +75,7 @@ export default function PropertyPanel({
   isOpen, onClose, selectedChart, selectedElementType,
   canvasSize, setCanvasSize, canvasBgColor, setCanvasBgColor,
   gridSize, setGridSize, scale, setScale, allCharts,
-  isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange,
+  isNewChart, onPropertyChange, onPositionChange, onWidgetConfigChange, onWidgetI18nChange,
   onDelete, onChartConfig, pageBreakpoint, pageRect, pageGaps, onPageGapChange, onResetPage, tab, onTab, pageParams, onCreatePageParam,
   widgetStyleBase, widgetVisName, filters, onFiltersChange, onReplayMotion,
 }: Props) {
@@ -101,17 +104,17 @@ export default function PropertyPanel({
           {selectedElementType === 'canvas' ? (
             <><Monitor className="h-4 w-4" />{pageBreakpoint ? '页面属性' : '画布属性'}</>
           ) : selectedElementType === 'control' ? (
-            <><Settings className="h-4 w-4" />控件属性</>
+            <><Settings className="h-4 w-4" />{t("k_75633debeb")}</>
           ) : (
-            <><BarChart3 className="h-4 w-4" />图表属性</>
+            <><BarChart3 className="h-4 w-4" />{t("k_766af83e7b")}</>
           )}
         </h3>
-        <Button variant="ghost" size="sm" aria-label="关闭属性面板" className="h-7 w-7 p-0" onClick={onClose}>
+        <Button variant="ghost" size="sm" aria-label={t("k_b45526a64d")} className="h-7 w-7 p-0" onClick={onClose}>
           <PanelRightClose className="h-4 w-4" />
         </Button>
       </div>
 
-      <div className="flex border-b p-1" role="tablist" aria-label="属性分类" onKeyDown={moveTab}>
+      <div className="flex border-b p-1" role="tablist" aria-label={t("k_b7a98781fb")} onKeyDown={moveTab}>
         {PROPERTY_TABS.map(([key, label]) =>
           <Button key={key} id={`property-tab-${key}`} role="tab" aria-selected={tab === key}
             aria-controls="property-tabpanel" tabIndex={tab === key ? 0 : -1}
@@ -126,22 +129,22 @@ export default function PropertyPanel({
               <Badge variant={selectedElementType === 'control' ? 'secondary' : 'default'}>
                 {CHART_TYPES.find(t => t.value === selectedChart.chart_type)?.label || selectedChart.chart_type}
               </Badge>
-              {isNewChart(selectedChart.id) && <Badge variant="outline" className="text-xs">新增</Badge>}
+              {isNewChart(selectedChart.id) && <Badge variant="outline" className="text-xs">{t("k_2cd9e6ce81")}</Badge>}
             </div>
 
             <Separator />
 
             {/* Basic info */}
             <div className="space-y-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">基本信息</div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{t("k_b122f813d5")}</div>
               <div className="space-y-2">
-                <Label className="text-xs">名称</Label>
+                <Label className="text-xs">{t("k_1be7ae4fc2")}</Label>
                 <Input className="h-7 text-xs"
                   value={selectedChart.name || ''}
                   onChange={e => onPropertyChange(selectedChart.id, 'name', e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label className="text-xs">类型</Label>
+                <Label className="text-xs">{t("k_e4e46c7235")}</Label>
                 {/* 图表卡与控件卡各自只能在同类内换型：跨类改型会留下不匹配的 source_type 与数据配置 */}
                 <Select value={selectedChart.chart_type}
                   onValueChange={v => onPropertyChange(selectedChart.id, 'chart_type', v)}>
@@ -158,7 +161,7 @@ export default function PropertyPanel({
                   </SelectContent>
                 </Select>
                 {selectedChart.chart_type?.startsWith('widget_') && (
-                  <p className="text-[10px] text-muted-foreground">换型会保留已填的参数与样式，但不同控件的专有字段会重置。</p>
+                  <p className="text-[10px] text-muted-foreground">{t("k_a25105dccc")}</p>
                 )}
               </div>
             </div>
@@ -217,7 +220,7 @@ export default function PropertyPanel({
                 allCharts={allCharts}
                 pageParams={pageParams || []}
                 onCreatePageParam={onCreatePageParam}
-                onWidgetConfigChange={onWidgetConfigChange}
+                onWidgetConfigChange={onWidgetConfigChange} onWidgetI18nChange={onWidgetI18nChange}
               />
             )}
 
@@ -227,10 +230,10 @@ export default function PropertyPanel({
             {tab === 'appearance' && (selectedChart.chart_type?.startsWith('widget_') ? <StyleSettings
               chart={selectedChart} onWidgetConfigChange={onWidgetConfigChange} base={widgetStyleBase} visName={widgetVisName}
             /> : <div className="space-y-3">
-              <p className="text-xs text-muted-foreground">字模提供基础外观，下列设置为当前图表的显式覆盖。</p>
+              <p className="text-xs text-muted-foreground">{t("k_b4c2d88ecc")}</p>
               {[['cardBg', '卡片背景'], ['titleColor', '标题颜色'], ['valueColor', '指标颜色'], ['labelColor', '标签颜色']].map(([key, label]) =>
-                <label key={key} className="block space-y-1 text-xs">{label}<Input value={selectedChart.config?.[key] || ''} placeholder="沿用字模" onChange={e => onWidgetConfigChange(selectedChart.id, key, e.target.value)} /></label>)}
-              <label className="block space-y-1 text-xs">系列配色（逗号分隔）<Input value={(selectedChart.config?.colorScheme || []).join(', ')} placeholder="沿用字模" onChange={e => onWidgetConfigChange(selectedChart.id, 'colorScheme', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></label>
+                <label key={key} className="block space-y-1 text-xs">{label}<Input value={selectedChart.config?.[key] || ''} placeholder={t("k_40bb65de1c")} onChange={e => onWidgetConfigChange(selectedChart.id, key, e.target.value)} /></label>)}
+              <label className="block space-y-1 text-xs">{t("k_27e056d686")}<Input value={(selectedChart.config?.colorScheme || []).join(', ')} placeholder={t("k_40bb65de1c")} onChange={e => onWidgetConfigChange(selectedChart.id, 'colorScheme', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} /></label>
             </div>)}
 
             {/* Chart-specific: SQL info */}
@@ -239,7 +242,7 @@ export default function PropertyPanel({
                 图表样式示例数据（模板内置）：当前展示的是预设演示数值，不跑取数查询。写 SQL 或语义查询后保存，示例数据与标记自动清除。
               </p>}
               <p>{selectedChart.query_source === 'semantic' || selectedChart.semantic_query ? '语义图表：声明式查询保持不变，不展示生成 SQL。' : '通过人工数据配置入口绑定数据。'}</p>
-              <Button size="sm" variant="outline" onClick={() => onChartConfig(selectedChart)}>数据与字段配置</Button>
+              <Button size="sm" variant="outline" onClick={() => onChartConfig(selectedChart)}>{t("k_f55f763f56")}</Button>
             </div>}
 
             <div className="h-2" />
@@ -249,7 +252,7 @@ export default function PropertyPanel({
           {/* 间距从“只读文本”变成真控件：滑杆粗调 + 数字框精调（0–64px，1px 一档） */}
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <Label className="text-xs">图表间距</Label>
+              <Label className="text-xs">{t("k_c883132fce")}</Label>
               <span className="font-mono text-[10px] text-muted-foreground">{pageGap(pageBreakpoint, pageGaps)}px</span>
             </div>
             <Slider aria-label={`${PAGE_LABELS[pageBreakpoint]}图表间距滑杆`} min={PAGE_GAP_MIN} max={32} step={2}
@@ -262,7 +265,7 @@ export default function PropertyPanel({
             </div>
           </div>
           <p className="text-xs text-muted-foreground">1 行 = {PAGE_ROW}px（高度步进）、1 列 ≈ {Math.round(pageColumnPx(pageBreakpoint, pageGaps))}px（宽度步进）；间距只作用于列之间与自动避让留白，不再把卡片高度拉扇。仅修改当前断点，未调整的平板和手机布局从桌面派生。</p>
-          <Button variant="outline" size="sm" onClick={onResetPage}>恢复当前断点自动适配</Button>
+          <Button variant="outline" size="sm" onClick={onResetPage}>{t("k_b0b837db00")}</Button>
           {/* 板级动效：只在外观页出现（与阅读/播放面的「出现效果」同一份解析） */}
           {tab === 'appearance' && onFiltersChange && <BoardMotionSection filters={filters || {}} onFiltersChange={onFiltersChange} onReplay={onReplayMotion} />}
         </div> : (
@@ -303,16 +306,17 @@ export default function PropertyPanel({
     </div>
   );
   if (narrow) return <Dialog open={isOpen} onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="left-auto right-0 top-0 h-[100dvh] max-h-[100dvh] w-[min(320px,95vw)] translate-x-0 translate-y-0 rounded-none p-0 flex flex-col gap-0">
-    <DialogTitle className="sr-only">属性面板</DialogTitle><DialogDescription className="sr-only">修改当前选中元素的外观、数据与布局。</DialogDescription>{content}
+    <DialogTitle className="sr-only">{t("k_82eb970022")}</DialogTitle><DialogDescription className="sr-only">{t("k_ec85716201")}</DialogDescription>{content}
   </DialogContent></Dialog>;
   return <aside className={`shrink-0 overflow-hidden border-l ${isOpen ? 'w-[300px]' : 'hidden'}`}>{content}</aside>;
 }
 
 // ========== Sub-components ==========
 
-function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidgetConfigChange }: {
+function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidgetConfigChange, onWidgetI18nChange }: {
   chart: any; allCharts: any[]; pageParams: PageParam[]; onCreatePageParam?: (param: PageParam) => void;
   onWidgetConfigChange: (id: number, key: string, value: any) => void;
+  onWidgetI18nChange?: (id: number, key: string, enValue: string) => void;
 }) {
   const type: string = chart.chart_type;
   const isButton = ['widget_search', 'widget_reset', 'widget_export'].includes(type);
@@ -325,7 +329,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
   const exportTargets = (allCharts || []).filter(c => !String(c.chart_type || '').startsWith('widget_'));
   return (
     <div className="space-y-3">
-      <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">控件配置</div>
+      <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{t("k_8786320c1f")}</div>
 
       {isDecision && (
         <DecisionWidgetConfig chart={chart} pageParams={pageParams}
@@ -334,18 +338,28 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
 
       {chart.chart_type === 'widget_label' && (
         <div className="space-y-2">
-          <Label className="text-xs">显示内容</Label>
+          <Label className="text-xs">{t("k_102d692a3b")}</Label>
           <textarea
             className="w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 min-h-[60px] resize-y"
             value={chart.config?.content || ''}
             onChange={e => onWidgetConfigChange(chart.id, 'content', e.target.value)}
-            placeholder="输入要显示的文本内容"
+            placeholder={t("k_eabd27384f")}
+          />
+          {/* 双语：说明卡的 English 输入位；留空 = 英文界面回落中文（后端 localize_display 记 fallback） */}
+          <Label className="text-xs text-muted-foreground">{t("k_371a95ba93")}</Label>
+          <textarea
+            className="w-full text-xs rounded-md border border-input bg-background px-2 py-1.5 min-h-[60px] resize-y"
+            value={String(chart.i18n?.config?.['en-US']?.content || '')}
+            onChange={e => onWidgetI18nChange?.(chart.id, 'content', e.target.value)}
+            placeholder="Note body shown on the English UI (optional)"
+            aria-label={t("k_35d6c36c05")}
+            data-testid="note-content-en"
           />
         </div>
       )}
 
       {takesParam && (
-        <ParamNameSelect label="参数 Key" value={chart.config?.paramKey || ''} params={pageParams}
+        <ParamNameSelect label={t("k_33656c610f")} value={chart.config?.paramKey || ''} params={pageParams}
           placeholder="如 site / date_start"
           onChange={v => {
             onWidgetConfigChange(chart.id, 'paramKey', v);
@@ -371,23 +385,23 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
         <>
           <div className="grid grid-cols-2 items-center gap-2">
             <div className="space-y-1">
-              <Label className="text-xs">显示标签</Label>
+              <Label className="text-xs">{t("k_6c64d7e6ab")}</Label>
               <Switch checked={chart.config?.showLabel !== false}
                 onCheckedChange={v => onWidgetConfigChange(chart.id, 'showLabel', v)} />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">标签位置</Label>
+              <Label className="text-xs">{t("k_fd6782ee52")}</Label>
               <Select value={chart.config?.labelPosition || 'left'} onValueChange={v => onWidgetConfigChange(chart.id, 'labelPosition', v)}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="left" className="text-xs">左侧</SelectItem>
-                  <SelectItem value="top" className="text-xs">上方</SelectItem>
+                  <SelectItem value="left" className="text-xs">{t("k_440495fc2d")}</SelectItem>
+                  <SelectItem value="top" className="text-xs">{t("k_c847d66f6b")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
           <div className="space-y-2">
-            <Label className="text-xs">占位提示</Label>
+            <Label className="text-xs">{t("k_fe838cb782")}</Label>
             <Input className="h-7 text-xs"
               value={chart.config?.placeholder || ''}
               onChange={e => onWidgetConfigChange(chart.id, 'placeholder', e.target.value)} />
@@ -396,7 +410,7 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
               这里的 defaultValue 对 daterange 无消费方，渲染出来就是“存了不生效”的假旋钮 */}
           {type !== 'widget_daterange' && (
             <div className="space-y-2">
-              <Label className="text-xs">默认值</Label>
+              <Label className="text-xs">{t("k_d93919c37b")}</Label>
               <Input className="h-7 text-xs"
                 value={chart.config?.defaultValue || ''}
                 onChange={e => onWidgetConfigChange(chart.id, 'defaultValue', e.target.value)} />
@@ -414,8 +428,8 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
               })}
             </div>
           ) : (
-            <ParamNameSelect label="绑定页面参数" value={chart.config?.bind_param || ''} params={pageParams}
-              placeholder="不绑定" onChange={v => onWidgetConfigChange(chart.id, 'bind_param', v)}
+            <ParamNameSelect label={t("k_8a2be008ce")} value={chart.config?.bind_param || ''} params={pageParams}
+              placeholder={t("k_9a0ee40403")} onChange={v => onWidgetConfigChange(chart.id, 'bind_param', v)}
               onCreate={p => onCreatePageParam?.(p)} />
           )}
         </>
@@ -424,28 +438,28 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
       {type === 'widget_daterange' && <>
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
-            <Label className="text-xs">时间粒度</Label>
+            <Label className="text-xs">{t("k_924f63b2f6")}</Label>
             <Select value={chart.config?.granularity || 'date'} onValueChange={v => onWidgetConfigChange(chart.id, 'granularity', v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="date" className="text-xs">按天（日期列）</SelectItem>
-                <SelectItem value="datetime" className="text-xs">到时分秒（时间戳列）</SelectItem>
+                <SelectItem value="date" className="text-xs">{t("k_b76451d2ac")}</SelectItem>
+                <SelectItem value="datetime" className="text-xs">{t("k_8210452c24")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">默认选项</Label>
+            <Label className="text-xs">{t("k_31bb6f06c8")}</Label>
             <Select value={chart.config?.defaultPreset || CUSTOM_PRESET} onValueChange={v => onWidgetConfigChange(chart.id, 'defaultPreset', v === CUSTOM_PRESET ? undefined : v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {TIME_PRESETS.map(p => <SelectItem key={p.key} value={p.key} className="text-xs">{presetLabel(p)}</SelectItem>)}
-                <SelectItem value={CUSTOM_PRESET} className="text-xs">不预设（默认留空）</SelectItem>
+                <SelectItem value={CUSTOM_PRESET} className="text-xs">{t("k_3dc275b357")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">快捷选项</Label>
+          <Label className="text-xs">{t("k_a7a74e23ed")}</Label>
           <div className="flex flex-wrap gap-x-3 gap-y-1">
             {TIME_PRESETS.map(p => {
               const checked = !Array.isArray(chart.config?.presets) || chart.config.presets.includes(p.key);
@@ -460,15 +474,15 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
             })}
           </div>
           {Array.isArray(chart.config?.presets) && chart.config.presets.length === 0 && (
-            <p className="text-[10px] text-muted-foreground">已全部取消：控件只保留两个日期输入框，不再显示快捷下拉。</p>
+            <p className="text-[10px] text-muted-foreground">{t("k_6eef6a1f3d")}</p>
           )}
         </div>
         <div className="space-y-2">
-          <Label className="text-xs">最大跨度（天）</Label>
+          <Label className="text-xs">{t("k_1ea259174d")}</Label>
           <Input type="number" className="h-7 text-xs" min={1}
             value={chart.config?.rangeMaxDays ?? 365}
             onChange={e => onWidgetConfigChange(chart.id, 'rangeMaxDays', e.target.value ? Number(e.target.value) : undefined)} />
-          <p className="text-[10px] text-muted-foreground">限制自由选择时结束与开始的间隔；快捷选项不受此限制。</p>
+          <p className="text-[10px] text-muted-foreground">{t("k_a01c057f88")}</p>
         </div>
         {(chart.config?.granularity === 'datetime' || needsTime(chart.config?.defaultPreset)) && (
           <p className="text-[10px] text-muted-foreground">
@@ -479,21 +493,21 @@ function WidgetConfig({ chart, allCharts, pageParams, onCreatePageParam, onWidge
 
       {type === 'widget_export' && (
         <div className="space-y-2">
-          <Label className="text-xs">导出目标图表</Label>
+          <Label className="text-xs">{t("k_a0a45d39e2")}</Label>
           <Select value={targetChartId ? String(targetChartId) : ''} onValueChange={v => onWidgetConfigChange(chart.id, 'targetChartId', Number(v))}>
-            <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="请选择要导出的图表" /></SelectTrigger>
+            <SelectTrigger className="h-7 text-xs"><SelectValue placeholder={t("k_5d93cf7350")} /></SelectTrigger>
             <SelectContent>
               {exportTargets.map(c => <SelectItem key={c.id} value={String(c.id)} className="text-xs">{c.name}</SelectItem>)}
             </SelectContent>
           </Select>
           {!targetChartId && (
-            <p role="alert" className="text-[10px] text-destructive">未选择目标图表，运行时导出按钮会置灰（不会默默导出别的图表）。</p>
+            <p role="alert" className="text-[10px] text-destructive">{t("k_7cf2bb77f7")}</p>
           )}
           {!!targetChartId && !exportTargets.some(c => c.id === targetChartId) && (
-            <p role="alert" className="text-[10px] text-destructive">原目标图表已不在当前看板，请重新选择。</p>
+            <p role="alert" className="text-[10px] text-destructive">{t("k_d8b6336d2c")}</p>
           )}
           {!!targetChartId && exportTargets.some(c => c.id === targetChartId) && (
-            <p className="text-[10px] text-muted-foreground">导出该图表当前缓存的数据行，取数口径与图表一致。</p>
+            <p className="text-[10px] text-muted-foreground">{t("k_49744814f5")}</p>
           )}
         </div>
       )}
@@ -553,15 +567,15 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
           {pinned.length ? ' + 本图覆盖（优先于字模）' : '，本图未覆盖任何项'}。
         </p>
         {pinned.length > 0 && <div className="flex flex-wrap items-center gap-1">
-          {pinned.map(k => <button key={k} type="button" title="点击让该项跟随字模" onClick={() => followOne(k)}
+          {pinned.map(k => <button key={k} type="button" title={t("k_05e33849c6")} onClick={() => followOne(k)}
             className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 ring-1 ring-amber-500/30 hover:bg-amber-500/25">{k} ×</button>)}
-          <Button variant="link" size="sm" className="h-auto p-0 text-[10px]" onClick={() => write({})}>全部跟随字模</Button>
+          <Button variant="link" size="sm" className="h-auto p-0 text-[10px]" onClick={() => write({})}>{t("k_8d6285d591")}</Button>
         </div>}
       </div>
 
       {/* Background color */}
       <div className="space-y-1">
-        <Label className="text-xs">背景色</Label>
+        <Label className="text-xs">{t("k_498e30003d")}</Label>
         <div className="flex items-center gap-2">
           <input type="color" value={eff('backgroundColor', '#ffffff')}
             onChange={e => updateStyle('backgroundColor', e.target.value)}
@@ -575,7 +589,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
 
       {/* Text color */}
       <div className="space-y-1">
-        <Label className="text-xs">文字颜色</Label>
+        <Label className="text-xs">{t("k_07f568dada")}</Label>
         <div className="flex items-center gap-2">
           <input type="color" value={eff('textColor', '#000000')}
             onChange={e => updateStyle('textColor', e.target.value)}
@@ -589,7 +603,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
 
       {/* Border color */}
       <div className="space-y-1">
-        <Label className="text-xs">边框颜色</Label>
+        <Label className="text-xs">{t("k_84b640c803")}</Label>
         <div className="flex items-center gap-2">
           <input type="color" value={eff('borderColor', '#e5e7eb')}
             onChange={e => updateStyle('borderColor', e.target.value)}
@@ -604,21 +618,21 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Border width + style */}
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <Label className="text-xs">边框宽度</Label>
+          <Label className="text-xs">{t("k_4cea9c737f")}</Label>
           <Input type="number" className="h-7 text-xs"
             value={ws.borderWidth ?? ''}
             onChange={e => updateStyle('borderWidth', e.target.value ? Number(e.target.value) : undefined)}
             placeholder={String(num('borderWidth', 1))} />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">边框样式</Label>
+          <Label className="text-xs">{t("k_d844547190")}</Label>
           <Select value={eff('borderStyle', 'solid')} onValueChange={v => updateStyle('borderStyle', v)}>
             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="solid" className="text-xs">实线</SelectItem>
-              <SelectItem value="dashed" className="text-xs">虚线</SelectItem>
-              <SelectItem value="dotted" className="text-xs">点线</SelectItem>
-              <SelectItem value="none" className="text-xs">无</SelectItem>
+              <SelectItem value="solid" className="text-xs">{t("k_165a7c4409")}</SelectItem>
+              <SelectItem value="dashed" className="text-xs">{t("k_12c09d0341")}</SelectItem>
+              <SelectItem value="dotted" className="text-xs">{t("k_1510a5c5e1")}</SelectItem>
+              <SelectItem value="none" className="text-xs">{t("k_72077749f7")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -627,7 +641,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Border radius */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">圆角</Label>
+          <Label className="text-xs">{t("k_9978b8a700")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('borderRadius', 8)}px{ws.borderRadius === undefined && base?.borderRadius !== undefined ? '（跟随字模）' : ''}</span>
         </div>
         <Slider min={0} max={32} step={1}
@@ -638,7 +652,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Padding */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">内边距</Label>
+          <Label className="text-xs">{t("k_c13a3ad236")}</Label>
           <span className="text-[10px] text-muted-foreground">{typeof eff('padding', 8) === 'number' ? `${eff('padding', 8)}px` : String(eff('padding', 8))}</span>
         </div>
         <Slider min={0} max={40} step={2}
@@ -649,7 +663,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Font size */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">字号</Label>
+          <Label className="text-xs">{t("k_576ccdb1f1")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('fontSize', 14)}px</span>
         </div>
         <Slider min={11} max={32} step={1}
@@ -660,7 +674,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Line height */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">行高</Label>
+          <Label className="text-xs">{t("k_b534c8636c")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('lineHeight', 0) ? `${num('lineHeight', 0)}px` : '自动'}</span>
         </div>
         <Slider min={0} max={40} step={1}
@@ -672,7 +686,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Control height — 接管多选框等内层写死高度，小尺寸控件才能真正缩小 */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">控件高</Label>
+          <Label className="text-xs">{t("k_c00791396c")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('height', 0) ? `${num('height', 0)}px` : '默认'}</span>
         </div>
         <Slider min={0} max={160} step={2}
@@ -684,7 +698,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Label width */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">标签宽度</Label>
+          <Label className="text-xs">{t("k_563bafbe2e")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('labelWidth', 0) ? `${num('labelWidth', 0)}px` : '自适应'}</span>
         </div>
         <Slider min={0} max={160} step={4}
@@ -695,7 +709,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Gap between label and control */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">间距</Label>
+          <Label className="text-xs">{t("k_043cefb678")}</Label>
           <span className="text-[10px] text-muted-foreground">{num('gap', 0) ? `${num('gap', 0)}px` : '默认'}</span>
         </div>
         <Slider min={0} max={24} step={1}
@@ -705,7 +719,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
 
       {/* Font weight */}
       <div className="space-y-1">
-        <Label className="text-xs">字重</Label>
+        <Label className="text-xs">{t("k_b361526fa3")}</Label>
         <Select value={String(eff('fontWeight', 'normal'))} onValueChange={v => updateStyle('fontWeight', v)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -720,7 +734,7 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {/* Opacity */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">透明度</Label>
+          <Label className="text-xs">{t("k_61b101b501")}</Label>
           <span className="text-[10px] text-muted-foreground">{Math.round(num('opacity', 1) * 100)}%</span>
         </div>
         <Slider min={0} max={100} step={5}
@@ -730,16 +744,16 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
 
       {/* Box shadow */}
       <div className="space-y-1">
-        <Label className="text-xs">阴影</Label>
+        <Label className="text-xs">{t("k_7cfeac8f06")}</Label>
         <Select value={base?.boxShadow && ws.boxShadow === undefined ? '__from_vis__' : (ws.boxShadow || 'none')} onValueChange={v => updateStyle('boxShadow', v === 'none' || v === '__from_vis__' ? undefined : v)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {!!base?.boxShadow && <SelectItem value="__from_vis__" className="text-xs">跟随字模</SelectItem>}
-            <SelectItem value="none" className="text-xs">无</SelectItem>
-            <SelectItem value="0 1px 3px rgba(0,0,0,0.12)" className="text-xs">轻微</SelectItem>
-            <SelectItem value="0 2px 8px rgba(0,0,0,0.15)" className="text-xs">中等</SelectItem>
-            <SelectItem value="0 4px 16px rgba(0,0,0,0.2)" className="text-xs">较强</SelectItem>
-            <SelectItem value="0 8px 32px rgba(0,0,0,0.25)" className="text-xs">强烈</SelectItem>
+            {!!base?.boxShadow && <SelectItem value="__from_vis__" className="text-xs">{t("k_5837bb2897")}</SelectItem>}
+            <SelectItem value="none" className="text-xs">{t("k_72077749f7")}</SelectItem>
+            <SelectItem value="0 1px 3px rgba(0,0,0,0.12)" className="text-xs">{t("k_fcb9a22f43")}</SelectItem>
+            <SelectItem value="0 2px 8px rgba(0,0,0,0.15)" className="text-xs">{t("k_839de24a0c")}</SelectItem>
+            <SelectItem value="0 4px 16px rgba(0,0,0,0.2)" className="text-xs">{t("k_b761b26732")}</SelectItem>
+            <SelectItem value="0 8px 32px rgba(0,0,0,0.25)" className="text-xs">{t("k_ed9b465bae")}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -748,24 +762,24 @@ function StyleSettings({ chart, onWidgetConfigChange, base, visName }: {
       {chart.chart_type?.startsWith('widget_') && (
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
-            <Label className="text-xs">垂直对齐</Label>
+            <Label className="text-xs">{t("k_ba5af08d76")}</Label>
             <Select value={eff('verticalAlign', 'center')} onValueChange={v => updateStyle('verticalAlign', v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="flex-start" className="text-xs">顶部</SelectItem>
-                <SelectItem value="center" className="text-xs">居中</SelectItem>
-                <SelectItem value="flex-end" className="text-xs">底部</SelectItem>
+                <SelectItem value="flex-start" className="text-xs">{t("k_a9d35ab0a6")}</SelectItem>
+                <SelectItem value="center" className="text-xs">{t("k_5009324782")}</SelectItem>
+                <SelectItem value="flex-end" className="text-xs">{t("k_435b2d8982")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">水平对齐</Label>
+            <Label className="text-xs">{t("k_a42052bd0b")}</Label>
             <Select value={eff('horizontalAlign', 'center')} onValueChange={v => updateStyle('horizontalAlign', v)}>
               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="flex-start" className="text-xs">左对齐</SelectItem>
-                <SelectItem value="center" className="text-xs">居中</SelectItem>
-                <SelectItem value="flex-end" className="text-xs">右对齐</SelectItem>
+                <SelectItem value="flex-start" className="text-xs">{t("k_413f8db65f")}</SelectItem>
+                <SelectItem value="center" className="text-xs">{t("k_5009324782")}</SelectItem>
+                <SelectItem value="flex-end" className="text-xs">{t("k_70fe40dec2")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -799,12 +813,12 @@ function CanvasProperties({
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Monitor className="h-4 w-4" />
-        <span>画布设置</span>
+        <span>{t("k_eba6b84294")}</span>
       </div>
       <Separator />
 
       <div className="space-y-3">
-        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">尺寸</div>
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{t("k_94a6711f24")}</div>
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label className="text-[10px] text-muted-foreground">宽度 (px)</Label>
@@ -818,7 +832,7 @@ function CanvasProperties({
           </div>
         </div>
         <div className="flex items-center justify-between text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1.5">
-          <span>分辨率</span>
+          <span>{t("k_cde9b52b23")}</span>
           <span className="font-mono">{canvasSize.width} × {canvasSize.height} px</span>
         </div>
       </div>
@@ -835,10 +849,10 @@ function CanvasProperties({
             className="w-8 h-8 rounded cursor-pointer border" />
           <Input className="h-7 text-xs font-mono flex-1" value={canvasBgColor || ''}
             onChange={e => setCanvasBgColor(e.target.value)}
-            placeholder="默认背景" />
+            placeholder={t("k_e85bf62c12")} />
           <Button variant="outline" size="sm" className="h-7 text-xs flex-shrink-0"
             onClick={() => setCanvasBgColor('')}
-          >重置</Button>
+          >{t("k_3d81345303")}</Button>
         </div>
       </div>
 
@@ -850,7 +864,7 @@ function CanvasProperties({
         </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <Label className="text-xs">网格大小（吸附步进）</Label>
+            <Label className="text-xs">{t("k_1a38a1115d")}</Label>
             <span className="text-xs text-muted-foreground">{gridSize}px</span>
           </div>
           {/* 步进从 5px 一档改为 1px，下限从 10px 降到 2px：吸附格栅要能小幅调细 */}
@@ -861,9 +875,9 @@ function CanvasProperties({
       <Separator />
 
       <div className="space-y-3">
-        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">缩放</div>
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{t("k_12e2ed4d50")}</div>
         <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">当前缩放</span>
+          <span className="text-xs text-muted-foreground">{t("k_d962d98436")}</span>
           <span className="text-xs font-mono">{Math.round(scale * 100)}%</span>
         </div>
         <Slider min={20} max={200} step={5} value={[Math.round(scale * 100)]} onValueChange={([v]) => setScale(v / 100)} />
@@ -872,14 +886,14 @@ function CanvasProperties({
       <Separator />
 
       <div className="space-y-2">
-        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">统计</div>
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{t("k_ca8ffc3990")}</div>
         <div className="grid grid-cols-2 gap-2">
           <div className="bg-muted/50 rounded px-2 py-1.5">
-            <div className="text-[10px] text-muted-foreground">图表</div>
+            <div className="text-[10px] text-muted-foreground">{t("k_a66b71e29e")}</div>
             <div className="text-sm font-medium">{allCharts.filter(c => !c.chart_type?.startsWith('widget_')).length}</div>
           </div>
           <div className="bg-muted/50 rounded px-2 py-1.5">
-            <div className="text-[10px] text-muted-foreground">控件</div>
+            <div className="text-[10px] text-muted-foreground">{t("k_f17e504804")}</div>
             <div className="text-sm font-medium">{allCharts.filter(c => c.chart_type?.startsWith('widget_')).length}</div>
           </div>
         </div>

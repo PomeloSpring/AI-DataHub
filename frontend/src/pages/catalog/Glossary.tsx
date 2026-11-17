@@ -3,6 +3,7 @@ import client from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { t } from '@/i18n/runtime';
 import {
   Dialog,
   DialogContent,
@@ -205,8 +206,8 @@ export default function Glossary({
       <div className="flex items-center justify-between shrink-0">
         {!embedded && (
         <div>
-          <h1 className="text-2xl font-bold">业务术语</h1>
-          <p className="text-muted-foreground text-sm mt-1">管理业务术语定义，用于 NL2SQL 语义理解和 RAG 检索增强</p>
+          <h1 className="text-2xl font-bold">{t("k_779b13e3d9")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_c05a63e6dd")}</p>
         </div>
         )}
         <div className="flex gap-2">
@@ -239,14 +240,14 @@ export default function Glossary({
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">中文术语</th>
-              <th className="text-left p-3 font-medium">英文术语</th>
-              <th className="text-left p-3 font-medium">类型</th>
-              <th className="text-left p-3 font-medium">目标表</th>
-              <th className="text-left p-3 font-medium">目标列</th>
-              <th className="text-center p-3 font-medium">使用次数</th>
-              <th className="text-center p-3 font-medium">状态</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t("k_ad067a0eba")}</th>
+              <th className="text-left p-3 font-medium">{t("k_41ab8d041b")}</th>
+              <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+              <th className="text-left p-3 font-medium">{t("k_442be9c497")}</th>
+              <th className="text-left p-3 font-medium">{t("k_38556b027f")}</th>
+              <th className="text-center p-3 font-medium">{t("k_2d7d18da79")}</th>
+              <th className="text-center p-3 font-medium">{t("k_62e951a692")}</th>
+              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -344,7 +345,7 @@ export default function Glossary({
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">英文术语</label>
+                <label className="text-sm font-medium">{t("k_41ab8d041b")}</label>
                 <Input
                   placeholder="如: GMV"
                   value={formData.term_en}
@@ -353,7 +354,7 @@ export default function Glossary({
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">术语类型</label>
+              <label className="text-sm font-medium">{t("k_5ce3a2455b")}</label>
               <Select value={formData.term_type} onValueChange={(v) => setFormData({ ...formData, term_type: v })}>
                 <SelectTrigger>
                   <SelectValue />
@@ -367,33 +368,33 @@ export default function Glossary({
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">目标表</label>
+                <label className="text-sm font-medium">{t("k_442be9c497")}</label>
                 <Input
-                  placeholder="关联的数据库表"
+                  placeholder={t("k_d15cb11d57")}
                   value={formData.target_table}
                   onChange={(e) => setFormData({ ...formData, target_table: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">目标列</label>
+                <label className="text-sm font-medium">{t("k_38556b027f")}</label>
                 <Input
-                  placeholder="关联的字段"
+                  placeholder={t("k_b2cb149986")}
                   value={formData.target_column}
                   onChange={(e) => setFormData({ ...formData, target_column: e.target.value })}
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">描述</label>
+              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
               <Input
-                placeholder="术语的业务含义说明"
+                placeholder={t("k_f090aa45e2")}
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving ? '保存中...' : '保存'}
             </Button>
@@ -405,14 +406,14 @@ export default function Glossary({
       <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             确定要删除术语 <strong>{deleteTarget?.term_cn}</strong> 吗？此操作不可恢复。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

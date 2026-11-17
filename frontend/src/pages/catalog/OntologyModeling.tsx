@@ -53,6 +53,7 @@ import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, Objec
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 import { hasPerm } from '@/stores/permissionStore';
+import { useTranslation } from 'react-i18next';
 
 interface Datasource {
   id: number;
@@ -132,6 +133,7 @@ function ModelGroup({ title, list, selectedId, onPick }: {
 }
 
 export default function OntologyModeling() {
+  const { t } = useTranslation('ui');
   // ── 数据源 ──
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [datasourceId, setDatasourceId] = useState<number>(0);
@@ -646,7 +648,7 @@ export default function OntologyModeling() {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Boxes className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">本体建模</h1>
+          <h1 className="text-lg font-semibold">{t("k_ea36677e56")}</h1>
         </div>
         <div className="flex-1" />
         <Select
@@ -654,7 +656,7 @@ export default function OntologyModeling() {
           onValueChange={(v) => setDatasourceId(Number(v))}
         >
           <SelectTrigger className="w-56">
-            <SelectValue placeholder="选择数据源" />
+            <SelectValue placeholder={t("k_422b9e314a")} />
           </SelectTrigger>
           <SelectContent>
             {datasources.map((ds) => (
@@ -690,7 +692,7 @@ export default function OntologyModeling() {
                 </label>
               ))}
               {!knowledgeBases.length && (
-                <div className="px-1.5 py-1 text-xs text-muted-foreground">没有启用中的知识库</div>)}
+                <div className="px-1.5 py-1 text-xs text-muted-foreground">{t("k_309f7b3872")}</div>)}
             </div>
           </PopoverContent>
         </Popover>
@@ -736,7 +738,7 @@ export default function OntologyModeling() {
             <div className="relative mt-2">
               <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input value={modelKw} onChange={(e) => setModelKw(e.target.value)}
-                placeholder="搜索模型名 / 业务域" className="h-8 pl-7 text-xs" />
+                placeholder={t("k_f23093e437")} className="h-8 pl-7 text-xs" />
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -750,19 +752,19 @@ export default function OntologyModeling() {
               <div className="text-xs text-muted-foreground py-3 text-center">没有匹配“{modelKw}”的模型</div>
             )}
             <ModelGroup
-              title="业务本体（按业务域）" list={filteredBizModels}
+              title={t("k_d381fb12f2")} list={filteredBizModels}
               selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="源本体（按数据源）" list={filteredSourceModels}
+              title={t("k_f5db121235")} list={filteredSourceModels}
               selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="系统能力本体" list={filteredSysModels}
+              title={t("k_f6b932be1d")} list={filteredSysModels}
               selectedId={selectedId} onPick={loadModel}
             />
             <ModelGroup
-              title="未分类" list={filteredLegacyModels}
+              title={t("k_b28f13ea3e")} list={filteredLegacyModels}
               selectedId={selectedId} onPick={loadModel}
             />
 
@@ -778,7 +780,7 @@ export default function OntologyModeling() {
                   <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{poolTotal} 项</Badge>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground mt-0.5">跨模型的覆盖缺口 · 打开独立工作台处理</div>
+              <div className="text-xs text-muted-foreground mt-0.5">{t("k_4cd3a552c0")}</div>
             </button>
           </CardContent>
         </Card>
@@ -799,7 +801,7 @@ export default function OntologyModeling() {
                     草案视图·未生效
                   </Badge>
                 )}
-                {saving && <span className="text-xs text-muted-foreground">写入草案中…</span>}
+                {saving && <span className="text-xs text-muted-foreground">{t("k_8dd685ca90")}</span>}
               </CardTitle>
               {model && (
                 <div className="flex items-center gap-2 flex-wrap">
@@ -808,7 +810,7 @@ export default function OntologyModeling() {
                   <div className="inline-flex items-center rounded-md border border-border bg-muted/40 p-0.5">
                     <button
                       onClick={() => switchView('live')}
-                      title="线上正在生效的口径（只读；要改请切到草案）"
+                      title={t("k_2f0436bcbf")}
                       className={`h-7 rounded px-2.5 text-xs transition-colors ${
                         viewMode === 'live' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
                     >
@@ -839,7 +841,7 @@ export default function OntologyModeling() {
                       系统知识库 · 自动同步
                     </Badge>
                   )}
-                  <span title="派生状态回显（30s 轮询）；手动「图谱生成」与「同步知识库」请到「关系图谱」页">
+                  <span title={t("k_4af21def1e")}>
                     <SyncBadges modelId={model.id} kind={model.kind} />
                   </span>
                   <Button size="sm" variant="outline" onClick={handleOpenVersions}>
@@ -902,7 +904,7 @@ export default function OntologyModeling() {
                     {draftSummary || '草案与生效版对象清单一致（可能只改了属性/关系以外的内容）'}
                     {' · '}{draftStatus?.draft_updated_by || '未知'} 于 {draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存
                     {draftStatus?.base_stale && (
-                      <span className="ml-1 text-red-600">· 生效版已再被改动，发布会被阻断，需重做草案</span>
+                      <span className="ml-1 text-red-600">{t("k_8b2f6ff8c9")}</span>
                     )}
                   </div>
                   {viewMode === 'live' && (
@@ -948,7 +950,7 @@ export default function OntologyModeling() {
             ) : (
               <Tabs key={model.id} value={tab} onValueChange={setTab}>
                 <TabsList>
-                  <TabsTrigger value="hub">对象 · Link</TabsTrigger>
+                  <TabsTrigger value="hub">{t("k_27424f442a")}</TabsTrigger>
                   {draftPending && (
                     <TabsTrigger value="changes">
                       变更对比
@@ -957,12 +959,12 @@ export default function OntologyModeling() {
                       </Badge>
                     </TabsTrigger>
                   )}
-                  <TabsTrigger value="terms">业务术语</TabsTrigger>
-                  <TabsTrigger value="tags">标签</TabsTrigger>
-                  {showsM234(model.kind) && <TabsTrigger value="m234">行为</TabsTrigger>}
-                  {showsM234(model.kind) && <TabsTrigger value="rules">规则</TabsTrigger>}
-                  {showsM234(model.kind) && <TabsTrigger value="scenarios">场景</TabsTrigger>}
-                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">同构站点部署</TabsTrigger>}
+                  <TabsTrigger value="terms">{t("k_779b13e3d9")}</TabsTrigger>
+                  <TabsTrigger value="tags">{t("k_ae0a7afece")}</TabsTrigger>
+                  {showsM234(model.kind) && <TabsTrigger value="m234">{t("k_c09395949f")}</TabsTrigger>}
+                  {showsM234(model.kind) && <TabsTrigger value="rules">{t("k_ed904c685a")}</TabsTrigger>}
+                  {showsM234(model.kind) && <TabsTrigger value="scenarios">{t("k_625b392c7b")}</TabsTrigger>}
+                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">{t("k_c308156eae")}</TabsTrigger>}
                 </TabsList>
                 {hiddenM234 && (
                   <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
@@ -1044,11 +1046,11 @@ export default function OntologyModeling() {
       <Dialog open={yamlOpen} onOpenChange={setYamlOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>导入 Palantir Ontology YAML</DialogTitle>
+            <DialogTitle>{t("k_30c443af4b")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div>
-              <label className="text-sm font-medium block mb-1">服务端 YAML 目录</label>
+              <label className="text-sm font-medium block mb-1">{t("k_d3ba8eca71")}</label>
               <Input value={yamlDir} onChange={(e) => setYamlDir(e.target.value)}
                 placeholder="如: ontology" />
               <p className="text-xs text-muted-foreground mt-1">
@@ -1058,7 +1060,7 @@ export default function OntologyModeling() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setYamlOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setYamlOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleImportYaml} disabled={importing}>
               {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Upload className="h-4 w-4 mr-1" />}
               {importing ? '导入中…' : '开始导入'}
@@ -1071,17 +1073,17 @@ export default function OntologyModeling() {
       <Dialog open={activateOpen} onOpenChange={setActivateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认激活本体模型？</DialogTitle>
+            <DialogTitle>{t("k_717d2e4a5e")}</DialogTitle>
           </DialogHeader>
           <div className="text-sm text-muted-foreground space-y-2">
-            <p>激活将执行以下操作：</p>
+            <p>{t("k_afc1e1cf46")}</p>
             <ul className="list-disc pl-5 space-y-1">
-              <li>该数据源原 active 模型将被归档</li>
-              <li>本体模型转换为 RDF/Turtle 写入 Oxigraph</li>
+              <li>{t("k_93bc92d2ab")}</li>
+              <li>{t("k_ee23325510")}</li>
               <li>逐对象 MD 段重新向量化写入向量库（{objects.length} 个对象）</li>
               <li>ontology_first 检索策略将使用新模型</li>
             </ul>
-            <p>激活前请确认 JSON 内容已检查无误。</p>
+            <p>{t("k_f610b131c2")}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setActivateOpen(false)} disabled={activating}>
@@ -1112,7 +1114,7 @@ export default function OntologyModeling() {
                 <Loader2 className="h-4 w-4 mr-1 inline animate-spin" />加载中…
               </div>
             ) : versions.length === 0 ? (
-              <div className="py-6 text-center text-sm text-muted-foreground">暂无版本记录</div>
+              <div className="py-6 text-center text-sm text-muted-foreground">{t("k_e65efc0072")}</div>
             ) : (
               <div className="space-y-2 pr-2">
                 {versions.map((v) => {
@@ -1152,7 +1154,7 @@ export default function OntologyModeling() {
             )}
           </ScrollArea>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setVersionsOpen(false)}>关闭</Button>
+            <Button variant="outline" onClick={() => setVersionsOpen(false)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

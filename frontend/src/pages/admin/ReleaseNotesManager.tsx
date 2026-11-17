@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { releaseNotesApi, type ReleaseNote } from '@/api/releaseNotes';
 import { GUIDE_OPTIONS } from '@/lib/onboarding/guides';
 import { toast } from '@/lib/toast';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 版本公告管理（系统配置 → 版本公告）。
@@ -71,6 +72,7 @@ const splitLines = (note: ReleaseNote, kind: SectionKind) =>
   note.sections.filter(s => s.kind === kind).flatMap(s => s.items).join('\n');
 
 export default function ReleaseNotesManager() {
+  const { t } = useTranslation('ui');
   const [notes, setNotes] = useState<ReleaseNote[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -174,7 +176,7 @@ export default function ReleaseNotesManager() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={load} disabled={loading}>刷新</Button>
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>{t("k_38108eaa1d")}</Button>
           <Button size="sm" onClick={openCreate}>
             <Plus className="mr-1.5 h-4 w-4" />新增公告
           </Button>
@@ -185,11 +187,11 @@ export default function ReleaseNotesManager() {
       {!loading && error && (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           {error}
-          <Button variant="link" size="sm" className="ml-2 h-auto p-0" onClick={load}>重试</Button>
+          <Button variant="link" size="sm" className="ml-2 h-auto p-0" onClick={load}>{t("k_e2d53a6d3a")}</Button>
         </div>
       )}
       {!loading && !error && !notes.length && (
-        <p className="py-8 text-center text-sm text-muted-foreground">还没有公告，点「新增公告」发第一条</p>
+        <p className="py-8 text-center text-sm text-muted-foreground">{t("k_20320f1785")}</p>
       )}
 
       {!loading && !!notes.length && (
@@ -197,12 +199,12 @@ export default function ReleaseNotesManager() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[110px]">版本</TableHead>
-                <TableHead>标题</TableHead>
-                <TableHead className="w-[210px]">更新项</TableHead>
-                <TableHead className="w-[150px]">关联引导</TableHead>
-                <TableHead className="w-[110px]">状态</TableHead>
-                <TableHead className="w-[100px] text-right">操作</TableHead>
+                <TableHead className="w-[110px]">{t("k_989d1affa0")}</TableHead>
+                <TableHead>{t("k_748d7dc7e3")}</TableHead>
+                <TableHead className="w-[210px]">{t("k_d1f5204cab")}</TableHead>
+                <TableHead className="w-[150px]">{t("k_3bafa29277")}</TableHead>
+                <TableHead className="w-[110px]">{t("k_62e951a692")}</TableHead>
+                <TableHead className="w-[100px] text-right">{t("k_f3ea6d345e")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -212,7 +214,7 @@ export default function ReleaseNotesManager() {
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <span className="truncate">{n.title}</span>
-                      {!!n.is_major && <Badge className="shrink-0">重大版本</Badge>}
+                      {!!n.is_major && <Badge className="shrink-0">{t("k_34089895a6")}</Badge>}
                     </div>
                     {!!n.summary && <div className="mt-0.5 truncate text-xs text-muted-foreground">{n.summary}</div>}
                   </TableCell>
@@ -227,15 +229,15 @@ export default function ReleaseNotesManager() {
                   </TableCell>
                   <TableCell>
                     {n.is_published
-                      ? <Badge variant="secondary" className="font-normal">已发布</Badge>
-                      : <Badge variant="outline" className="font-normal">草稿</Badge>}
+                      ? <Badge variant="secondary" className="font-normal">{t("k_176a2eb4eb")}</Badge>
+                      : <Badge variant="outline" className="font-normal">{t("k_0f436818c0")}</Badge>}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="编辑" onClick={() => openEdit(n)}>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={t("k_a7f814c0a4")} onClick={() => openEdit(n)}>
                       <Edit className="h-3.5 w-3.5" />
                     </Button>
                     <Button
-                      size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" title="删除"
+                      size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" title={t("k_3755f56f2f")}
                       onClick={() => setDeleteTarget(n)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -273,30 +275,30 @@ export default function ReleaseNotesManager() {
                   <Input
                     id="rn-title" value={form.title}
                     onChange={e => setForm({ ...form, title: e.target.value })}
-                    placeholder="如：新手引导与版本公告"
+                    placeholder={t("k_017a08a7d9")}
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="rn-summary">一句话摘要</Label>
+                <Label htmlFor="rn-summary">{t("k_b66b21f872")}</Label>
                 <Input
                   id="rn-summary" value={form.summary}
                   onChange={e => setForm({ ...form, summary: e.target.value })}
-                  placeholder="给忙的人看的版本要点，显示在版本清单里"
+                  placeholder={t("k_ee8a723f36")}
                 />
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>关联引导</Label>
+                  <Label>{t("k_3bafa29277")}</Label>
                   <Select
                     value={form.guide_key}
                     onValueChange={v => setForm({ ...form, guide_key: v })}
                   >
-                    <SelectTrigger><SelectValue placeholder="选择不关联" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={t("k_e8a357a4d4")} /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={NO_GUIDE}>不关联</SelectItem>
+                      <SelectItem value={NO_GUIDE}>{t("k_1bd98fef01")}</SelectItem>
                       {GUIDE_OPTIONS.map(o => (
                         <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>
                       ))}
@@ -312,14 +314,14 @@ export default function ReleaseNotesManager() {
                       id="rn-major" checked={form.is_major}
                       onCheckedChange={v => setForm({ ...form, is_major: v })}
                     />
-                    <Label htmlFor="rn-major">重大版本（升级时向全体用户提示）</Label>
+                    <Label htmlFor="rn-major">{t("k_0f020c708d")}</Label>
                   </div>
                   <div className="flex items-center gap-2">
                     <Switch
                       id="rn-published" checked={form.is_published}
                       onCheckedChange={v => setForm({ ...form, is_published: v })}
                     />
-                    <Label htmlFor="rn-published">发布（未发布仅本页可见）</Label>
+                    <Label htmlFor="rn-published">{t("k_e674cc0143")}</Label>
                   </div>
                 </div>
               </div>
@@ -339,7 +341,7 @@ export default function ReleaseNotesManager() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)} disabled={saving}>取消</Button>
+            <Button variant="outline" onClick={() => setForm(null)} disabled={saving}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving || !form}>
               {saving && <Spinner size={14} className="mr-2" />}
               {form?.id ? '保存修改' : '创建公告'}
@@ -358,7 +360,7 @@ export default function ReleaseNotesManager() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>取消</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting && <Spinner size={14} className="mr-2" />}
               确认删除

@@ -13,6 +13,7 @@ import SelectionOverlay from './SelectionOverlay';
 import { PAGE_ROW, computeAlignHints, pageColumnPx, pageGap, pageGapsOf, pagePixelRect, pageCanvasSize, previewInsert, resolvePageLayout, movePageItem, type AlignHints, type PageBreakpoint, type PageItem } from '@/lib/dashboardPageLayout';
 import type { DropGhost } from '@/lib/editorDrag';
 import { useMergedRefs } from '@/lib/mergeRefs';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   dashboard: Dashboard; items: VisComponent[]; breakpoint: PageBreakpoint; selectedIds?: number[];
@@ -37,6 +38,7 @@ type Preview = { layout: PageItem[]; pixels: Rect; hints: AlignHints };
 /** 拖入预览用的哨兵 id：不与真实图表冲突，也不会被渲染成卡片 */
 const PREVIEW_ID = -0x9c40;
 export default function PageLayoutEditor({ dashboard, items, breakpoint, selectedIds = [], onSelect, onConfig, onDelete, onChange, canvas, showGrid, panMode, interactive, showRulers, dropRef, dropGhost, onInsertFromLibrary, onOpenTemplates, entranceReplay }: Props) {
+  const { t } = useTranslation('ui');
   const { canvasRef: viewport, surfaceRef: surface, scale, panOffset, beginElementInteraction, endElementInteraction } = canvas;
   // 稳定身份的合并 ref：内联 mergeRefs 会每帧新建，React 先用 null 调旧回调会注销 dnd-kit 落点节点
   const viewRef = useMergedRefs<HTMLDivElement>(viewport, dropRef);
@@ -150,7 +152,7 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
   return <div ref={viewRef} className="adh-canvas-viewport relative min-h-0 min-w-0 flex-1 overflow-hidden"
     data-panning={panMode || canvas.spaceHeld || undefined} data-drag-over={ghostPixels ? true : undefined}
     style={{ touchAction: 'none', userSelect: 'none', ...backdropStyle() }}
-    aria-label="页面布局编辑区" onPointerDownCapture={canvas.handlePanStart}>
+    aria-label={t("k_7eb2c03699")} onPointerDownCapture={canvas.handlePanStart}>
     <div ref={surface} className="absolute bg-background" data-testid="page-editor-surface" style={{ ...size, left: '50%', top: '50%', marginLeft: -size.width / 2, marginTop: -size.height / 2,
       transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`, transformOrigin: 'center',
       boxShadow: `0 0 0 1px ${CANVAS_COLORS.surfaceBorder}, ${CANVAS_COLORS.surfaceShadow}` }}>
@@ -176,8 +178,8 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
           </div>;
         }} />}
       {/* 方块转角点星，不画线；zIndex 0 保证参考标记永远在卡片下方 */}
-      {showGrid && <div aria-label="页面参考点" className="pointer-events-none absolute inset-0" style={{ ...cornerDotStyle(column), zIndex: 0 }} />}
-      {snapped && <div aria-label="图表放置预览" className="pointer-events-none absolute border border-dashed"
+      {showGrid && <div aria-label={t("k_a29cc8af2a")} className="pointer-events-none absolute inset-0" style={{ ...cornerDotStyle(column), zIndex: 0 }} />}
+      {snapped && <div aria-label={t("k_b8c46b58a6")} className="pointer-events-none absolute border border-dashed"
         style={{ left: pagePixelRect(snapped.rect, breakpoint, gaps).x, top: pagePixelRect(snapped.rect, breakpoint, gaps).y,
           width: pagePixelRect(snapped.rect, breakpoint, gaps).w, height: pagePixelRect(snapped.rect, breakpoint, gaps).h,
           borderColor: CANVAS_COLORS.dropGhostBorder, background: CANVAS_COLORS.dropGhostFill }} />}
@@ -194,7 +196,7 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
             g.equal ? 'bg-primary/10 text-primary ring-1 ring-primary/30' : 'bg-background/85 text-muted-foreground ring-1 ring-border/70'}`}
           style={g.axis === 'x' ? { left: (g.from + g.to) / 2, top: g.at } : { top: (g.from + g.to) / 2, left: g.at }}>{Math.round(g.value)}</span>)}
       </div>}
-      {ghostPixels && <div aria-label="新增落点预览" className="pointer-events-none absolute border border-dashed"
+      {ghostPixels && <div aria-label={t("k_b4db4abaf6")} className="pointer-events-none absolute border border-dashed"
         style={{ left: ghostPixels.x, top: ghostPixels.y, width: ghostPixels.w, height: ghostPixels.h,
           borderColor: CANVAS_COLORS.dropGhostBorder, background: CANVAS_COLORS.dropGhostFill }}>
         {/* 把将占用的尺寸直接标在框内（像素为准，网格单位只是实现细节），用户不必自己算 */}
@@ -206,11 +208,11 @@ export default function PageLayoutEditor({ dashboard, items, breakpoint, selecte
     </div>
     {empty && <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
       <div className="pointer-events-auto max-w-sm rounded-lg border bg-background/95 p-4 text-center shadow-sm">
-        <p className="text-sm font-medium">这个断点还是空的</p>
-        <p className="mt-1 text-xs text-muted-foreground">从左侧组件库把图表或控件拖到画布；网格会自动避让，不需要手动对齐。</p>
+        <p className="text-sm font-medium">{t("k_67cca2ba62")}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("k_8d9011f8ce")}</p>
         {(onInsertFromLibrary || onOpenTemplates) && <div className="mt-3 flex justify-center gap-2">
-          {onInsertFromLibrary && <Button size="sm" variant="outline" onClick={onInsertFromLibrary}>从数据集引入</Button>}
-          {onOpenTemplates && <Button size="sm" variant="outline" onClick={onOpenTemplates}>套用模板</Button>}
+          {onInsertFromLibrary && <Button size="sm" variant="outline" onClick={onInsertFromLibrary}>{t("k_e0a423f4a7")}</Button>}
+          {onOpenTemplates && <Button size="sm" variant="outline" onClick={onOpenTemplates}>{t("k_e360c4fd5b")}</Button>}
         </div>}
       </div>
     </div>}

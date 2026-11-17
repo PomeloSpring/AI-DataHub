@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { t } from '@/i18n/runtime';
 import {
   ArrowLeft, ChevronRight, FileText, FolderClosed, FolderOpen, Plus, RefreshCw,
   Save, ShieldAlert,
@@ -13,6 +14,7 @@ import {
   type KbDoc, type KbTree, type KbTreeNode,
 } from '@/api/kbDocs';
 import { ErrorBanner, LoadingRow, NoticeBanner, useContentPerms } from './shared';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 知识库文档 — 详情页（`/content/kb-docs/:kb`）。
@@ -34,6 +36,7 @@ import { ErrorBanner, LoadingRow, NoticeBanner, useContentPerms } from './shared
  * 文本再画一遍，多一次切换只会挡路（用户 2026-11-05 反馈后移除）。
  */
 export default function KnowledgeDocDetail() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const { kb } = useParams<{ kb: string }>();
   const baseName = kb ? decodeURIComponent(kb) : '';
@@ -191,7 +194,7 @@ export default function KnowledgeDocDetail() {
       <div className="grid gap-4 lg:grid-cols-[minmax(260px,340px)_1fr]">
         <aside className="space-y-2 rounded-xl border bg-card p-3">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>目录树</span>
+            <span>{t("k_0d791f13ed")}</span>
             {tree && <span>{tree.doc_count} 篇 / {tree.folder_count} 个目录{flatTree ? ' · 扁平库' : ''}</span>}
           </div>
           {treeLoading && <LoadingRow text="正在读取云端目录" />}
@@ -218,8 +221,8 @@ export default function KnowledgeDocDetail() {
               <div className="flex items-center gap-2">
                 <Input id="kbd-new" value={newTitle} onChange={e => setNewTitle(e.target.value)}
                   placeholder={creating.kind === 'doc' ? '如 常见问答-装机口径.md' : '如 合规与标准'} className="flex-1" />
-                <Button size="sm" onClick={create} disabled={saving || !newTitle.trim()}>确定</Button>
-                <Button size="sm" variant="ghost" onClick={() => { setCreating(null); setNewTitle(''); }}>取消</Button>
+                <Button size="sm" onClick={create} disabled={saving || !newTitle.trim()}>{t("k_f526c89937")}</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setCreating(null); setNewTitle(''); }}>{t("k_4d0b4688c7")}</Button>
               </div>
               {creating.parentId && (
                 <p className="text-[11px] text-muted-foreground">
@@ -234,8 +237,8 @@ export default function KnowledgeDocDetail() {
 
           {!docLoading && !doc && !docError && (
             <div className="rounded-xl border border-dashed bg-muted/20 p-10 text-center">
-              <p className="text-sm font-medium">左边点一篇文档</p>
-              <p className="mt-1 text-xs text-muted-foreground">目录用于展开；正文在右侧直接编辑。</p>
+              <p className="text-sm font-medium">{t("k_16bae4965a")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("k_3816a3e586")}</p>
             </div>
           )}
 
@@ -266,7 +269,7 @@ export default function KnowledgeDocDetail() {
 
               <Textarea
                 value={draft} onChange={e => setDraft(e.target.value)} rows={26}
-                aria-label="编辑文档正文" className="font-mono text-xs leading-6"
+                aria-label={t("k_96950885c6")} className="font-mono text-xs leading-6"
                 readOnly={readOnly} disabled={readOnly}
               />
 
@@ -275,11 +278,11 @@ export default function KnowledgeDocDetail() {
                   <Save className="mr-1.5 h-4 w-4" />{saving ? '提交中' : '只提交这一篇'}
                 </Button>
                 {dirty && (
-                  <Button size="sm" variant="ghost" onClick={() => setDraft(doc.content)} disabled={saving}>放弃改动</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setDraft(doc.content)} disabled={saving}>{t("k_cf1fe2f1b4")}</Button>
                 )}
-                {dirty && <span className="text-[11px] text-amber-600">有未提交改动</span>}
+                {dirty && <span className="text-[11px] text-amber-600">{t("k_06c84d4a53")}</span>}
                 {!dirty && (
-                  <span className="text-xs text-muted-foreground">内容与云端一致，无需提交（空提交会白换一次文档标识并重跑解析）。</span>
+                  <span className="text-xs text-muted-foreground">{t("k_def69a36b7")}</span>
                 )}
               </div>
             </div>
@@ -326,7 +329,7 @@ function TreeNode({ node, depth, openIds, selectedId, onNode, canWrite, onCreate
           {!node.is_dir && <ChevronRight className="h-3 w-3 shrink-0 opacity-40" />}
           <span className="truncate">{node.title}</span>
           {node.is_dir && <span className="shrink-0 text-[10px] opacity-60">{(node.children ?? []).length}</span>}
-          {node.orphan && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">父级缺失</span>}
+          {node.orphan && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">{t("k_6b471d1d33")}</span>}
           {hint && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">{hint}</span>}
         </button>
         {node.is_dir && canWrite && (

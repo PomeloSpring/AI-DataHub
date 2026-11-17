@@ -16,14 +16,16 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Layers, MessageSquare, Mail, Smartphone } from 'lucide-react';
 import ReportTemplatePanel from './templates/ReportTemplatePanel';
 import MessageTemplatePanel from './templates/MessageTemplatePanel';
+import { useTranslation } from 'react-i18next';
 
 export default function TemplateCenter() {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState('report');
 
   return (
     <div className="p-6 space-y-4 overflow-y-auto">
       <div>
-        <h1 className="text-xl font-bold flex items-center gap-2"><Layers className="h-5 w-5" /> 模板中心</h1>
+        <h1 className="text-xl font-bold flex items-center gap-2"><Layers className="h-5 w-5" /> {t("k_42bae137bf")}</h1>
         <p className="text-sm text-muted-foreground mt-1">
           报告模板管版式（章节 + 图表规格 + 主题），消息模板管通知文案（按变量展开）。
           模板只存结构与文案，不存数据；任务与渠道选的都只是引用，改一处即生效。
@@ -32,10 +34,10 @@ export default function TemplateCenter() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
-          <TabsTrigger value="report"><Layers className="h-4 w-4 mr-1" />报告模板</TabsTrigger>
-          <TabsTrigger value="im"><MessageSquare className="h-4 w-4 mr-1" />群机器人 / Webhook</TabsTrigger>
-          <TabsTrigger value="email"><Mail className="h-4 w-4 mr-1" />邮件</TabsTrigger>
-          <TabsTrigger value="sms"><Smartphone className="h-4 w-4 mr-1" />短信</TabsTrigger>
+          <TabsTrigger value="report"><Layers className="h-4 w-4 mr-1" />{t("k_e7d5880a37")}</TabsTrigger>
+          <TabsTrigger value="im"><MessageSquare className="h-4 w-4 mr-1" />{t("k_793558f54c")}</TabsTrigger>
+          <TabsTrigger value="email"><Mail className="h-4 w-4 mr-1" />{t("k_1c8e464184")}</TabsTrigger>
+          <TabsTrigger value="sms"><Smartphone className="h-4 w-4 mr-1" />{t("k_17e1a481d8")}</TabsTrigger>
         </TabsList>
         {/* 非当前分类不挂载：切回来时重新按服务端口径取数，免得留着旧行编辑到已下架的模板 */}
         <TabsContent value="report"><ReportTemplatePanel /></TabsContent>

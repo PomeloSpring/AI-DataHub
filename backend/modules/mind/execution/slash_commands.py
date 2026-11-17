@@ -20,6 +20,8 @@
 
 import logging
 
+from backend.common import i18n
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,10 @@ COMMANDS = [
         "description": "把本轮问题创建为周期执行的 Agent 分析任务（需任务调度权限）",
         "kind": "directive",
         "action": "",
+        "i18n": {
+            "label": {"en-US": "Create Scheduled Task"},
+            "description": {"en-US": "Turn this turn's question into a recurring Agent analysis task (requires task-scheduling permission)"},
+        },
     },
     {
         "key": "clear",
@@ -39,6 +45,10 @@ COMMANDS = [
         "description": "擦掉本会话的历史消息与模型上下文，不新开窗口（不可撤销；会话运行中需先停止）",
         "kind": "action",
         "action": "clear_conversation",
+        "i18n": {
+            "label": {"en-US": "Clear Current Session"},
+            "description": {"en-US": "Erase this session's history and model context without opening a new one (irreversible; stop a running session first)"},
+        },
     },
 ]
 
@@ -46,10 +56,17 @@ _COMMAND_KEYS = {c["key"] for c in COMMANDS}
 
 
 def list_commands() -> list[dict]:
-    """`/` 菜单可选的指令清单（不含 directive 内部文案，但带 kind/action 供前端分流）。"""
-    return [{"key": c["key"], "label": c["label"], "description": c["description"],
-             "kind": c.get("kind") or "directive", "action": c.get("action") or ""}
-            for c in COMMANDS]
+    """`/` 菜单可选的指令清单（不含 directive 内部文案，但带 kind/action 供前端分流）。
+
+    label/description 按当前请求语言下发（无请求上下文时为中文）。i18n 子对象与库里元数据
+    同一形态、同一读取口径（i18n.localize_row），避免代码内清单与 DB 资产两套本地化写法。
+    """
+    out = []
+    for c in COMMANDS:
+        row, _missing = i18n.localize_row(c, "", ("label", "description"))
+        out.append({"key": row["key"], "label": row["label"], "description": row["description"],
+                    "kind": c.get("kind") or "directive", "action": c.get("action") or ""})
+    return out
 
 
 def is_known_command(key: str) -> bool:
@@ -103,12 +120,20 @@ MODES = [
         "label": "快速问答",
         "description": "知识检索 + 查数 + 分析，一轮内给结论；不擅自猜测、不多轮下钻，也不执行平台操作",
         "skill": "knowledge-qa",
+        "i18n": {
+            "label": {"en-US": "Quick Answer"},
+            "description": {"en-US": "Knowledge lookup + data query + analysis, conclusion in one turn; no guessing, no multi-turn drill-down, no platform mutations"},
+        },
     },
     {
         "key": "analysis",
         "label": "深度分析",
         "description": "当前全量能力：多轮取数、下钻归因、跨站对比与图表产出（耗时较长）",
         "skill": "data-analysis",
+        "i18n": {
+            "label": {"en-US": "Deep Analysis"},
+            "description": {"en-US": "Full capability today: multi-turn queries, drill-down attribution, cross-site comparison and charts (takes longer)"},
+        },
     },
 ]
 MODE_DEFAULT = "knowledge"
@@ -141,9 +166,12 @@ _MODE_DIRECTIVES = {
 
 
 def list_modes() -> list[dict]:
-    """快速入口清单（给前端渲染切换按钮；label/description 面向用户）。"""
-    return [{"key": m["key"], "label": m["label"], "description": m["description"]}
-            for m in MODES]
+    """快速入口清单（给前端渲染切换按钮；label/description 面向用户，按请求语言下发）。"""
+    out = []
+    for m in MODES:
+        row, _missing = i18n.localize_row(m, "", ("label", "description"))
+        out.append({"key": m["key"], "label": row["label"], "description": row["description"]})
+    return out
 
 
 def is_known_mode(key: str) -> bool:

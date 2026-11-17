@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -206,11 +207,11 @@ export default function ModelDraftReview({
             </span>
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-            <FilterChip value="all" label="全部" n={objects.length} cls={STATE_META.added.cls} />
-            <FilterChip value="added" label="新增" n={counts.added} cls={STATE_META.added.cls} />
-            <FilterChip value="changed" label="修改" n={counts.changed} cls={STATE_META.changed.cls} />
-            <FilterChip value="removed" label="删除" n={counts.removed} cls={STATE_META.removed.cls} />
-            <FilterChip value="unchanged" label="未改动" n={counts.unchanged} cls={STATE_META.unchanged.cls} />
+            <FilterChip value="all" label={t("k_778fc8f994")} n={objects.length} cls={STATE_META.added.cls} />
+            <FilterChip value="added" label={t("k_2cd9e6ce81")} n={counts.added} cls={STATE_META.added.cls} />
+            <FilterChip value="changed" label={t("k_c9c77517fe")} n={counts.changed} cls={STATE_META.changed.cls} />
+            <FilterChip value="removed" label={t("k_3755f56f2f")} n={counts.removed} cls={STATE_META.removed.cls} />
+            <FilterChip value="unchanged" label={t("k_bb48ba5958")} n={counts.unchanged} cls={STATE_META.unchanged.cls} />
           </div>
           {draft.base_stale && (
             <div className="mt-2 text-xs text-red-600">
@@ -256,7 +257,7 @@ export default function ModelDraftReview({
       <div className="flex items-center gap-2">
         <div className="relative flex-1 max-w-xs">
           <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜索对象名 / 标识"
+          <Input value={kw} onChange={(e) => setKw(e.target.value)} placeholder={t("k_81b7dcf612")}
             className="h-8 pl-7 text-xs" />
         </div>
         <div className="text-xs text-muted-foreground">
@@ -267,7 +268,7 @@ export default function ModelDraftReview({
       <ScrollArea className="h-[calc(62vh-13rem)] rounded-lg border">
         <div className="p-2 space-y-1.5">
           {visible.length === 0 && (
-            <div className="py-8 text-center text-sm text-muted-foreground">没有符合筛选条件的对象</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{t("k_0c3c300b04")}</div>
           )}
           {visible.map((o) => {
             const meta = STATE_META[o.state || 'unchanged'] || STATE_META.unchanged;
@@ -310,16 +311,16 @@ export default function ModelDraftReview({
       {/* 丢弃草案确认 */}
       <Dialog open={discardOpen} onOpenChange={setDiscardOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>丢弃这份草案？</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_a0eb9acff4")}</DialogTitle></DialogHeader>
           <div className="text-sm text-muted-foreground space-y-2">
             <p>
               将清除 {draft.draft_updated_by || '最近一次保存者'} 于 {draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—'} 保存的草案
               （新增 {counts.added} / 修改 {counts.changed} / 删除 {counts.removed}）。
             </p>
-            <p className="text-red-600">草案丢弃后不可恢复；生效版与图谱/知识库不受影响。</p>
+            <p className="text-red-600">{t("k_3b3fcfb34d")}</p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDiscardOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setDiscardOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={confirmDiscard} disabled={discarding}>
               {discarding ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Undo2 className="h-4 w-4 mr-1" />}
               确认丢弃
@@ -331,7 +332,7 @@ export default function ModelDraftReview({
       {/* 原始内容（排查附录，不是主视图） */}
       <Dialog open={jsonOpen} onOpenChange={setJsonOpen}>
         <DialogContent className="max-w-3xl">
-          <DialogHeader><DialogTitle>草案原始内容（JSON 事实源）</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("k_840aad6766")}</DialogTitle></DialogHeader>
           <div className="text-xs text-muted-foreground">
             仅供排查结构问题；审阅与判断请以左侧「变更对比」清单为准。
           </div>
@@ -347,7 +348,7 @@ export default function ModelDraftReview({
             )}
           </ScrollArea>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setJsonOpen(false)}>关闭</Button>
+            <Button variant="outline" onClick={() => setJsonOpen(false)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

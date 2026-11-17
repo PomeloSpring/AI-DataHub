@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   TrendingUp,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface DashboardData {
   overall_score: number;
@@ -68,6 +69,7 @@ function ScoreSkeleton() {
 }
 
 export default function QualityOverview() {
+  const { t } = useTranslation('ui');
   // 质量域为全局共享（工作空间概念已退役，不再按工作空间隔离/选择）；
   // API 的 workspace 参数固定 0，后端按 IN (ws, 0) 兼容全局行。
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
@@ -119,7 +121,7 @@ export default function QualityOverview() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">数据质量概览</h1>
+          <h1 className="text-2xl font-bold">{t("k_eff2176b6d")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
             监控数据质量指标，查看检查报告和问题趋势
           </p>
@@ -167,7 +169,7 @@ export default function QualityOverview() {
                 <div className={`text-4xl font-bold ${getScoreColor(dashboard.overall_score)}`}>
                   {dashboard.overall_score.toFixed(1)}
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">满分 100</p>
+                <p className="text-xs text-muted-foreground mt-1">{t("k_b42c6f855b")}</p>
               </CardContent>
             </Card>
 
@@ -182,7 +184,7 @@ export default function QualityOverview() {
                 <div className={`text-4xl font-bold ${getScoreColor(dashboard.pass_rate)}`}>
                   {dashboard.pass_rate.toFixed(1)}%
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">检查通过比例</p>
+                <p className="text-xs text-muted-foreground mt-1">{t("k_aaf865f61f")}</p>
               </CardContent>
             </Card>
 
@@ -212,7 +214,7 @@ export default function QualityOverview() {
                 <div className="text-4xl font-bold text-red-500">
                   {dashboard.top_issues.length}
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">TOP 问题规则数</p>
+                <p className="text-xs text-muted-foreground mt-1">{t("k_12eac7428a")}</p>
               </CardContent>
             </Card>
           </>
@@ -223,7 +225,7 @@ export default function QualityOverview() {
         {/* Recent Reports */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">最近质量报告</CardTitle>
+            <CardTitle className="text-base">{t("k_3d97ea36be")}</CardTitle>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -237,10 +239,10 @@ export default function QualityOverview() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr>
-                      <th className="text-left p-2 font-medium">日期</th>
-                      <th className="text-right p-2 font-medium">质量分</th>
-                      <th className="text-right p-2 font-medium">通过率</th>
-                      <th className="text-right p-2 font-medium">通过/总数</th>
+                      <th className="text-left p-2 font-medium">{t("k_b6fed9af83")}</th>
+                      <th className="text-right p-2 font-medium">{t("k_06db0729e4")}</th>
+                      <th className="text-right p-2 font-medium">{t("k_b4582b86da")}</th>
+                      <th className="text-right p-2 font-medium">{t("k_650c5270d2")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -274,7 +276,7 @@ export default function QualityOverview() {
         {/* Top Issues */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">问题 TOP 10</CardTitle>
+            <CardTitle className="text-base">{t("k_28f55f3cbb")}</CardTitle>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -288,10 +290,10 @@ export default function QualityOverview() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr>
-                      <th className="text-left p-2 font-medium">规则名称</th>
-                      <th className="text-left p-2 font-medium">目标表</th>
-                      <th className="text-center p-2 font-medium">严重度</th>
-                      <th className="text-right p-2 font-medium">失败次数</th>
+                      <th className="text-left p-2 font-medium">{t("k_1937bcb105")}</th>
+                      <th className="text-left p-2 font-medium">{t("k_442be9c497")}</th>
+                      <th className="text-center p-2 font-medium">{t("k_9272e8abe5")}</th>
+                      <th className="text-right p-2 font-medium">{t("k_06b7ab3fb0")}</th>
                     </tr>
                   </thead>
                   <tbody>

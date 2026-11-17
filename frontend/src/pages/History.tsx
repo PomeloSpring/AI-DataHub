@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import client from '../api/client';
+import { useTranslation } from 'react-i18next';
 
 function TableSkeleton({ rows = 8 }: { rows?: number }) {
   return (
@@ -29,6 +30,7 @@ function TableSkeleton({ rows = 8 }: { rows?: number }) {
 }
 
 export default function History({ compact = false }: { compact?: boolean }) {
+  const { t } = useTranslation('ui');
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [days, setDays] = useState('7');
@@ -75,21 +77,21 @@ export default function History({ compact = false }: { compact?: boolean }) {
   return (
     <div className={compact ? '' : 'flex flex-col p-6 h-full'}>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
-        <h1 className="text-lg font-semibold text-foreground">查询历史</h1>
+        <h1 className="text-lg font-semibold text-foreground">{t("k_6079f66ae4")}</h1>
         <div className="flex items-center gap-3 flex-wrap">
           <Select value={status} onValueChange={(v) => { setStatus(v); setPagination(p => ({ ...p, current: 1 })); }}>
             <SelectTrigger className="w-[120px]">
-              <SelectValue placeholder="全部状态" />
+              <SelectValue placeholder={t("k_1a4c26d92d")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="success">成功</SelectItem>
-              <SelectItem value="error">失败</SelectItem>
+              <SelectItem value="all">{t("k_1a4c26d92d")}</SelectItem>
+              <SelectItem value="success">{t("k_51991a5d11")}</SelectItem>
+              <SelectItem value="error">{t("k_3e3c8068bb")}</SelectItem>
             </SelectContent>
           </Select>
           <Select value={days} onValueChange={(v) => { setDays(v); setPagination(p => ({ ...p, current: 1 })); }}>
             <SelectTrigger className="w-[120px]">
-              <SelectValue placeholder="近 7 天" />
+              <SelectValue placeholder={t("k_f297b996de")} />
             </SelectTrigger>
             <SelectContent>
               {[1, 3, 7, 14, 30].map((d) => (
@@ -123,17 +125,17 @@ export default function History({ compact = false }: { compact?: boolean }) {
           </div>
         ) : (
           <ScrollArea className="flex-1 min-h-0">
-            <table className="w-full" aria-label="查询历史记录">
+            <table className="w-full" aria-label={t("k_14e8883443")}>
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">时间</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">用户</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">数据源</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">问题</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_89b4aa6364")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_9ba763ea34")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a3ccf702c5")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_2fb49eec39")}</th>
                   <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">SQL</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">状态</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">行数</th>
-                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">耗时</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_579f280b5d")}</th>
+                  <th scope="col" className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">{t("k_a9704e1997")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -164,8 +166,8 @@ export default function History({ compact = false }: { compact?: boolean }) {
             {data.length === 0 && (
               <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                 <RefreshCw className="h-10 w-10 mb-3 opacity-30" />
-                <p className="text-sm">暂无查询历史</p>
-                <p className="text-xs mt-1">在 Chat 中发起数据查询后，记录将显示在这里</p>
+                <p className="text-sm">{t("k_ee7229352d")}</p>
+                <p className="text-xs mt-1">{t("k_84f99dc007")}</p>
               </div>
             )}
           </ScrollArea>

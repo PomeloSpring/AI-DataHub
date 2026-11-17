@@ -6,6 +6,8 @@ category: knowledge
 requires_any: [knowledge_search]
 exclusive_group: playbook
 triggers: [是什么, 什么意思, 指什么, 含义, 怎么定义, 如何定义, 定义, 口径, 怎么算, 如何计算, 计算规则, 统计规则, 区别, 差别, 差异在哪, 规范, 标准, 制度, 流程, 文档, 资料, 背景, 术语, 包含哪些, 为什么这么定, 依据是什么]
+display_name_en: "Knowledge Q&A"
+description_en: "Quick knowledge lookup for concepts, terms, metric definitions and processes; one-turn answer, no multi-turn drill-down and no platform mutations."
 ---
 
 # 知识问答 Skill（概念与口径 · 只依据知识库）

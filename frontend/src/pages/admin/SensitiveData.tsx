@@ -23,6 +23,7 @@ import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield } from 'lucide-react'
 import { governanceApi, type SensitiveField } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 const LEVEL_MAP: Record<string, { label: string; color: string }> = {
   low: { label: '低', color: 'bg-green-500/10 text-green-500 border-green-500/20' },
@@ -61,6 +62,7 @@ const EMPTY_FORM: FieldForm = {
 };
 
 export default function SensitiveData() {
+  const { t } = useTranslation('ui');
   const [fields, setFields] = useState<SensitiveField[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -183,8 +185,8 @@ export default function SensitiveData() {
     <div className="flex flex-col h-full gap-4">
       <div className="flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-lg font-semibold">敏感数据管理</h1>
-          <p className="text-muted-foreground text-xs mt-1">管理敏感字段识别和脱敏策略</p>
+          <h1 className="text-lg font-semibold">{t("k_980954e90b")}</h1>
+          <p className="text-muted-foreground text-xs mt-1">{t("k_21e42c9cdf")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadFields}>
@@ -201,13 +203,13 @@ export default function SensitiveData() {
       {/* Scan Bar */}
       <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/20 shrink-0">
         <Shield className="w-5 h-5 text-muted-foreground" />
-        <span className="text-sm font-medium">自动扫描</span>
+        <span className="text-sm font-medium">{t("k_c4f0cf5ff7")}</span>
         <Select value={scanDatasourceId} onValueChange={setScanDatasourceId}>
           <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="选择数据源" />
+            <SelectValue placeholder={t("k_422b9e314a")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="global">全局（所有数据源）</SelectItem>
+            <SelectItem value="global">{t("k_f92855e6dd")}</SelectItem>
             {datasources.map(ds => (
               <SelectItem key={ds.id} value={String(ds.id)}>
                 {ds.name} ({ds.db_type})
@@ -230,13 +232,13 @@ export default function SensitiveData() {
         <table className="w-full text-sm">
           <thead>
             <tr>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">表名</th>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">字段名</th>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">敏感级别</th>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">脱敏方式</th>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">数据源</th>
-              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">创建时间</th>
-              <th className="sticky top-0 z-10 bg-muted text-right p-3 font-medium">操作</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_584c112b78")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_074a5eecfc")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_db09fe2f4c")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_d520a7a44a")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_a3ccf702c5")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-left p-3 font-medium">{t("k_84e3802f60")}</th>
+              <th className="sticky top-0 z-10 bg-muted text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -259,7 +261,7 @@ export default function SensitiveData() {
                     {field.table_name ? (
                       <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{field.table_name}</code>
                     ) : (
-                      <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-500">全局（所有表）</Badge>
+                      <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-500">{t("k_7b006fedc8")}</Badge>
                     )}
                   </td>
                   <td className="p-3">
@@ -293,7 +295,7 @@ export default function SensitiveData() {
                         variant="ghost"
                         size="sm"
                         onClick={() => openEdit(field)}
-                        title="编辑"
+                        title={t("k_a7f814c0a4")}
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
@@ -301,7 +303,7 @@ export default function SensitiveData() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setDeleteTarget(field)}
-                        title="删除"
+                        title={t("k_3755f56f2f")}
                       >
                         <Trash2 className="w-4 h-4 text-destructive" />
                       </Button>
@@ -345,10 +347,10 @@ export default function SensitiveData() {
                 disabled={!!editField}
               >
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="选择数据源" />
+                  <SelectValue placeholder={t("k_422b9e314a")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="global">全局（所有数据源）</SelectItem>
+                  <SelectItem value="global">{t("k_f92855e6dd")}</SelectItem>
                   {datasources.map(ds => (
                     <SelectItem key={ds.id} value={String(ds.id)}>
                       {ds.name} ({ds.db_type})
@@ -357,12 +359,12 @@ export default function SensitiveData() {
                 </SelectContent>
               </Select>
               {!editField && (
-                <p className="text-xs text-muted-foreground mt-1">选择「全局」则对所有数据源生效，与指定数据源规则取并集</p>
+                <p className="text-xs text-muted-foreground mt-1">{t("k_baf2c0c25e")}</p>
               )}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">表名</label>
+                <label className="text-sm font-medium">{t("k_584c112b78")}</label>
                 <Input
                   className="mt-1"
                   value={form.table_name}
@@ -371,7 +373,7 @@ export default function SensitiveData() {
                   disabled={!!editField}
                 />
                 {!editField && (
-                  <p className="text-xs text-muted-foreground mt-1">留空表示跨所有表按列名屏蔽（全局）</p>
+                  <p className="text-xs text-muted-foreground mt-1">{t("k_695606f679")}</p>
                 )}
               </div>
               <div>
@@ -393,13 +395,13 @@ export default function SensitiveData() {
                   onValueChange={v => setForm(f => ({ ...f, sensitivity_level: v }))}
                 >
                   <SelectTrigger className="mt-1">
-                    <SelectValue placeholder="选择敏感级别" />
+                    <SelectValue placeholder={t("k_18f438b908")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">低</SelectItem>
-                    <SelectItem value="medium">中</SelectItem>
-                    <SelectItem value="high">高</SelectItem>
-                    <SelectItem value="critical">极高</SelectItem>
+                    <SelectItem value="low">{t("k_b9ee259b7f")}</SelectItem>
+                    <SelectItem value="medium">{t("k_0869071c92")}</SelectItem>
+                    <SelectItem value="high">{t("k_b096b3f5ac")}</SelectItem>
+                    <SelectItem value="critical">{t("k_c34687da2b")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -410,7 +412,7 @@ export default function SensitiveData() {
                   onValueChange={v => setForm(f => ({ ...f, mask_type: v }))}
                 >
                   <SelectTrigger className="mt-1">
-                    <SelectValue placeholder="选择脱敏方式" />
+                    <SelectValue placeholder={t("k_23ddbfc460")} />
                   </SelectTrigger>
                   <SelectContent>
                     {MASK_TYPE_OPTIONS.map(opt => (
@@ -422,7 +424,7 @@ export default function SensitiveData() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>{editField ? '更新' : '添加'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -432,14 +434,14 @@ export default function SensitiveData() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除敏感字段「{deleteTarget?.table_name ? deleteTarget.table_name + '.' : '（全局）'}{deleteTarget?.column_name}」的脱敏配置吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -208,6 +208,8 @@ class KnowledgeCreate(BaseModel):
     related_tables: str = ""
     priority: int = 0
     is_active: int = 1
+    # 双语覆盖层（quick_path 场景：title/scenario 支持 en-US，前端场景编辑器写入）
+    i18n: Optional[dict] = None
 
 
 class KnowledgeUpdate(BaseModel):
@@ -217,6 +219,7 @@ class KnowledgeUpdate(BaseModel):
     related_tables: Optional[str] = None
     priority: Optional[int] = None
     is_active: Optional[int] = None
+    i18n: Optional[dict] = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -485,11 +488,12 @@ def create_knowledge(body: KnowledgeCreate, user: dict = Depends(get_current_use
             cur.execute(
                 """INSERT INTO adh_knowledge_items
                    (id, workspace_id, datasource_id, knowledge_type, title, content,
-                    metadata, related_tables, priority, is_active)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    metadata, related_tables, priority, is_active, i18n)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (item_id, body.workspace_id, body.datasource_id, body.knowledge_type,
                  body.title, body.content, metadata_json, body.related_tables,
-                 body.priority, body.is_active),
+                 body.priority, body.is_active,
+                 json.dumps(body.i18n or {}, ensure_ascii=False)),
             )
 
     _invalidate_quick_paths()
@@ -507,6 +511,10 @@ def update_knowledge(item_id: int, body: KnowledgeUpdate, user: dict = Depends(g
         if val is not None:
             updates.append(f"{field} = %s")
             params.append(val)
+    # 双语：i18n 走 JSON dump（quick_path 场景 title/scenario 覆盖层）
+    if body.i18n is not None:
+        updates.append("i18n = %s")
+        params.append(json.dumps(body.i18n, ensure_ascii=False))
 
     if body.metadata is not None:
         updates.append("metadata = %s")

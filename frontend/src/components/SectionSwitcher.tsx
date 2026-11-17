@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { LayoutGrid, Folder, Database, Settings, Check, House, Newspaper } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -29,6 +30,7 @@ interface SectionSwitcherProps {
  */
 export default function SectionSwitcher({ current }: SectionSwitcherProps) {
   const navigate = useNavigate();
+  const { t } = useTranslation('menu');
   const { user } = useAuthStore();
   const { getDefaultWorkspaceId } = useWorkspaceStore();
 
@@ -57,27 +59,27 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
       <Tooltip>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="切换模块" data-tour={TOUR.headerModuleSwitcher}>
+            <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label={t("switcher.trigger")} data-tour={TOUR.headerModuleSwitcher}>
               <LayoutGrid className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent>切换模块</TooltipContent>
+        <TooltipContent>{t("switcher.trigger")}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuLabel className="text-xs font-medium text-muted-foreground">
-          模块切换
+          {t("switcher.label")}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => navigate('/')} className={`flex items-center gap-2 ${current === 'home' ? 'bg-accent' : ''}`}>
-          <House className="h-4 w-4" /><span className="flex-1">首页</span>{current === 'home' && <Check className="h-4 w-4 text-primary" />}
+          <House className="h-4 w-4" /><span className="flex-1">{t("switcher.home")}</span>{current === 'home' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>
         {showWorkspace && <DropdownMenuItem
           onClick={goWorkspace}
           className={`flex items-center gap-2 ${current === 'workspace' ? 'bg-accent' : ''}`}
         >
           <Folder className="h-4 w-4" />
-          <span className="flex-1">工作空间</span>
+          <span className="flex-1">{t("switcher.workspace")}</span>
           {current === 'workspace' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>}
         {showData && <DropdownMenuItem
@@ -85,7 +87,7 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
           className={`flex items-center gap-2 ${current === 'data' ? 'bg-accent' : ''}`}
         >
           <Database className="h-4 w-4" />
-          <span className="flex-1">数据中台</span>
+          <span className="flex-1">{t("switcher.data")}</span>
           {current === 'data' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>}
         {showContent && <DropdownMenuItem
@@ -93,7 +95,7 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
           className={`flex items-center gap-2 ${current === 'content' ? 'bg-accent' : ''}`}
         >
           <Newspaper className="h-4 w-4" />
-          <span className="flex-1">内容中心</span>
+          <span className="flex-1">{t("switcher.content")}</span>
           {current === 'content' && <Check className="h-4 w-4 text-primary" />}
         </DropdownMenuItem>}
         {isAdmin && (
@@ -102,7 +104,7 @@ export default function SectionSwitcher({ current }: SectionSwitcherProps) {
             className={`flex items-center gap-2 ${current === 'system' ? 'bg-accent' : ''}`}
           >
             <Settings className="h-4 w-4" />
-            <span className="flex-1">系统配置</span>
+            <span className="flex-1">{t("switcher.system")}</span>
             {current === 'system' && <Check className="h-4 w-4 text-primary" />}
           </DropdownMenuItem>
         )}

@@ -56,11 +56,19 @@ def _normalize(row: dict) -> dict:
     # 主体绑定（场景可见性的唯一判据）：与 scenario_access 同一份解析，不在此另写一套
     from backend.core.scenario_access import scenario_subjects
     subjects, subject_all = scenario_subjects(meta)
+    blob = row.get("i18n")
+    if isinstance(blob, str):
+        try:
+            blob = json.loads(blob)
+        except (json.JSONDecodeError, TypeError):
+            blob = None
     return {
         "id": row.get("id"),
         "title": row.get("title") or "",
         "content": row.get("content") or "",
         "scenario": (meta.get("scenario") or "").strip(),
+        # 双语只给候选展示用（`/` 面板），不进缓存判定与提示词正文；作业细则中文一份就是事实源
+        "i18n": blob if isinstance(blob, dict) else {},
         # 场景绑定的报告模板（业务名）：由 prompt_composer 在命中时解析成版式契约
         "report_template": (meta.get("report_template") or "").strip(),
         "triggers": clean,
@@ -88,7 +96,7 @@ def _load_rows() -> list[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT id, workspace_id, datasource_id, title, content,
-                              metadata, related_tables, priority
+                              metadata, related_tables, priority, i18n
                        FROM adh_knowledge_items
                        WHERE knowledge_type = 'quick_path' AND is_active = 1"""
                 )
@@ -259,15 +267,28 @@ def list_visible_paths(allowed_subjects: set[str] | None = None,
     Returns ``(items, hidden_count)``：hidden_count = 因主体无权/未绑主体而被隐去的条数，
     调用方得把它告诉用户（“不是没配场景，是那些场景的主体你没权限”），不能静默少返。
     """
+    from backend.common import i18n
+
     rows = [p for p in _load_rows() if p["content"] and _in_scope(p, workspace_id, datasource_id)]
     visible = [p for p in rows if _subject_ok(p, allowed_subjects)]
     visible.sort(key=lambda p: (-int(p.get("priority") or 0), (p.get("title") or "")))
     # 字段名跟前端契约一致：候选标识叫 `key`（叫 id 的话前端读 s.key=undefined，
     # 同一组内所有项的 React key 撞成一个，来回切类别就渲染出重复行与 Esc 关不掉的残影）。
     # subjects 是内部 object_key，对候选列表没意义且属实现细节，不下发。
-    return ([{"key": str(p["id"]), "name": p["title"],
-              "description": p["scenario"] or _short(p["content"])} for p in visible[:limit]],
-            max(0, len(rows) - len(visible)))
+    # name/description 按当前请求语言下发；无英文时回落中文，`i18n_fallback` 随行走（不静默）。
+    out = []
+    for p in visible[:limit]:
+        blob = p.get("i18n") or {}
+        row, missing = i18n.localize_row(
+            {"name": p["title"],
+             "description": p["scenario"] or _short(p["content"]),
+             "i18n": {"name": blob.get("title") or {},
+                      "description": blob.get("scenario") or {}}},
+            "", ("name", "description"))
+        out.append({"key": str(p["id"]), "name": row["name"],
+                    "description": row["description"],
+                    "i18n_fallback": bool(missing)})
+    return out, max(0, len(rows) - len(visible))
 
 
 def _short(text: str) -> str:

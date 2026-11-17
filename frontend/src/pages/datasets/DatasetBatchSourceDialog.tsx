@@ -6,6 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 批量修改数据集的数据源配置：默认数据源（执行源）与可用数据源范围。
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export default function DatasetBatchSourceDialog({ open, count, datasources, busy, onClose, onSubmit }: Props) {
+  const { t } = useTranslation('ui');
   const [execMode, setExecMode] = useState<'keep' | 'set'>('keep');
   const [execId, setExecId] = useState<string>('0');
   const [availMode, setAvailMode] = useState<'keep' | 'set'>('keep');
@@ -65,7 +67,7 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>批量修改数据源</DialogTitle>
+          <DialogTitle>{t("k_7383277086")}</DialogTitle>
           <DialogDescription>
             对已选中的 <b>{count}</b> 个数据集生效。只想改一项就把另一项保持「不修改」；
             ES 型数据集不挂在数据源上，会在结果里逐条回报「本次不处理」，不会被静默改动。
@@ -76,30 +78,30 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
           {/* 默认数据源（执行源） */}
           <div className="space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between">
-              <Label className="flex items-center gap-1.5 text-sm"><Database className="h-4 w-4" />默认数据源（执行源）</Label>
+              <Label className="flex items-center gap-1.5 text-sm"><Database className="h-4 w-4" />{t("k_fdb76b9e48")}</Label>
               <div className="flex gap-1">
-                <Button size="sm" variant={execMode === 'keep' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setExecMode('keep')}>不修改</Button>
-                <Button size="sm" variant={execMode === 'set' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setExecMode('set')}>修改</Button>
+                <Button size="sm" variant={execMode === 'keep' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setExecMode('keep')}>{t("k_7cbe601379")}</Button>
+                <Button size="sm" variant={execMode === 'set' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setExecMode('set')}>{t("k_c9c77517fe")}</Button>
               </div>
             </div>
             {execMode === 'set' ? (
               <Select value={execId} onValueChange={setExecId}>
                 <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">默认引擎（平台元数据库）</SelectItem>
+                  <SelectItem value="0">{t("k_2d483ce903")}</SelectItem>
                   {datasources.map(d => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
                 </SelectContent>
               </Select>
-            ) : <p className="text-xs text-muted-foreground">保持各数据集当前执行源不变。</p>}
+            ) : <p className="text-xs text-muted-foreground">{t("k_eea93691cc")}</p>}
           </div>
 
           {/* 可用数据源范围 */}
           <div className="space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between">
-              <Label className="flex items-center gap-1.5 text-sm"><Layers className="h-4 w-4" />可用数据源范围</Label>
+              <Label className="flex items-center gap-1.5 text-sm"><Layers className="h-4 w-4" />{t("k_4cfbc3c531")}</Label>
               <div className="flex gap-1">
-                <Button size="sm" variant={availMode === 'keep' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setAvailMode('keep')}>不修改</Button>
-                <Button size="sm" variant={availMode === 'set' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setAvailMode('set')}>修改</Button>
+                <Button size="sm" variant={availMode === 'keep' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setAvailMode('keep')}>{t("k_7cbe601379")}</Button>
+                <Button size="sm" variant={availMode === 'set' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setAvailMode('set')}>{t("k_c9c77517fe")}</Button>
               </div>
             </div>
             {availMode === 'set' && (
@@ -122,20 +124,20 @@ export default function DatasetBatchSourceDialog({ open, count, datasources, bus
                       ))}
                     </div>
                   ))}
-                  {groups.length === 0 && <p className="text-xs text-muted-foreground">暂无可选数据源</p>}
+                  {groups.length === 0 && <p className="text-xs text-muted-foreground">{t("k_9f7fbe061a")}</p>}
                 </div>
               </div>
             )}
-            {availMode === 'keep' && <p className="text-xs text-muted-foreground">保持各数据集当前可用范围不变。</p>}
+            {availMode === 'keep' && <p className="text-xs text-muted-foreground">{t("k_e0584deb33")}</p>}
           </div>
 
           {nothingToChange && (
-            <p className="text-xs text-amber-600">至少把一项切到「修改」，否则没有可提交的变更。</p>
+            <p className="text-xs text-amber-600">{t("k_992261898b")}</p>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={submit} disabled={busy || nothingToChange}>{busy ? '处理中…' : `应用到 ${count} 个数据集`}</Button>
         </DialogFooter>
       </DialogContent>

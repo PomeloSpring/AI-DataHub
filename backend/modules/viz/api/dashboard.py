@@ -99,6 +99,8 @@ class ChartCreate(BaseModel):
     query_source: Optional[str] = "raw_sql"  # raw_sql | semantic
     # 模板导入的示例数据（{columns, rows}）：服务层校验仅允许 config.demoData=true 的图表写入
     data_cache: Optional[dict | str] = None
+    # 双语覆盖层：{field: {locale: text}}；图表 name + config 里的 title/content/label 走这里
+    i18n: Optional[dict] = None
 
 
 class ChartUpdate(BaseModel):
@@ -113,6 +115,8 @@ class ChartUpdate(BaseModel):
     source_id: Optional[int] = None
     semantic_query: Optional[dict] = None
     query_source: Optional[str] = None
+    # 双语覆盖层（与 ChartCreate 同一契约；留空即清空某字段的英）
+    i18n: Optional[dict] = None
 
     @field_validator("name", "chart_type", "source_type", "query_source")
     @classmethod
@@ -273,8 +277,12 @@ class GroupRolesRequest(BaseModel):
 
 def _group_payload(g: dict) -> dict:
     from backend.common.db import execute_query
+    # 只回仍存在的看板：已删除看板不得进管理端组合清单/穿梭框（否则出现"看板已删除"悬空项）。
+    # 按 adh_dashboards 全局存在性过滤（不按工作空间），以免把“存在但不在当前工作空间清单”的看板误判为已删除。
     g["dashboard_ids"] = [r["dashboard_id"] for r in (execute_query(
-        "SELECT dashboard_id FROM adh_dashboard_group_items WHERE group_id=%s ORDER BY sort, id",
+        "SELECT gi.dashboard_id FROM adh_dashboard_group_items gi "
+        "JOIN adh_dashboards d ON d.id = gi.dashboard_id "
+        "WHERE gi.group_id=%s ORDER BY gi.sort, gi.id",
         (g["id"],)) or [])]
     g["role_ids"] = [r["role_id"] for r in (execute_query(
         "SELECT role_id FROM adh_role_dashboard_groups WHERE group_id=%s", (g["id"],)) or [])]
@@ -376,13 +384,22 @@ def set_group_items_endpoint(group_id: int, req: GroupItemsRequest,
     from backend.common.db import execute_write, execute_query
     if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
+    # 只登记仍存在的看板：不存在的 id（已删除）不得写回组内，否则组合重新长出"看板已删除"悬空成员。
+    ids = [int(x) for x in dict.fromkeys(req.dashboard_ids or [])]
+    existing: set[int] = set()
+    if ids:
+        marks = ",".join(["%s"] * len(ids))
+        existing = {int(r["id"]) for r in (execute_query(
+            f"SELECT id FROM adh_dashboards WHERE id IN ({marks})", ids) or [])}
+    dropped = [x for x in ids if x not in existing]
     execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (group_id,))
-    for i, did in enumerate(dict.fromkeys(req.dashboard_ids or [])):
+    for i, did in enumerate([x for x in ids if x in existing]):
         execute_write(
             "INSERT IGNORE INTO adh_dashboard_group_items (group_id, dashboard_id, sort) VALUES (%s,%s,%s)",
             (group_id, int(did), i))
     _invalidate_dashboard_payload()
-    return {"success": True, "count": len(set(req.dashboard_ids or []))}
+    # dropped 显式回传（no-silent-degradation）：正常流程读口已过滤，非空说明有陈旧/越权引用被拒登记
+    return {"success": True, "count": len(existing), "dropped": dropped}
 
 
 @router.put("/groups/{group_id}/roles")
@@ -453,6 +470,11 @@ def delete_dashboard_endpoint(
         deleted = dashboard_service.delete_dashboard(dashboard_id, user["user_id"])
         if not deleted:
             raise HTTPException(status_code=404, detail="Dashboard not found")
+        # 联动清理看板组合成员：adh_dashboard_group_items 对 adh_dashboards 无外键级联，
+        # 删板后必须显式删掉引用行，否则管理端「看板组合」出现"看板已删除"悬空项（幂等 DELETE）。
+        from backend.common.db import execute_write
+        execute_write("DELETE FROM adh_dashboard_group_items WHERE dashboard_id = %s", (dashboard_id,))
+        _invalidate_dashboard_payload()
         return {"success": True}
     except HTTPException:
         raise

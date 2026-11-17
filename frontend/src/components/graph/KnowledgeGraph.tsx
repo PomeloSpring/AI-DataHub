@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   ReactFlow,
   Background,
@@ -433,20 +434,20 @@ function KnowledgeGraphInner({
       {/* Toolbar */}
       <div className="absolute top-3 right-3 z-40 flex items-center gap-1 p-1 rounded-xl border bg-card/95 shadow-sm">
         <Button variant={showLabels ? 'secondary' : 'ghost'} size="sm" className="h-8 text-xs"
-          aria-label="显示全部关系名" aria-pressed={showLabels} onClick={() => setShowLabels((value) => !value)}>
+          aria-label={t("k_460913e272")} aria-pressed={showLabels} onClick={() => setShowLabels((value) => !value)}>
           <Tags className="h-3.5 w-3.5 mr-1" />关系名称
         </Button>
         <span className="h-4 border-l mx-1" />
-        <Button variant="ghost" size="sm" onClick={handleZoomIn} aria-label="放大图谱" className="h-8 w-8 p-0">
+        <Button variant="ghost" size="sm" onClick={handleZoomIn} aria-label={t("k_04c68eeac4")} className="h-8 w-8 p-0">
           <ZoomIn className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="sm" onClick={handleZoomOut} aria-label="缩小图谱" className="h-8 w-8 p-0">
+        <Button variant="ghost" size="sm" onClick={handleZoomOut} aria-label={t("k_83b526abcc")} className="h-8 w-8 p-0">
           <ZoomOut className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="sm" onClick={handleFitView} aria-label="适应画布" className="h-8 w-8 p-0">
+        <Button variant="ghost" size="sm" onClick={handleFitView} aria-label={t("k_3bc70c8d9d")} className="h-8 w-8 p-0">
           <Maximize2 className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="sm" onClick={handleReLayout} aria-label="重新布局" className="h-8 w-8 p-0">
+        <Button variant="ghost" size="sm" onClick={handleReLayout} aria-label={t("k_f4c7698c45")} className="h-8 w-8 p-0">
           <RefreshCw className="h-4 w-4" />
         </Button>
       </div>
@@ -470,8 +471,8 @@ function KnowledgeGraphInner({
                 />
               </svg>
             </div>
-            <p className="text-sm font-medium">暂无图谱数据</p>
-            <p className="text-xs mt-1">请先同步元数据或选择其他图谱类型</p>
+            <p className="text-sm font-medium">{t("k_70ca30cd48")}</p>
+            <p className="text-xs mt-1">{t("k_458efc2695")}</p>
           </div>
         </div>
       )}

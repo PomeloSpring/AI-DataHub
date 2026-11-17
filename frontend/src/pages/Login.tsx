@@ -16,6 +16,7 @@ import { useBrandStore } from '../stores/brandStore';
 import { brandNameOf } from '@/lib/brand';
 import { useAuthStore } from '../stores/authStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
+import { useTranslation } from 'react-i18next';
 
 const features = [
   { icon: MessageSquare, title: '自然语言查询', desc: '用中文提问，AI 自动生成 SQL' },
@@ -64,6 +65,7 @@ function ChartSilhouette() {
 }
 
 export default function Login() {
+  const { t } = useTranslation('ui');
   const [loading, setLoading] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -177,18 +179,18 @@ export default function Login() {
               </div>
 
               <div className="mb-8">
-                <h2 className="text-2xl font-bold tracking-tight text-foreground">欢迎回来</h2>
-                <p className="text-sm text-muted-foreground mt-1.5">登录以继续你的数据分析工作</p>
+                <h2 className="text-2xl font-bold tracking-tight text-foreground">{t("k_a5d9fdec5a")}</h2>
+                <p className="text-sm text-muted-foreground mt-1.5">{t("k_6c5f4201e5")}</p>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div className="space-y-1.5">
-                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">用户名 / 邮箱</Label>
+                  <Label htmlFor="username" className="text-xs font-medium text-muted-foreground">{t("k_3f27a643d4")}</Label>
                   <div className="relative">
                     <User className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="username"
-                      placeholder="请输入用户名或邮箱"
+                      placeholder={t("k_0600e9654d")}
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={loading}
@@ -198,13 +200,13 @@ export default function Login() {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="password" className="text-xs font-medium text-muted-foreground">密码</Label>
+                  <Label htmlFor="password" className="text-xs font-medium text-muted-foreground">{t("k_c839a8ff17")}</Label>
                   <div className="relative">
                     <Lock className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       id="password"
                       type={showPwd ? 'text' : 'password'}
-                      placeholder="请输入密码"
+                      placeholder={t("k_713b738250")}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       disabled={loading}

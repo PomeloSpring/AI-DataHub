@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowRight, Flame, Layers, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { contentApi, contentError, type ContentArticle, type ContentCategory } from '@/api/content';
+import { t } from '@/i18n/runtime';
 import {
   CategoryBadge, ReadMeta, ReleaseChip, categoryOfArticle, kindHint, useReadState, ABOUT_CATEGORY,
 } from './shared';
@@ -50,14 +52,38 @@ export default function NewsFeed({
   const [sort, setSort] = useState<Sort>('latest');
   const [expanded, setExpanded] = useState(false);
   const { mark, isUnread } = useReadState();
+  const { i18n } = useTranslation();
 
   const load = useCallback(() => {
     setLoading(true);
     setError('');
     contentApi.list({
       category, exclude_category: ABOUT_CATEGORY, tag, q, sort, page: 1, page_size: expanded ? 24 : pageSize,
+      // 资讯流**不按 lang 硬筛**：英文界面下若强制筛 en-US，存量全中文时列表就空了
+      // （后端按 title/summary 已本地化，中英同组由前端 pickByLocale 去重）。仅服务端仍筛一次 status/live。
     })
-      .then(({ data }) => { setItems(data.items || []); setTotal(data.total || 0); })
+      .then(({ data }) => {
+        // 双语去重：同一 translation_group 下的中英两份只留一份 —— 优先当前界面语言，
+        // 该语言无在线版则回落另一版（ArticleReader 顶部会显式说「暂无英文版」）。
+        const wantEn = i18n.language === 'en-US';
+        const raw = data.items || [];
+        const byGroup = new Map<string, ContentArticle>();
+        const loose: ContentArticle[] = [];
+        for (const a of raw) {
+          const g = a.translation_group || '';
+          if (!g) { loose.push(a); continue; }
+          const prev = byGroup.get(g);
+          if (!prev) { byGroup.set(g, a); continue; }
+          const prevWanted = (prev.lang || 'zh-CN') === (wantEn ? 'en-US' : 'zh-CN');
+          const curWanted = (a.lang || 'zh-CN') === (wantEn ? 'en-US' : 'zh-CN');
+          if (!prevWanted && curWanted) byGroup.set(g, a);
+        }
+        const merged = [...byGroup.values(), ...loose];
+        // 保持服务端返回顺序（pinned/最新/最热）：Map/Set 遍历序 = 插入序，够用
+        setItems(merged);
+        // 总数按去重后的组数报，避免"共 30 篇 / 只见 15 张卡"的分裂（同一篇中英各一份 = 1 篇）
+        setTotal(Math.max(merged.length, (data.total || 0) - (raw.length - merged.length)));
+      })
       .catch(err => {
         // 失败必须显式：静默回空列表会把"权限没配/接口挂了"伪装成"今天没内容"
         setItems([]); setTotal(0);
@@ -104,8 +130,8 @@ export default function NewsFeed({
             <Input
               value={q}
               onChange={e => setQ(e.target.value)}
-              placeholder="搜索标题与摘要"
-              aria-label="搜索资讯"
+              placeholder={t("k_f06db725d9")}
+              aria-label={t("k_55322770d4")}
               className="h-8 w-[190px] pl-8 text-xs"
             />
           </div>
@@ -129,7 +155,7 @@ export default function NewsFeed({
       {/* 栏目筛选：label 与计数都来自接口，任何栏目名都不写在代码里；
           「关于本公司」由简介卡专属展示，不在此重复成可点筛选（点了只会筛出一堆被让位的内容） */}
       <div className="mb-3 flex flex-wrap gap-1.5">
-        <CatChip active={!category} onClick={() => setCategory('')} label="全部" count={total} />
+        <CatChip active={!category} onClick={() => setCategory('')} label={t("k_778fc8f994")} count={total} />
         {categories.filter(c => c.key !== ABOUT_CATEGORY).map(c => (
           <CatChip
             key={c.key}
@@ -146,7 +172,7 @@ export default function NewsFeed({
           {category && <FilterChip label={`栏目：${catOf(category)?.label || category}`} onX={() => setCategory('')} />}
           {tag && <FilterChip label={`标签：${tag}`} onX={() => onTag('')} />}
           {q && <FilterChip label={`关键词：${q}`} onX={() => setQ('')} />}
-          <button type="button" onClick={clearAll} className="hover:text-primary">清空筛选</button>
+          <button type="button" onClick={clearAll} className="hover:text-primary">{t("k_4f761bb4a4")}</button>
         </div>
       )}
 
@@ -163,11 +189,11 @@ export default function NewsFeed({
           <div className="flex items-start gap-2">
             <X className="mt-0.5 h-4 w-4 flex-none text-destructive" />
             <div className="flex-1">
-              <p className="font-medium">资讯读取失败，暂时拿不到已发布内容</p>
+              <p className="font-medium">{t("k_96eec71a72")}</p>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {error}。这里不把失败显示成「暂无内容」—— 两者需要你做的事完全不同。
               </p>
-              <Button size="sm" variant="outline" className="mt-2.5" onClick={load}>重试</Button>
+              <Button size="sm" variant="outline" className="mt-2.5" onClick={load}>{t("k_e2d53a6d3a")}</Button>
             </div>
           </div>
         </div>
@@ -184,9 +210,9 @@ export default function NewsFeed({
               : '内容中心的稿件要经「提交审核 → 发布」才会出现在这里。'}
           </p>
           {filteredHard
-            ? <Button size="sm" variant="outline" className="mt-3" onClick={clearAll}>清空筛选</Button>
+            ? <Button size="sm" variant="outline" className="mt-3" onClick={clearAll}>{t("k_4f761bb4a4")}</Button>
             : canEdit && (
-              <Button size="sm" className="mt-3" onClick={onManage}>去内容中心发布</Button>
+              <Button size="sm" className="mt-3" onClick={onManage}>{t("k_a196305994")}</Button>
             )}
         </div>
       )}
@@ -214,7 +240,7 @@ export default function NewsFeed({
                       <Flame className="h-3 w-3" />置顶
                     </span>
                   ) : (
-                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">编辑精选</span>
+                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">{t("k_fbf4902eeb")}</span>
                   )}
                   {kindHint(featured) && (
                     <span className="rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground">

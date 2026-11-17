@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -354,6 +355,7 @@ interface VersionedConfigEditorProps {
 }
 
 export default function VersionedConfigEditor({ adapters }: VersionedConfigEditorProps) {
+  const { t } = useTranslation('ui');
   const [adapterIdx, setAdapterIdx] = useState(0);
   const adapter = adapters[adapterIdx];
 
@@ -540,7 +542,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
     <div className="flex h-full flex-col gap-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">版本化配置管理</h1>
+          <h1 className="text-2xl font-bold">{t("k_4802a49d8f")}</h1>
           <p className="text-sm text-muted-foreground">
             治理护栏与 NL2SQL 生成链 Prompt（全局默认 + 工作空间覆盖），自动记录版本快照，支持历史 diff 与一键回滚。
             角色风格在 AS-BOT 配置，分析类提示词在 Skills 管理，MCP 服务在 MCP 配置页管理，均不属本页职责。
@@ -589,7 +591,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                     <SelectContent>
                       {f.dynamic === 'workspaces' ? (
                         <>
-                          <SelectItem value="0">全局默认</SelectItem>
+                          <SelectItem value="0">{t("k_e0523a661c")}</SelectItem>
                           {workspaces.map((w) => (
                             <SelectItem key={w.id} value={String(w.id)}>
                               {w.name}
@@ -623,7 +625,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
           </div>
           <div className="flex-1 overflow-y-auto">
             {items.length === 0 && !loadingList && (
-              <p className="p-4 text-sm text-muted-foreground">暂无数据</p>
+              <p className="p-4 text-sm text-muted-foreground">{t("k_b246458f20")}</p>
             )}
             {items.map((it) => (
               <button
@@ -669,7 +671,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                   <button
                     className={cn('px-2 py-1', mode === 'form' && 'bg-muted font-semibold')}
                     onClick={() => switchMode('form')}
-                  >表单</button>
+                  >{t("k_1f515561b6")}</button>
                   <button
                     className={cn('px-2 py-1', mode === 'json' && 'bg-muted font-semibold')}
                     onClick={() => switchMode('json')}
@@ -677,7 +679,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                 </div>
               ) : null}
               {mode === 'json' && (jsonError ? (
-                <span className="text-xs text-destructive">JSON 格式错误</span>
+                <span className="text-xs text-destructive">{t("k_f285764449")}</span>
               ) : (
                 <span className="flex items-center gap-1 text-xs text-green-600">
                   <Check className="h-3 w-3" /> JSON 有效
@@ -739,10 +741,10 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
 
         {/* Version history */}
         <div className="col-span-4 flex flex-col overflow-hidden rounded-lg border bg-card">
-          <div className="border-b px-3 py-2 text-sm font-semibold">版本历史</div>
+          <div className="border-b px-3 py-2 text-sm font-semibold">{t("k_8770418ba3")}</div>
           <div className="flex-1 overflow-y-auto">
             {versions.length === 0 && (
-              <p className="p-4 text-sm text-muted-foreground">选择一项以查看版本历史</p>
+              <p className="p-4 text-sm text-muted-foreground">{t("k_fff4ee42b2")}</p>
             )}
             {versions.map((v) => (
               <div key={v.version} className="border-b px-3 py-2 text-sm">
@@ -756,7 +758,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
                     )}
                   </span>
                   <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => setDiffVersion(v)} title="对比">
+                    <Button size="sm" variant="ghost" onClick={() => setDiffVersion(v)} title={t("k_ef765015fe")}>
                       <Columns2 className="h-4 w-4" />
                     </Button>
                     <Button
@@ -785,7 +787,7 @@ export default function VersionedConfigEditor({ adapters }: VersionedConfigEdito
         <DialogContent className="max-w-4xl">
           <DialogHeader>
             <DialogTitle>版本对比 · v{diffVersion?.version} → 当前编辑内容</DialogTitle>
-            <DialogDescription>左侧为历史版本快照，右侧为当前编辑器内容。</DialogDescription>
+            <DialogDescription>{t("k_b4930c5203")}</DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-auto rounded border font-mono text-xs">
             {diffLines.map((line, idx) => (

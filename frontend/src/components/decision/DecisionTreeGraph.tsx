@@ -4,6 +4,7 @@ import '@xyflow/react/dist/style.css';
 import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { t } from '@/i18n/runtime';
 import {
   CircleNode, KnowledgeEdge, NODE_CONFIG,
 } from '@/components/graph/KnowledgeGraph';
@@ -214,7 +215,7 @@ export default function DecisionTreeGraph({
         </ReactFlow>
       </div>
 
-      <aside className="space-y-3 rounded-xl border border-border p-3" aria-label="节点详情">
+      <aside className="space-y-3 rounded-xl border border-border p-3" aria-label={t("k_47571d7c1b")}>
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium">
             {selectedPath.length === 0 ? '根判定' : selected?.type === 'leaf' ? '判定条件明细' : '分支明细'}
@@ -223,16 +224,16 @@ export default function DecisionTreeGraph({
             <span className="ml-auto flex gap-1">
               {selected?.type === 'branch' && (
                 <>
-                  <Button size="sm" variant="outline" aria-label="图面加判定条件" onClick={() => addChild('leaf')}>
-                    <Plus className="h-4 w-4" /><span className="ml-1">条件</span>
+                  <Button size="sm" variant="outline" aria-label={t("k_0941abb833")} onClick={() => addChild('leaf')}>
+                    <Plus className="h-4 w-4" /><span className="ml-1">{t("k_72f1cf759c")}</span>
                   </Button>
-                  <Button size="sm" variant="outline" aria-label="图面加分支" onClick={() => addChild('branch')}>
-                    <Plus className="h-4 w-4" /><span className="ml-1">分支</span>
+                  <Button size="sm" variant="outline" aria-label={t("k_8fe320815f")} onClick={() => addChild('branch')}>
+                    <Plus className="h-4 w-4" /><span className="ml-1">{t("k_2f6f9d51c5")}</span>
                   </Button>
                 </>
               )}
               {selectedPath.length > 0 && (
-                <Button size="sm" variant="ghost" aria-label="图面删除节点" className="text-red-600"
+                <Button size="sm" variant="ghost" aria-label={t("k_b73edb2e57")} className="text-red-600"
                   onClick={removeSelected}>
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -245,15 +246,15 @@ export default function DecisionTreeGraph({
           <LeafEditor leaf={selected} adviceRows={adviceRows} readOnly={readOnly} onChange={patch} />
         ) : selected ? (
           <div className="space-y-2">
-            <Input aria-label="图面分支名称" value={selected.label} disabled={readOnly}
+            <Input aria-label={t("k_0d07121220")} value={selected.label} disabled={readOnly}
               placeholder={selectedPath.length ? '分支名称' : '这棵树在判什么（如：精度风险判定）'}
               onChange={(e) => patch({ ...selected, label: e.target.value } as DecisionTreeNode)}
               className="h-8 text-sm" />
-            <select aria-label="图面组合方式" value={selected.op} disabled={readOnly}
+            <select aria-label={t("k_8b4c652b9c")} value={selected.op} disabled={readOnly}
               onChange={(e) => patch({ ...selected, op: e.target.value as 'all' | 'any' } as DecisionTreeNode)}
               className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
-              <option value="all">全部满足（且）</option>
-              <option value="any">任一满足（或）</option>
+              <option value="all">{t("k_061e49bef4")}</option>
+              <option value="any">{t("k_7d5470b1e6")}</option>
             </select>
             <p className="text-xs text-muted-foreground">
               该分支下有 {selected.children.length} 个子节点。阈值、单位与建议正文请在右侧叶子明细里改，图面只画判定主干。

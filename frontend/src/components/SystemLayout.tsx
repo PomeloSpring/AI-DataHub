@@ -28,6 +28,7 @@ import { SidebarMenuSkeleton } from './SidebarMenuSkeleton';
 import { pruneEmptySections } from '@/lib/menuUtils';
 import ThemeMenuItems from './ThemeMenuItems';
 import LanguageMenu from './LanguageMenu';
+import { useTranslation } from 'react-i18next';
 
 /** 将路由 key 转换为 menu_key: '/system/models' → 'system:models' */
 function toMenuKey(routeKey: string): string {
@@ -73,6 +74,7 @@ const SYSTEM_MENU_ITEMS = [
 const MENU_SKELETON_ROWS = SYSTEM_MENU_ITEMS.filter(item => 'key' in item).length;
 
 export default function SystemLayout() {
+  const { t } = useTranslation('ui');
   const [collapsed, setCollapsed] = useState(false);
   const menuAccess = useMenuAccess();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -110,14 +112,14 @@ export default function SystemLayout() {
         <div className="h-12 flex items-center justify-center border-b border-sidebar-border gap-1.5">
           <BrandLogo brand={brand} size={24} />
           {!collapsed && (
-            <span className="font-bold text-sm text-sidebar-foreground truncate">系统配置</span>
+            <span className="font-bold text-sm text-sidebar-foreground truncate">{t("k_3c71dca8a0")}</span>
           )}
         </div>
 
         {/* Menu — min-h-0 allows flex child to shrink below content size, enabling scroll */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full py-2">
-          <nav className="space-y-1 px-2" role="navigation" aria-label="系统配置导航">
+          <nav className="space-y-1 px-2" role="navigation" aria-label={t("k_129feba814")}>
             {/* 权限清单未就绪时先给骨架，避开无权限菜单先画出再抽走的闪现 */}
             {!menuAccess.ready && <SidebarMenuSkeleton rows={MENU_SKELETON_ROWS} collapsed={collapsed} />}
             {visibleMenu.map((item, idx) => {
@@ -176,7 +178,7 @@ export default function SystemLayout() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
           <div className="relative w-[280px] h-full bg-sidebar border-r border-sidebar-border flex flex-col">
             <div className="h-12 flex items-center justify-between px-4 border-b border-sidebar-border">
-              <span className="font-bold text-lg text-sidebar-foreground">系统配置</span>
+              <span className="font-bold text-lg text-sidebar-foreground">{t("k_3c71dca8a0")}</span>
               <Button variant="ghost" size="sm" className="h-9 w-9 p-0" onClick={() => setMobileMenuOpen(false)}>
                 <X className="h-5 w-5" />
               </Button>
@@ -237,12 +239,12 @@ export default function SystemLayout() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label="主题风格" data-tour={TOUR.headerTheme}>
+                    <Button variant="ghost" size="sm" className="h-9 w-9 p-0" aria-label={t("k_297ca007c9")} data-tour={TOUR.headerTheme}>
                       <Palette className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
-                <TooltipContent>主题风格</TooltipContent>
+                <TooltipContent>{t("k_297ca007c9")}</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="w-48">
                 <ThemeMenuItems />
@@ -252,7 +254,7 @@ export default function SystemLayout() {
             <LanguageMenu />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button aria-label="用户菜单" data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
+                <button aria-label={t("k_a375a2cf71")} data-tour={TOUR.headerUser} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted transition-colors min-h-[36px]">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="text-xs">{user?.username?.charAt(0)?.toUpperCase() || 'U'}</AvatarFallback>
                   </Avatar>

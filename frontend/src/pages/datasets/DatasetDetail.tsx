@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { t } from '@/i18n/runtime';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
   BarChart3, Check, ChevronsUpDown,
@@ -24,6 +25,7 @@ import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
 import { CONTROL_LABELS, KIND_LABELS, ROLE_LABELS, VALUE_TYPE_LABELS } from '@/lib/dashboardParamAssembly';
 import { useChartDesign } from '@/hooks/useChartDesign';
 import { FIELD_DISPLAY_FORMATS, applyFieldFormats } from '@/lib/fieldFormat';
+import { useTranslation } from 'react-i18next';
 
 // Radix Select 不接受空串作为选项值，「不格式化」用哨兵位表示（存回后端仍是空 = 原样下发）
 const NO_FORMAT = '__no_format__';
@@ -97,6 +99,7 @@ function cleanPreset(preset: any): Record<string, any> {
 }
 
 export default function DatasetDetail() {
+  const { t } = useTranslation('ui');
   const { id } = useParams();
   const navigate = useNavigate();
   const datasetId = Number(id);
@@ -174,11 +177,11 @@ export default function DatasetDetail() {
 
       <Tabs defaultValue="config" className="mt-2">
         <TabsList>
-          <TabsTrigger value="config">配置</TabsTrigger>
+          <TabsTrigger value="config">{t("k_d7d7ce790b")}</TabsTrigger>
           <TabsTrigger value="fields">字段定义 ({fields.length})</TabsTrigger>
         <TabsTrigger value="params">入参 ({(ds.param_plan || []).length})</TabsTrigger>
-          <TabsTrigger value="scopes">行级范围</TabsTrigger>
-          <TabsTrigger value="refs">引用</TabsTrigger>
+          <TabsTrigger value="scopes">{t("k_6fe882318f")}</TabsTrigger>
+          <TabsTrigger value="refs">{t("k_23c0e102a0")}</TabsTrigger>
         </TabsList>
 
         {/* ── 配置: 左=基本信息/执行 SQL/图表预设, 右=数据预览(取数 + 图表预览) 双栏 ── */}
@@ -193,15 +196,15 @@ export default function DatasetDetail() {
                     {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
                     保存配置
                   </Button>
-                  <span className="text-xs text-muted-foreground">基本信息 / 查询定义 / 图表预设一次保存，不分块提交</span>
+                  <span className="text-xs text-muted-foreground">{t("k_b21acfc2de")}</span>
                 </div>
               )}
 
               {/* 基本信息 */}
               <div className="border rounded-lg p-3 space-y-2">
-                <div className="text-sm font-medium">基本信息</div>
+                <div className="text-sm font-medium">{t("k_b122f813d5")}</div>
                 <div className="space-y-1.5">
-                  <Label>描述</Label>
+                  <Label>{t("k_412f54dc38")}</Label>
                   <Textarea rows={2} value={ds.description || ''} disabled={!canManage}
                     onChange={e => setDs({ ...ds, description: e.target.value })} />
                 </div>
@@ -218,7 +221,7 @@ export default function DatasetDetail() {
 
               {/* 图表预设 */}
               <div className="border rounded-lg p-3">
-                <div className="text-sm font-medium mb-2">图表预设</div>
+                <div className="text-sm font-medium mb-2">{t("k_099c0176b1")}</div>
                 <ChartPresetPanel
                   ds={ds}
                   fields={fields}
@@ -230,7 +233,7 @@ export default function DatasetDetail() {
 
             {/* 右栏: 数据预览(预览取数 + 按图表预设渲染的图表预览); 宽屏吸附并自带滚动, 避免高内容被裁 */}
             <div className="border rounded-lg p-3 min-w-0 space-y-2 xl:sticky xl:top-2 xl:max-h-[calc(100vh-2rem)] xl:overflow-auto">
-              <div className="text-sm font-medium">数据预览</div>
+              <div className="text-sm font-medium">{t("k_97b4a6aefe")}</div>
               <PreviewPanel datasetId={datasetId} fields={fields} ds={ds} />
             </div>
           </div>
@@ -242,12 +245,12 @@ export default function DatasetDetail() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs text-muted-foreground">
                 <tr>
-                  <th className="text-left px-3 py-2 font-medium">字段</th>
-                  <th className="text-left px-3 py-2 font-medium">SQL 列</th>
-                  <th className="text-left px-3 py-2 font-medium">显示名</th>
-                  <th className="text-left px-3 py-2 font-medium w-28">角色</th>
-                  <th className="text-left px-3 py-2 font-medium w-40">显示格式</th>
-                  <th className="text-left px-3 py-2 font-medium">说明</th>
+                  <th className="text-left px-3 py-2 font-medium">{t("k_77a49f2c38")}</th>
+                  <th className="text-left px-3 py-2 font-medium">{t("k_fa09ed9cb5")}</th>
+                  <th className="text-left px-3 py-2 font-medium">{t("k_c10bbf5ddd")}</th>
+                  <th className="text-left px-3 py-2 font-medium w-28">{t("k_6b26695e4d")}</th>
+                  <th className="text-left px-3 py-2 font-medium w-40">{t("k_799e2cb348")}</th>
+                  <th className="text-left px-3 py-2 font-medium">{t("k_26670dda42")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,12 +260,12 @@ export default function DatasetDetail() {
                     <tr key={`${f.field}-${i}`} className="border-t">
                       <td className="px-3 py-2">
                         <code className="text-xs">{f.field}</code>
-                        {f.is_time && <Badge variant="secondary" className="ml-2 text-[10px]">时间</Badge>}
+                        {f.is_time && <Badge variant="secondary" className="ml-2 text-[10px]">{t("k_89b4aa6364")}</Badge>}
                         {f.from === 'semantic' && (
-                          <Badge variant="outline" className="ml-2 text-[10px]">语义字典</Badge>
+                          <Badge variant="outline" className="ml-2 text-[10px]">{t("k_5fe10a5160")}</Badge>
                         )}
                         {f.unmapped && (
-                          <Badge variant="destructive" className="ml-2 text-[10px]">悬空映射</Badge>
+                          <Badge variant="destructive" className="ml-2 text-[10px]">{t("k_0d380c9757")}</Badge>
                         )}
                       </td>
                       <td className="px-3 py-2 text-xs">
@@ -281,8 +284,8 @@ export default function DatasetDetail() {
                           <Select value={f.role} onValueChange={v => setFields(prev => prev.map((p, pi) => pi === i ? { ...p, role: v as any } : p))}>
                             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="dimension">维度</SelectItem>
-                              <SelectItem value="measure">度量</SelectItem>
+                              <SelectItem value="dimension">{t("k_72fa9ecdc4")}</SelectItem>
+                              <SelectItem value="measure">{t("k_a285e2aa8c")}</SelectItem>
                             </SelectContent>
                           </Select>
                         ) : (
@@ -301,7 +304,7 @@ export default function DatasetDetail() {
                               pi === i ? { ...p, display_format: v === NO_FORMAT ? '' : v } : p))}>
                             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value={NO_FORMAT} className="text-xs">不格式化（原样）</SelectItem>
+                              <SelectItem value={NO_FORMAT} className="text-xs">{t("k_31c70e9012")}</SelectItem>
                               {FIELD_DISPLAY_FORMATS.filter(o => o.value).map(o => (
                                 <SelectItem key={o.value} value={o.value} className="text-xs">
                                   {o.label} · {o.example}
@@ -325,7 +328,7 @@ export default function DatasetDetail() {
                   );
                 })}
                 {fields.length === 0 && (
-                  <tr><td colSpan={6} className="text-center py-6 text-muted-foreground text-sm">暂无字段</td></tr>
+                  <tr><td colSpan={6} className="text-center py-6 text-muted-foreground text-sm">{t("k_79bbc81592")}</td></tr>
                 )}
               </tbody>
             </table>
@@ -378,7 +381,7 @@ export default function DatasetDetail() {
               </div>
             ))}
             {(ds.references || []).length === 0 && (
-              <div className="text-center py-6 text-muted-foreground text-sm">暂未被看板引用</div>
+              <div className="text-center py-6 text-muted-foreground text-sm">{t("k_bb5ed43221")}</div>
             )}
           </div>
         </TabsContent>
@@ -408,7 +411,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
           </Badge>
         </div>
         <div className="space-y-1.5">
-          <Label>执行数据源</Label>
+          <Label>{t("k_af13271686")}</Label>
           <SqlDatasourceSelect
             value={ds.datasource_id || 0}
             disabled={!canManage}
@@ -416,7 +419,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>可用数据源范围</Label>
+          <Label>{t("k_4cfbc3c531")}</Label>
           <DatasourceScopeSelect
             value={ds.available_datasources || []}
             disabled={!canManage}
@@ -462,7 +465,7 @@ function ExecPanel({ ds, canManage, onDsChange }: {
             disabled={!canManage}
             onCheckedChange={v => onDsChange({ paginable: v })}
           />
-          <Label className="text-sm font-medium">支持分页（结果是明细行集）</Label>
+          <Label className="text-sm font-medium">{t("k_f45074d9e8")}</Label>
         </div>
         <p className="text-xs text-muted-foreground">
           开启后，看板上的表值图会按「每页行数 / 页号」向服务端取数（每页上限 100 行），
@@ -491,13 +494,13 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
         预设图表类型与字段映射，看板编辑器「从数据集引入」时直接搬入图表配置。
       </p>
       <div className="space-y-1.5">
-        <Label>图表类型</Label>
+        <Label>{t("k_e891b46dbb")}</Label>
         <Select
           value={ds.chart_type || ''}
           onValueChange={v => onDsChange({ chart_type: v })}
           disabled={!canManage}
         >
-          <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+          <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
           <SelectContent>
             {PRESET_CHART_TYPES.map(t => (
               <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
@@ -507,50 +510,50 @@ function ChartPresetPanel({ ds, fields, canManage, onDsChange }: {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>X 轴列</Label>
+          <Label>{t("k_6bd074681b")}</Label>
           <Select
             value={preset.xCol || ''}
             onValueChange={v => onDsChange({ chart_preset: { ...preset, xCol: v } })}
             disabled={!canManage}
           >
-            <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
             <SelectContent>
               {resultColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Y 轴列</Label>
+          <Label>{t("k_55f83922dd")}</Label>
           <Select
             value={preset.yCol || ''}
             onValueChange={v => onDsChange({ chart_preset: { ...preset, yCol: v } })}
             disabled={!canManage}
           >
-            <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
             <SelectContent>
               {resultColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>分组列</Label>
+          <Label>{t("k_8b9d1d4bf1")}</Label>
           <Select
             value={preset.groupCol || ''}
             onValueChange={v => onDsChange({ chart_preset: { ...preset, groupCol: v } })}
             disabled={!canManage}
           >
-            <SelectTrigger><SelectValue placeholder="不预设" /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder={t("k_0c4c3bfaba")} /></SelectTrigger>
             <SelectContent>
               {resultColumns.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>行数上限</Label>
+          <Label>{t("k_b93b6b4c48")}</Label>
           <Input
             type="number" min={0} value={preset.limit || ''} disabled={!canManage}
             onChange={e => onDsChange({ chart_preset: { ...preset, limit: Number(e.target.value) || 0 } })}
-            placeholder="默认"
+            placeholder={t("k_c8d09cf955")}
           />
         </div>
       </div>
@@ -574,7 +577,7 @@ function SqlDatasourceSelect({ value, disabled, onChange }: {
     <Select value={String(value)} onValueChange={v => onChange(Number(v))} disabled={disabled}>
       <SelectTrigger><SelectValue /></SelectTrigger>
       <SelectContent>
-        <SelectItem value="0">默认引擎</SelectItem>
+        <SelectItem value="0">{t("k_4c3c25802e")}</SelectItem>
         {list.map((d: any) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
       </SelectContent>
     </Select>
@@ -631,7 +634,7 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0 max-h-72 overflow-auto" align="start">
         {list.length === 0 && (
-          <div className="px-3 py-2 text-sm text-muted-foreground">无可选数据源</div>
+          <div className="px-3 py-2 text-sm text-muted-foreground">{t("k_75f6076518")}</div>
         )}
         {groups.map(g => (
           <div key={g.code || '_none'}>
@@ -666,6 +669,7 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
 
 // 导出供用例直接验证 ES 执行通道的预览契约（请求体形状与治理标注来源）
 export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
+  const { t } = useTranslation('ui');
   const [result, setResult] = useState<any>(null);
   const [running, setRunning] = useState(false);
   // ES 型：取数形状由正文决定，不存在"选哪些维度/度量重新聚合"这回事（传了会被护栏显式拒）。
@@ -719,7 +723,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2 items-end">
         {!isEs && <div className="min-w-40">
-          <Label className="text-xs">维度</Label>
+          <Label className="text-xs">{t("k_72fa9ecdc4")}</Label>
           <div className="flex flex-wrap gap-1 mt-1">
             {dims.map(f => (
               <Badge key={f.field}
@@ -732,7 +736,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
           </div>
         </div>}
         {!isEs && <div className="min-w-40">
-          <Label className="text-xs">度量</Label>
+          <Label className="text-xs">{t("k_a285e2aa8c")}</Label>
           <div className="flex flex-wrap gap-1 mt-1">
             {measures.map(f => (
               <Badge key={f.field}
@@ -748,12 +752,12 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
             （ES 也一样，见 query_dataset 的 resolve_effective_source），多源时才出现这一项 */}
         {scopeNames.length > 1 && (
           <div className="min-w-44">
-            <Label className="text-xs">执行数据源</Label>
+            <Label className="text-xs">{t("k_af13271686")}</Label>
             <Select value={sourceSel || '__auto__'}
               onValueChange={v => setSourceSel(v === '__auto__' ? '' : v)}>
-              <SelectTrigger className="h-8 text-xs" aria-label="执行数据源"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 text-xs" aria-label={t("k_af13271686")}><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="__auto__">自动（服务端定源）</SelectItem>
+                <SelectItem value="__auto__">{t("k_cacd6fa0e0")}</SelectItem>
                 {scopeNames.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -795,7 +799,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
             <div className="border rounded-lg p-3">
               <div className="text-sm font-medium mb-2 flex items-center gap-1.5">
                 <BarChart3 className="h-4 w-4" /> 图表预览 · {CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type}
-                <Badge variant="outline" className="text-[10px]">按图表预设渲染</Badge>
+                <Badge variant="outline" className="text-[10px]">{t("k_8acafb5e1f")}</Badge>
               </div>
               {(result.rows || []).length > 0 ? (
                 <div className="relative h-[320px]">
@@ -808,7 +812,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
                   />
                 </div>
               ) : (
-                <p className="py-6 text-center text-sm text-muted-foreground">查询成功，当前范围没有数据，无法渲染图表。</p>
+                <p className="py-6 text-center text-sm text-muted-foreground">{t("k_77fb09d043")}</p>
               )}
             </div>
           )}
@@ -818,7 +822,7 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
               <span>执行方式: {result.execution_mode === 'sql' ? '执行 SQL' : '语义查询'}</span>
             )}
             {result.elapsed_ms != null && <span>{Math.round(result.elapsed_ms)}ms</span>}
-            {result.applied_rls ? <span className="text-amber-600">已应用行级权限</span> : <span>无 RLS 规则</span>}
+            {result.applied_rls ? <span className="text-amber-600">{t("k_0fe55c1585")}</span> : <span>{t("k_f6b3a589bc")}</span>}
             {!!result.masked_columns?.length && <span className="text-destructive">脱敏列: {result.masked_columns.join(', ')}</span>}
           </div>
           <div className="border rounded-lg overflow-auto max-h-[60vh]">
@@ -929,17 +933,17 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
                   <Select value={s.subject_type} onValueChange={v => update(i, { subject_type: v as any, subject_id: 0 })}>
                     <SelectTrigger className="h-8 w-24 text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="user">用户</SelectItem>
-                      <SelectItem value="role">角色</SelectItem>
+                      <SelectItem value="user">{t("k_9ba763ea34")}</SelectItem>
+                      <SelectItem value="role">{t("k_6b26695e4d")}</SelectItem>
                     </SelectContent>
                   </Select>
                   <Select
                     value={s.subject_id ? String(s.subject_id) : '__none__'}
                     onValueChange={v => update(i, { subject_id: v === '__none__' ? 0 : Number(v) })}
                   >
-                    <SelectTrigger className="h-8 w-52 text-xs"><SelectValue placeholder="选择用户/角色" /></SelectTrigger>
+                    <SelectTrigger className="h-8 w-52 text-xs"><SelectValue placeholder={t("k_6db0631820")} /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">选择用户/角色</SelectItem>
+                      <SelectItem value="__none__">{t("k_6db0631820")}</SelectItem>
                       {(s.subject_type === 'user'
                         ? users.map(u => ({ id: u.id, label: u.username || u.display_name || `用户#${u.id}` }))
                         : roles.map(r => ({ id: r.id, label: r.display_name || r.name || `角色#${r.id}` }))
@@ -959,7 +963,7 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
             {s.filters.map((f, fi) => (
               <div key={fi} className="flex gap-2 items-center flex-wrap">
                 <Select value={f.field} onValueChange={v => updateFilter(i, fi, { field: v })} disabled={!canManage}>
-                  <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="字段" /></SelectTrigger>
+                  <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder={t("k_77a49f2c38")} /></SelectTrigger>
                   <SelectContent>
                     {fields.map(fd => <SelectItem key={fd.field} value={fd.field}>{fd.label || fd.field}</SelectItem>)}
                   </SelectContent>
@@ -999,7 +1003,7 @@ function ScopesPanel({ datasetId, fields, canManage, ds }: {
         </div>
       )}
       {scopes.length === 0 && !canManage && (
-        <div className="text-center py-6 text-muted-foreground text-sm border rounded-lg">未配置行级范围</div>
+        <div className="text-center py-6 text-muted-foreground text-sm border rounded-lg">{t("k_a986e5ce97")}</div>
       )}
     </div>
   );
@@ -1147,12 +1151,12 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">值域：普通业务值</SelectItem>
-                    <SelectItem value="site">值域：站点</SelectItem>
+                    <SelectItem value="none">{t("k_567c475002")}</SelectItem>
+                    <SelectItem value="site">{t("k_3650368926")}</SelectItem>
                   </SelectContent>
                 </Select>
               ) : ((t.value_domain || '') === 'site' && (
-                <Badge variant="secondary" className="text-[10px]">值域：站点</Badge>
+                <Badge variant="secondary" className="text-[10px]">{t("k_3650368926")}</Badge>
               ))}
             </li>
           ))}
@@ -1160,11 +1164,11 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
 
         {canManage && (
           <label className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="shrink-0 text-muted-foreground">看板显示名</span>
+            <span className="shrink-0 text-muted-foreground">{t("k_93cf80247a")}</span>
             <Input className="h-6 w-56 text-xs"
               value={groupLabels[g.key] || ''} aria-label={`看板显示名 ${g.key}`} placeholder={g.suggested_label || g.key}
               onChange={e => setGroupLabels(v => ({ ...v, [g.key]: e.target.value }))} />
-            <span className="text-[10px] text-muted-foreground">装配控件与参数清单上给用户看的词</span>
+            <span className="text-[10px] text-muted-foreground">{t("k_e7b3f915ca")}</span>
           </label>
         )}
 

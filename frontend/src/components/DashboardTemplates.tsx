@@ -14,6 +14,7 @@ import { readChartPalette } from '@/lib/chartTheme';
 import { resolveDashboardDesign } from '@/lib/dashboardDesign';
 import { useThemeStore } from '@/stores/themeStore';
 import type { VisComponent } from '@/api/visLibrary';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 模板选择弹窗。模板定义与示例数据唯一来源 `lib/dashboardTemplates.ts`；
@@ -32,6 +33,7 @@ interface DashboardTemplatesProps {
 
 /** 模板缩略示意：按真实栅格画卡片 + 图表类型符号，让“导入后长什么样”一眼可见 */
 function TemplatePreview({ template, items }: { template: DashboardTemplate; items: VisComponent[] }) {
+  const { t } = useTranslation('ui');
   const theme = useThemeStore(s => s.theme);
   const design = useMemo(() => resolveDashboardDesign({}, items, { theme }), [items, theme]);
   const dark = design.visual.mode === 'dark';
@@ -54,12 +56,13 @@ function TemplatePreview({ template, items }: { template: DashboardTemplate; ite
           <div className="h-[calc(100%-14px)]"><ChartGlyph chartType={chart.chart_type} palette={palette} /></div>
         </div>
       ))}
-      {!template.charts.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">空白画布</span>}
+      {!template.charts.length && <span className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">{t("k_a504c0beda")}</span>}
     </div>
   );
 }
 
 export default function DashboardTemplates({ open, onClose, onApply, items = [] }: DashboardTemplatesProps) {
+  const { t } = useTranslation('ui');
   const [selected, setSelected] = useState<DashboardTemplate | null>(null);
   const [searchText, setSearchText] = useState('');
 
@@ -92,7 +95,7 @@ export default function DashboardTemplates({ open, onClose, onApply, items = [] 
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-[900px]">
         <DialogHeader>
-          <DialogTitle>选择仪表盘模板</DialogTitle>
+          <DialogTitle>{t("k_f37ea49674")}</DialogTitle>
         </DialogHeader>
 
         {templateErrors.length > 0 && (
@@ -103,7 +106,7 @@ export default function DashboardTemplates({ open, onClose, onApply, items = [] 
 
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <Input
-            placeholder="搜索模板名称、场景或标签…"
+            placeholder={t("k_1680ade49c")}
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
             className="max-w-[320px]"
@@ -114,7 +117,7 @@ export default function DashboardTemplates({ open, onClose, onApply, items = [] 
         </div>
 
         {filtered.length === 0 ? (
-          <div className="py-12 text-center text-muted-foreground">未找到匹配的模板</div>
+          <div className="py-12 text-center text-muted-foreground">{t("k_26f430cb6d")}</div>
         ) : (
           <ScrollArea className="h-[440px] pr-3">
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
@@ -166,7 +169,7 @@ export default function DashboardTemplates({ open, onClose, onApply, items = [] 
                   : '空白看板'}
               </span>
             </div>
-            <Button onClick={handleApply} disabled={!!templateErrors.length}>使用此模板</Button>
+            <Button onClick={handleApply} disabled={!!templateErrors.length}>{t("k_5396434dc8")}</Button>
           </div>
         )}
       </DialogContent>

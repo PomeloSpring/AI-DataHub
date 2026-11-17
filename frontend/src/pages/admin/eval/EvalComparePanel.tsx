@@ -16,12 +16,14 @@ import { toast } from '@/lib/toast';
 import { GitCompare } from 'lucide-react';
 import client from '@/api/client';
 import { SUITE_LABEL, pct, type CompareResult, type EvalRun } from './shared';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   runs: EvalRun[];
 }
 
 export default function EvalComparePanel({ runs }: Props) {
+  const { t } = useTranslation('ui');
   const [base, setBase] = useState('');
   const [cmp, setCmp] = useState<CompareResult | null>(null);
   const [target, setTarget] = useState<EvalRun | null>(null);
@@ -51,13 +53,13 @@ export default function EvalComparePanel({ runs }: Props) {
         <b className="text-sm">版本对比（按 case_key 对齐）</b>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
-        <Label className="text-xs">基线运行</Label>
+        <Label className="text-xs">{t("k_cbe8264081")}</Label>
         <Select value={base || 'auto'} onValueChange={v => setBase(v === 'auto' ? '' : v)}>
           <SelectTrigger className="w-[280px] h-8 text-xs">
-            <SelectValue placeholder="自动（该层最近一次完成运行）" />
+            <SelectValue placeholder={t("k_190d749cfd")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">自动（该层最近一次完成运行）</SelectItem>
+            <SelectItem value="auto">{t("k_190d749cfd")}</SelectItem>
             {done.map(r => (
               <SelectItem key={r.id} value={String(r.id)}>
                 {SUITE_LABEL[r.suite] || r.suite} #{r.id} · {pct(r.accuracy)} · {r.finished_at || r.created_at}
@@ -91,7 +93,7 @@ export default function EvalComparePanel({ runs }: Props) {
           </div>
           {Object.keys(cmp.regression || {}).length > 0 && (
             <div className="text-xs">
-              <b className="text-destructive">回退：</b>
+              <b className="text-destructive">{t("k_b80458fb6d")}</b>
               {Object.entries(cmp.regression).map(([k, v]) => (
                 <div key={k} className="pl-2 text-destructive">
                   {k}：{v.from} → {v.to}（{v.reason}）
@@ -117,7 +119,7 @@ export default function EvalComparePanel({ runs }: Props) {
           {cmp.removed?.length ? (
             <div className="text-xs text-muted-foreground">
               基线有、本次无：{cmp.removed.join('、')}
-              <Badge variant="outline" className="ml-1 text-[9px]">含未通过项</Badge>
+              <Badge variant="outline" className="ml-1 text-[9px]">{t("k_bac41fb627")}</Badge>
             </div>
           ) : null}
         </div>

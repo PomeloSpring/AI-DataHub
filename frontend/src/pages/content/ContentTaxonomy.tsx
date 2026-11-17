@@ -46,7 +46,7 @@ export default function ContentTaxonomy() {
   return (
     <div className="space-y-5">
       <header className="space-y-1">
-        <h1 className="text-xl font-semibold">栏目与标签</h1>
+        <h1 className="text-xl font-semibold">{"栏目与标签"}</h1>
         <p className="text-sm text-muted-foreground">
           栏目决定门户的分区导航；标签是受控词表，编辑器里只能从这份清单里选。
         </p>
@@ -65,7 +65,7 @@ export default function ContentTaxonomy() {
           )}
         </div>
         {categories.length === 0 ? (
-          <EmptyState title="还没有栏目" hint="栏目是内容的必填归属，至少建一个才能开始编写。" />
+          <EmptyState title={"还没有栏目"} hint="栏目是内容的必填归属，至少建一个才能开始编写。" />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {categories.map(c => (
@@ -80,7 +80,7 @@ export default function ContentTaxonomy() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">
                       {c.label}
-                      {!c.is_active && <span className="ml-1.5 rounded bg-destructive/10 px-1.5 text-[10px] text-destructive">已停用</span>}
+                      {!c.is_active && <span className="ml-1.5 rounded bg-destructive/10 px-1.5 text-[10px] text-destructive">{"已停用"}</span>}
                     </p>
                     <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{c.description || '（无说明）'}</p>
                     <p className="mt-1 text-[11px] text-muted-foreground">{c.key} · 在线 {c.count ?? 0} 篇 · 排序 {c.sort}</p>
@@ -88,13 +88,13 @@ export default function ContentTaxonomy() {
                 </div>
                 {canEdit && (
                   <div className="mt-2 flex items-center gap-1 border-t pt-2">
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setCatDraft(c)}>编辑</Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setCatDraft(c)}>{"编辑"}</Button>
                     <Button size="sm" variant="ghost" className="h-6 px-2 text-xs"
                       onClick={() => run(() => contentApi.updateCategory(c.id, { is_active: c.is_active ? 0 : 1 }),
                         c.is_active ? '栏目已停用' : '栏目已启用')}>
                       {c.is_active ? '停用' : '启用'}
                     </Button>
-                    <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-xs text-destructive" onClick={() => setCatDelete(c)}>删除</Button>
+                    <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-xs text-destructive" onClick={() => setCatDelete(c)}>{"删除"}</Button>
                   </div>
                 )}
               </div>
@@ -111,18 +111,18 @@ export default function ContentTaxonomy() {
         {canEdit && (
           <div className="flex flex-wrap items-end gap-2">
             <div className="space-y-1">
-              <Label htmlFor="tag-new">新标签</Label>
+              <Label htmlFor="tag-new">{"新标签"}</Label>
               <Input id="tag-new" className="w-48" value={newTag} onChange={e => setNewTag(e.target.value)}
-                placeholder="如「修复体材料」" maxLength={32} />
+                placeholder={"如「修复体材料」"} maxLength={32} />
             </div>
             <Button size="sm" disabled={!newTag.trim()} onClick={() => {
               run(() => contentApi.createTag({ tag: newTag.trim(), sort: nextSort(tags.map(t => t.sort)) }), '标签已添加');
               setNewTag('');
-            }}>加入词表</Button>
+            }}>{"加入词表"}</Button>
           </div>
         )}
         {tags.length === 0 ? (
-          <EmptyState title="标签词表是空的" hint="编辑器里的标签选择框会没有选项，请先加入词表。" />
+          <EmptyState title={"标签词表是空的"} hint="编辑器里的标签选择框会没有选项，请先加入词表。" />
         ) : (
           <div className="flex flex-wrap gap-2">
             {tags.map(t => (
@@ -131,8 +131,8 @@ export default function ContentTaxonomy() {
                   {t.tag}
                 </button>
                 <span className="text-muted-foreground">{t.count} 篇</span>
-                {t.count === 0 && <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">未被使用</span>}
-                {!t.is_active && <span className="rounded bg-destructive/10 px-1 text-[10px] text-destructive">已停用</span>}
+                {t.count === 0 && <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground">{"未被使用"}</span>}
+                {!t.is_active && <span className="rounded bg-destructive/10 px-1 text-[10px] text-destructive">{"已停用"}</span>}
                 {canEdit && (
                   <button
                     type="button"
@@ -163,7 +163,7 @@ export default function ContentTaxonomy() {
 
       <ConfirmDialog
         open={!!catDelete}
-        title="删除栏目"
+        title={"删除栏目"}
         description={catDelete
           ? `确定删除栏目「${catDelete.label}」？该栏目下若还有内容（含草稿），服务端会拒绝删除并要求先移走内容 —— 这是为了不留下没有栏目的条目。`
           : ''}
@@ -175,7 +175,7 @@ export default function ContentTaxonomy() {
 
       <ConfirmDialog
         open={!!tagDelete}
-        title="删除标签"
+        title={"删除标签"}
         description={tagDelete
           ? `确定从词表删除标签「${tagDelete.tag}」？若仍有条目在使用它，服务端会拒绝。只想暂时不再使用请选「停用」—— 停用会保留历史条目的标签归属。`
           : ''}
@@ -224,28 +224,28 @@ function CategoryDialog({ draft, onClose, onSaved, onError }: {
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="ct-key">栏目 key</Label>
+            <Label htmlFor="ct-key">{"栏目 key"}</Label>
             <Input id="ct-key" value={form.key ?? ''} disabled={!isNew} onChange={e => patch({ key: e.target.value })} placeholder="whitepaper" />
-            {!isNew && <p className="text-[11px] text-muted-foreground">key 已锁定，改 key 会让存量引用悬空。</p>}
+            {!isNew && <p className="text-[11px] text-muted-foreground">{"key 已锁定，改 key 会让存量引用悬空。"}</p>}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ct-label">显示名</Label>
-            <Input id="ct-label" value={form.label ?? ''} onChange={e => patch({ label: e.target.value })} placeholder="技术白皮书" />
+            <Label htmlFor="ct-label">{"显示名"}</Label>
+            <Input id="ct-label" value={form.label ?? ''} onChange={e => patch({ label: e.target.value })} placeholder={"技术白皮书"} />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="ct-desc">说明</Label>
-            <Input id="ct-desc" value={form.description ?? ''} onChange={e => patch({ description: e.target.value })} placeholder="这个栏目收什么内容，写清边界" />
+            <Label htmlFor="ct-desc">{"说明"}</Label>
+            <Input id="ct-desc" value={form.description ?? ''} onChange={e => patch({ description: e.target.value })} placeholder={"这个栏目收什么内容，写清边界"} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ct-icon">图标（一个 emoji）</Label>
+            <Label htmlFor="ct-icon">{"图标（一个 emoji）"}</Label>
             <Input id="ct-icon" value={form.icon ?? ''} onChange={e => patch({ icon: e.target.value })} placeholder="📄" />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ct-color">标识色</Label>
+            <Label htmlFor="ct-color">{"标识色"}</Label>
             <Input id="ct-color" type="color" className="h-9 p-1" value={form.color ?? '#6366f1'} onChange={e => patch({ color: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ct-sort">排序</Label>
+            <Label htmlFor="ct-sort">{"排序"}</Label>
             <Input id="ct-sort" type="number" value={form.sort ?? 0} onChange={e => patch({ sort: Number(e.target.value) })} />
           </div>
           <label className="flex items-center gap-2 text-sm">
@@ -253,8 +253,8 @@ function CategoryDialog({ draft, onClose, onSaved, onError }: {
           </label>
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>取消</Button>
-          <Button onClick={submit} disabled={!(form.label ?? '').trim() || !(form.key ?? '').trim()}>保存</Button>
+          <Button variant="ghost" onClick={onClose}>{"取消"}</Button>
+          <Button onClick={submit} disabled={!(form.label ?? '').trim() || !(form.key ?? '').trim()}>{"保存"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -275,14 +275,14 @@ function TagRenameDialog({ tag, onClose, onSaved, onError }: {
     <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>重命名标签</DialogTitle>
+          <DialogTitle>{"重命名标签"}</DialogTitle>
           <DialogDescription>
             改名会把当前挂着「{tag.tag}」的条目一起换成新名（词表是唯一真值源，不允许历史条目留旧名）。
           </DialogDescription>
         </DialogHeader>
-        <Input value={value} maxLength={32} onChange={e => setValue(e.target.value)} aria-label="新标签名" />
+        <Input value={value} maxLength={32} onChange={e => setValue(e.target.value)} aria-label={"新标签名"} />
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="ghost" onClick={onClose}>{"取消"}</Button>
           <Button
             disabled={!value.trim() || value.trim() === tag.tag}
             onClick={() => {

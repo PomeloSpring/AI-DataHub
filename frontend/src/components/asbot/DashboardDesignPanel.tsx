@@ -11,6 +11,7 @@ import client from '../../api/client';
 import { useDashboardStore } from '../../stores/dashboardStore';
 import { DESIGN_STATUS, designError, designPath, getDesign } from '../../api/dashboardDesign';
 import type { DashboardDesign, DesignOptions, DesignPreview, DesignWidget } from '../../api/dashboardDesign';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   designId: string;
@@ -21,6 +22,7 @@ interface Props {
 const selectClass = 'h-9 w-full rounded-md border bg-background px-2 text-sm';
 
 export default function DashboardDesignPanel({ designId, onClose, onChanged, onContinue }: Props) {
+  const { t } = useTranslation('ui');
   // 图表样式走 UI 字模库主题包管线(useChartDesign): 设计预览与看板/Chat 同观感
   const { chartStyle } = useChartDesign();
   const [design, setDesign] = useState<DashboardDesign | null>(null);
@@ -142,94 +144,94 @@ export default function DashboardDesignPanel({ designId, onClose, onChanged, onC
       {!design ? <Loader2 className="animate-spin" /> : <>
         <div className="flex items-center justify-between gap-3 rounded bg-muted/50 p-3 text-sm">
           <span>{design.request} <span className="text-muted-foreground">· 版本 {design.version}</span></span>
-          <Button size="sm" variant="outline" disabled={busy || sqlDirty || visualDirty} onClick={() => run(async () => accept(await getDesign(designId)))}><RefreshCw className="mr-1 h-3 w-3" />刷新</Button>
+          <Button size="sm" variant="outline" disabled={busy || sqlDirty || visualDirty} onClick={() => run(async () => accept(await getDesign(designId)))}><RefreshCw className="mr-1 h-3 w-3" />{t("k_38108eaa1d")}</Button>
         </div>
         {(!design.selection || selecting) && !terminal ? <fieldset disabled={busy} className="space-y-4 rounded border p-4">
-          <h3 className="font-medium">由您确认目标与业务域</h3>
-          <p className="text-xs text-muted-foreground">工作空间无需选择：已有仪表盘按其归属自动确定，新建按业务域绑定自动派生。</p>
+          <h3 className="font-medium">{t("k_a335bbacdd")}</h3>
+          <p className="text-xs text-muted-foreground">{t("k_cfd2b9a547")}</p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <label className="space-y-1 text-sm">目标仪表盘<select aria-label="目标仪表盘" className={selectClass} value={dashboardChoice} onChange={e => setDashboardChoice(e.target.value)}>
-              <option value="">请选择（或选择新建）</option>
+            <label className="space-y-1 text-sm">{t("k_6d79785fd7")}<select aria-label={t("k_6d79785fd7")} className={selectClass} value={dashboardChoice} onChange={e => setDashboardChoice(e.target.value)}>
+              <option value="">{t("k_a48169e534")}</option>
               <option value="new">＋ 新建仪表盘</option>
               {(options?.dashboards || []).flatMap(d => [
                 <option key={`d${d.id}`} value={String(d.id)}>追加到：{d.name}</option>,
                 ...d.charts.map(c => <option key={`c${d.id}-${c.id}`} value={`chart:${d.id}:${c.id}`}>修改图表：{d.name} / {c.name}</option>),
               ])}
             </select></label>
-            {dashboardChoice === 'new' && <label className="space-y-1 text-sm">新仪表盘名称<Input aria-label="新仪表盘名称" value={name} onChange={e => setName(e.target.value)} /></label>}
-            <label className="space-y-1 text-sm">业务域（有生效本体模型的数据源）<select aria-label="业务域" className={selectClass} value={domain} onChange={e => { setDomain(e.target.value); setKbs([]); setCatalogOnly(false); }}>
-              <option value="">请选择业务域</option>{options?.domains.map(d => <option key={d.datasource_name} value={d.datasource_name}>{d.datasource_name}（{d.model_name}）</option>)}
+            {dashboardChoice === 'new' && <label className="space-y-1 text-sm">{t("k_d30671dd5d")}<Input aria-label={t("k_d30671dd5d")} value={name} onChange={e => setName(e.target.value)} /></label>}
+            <label className="space-y-1 text-sm">{t("k_c09ae64145")}<select aria-label={t("k_8c045213f7")} className={selectClass} value={domain} onChange={e => { setDomain(e.target.value); setKbs([]); setCatalogOnly(false); }}>
+              <option value="">{t("k_1e63d4599f")}</option>{options?.domains.map(d => <option key={d.datasource_name} value={d.datasource_name}>{d.datasource_name}（{d.model_name}）</option>)}
             </select></label>
           </div>
-          {options && !options.domains.length && <p className="text-sm text-destructive">未发现可用业务域：没有任何数据源存在生效的业务本体模型，或当前账号无数据源权限。请先在模型中心完成业务建模。</p>}
-          {selectedDomain && <div className="space-y-2 text-sm"><Label>业务知识库（可选，用于理解业务口径）</Label>
-            {!selectedDomain.knowledge_bases.length && <p className="text-xs text-muted-foreground">无可用 qmind 知识库，本次将仅使用实时语义目录。</p>}
+          {options && !options.domains.length && <p className="text-sm text-destructive">{t("k_33eb6e08bd")}</p>}
+          {selectedDomain && <div className="space-y-2 text-sm"><Label>{t("k_cf8b0af665")}</Label>
+            {!selectedDomain.knowledge_bases.length && <p className="text-xs text-muted-foreground">{t("k_82072f81d3")}</p>}
             {selectedDomain.knowledge_bases.map(k => <label key={k.id} className="flex items-center gap-2">
               <input type="checkbox" disabled={catalogOnly} checked={kbs.includes(k.id)} onChange={e => setKbs(ids => e.target.checked ? [...ids, k.id] : ids.filter(id => id !== k.id))} />{k.name}
             </label>)}
-            <label className="flex items-center gap-2"><input type="checkbox" checked={catalogOnly} onChange={e => { setCatalogOnly(e.target.checked); setKbs([]); }} />仅使用实时语义目录，不查询业务知识库</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={catalogOnly} onChange={e => { setCatalogOnly(e.target.checked); setKbs([]); }} />{t("k_5e15c90de6")}</label>
           </div>}
-          <Button onClick={saveSelection} disabled={!selectedDomain || !dashboardChoice || (dashboardChoice === 'new' && !name.trim())}>确认范围</Button>
+          <Button onClick={saveSelection} disabled={!selectedDomain || !dashboardChoice || (dashboardChoice === 'new' && !name.trim())}>{t("k_a86371aab8")}</Button>
         </fieldset> : design.selection && <div className="flex flex-wrap items-center gap-3 text-sm">
           <span>业务域：{design.selection.datasource_name}</span><span>操作：{{ create: '新建', append: '追加图表', update: '修改图表' }[design.operation]}</span>
-          {!terminal && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setSelecting(true); setPreview(null); }}>重新选择（清空原方案）</Button>}
+          {!terminal && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setSelecting(true); setPreview(null); }}>{t("k_09b1e27c68")}</Button>}
         </div>}
         {!!design.questions.length && !terminal && <fieldset disabled={busy} className="space-y-3 rounded border p-4">
-          <h3 className="font-medium">这些口径需要您决定</h3>
+          <h3 className="font-medium">{t("k_3d73fdebcd")}</h3>
           {design.questions.map(q => <label key={q.key} className="block space-y-1 text-sm">{q.label}
             <select className={selectClass} value={answers[q.key] || ''} onChange={e => { setAnswers(a => ({ ...a, [q.key]: e.target.value })); setPreview(null); }}>
-              <option value="">请选择</option>{q.options.map(o => <option key={o}>{o}</option>)}
+              <option value="">{t("k_382f4b5559")}</option>{q.options.map(o => <option key={o}>{o}</option>)}
             </select></label>)}
-          <Button onClick={saveAnswers} disabled={design.questions.some(q => !answers[q.key])}>确认选择并更新设计</Button>
+          <Button onClick={saveAnswers} disabled={design.questions.some(q => !answers[q.key])}>{t("k_0b2028c5d7")}</Button>
         </fieldset>}
-        {design.selection && !terminal && <Button variant="outline" disabled={busy || sqlDirty || visualDirty} onClick={continueChat}>返回对话，让 AS-BOT 继续完善方案<ArrowRight className="ml-2 h-4 w-4" /></Button>}
+        {design.selection && !terminal && <Button variant="outline" disabled={busy || sqlDirty || visualDirty} onClick={continueChat}>{t("k_d6a219e09b")}<ArrowRight className="ml-2 h-4 w-4" /></Button>}
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList><TabsTrigger value="design">设计步骤</TabsTrigger><TabsTrigger value="sql">SQL 编辑</TabsTrigger><TabsTrigger value="preview">图表预览</TabsTrigger></TabsList>
+          <TabsList><TabsTrigger value="design">{t("k_aabf470861")}</TabsTrigger><TabsTrigger value="sql">{t("k_ff66f25314")}</TabsTrigger><TabsTrigger value="preview">{t("k_c5dd50f3c2")}</TabsTrigger></TabsList>
           <TabsContent value="design" className="space-y-4">
             <ol className="list-inside list-decimal space-y-2 text-sm">{design.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
-            {!design.widgets.length && <p className="py-6 text-sm text-muted-foreground">确认范围或口径后，返回对话继续设计。此时不会创建正式图表。</p>}
+            {!design.widgets.length && <p className="py-6 text-sm text-muted-foreground">{t("k_e4f04d1f40")}</p>}
             <fieldset disabled={busy || terminal} className="space-y-4">
               {widgets.map((w, i) => <div key={w.key} className="space-y-3 rounded border p-3">
-                <div className="grid grid-cols-2 gap-3"><label className="text-sm">图表标题<Input aria-label={`图表标题 ${i + 1}`} value={w.title} onChange={e => updateWidget(i, { title: e.target.value })} /></label>
-                  <label className="text-sm">图表类型<select className={selectClass} value={w.chart_type} onChange={e => updateWidget(i, { chart_type: e.target.value })}>{CHART_TYPES.filter(t => t.category !== 'widget').map(t => <option key={t.value} value={t.value}>{t.label}</option>)}</select></label></div>
+                <div className="grid grid-cols-2 gap-3"><label className="text-sm">{t("k_63177e26b4")}<Input aria-label={`图表标题 ${i + 1}`} value={w.title} onChange={e => updateWidget(i, { title: e.target.value })} /></label>
+                  <label className="text-sm">{t("k_e891b46dbb")}<select className={selectClass} value={w.chart_type} onChange={e => updateWidget(i, { chart_type: e.target.value })}>{CHART_TYPES.filter(t => t.category !== 'widget').map(t => <option key={t.value} value={t.value}>{t.label}</option>)}</select></label></div>
                 <div className="grid grid-cols-2 gap-3">{['xCol', 'yCol'].map(key => <label key={key} className="text-sm">{key === 'xCol' ? 'X 轴' : 'Y 轴'}<Input value={String(w.config[key] || '')} onChange={e => updateWidget(i, { config: { ...w.config, [key]: e.target.value } })} /></label>)}</div>
                 <div className="grid grid-cols-4 gap-2">{(['x', 'y', 'w', 'h'] as const).map(key => <label className="text-xs" key={key}>{key}<Input type="number" value={w.position[key]} onChange={e => updateWidget(i, { position: { ...w.position, [key]: Number(e.target.value) } })} /></label>)}</div>
-                <label className="block text-sm">图表主色<Input value={String(w.config.color || '')} placeholder="例如 #111111" onChange={e => updateWidget(i, { config: { ...w.config, color: e.target.value } })} /></label>
-                <details className="text-xs"><summary>声明式查询与统计口径</summary><pre className="mt-2 overflow-auto rounded bg-muted p-2">{JSON.stringify(w.query, null, 2)}</pre></details>
-                {w.query_source === 'raw_sql' && <p className="text-xs text-amber-700">人工 SQL 模式：原语义意图仅用于设计溯源，不参与运行时更新。</p>}
+                <label className="block text-sm">{t("k_d1202cc9f7")}<Input value={String(w.config.color || '')} placeholder="例如 #111111" onChange={e => updateWidget(i, { config: { ...w.config, color: e.target.value } })} /></label>
+                <details className="text-xs"><summary>{t("k_5d63f1c758")}</summary><pre className="mt-2 overflow-auto rounded bg-muted p-2">{JSON.stringify(w.query, null, 2)}</pre></details>
+                {w.query_source === 'raw_sql' && <p className="text-xs text-amber-700">{t("k_92a6138ad3")}</p>}
               </div>)}
-              {visualDirty && <Button onClick={saveVisuals}>保存视觉修改（需重新预览）</Button>}
+              {visualDirty && <Button onClick={saveVisuals}>{t("k_bac397a225")}</Button>}
             </fieldset>
           </TabsContent>
           <TabsContent value="sql" className="space-y-3">
-            <p className="text-sm text-muted-foreground">SQL 由服务端生成，仅在本面板展示。编辑后切换人工 SQL 模式，必须重新验证与预览；不要复制到聊天中。</p>
-            <Button variant="outline" disabled={busy || !design.widgets.length || sqlDirty || visualDirty} onClick={loadSql}>加载当前 SQL</Button>
+            <p className="text-sm text-muted-foreground">{t("k_653484b02a")}</p>
+            <Button variant="outline" disabled={busy || !design.widgets.length || sqlDirty || visualDirty} onClick={loadSql}>{t("k_b5fbb3be20")}</Button>
             {design.widgets.map(w => sql[w.key] !== undefined && <label key={w.key} className="block space-y-2 text-sm">{w.title}
               <textarea aria-label={`SQL ${w.title}`} className="h-52 w-full rounded border bg-muted/40 p-3 font-mono text-xs" disabled={busy || terminal} value={sql[w.key]} onChange={e => { setSql(q => ({ ...q, [w.key]: e.target.value })); setPreview(null); }} />
             </label>)}
-            {sqlDirty && <Button disabled={busy} onClick={saveSql}>保存 SQL 并校验</Button>}
+            {sqlDirty && <Button disabled={busy} onClick={saveSql}>{t("k_6d0d3f9fc0")}</Button>}
             {design.widgets.some(w => w.query_source === 'raw_sql') && !terminal && <Button variant="outline" disabled={busy} onClick={() => run(async () => {
               const { data } = await client.patch<DashboardDesign>(path, { expected_version: design.version, patch: { reset_sql: true } }); accept(data);
-            })}>放弃人工 SQL，恢复语义模式</Button>}
+            })}>{t("k_179b4387e4")}</Button>}
           </TabsContent>
           <TabsContent value="preview" className="space-y-4">
-            {!preview && <p className="py-8 text-sm text-muted-foreground">尚无当前版本的有效预览。预览只读取受治理数据，不写入仪表盘。</p>}
+            {!preview && <p className="py-8 text-sm text-muted-foreground">{t("k_e9f0382f85")}</p>}
             {preview && <><p className="text-xs text-muted-foreground">预览时间（UTC）：{preview.generated_at} · 10 分钟内有效 · 最多 500 行</p>
               {preview.charts.map(p => {
                 const w = design.widgets.find(w => w.key === p.key)!;
                 const styled = chartStyle(w.config, w.chart_type);
                 return <div key={p.key} className="rounded border p-4"><h3 className="mb-2 font-medium">{w.title}</h3>
-                  {p.rows.length ? <div className="relative h-[360px]"><DashboardChart chartType={w.chart_type} data={p} config={styled.config} visual={styled.visual} draft /></div> : <p className="py-10 text-center text-muted-foreground">查询成功，当前范围没有数据。</p>}
+                  {p.rows.length ? <div className="relative h-[360px]"><DashboardChart chartType={w.chart_type} data={p} config={styled.config} visual={styled.visual} draft /></div> : <p className="py-10 text-center text-muted-foreground">{t("k_ffdd7759c7")}</p>}
                   <p className="text-xs text-muted-foreground">{p.row_count} 行{p.possibly_truncated ? ' · 已达到预览上限，可能存在更多数据' : ''}</p>
                 </div>;
               })}</>}
           </TabsContent>
         </Tabs>
-        {design.result?.success && <a className="text-sm font-medium text-primary underline" href={design.result.url}>发布成功，打开仪表盘</a>}
+        {design.result?.success && <a className="text-sm font-medium text-primary underline" href={design.result.url}>{t("k_6778b8c866")}</a>}
         {!terminal && <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-2 border-t bg-background pt-3">
-          <Button variant="ghost" disabled={busy} onClick={() => run(async () => { const { data } = await client.post<DashboardDesign>(`${path}/cancel`, { expected_version: design.version }); accept(data); })}>取消设计</Button>
-          <Button variant="outline" disabled={busy || !design.widgets.length || sqlDirty || visualDirty || selecting} onClick={generatePreview}>重新校验并预览</Button>
-          <Button disabled={busy || !preview || sqlDirty || visualDirty || !design.preview_valid || selecting} onClick={publish}><Check className="mr-1 h-4 w-4" />确认并发布</Button>
+          <Button variant="ghost" disabled={busy} onClick={() => run(async () => { const { data } = await client.post<DashboardDesign>(`${path}/cancel`, { expected_version: design.version }); accept(data); })}>{t("k_15ecffe6f1")}</Button>
+          <Button variant="outline" disabled={busy || !design.widgets.length || sqlDirty || visualDirty || selecting} onClick={generatePreview}>{t("k_eceb8ce5ef")}</Button>
+          <Button disabled={busy || !preview || sqlDirty || visualDirty || !design.preview_valid || selecting} onClick={publish}><Check className="mr-1 h-4 w-4" />{t("k_70de69fcee")}</Button>
           {busy && <Loader2 className="h-4 w-4 animate-spin" />}
         </div>}
       </>}

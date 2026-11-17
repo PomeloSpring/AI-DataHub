@@ -39,6 +39,7 @@ from datetime import datetime
 
 from backend.common.db import execute_query
 from backend.modules.platform.services import content_service as cs
+from backend.common import i18n
 
 logger = logging.getLogger(__name__)
 
@@ -246,19 +247,32 @@ def promote(payload: dict, user: dict) -> dict:
     head_after = int(_article_by_series(series).get("head_revision_id") or 0) if article else 0
     out["new_version"] = bool(created or (article and head_after and head_after != head_before))
     if created:
-        out["message"] = f"已新建内容草稿《{saved['title']}》并写入正文。"
+        out["message"] = i18n.t_pair(
+            f"已新建内容草稿《{saved['title']}》并写入正文。",
+            f"Draft article \"{saved['title']}\" created with the report body.")
     elif out["new_version"]:
-        current = (f"当前线上是第 {out['release']} 期〈{out['release_label']}〉"
-                   if out["release"] else "这篇还没有已发布的期次（线上还看不到它）")
-        out["message"] = (f"已把这份报告的正文追加为《{saved['title']}》的新版本"
-                          f"（{current}，新内容尚未生效）。")
+        current = i18n.t_pair(
+            f"当前线上是第 {out['release']} 期〈{out['release_label']}〉",
+            f"Live release is #{out['release']} 〈{out['release_label']}〉",
+        ) if out["release"] else i18n.t_pair(
+            "这篇还没有已发布的期次（线上还看不到它）",
+            "This article has no published release yet (invisible on the portal)",
+        )
+        out["message"] = i18n.t_pair(
+            f"已把这份报告的正文追加为《{saved['title']}》的新版本（{current}，新内容尚未生效）。",
+            f"Report body appended as a new head revision of \"{saved['title']}\" ({current}; not yet live).",
+        )
     else:
-        out["message"] = (f"这份报告的正文与《{saved['title']}》当前版本一字不差，"
-                          "没有产生新版本（内容没变就不多开一条假历史）。")
+        out["message"] = i18n.t_pair(
+            f"这份报告的正文与《{saved['title']}》当前版本一字不差，没有产生新版本（内容没变就不多开一条假历史）。",
+            f"Report body is identical to the current revision of \"{saved['title']}\"; no new revision opened (avoids a fake history entry).",
+        )
     out["gate_blocked"] = []
     if not submit:
         out["submitted"] = False
-        out["message"] += " 未提交审核：需要时到「内容中心 → 我的草稿」提交。"
+        out["message"] += i18n.t_pair(
+            " 未提交审核：需要时到「内容中心 → 我的草稿」提交。",
+            " Not submitted for review; submit later from Content Center → My Drafts when ready.")
         logger.info("[content-promote] 存草稿 report=%s series=%s article=%s created=%s by=%s",
                     int(row.get("id") or 0), series, aid, created, actor)
         return out
@@ -276,7 +290,10 @@ def promote(payload: dict, user: dict) -> dict:
         # 弹框要能一条条列出来（与内容中心提交页同一形状），所以只剥那句固定前缀。
         reasons = [t.strip() for t in re.sub(r"^不能提交审核：", "", str(exc.detail or "")).split("；") if t.strip()]
         out["gate_blocked"] = reasons
-        out["message"] += "草稿已保存到内容中心，但未能提交审核：" + "；".join(reasons or [str(exc.detail)])
+        out["message"] += i18n.t_pair(
+            "草稿已保存到内容中心，但未能提交审核：",
+            "Draft saved to Content Center but review submission was blocked: ",
+        ) + "；".join(reasons or [str(exc.detail)])
         logger.info("[content-promote] 门禁拒 report=%s article=%s reason=%s",
                     int(row.get("id") or 0), aid, exc.detail)
         return out

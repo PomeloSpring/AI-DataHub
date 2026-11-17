@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   Plus, Edit2, Trash2, Eye, Search, Sparkles, BookOpen, Lock, FileCode, History, RotateCcw,
 } from 'lucide-react';
@@ -17,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { skillApi, type Skill, type SkillUpsert, type SkillVersion } from '@/api/skill';
+import { useTranslation } from 'react-i18next';
 
 // ── Category Options ───────────────────────────────────────────────
 
@@ -34,6 +36,7 @@ const catLabel = (c: string) => CATEGORIES.find((x) => x.value === c)?.label || 
 // ── Main Component ─────────────────────────────────────────────────
 
 export default function SkillsManager() {
+  const { t } = useTranslation('ui');
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -136,7 +139,7 @@ export default function SkillsManager() {
     <div className="p-6 w-full">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">技能配置</h1>
+          <h1 className="text-2xl font-bold">{t("k_d9377286b9")}</h1>
           <p className="text-muted-foreground mt-1">
             管理 Agent 技能（Qoder「文件夹 + SKILL.md」规范），系统内置 {builtinCount} 个、自定义 {customCount} 个，可在 AS-BOT 中勾选绑定
           </p>
@@ -155,7 +158,7 @@ export default function SkillsManager() {
             className="pl-9"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索技能名称/描述"
+            placeholder={t("k_56f2534e01")}
           />
         </div>
         <div className="flex items-center gap-1">
@@ -180,8 +183,8 @@ export default function SkillsManager() {
       ) : filtered.length === 0 ? (
         <div className="border rounded-lg p-12 text-center">
           <Sparkles className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-          <h3 className="text-lg font-medium mb-2">暂无技能</h3>
-          <p className="text-muted-foreground mb-4">新建一个自定义技能，或调整筛选条件</p>
+          <h3 className="text-lg font-medium mb-2">{t("k_6386d83f7c")}</h3>
+          <p className="text-muted-foreground mb-4">{t("k_5f61b651bb")}</p>
           <Button onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4 mr-2" />
             新建技能
@@ -200,7 +203,7 @@ export default function SkillsManager() {
                         <Lock className="h-3 w-3 mr-1" />内置
                       </Badge>
                     ) : (
-                      <Badge variant="secondary">自定义</Badge>
+                      <Badge variant="secondary">{t("k_c493338e8c")}</Badge>
                     )}
                   </div>
                   <div className="text-xs text-muted-foreground font-mono truncate">{s.name}</div>
@@ -219,18 +222,18 @@ export default function SkillsManager() {
               </div>
 
               <div className="flex items-center justify-end gap-1 pt-1">
-                <Button variant="ghost" size="sm" onClick={() => openView(s.name)} title="查看">
+                <Button variant="ghost" size="sm" onClick={() => openView(s.name)} title={t("k_f7acefd2d4")}>
                   <Eye className="h-4 w-4" />
                 </Button>
                 {!s.is_builtin && (
                   <>
-                    <Button variant="ghost" size="sm" onClick={() => setEditing(s)} title="编辑">
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(s)} title={t("k_a7f814c0a4")}>
                       <Edit2 className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => openVersions(s)} title="版本历史">
+                    <Button variant="ghost" size="sm" onClick={() => openVersions(s)} title={t("k_8770418ba3")}>
                       <History className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setDeleting(s)} title="删除">
+                    <Button variant="ghost" size="sm" onClick={() => setDeleting(s)} title={t("k_3755f56f2f")}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </>
@@ -249,14 +252,14 @@ export default function SkillsManager() {
               <DialogTitle className="flex items-center gap-2">
                 <BookOpen className="h-5 w-5" />
                 {viewing.display_name || viewing.name}
-                {viewing.is_builtin && <Badge className="bg-indigo-100 text-indigo-800">内置·只读</Badge>}
+                {viewing.is_builtin && <Badge className="bg-indigo-100 text-indigo-800">{t("k_9dcaae2f26")}</Badge>}
               </DialogTitle>
               <DialogDescription className="font-mono text-xs">{viewing.name}</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               {viewing.description && (
                 <div>
-                  <div className="text-sm font-medium mb-1">描述</div>
+                  <div className="text-sm font-medium mb-1">{t("k_412f54dc38")}</div>
                   <p className="text-sm text-muted-foreground">{viewing.description}</p>
                 </div>
               )}
@@ -268,7 +271,7 @@ export default function SkillsManager() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setViewing(null)}>关闭</Button>
+              <Button variant="outline" onClick={() => setViewing(null)}>{t("k_6c14bd7f6f")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -287,14 +290,14 @@ export default function SkillsManager() {
       <Dialog open={!!deleting} onOpenChange={() => setDeleting(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除自定义技能 "{deleting?.display_name || deleting?.name}" 吗？该操作会移除其 SKILL.md 文件夹，不可撤销。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleting(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleting(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -309,29 +312,29 @@ export default function SkillsManager() {
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[50vh] overflow-y-auto divide-y">
-            {loadingVersions && <p className="p-4 text-sm text-muted-foreground">加载中…</p>}
+            {loadingVersions && <p className="p-4 text-sm text-muted-foreground">{t("k_300ee3dee4")}</p>}
             {!loadingVersions && versions.length === 0 && (
-              <p className="p-4 text-sm text-muted-foreground">暂无历史版本（新保存一次后产生）</p>
+              <p className="p-4 text-sm text-muted-foreground">{t("k_1e8e7e0723")}</p>
             )}
             {versions.map((v, idx) => (
               <div key={v.version} className="flex items-start gap-3 py-2">
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium">
                     {v.version.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6')} UTC
-                    {idx === 0 && <Badge variant="outline" className="ml-2 text-[10px]">最近快照</Badge>}
+                    {idx === 0 && <Badge variant="outline" className="ml-2 text-[10px]">{t("k_b11bc1299e")}</Badge>}
                   </div>
                   <pre className="mt-1 whitespace-pre-wrap break-all text-[11px] text-muted-foreground font-mono max-h-20 overflow-hidden">
                     {v.preview}
                   </pre>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => handleRollback(v)} title="回滚到此版本">
+                <Button variant="outline" size="sm" onClick={() => handleRollback(v)} title={t("k_5fad9becdd")}>
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />回滚
                 </Button>
               </div>
             ))}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setVersionsFor(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setVersionsFor(null)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -425,19 +428,19 @@ function SkillFormDialog({
               placeholder="my-custom-skill"
               className="font-mono"
             />
-            <p className="text-xs text-muted-foreground">文件夹名，创建后不可修改</p>
+            <p className="text-xs text-muted-foreground">{t("k_75646b8ef8")}</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
-              <Label>显示名</Label>
+              <Label>{t("k_c10bbf5ddd")}</Label>
               <Input
                 value={form.display_name}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-                placeholder="我的技能"
+                placeholder={t("k_05337a0778")}
               />
             </div>
             <div className="space-y-2">
-              <Label>分类</Label>
+              <Label>{t("k_435c5259e4")}</Label>
               <Select
                 value={form.category}
                 onValueChange={(v) => setForm({ ...form, category: v })}
@@ -452,11 +455,11 @@ function SkillFormDialog({
             </div>
           </div>
           <div className="space-y-2">
-            <Label>描述</Label>
+            <Label>{t("k_412f54dc38")}</Label>
             <Textarea
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              placeholder="一句话说明该技能的用途"
+              placeholder={t("k_e846e17ee3")}
               rows={2}
             />
           </div>
@@ -474,7 +477,7 @@ function SkillFormDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button variant="outline" onClick={onClose}>{t("k_4d0b4688c7")}</Button>
           <Button onClick={handleSave} disabled={saving || loadingDetail}>
             {saving ? '保存中...' : '保存'}
           </Button>

@@ -26,6 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from '@/lib/toast';
 import { Dna, RefreshCw, Play, Check, X } from 'lucide-react';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 type Kind = 'new_metric' | 'new_dimension' | 'alias' | 'binding_gap' | 'term';
 
@@ -94,6 +95,7 @@ function expectItems(payload: any, what: string): any[] {
 }
 
 export default function EvolutionCenter() {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState('pending');
   const [status, setStatus] = useState('pending');
   const [kindFilter, setKindFilter] = useState<string>('');
@@ -282,7 +284,7 @@ export default function EvolutionCenter() {
     <div className="p-6 space-y-4">
       <div className="flex items-center gap-2">
         <Dna className="h-5 w-5" />
-        <h1 className="text-lg font-semibold">进化中心</h1>
+        <h1 className="text-lg font-semibold">{t("k_849e449611")}</h1>
         <Badge variant="outline" className="text-[10px]">
           反馈 / 解析失败 → 归纳候选 → 人工四出口 → 评测回归验证
         </Badge>
@@ -297,14 +299,14 @@ export default function EvolutionCenter() {
 
       <p className="text-xs text-muted-foreground">
         每日 03:30 自动归纳（可在「任务监控」暂停内置任务 <code>evolution_digest</code>）。
-        每条候选都带<b>分类依据</b>：命中权威名却解析不通的词被判为
-        <b>待核绑定</b>而非缺资产 —— 给这类词补别名或另建字典行都是错行动。
+        每条候选都带<b>{t("k_ccabc70a21")}</b>：命中权威名却解析不通的词被判为
+        <b>{t("k_ab33ea20aa")}</b>而非缺资产 —— 给这类词补别名或另建字典行都是错行动。
       </p>
 
       {ov && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
           <div className="border rounded-md p-2.5">
-            <div className="text-muted-foreground">反馈大盘</div>
+            <div className="text-muted-foreground">{t("k_fcc974676e")}</div>
             <div className="mt-1 font-medium">
               👍 {ov.feedback.up} · 👎 {ov.feedback.down}
             </div>
@@ -313,16 +315,16 @@ export default function EvolutionCenter() {
             </div>
           </div>
           <div className="border rounded-md p-2.5">
-            <div className="text-muted-foreground">信号来源</div>
+            <div className="text-muted-foreground">{t("k_9ab9b98fe5")}</div>
             {Object.keys(ov.pending_by_source).length === 0 && (
-              <div className="text-muted-foreground mt-1">无待办信号</div>
+              <div className="text-muted-foreground mt-1">{t("k_0f61703c58")}</div>
             )}
             {Object.entries(ov.pending_by_source).map(([k, n]) => (
               <div key={k} className="mt-0.5">{SOURCE_LABEL[k] || k}：{n}</div>
             ))}
           </div>
           <div className="border rounded-md p-2.5">
-            <div className="text-muted-foreground">处置分布（待处理）</div>
+            <div className="text-muted-foreground">{t("k_0ce8c74cda")}</div>
             {ov.kinds.map(k => (
               <div key={k} className="mt-0.5 flex items-center justify-between">
                 <span>{KIND_LABEL[k as Kind]}</span>
@@ -331,7 +333,7 @@ export default function EvolutionCenter() {
             ))}
           </div>
           <div className="border rounded-md p-2.5">
-            <div className="text-muted-foreground">闭环成效</div>
+            <div className="text-muted-foreground">{t("k_a35dbe4317")}</div>
             <div className="mt-1 text-green-700">已验证生效 {ov.outcome.verified ?? 0}</div>
             <div className={ov.outcome.stale ? 'text-destructive font-medium' : 'text-muted-foreground'}>
               转出但未生效 {ov.outcome.stale ?? 0}
@@ -343,17 +345,17 @@ export default function EvolutionCenter() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="grid grid-cols-2 w-full max-w-sm">
-          <TabsTrigger value="pending">待处理候选</TabsTrigger>
-          <TabsTrigger value="history">处置历史</TabsTrigger>
+          <TabsTrigger value="pending">{t("k_df8af0853b")}</TabsTrigger>
+          <TabsTrigger value="history">{t("k_8416c62f82")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pending" className="space-y-3">
           <div className="flex items-center gap-2">
-            <Label className="text-xs">类型筛选</Label>
+            <Label className="text-xs">{t("k_6bf1c6de44")}</Label>
             <Select value={kindFilter || 'all'} onValueChange={v => setKindFilter(v === 'all' ? '' : v)}>
               <SelectTrigger className="w-[180px] h-8 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部</SelectItem>
+                <SelectItem value="all">{t("k_778fc8f994")}</SelectItem>
                 {Object.entries(KIND_LABEL).map(([k, label]) => (
                   <SelectItem key={k} value={k}>{label}</SelectItem>
                 ))}
@@ -361,7 +363,7 @@ export default function EvolutionCenter() {
             </Select>
           </div>
 
-          {loading && <div className="text-xs text-muted-foreground p-4">加载中…</div>}
+          {loading && <div className="text-xs text-muted-foreground p-4">{t("k_300ee3dee4")}</div>}
           {!loading && error && (
             <div className="text-xs text-destructive p-4 border border-destructive/40 rounded">
               加载失败：{error}
@@ -442,7 +444,7 @@ export default function EvolutionCenter() {
                         </Button>
                       </div>
                       <div className="text-[11px] text-muted-foreground">
-                        <b>分类依据：</b>{c.classify_reason}
+                        <b>{t("k_d7d6020732")}</b>{c.classify_reason}
                       </div>
                       {Boolean((c.evidence as any)?.question) && (
                         <div className="text-[11px] text-muted-foreground">
@@ -474,7 +476,7 @@ export default function EvolutionCenter() {
 
         <TabsContent value="history" className="space-y-3">
           <div className="flex items-center gap-2">
-            <Label className="text-xs">状态</Label>
+            <Label className="text-xs">{t("k_62e951a692")}</Label>
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className="w-[180px] h-8 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -492,17 +494,17 @@ export default function EvolutionCenter() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-muted/40 text-left">
-                  <th className="p-2">业务词</th>
-                  <th className="p-2">类型</th>
-                  <th className="p-2">数据源</th>
-                  <th className="p-2">状态</th>
-                  <th className="p-2">产出物</th>
-                  <th className="p-2">决策人</th>
+                  <th className="p-2">{t("k_434eb25505")}</th>
+                  <th className="p-2">{t("k_e4e46c7235")}</th>
+                  <th className="p-2">{t("k_a3ccf702c5")}</th>
+                  <th className="p-2">{t("k_62e951a692")}</th>
+                  <th className="p-2">{t("k_f87c5ca889")}</th>
+                  <th className="p-2">{t("k_7086f8f94a")}</th>
                 </tr>
               </thead>
               <tbody>
                 {items.length === 0 && !loading && (
-                  <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">无记录</td></tr>
+                  <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">{t("k_afaa05cdc4")}</td></tr>
                 )}
                 {items.map(c => (
                   <tr key={c.id} className="border-t">
@@ -545,18 +547,18 @@ export default function EvolutionCenter() {
               {exitKind === 'alias' && (
                 <>
                   <div>
-                    <Label className="mb-1 block">目标类型</Label>
+                    <Label className="mb-1 block">{t("k_c44a4e3da1")}</Label>
                     <Select value={form.target_type} onValueChange={v => setForm({ ...form, target_type: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="metric">指标</SelectItem>
-                        <SelectItem value="dimension">维度</SelectItem>
-                        <SelectItem value="object">本体对象</SelectItem>
+                        <SelectItem value="metric">{t("k_1dfc810a7b")}</SelectItem>
+                        <SelectItem value="dimension">{t("k_72fa9ecdc4")}</SelectItem>
+                        <SelectItem value="object">{t("k_e5b5171f27")}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label className="mb-1 block">收编到哪个已有名称（必须已存在）</Label>
+                    <Label className="mb-1 block">{t("k_28223086a8")}</Label>
                     <Input value={form.target_ref}
                       onChange={e => setForm({ ...form, target_ref: e.target.value })}
                       placeholder={'从上方「≈ xxx」提示里取，或填已登记的字典名 / 对象 key'} />
@@ -566,9 +568,9 @@ export default function EvolutionCenter() {
 
               {(exitKind === 'metric' || exitKind === 'dimension' || exitKind === 'eval_case') && (
                 <div>
-                  <Label className="mb-1 block">归属到本模型对象</Label>
+                  <Label className="mb-1 block">{t("k_72317c17c2")}</Label>
                   <Select value={form.bound_object_key || undefined} onValueChange={loadProps}>
-                    <SelectTrigger><SelectValue placeholder="选择业务对象" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={t("k_63d7b41003")} /></SelectTrigger>
                     <SelectContent>
                       {objOptions.map(o => (
                         <SelectItem key={o.key} value={o.key}>{o.display_name || o.key}</SelectItem>
@@ -587,11 +589,11 @@ export default function EvolutionCenter() {
               {exitKind === 'metric' && (
                 <>
                   <div>
-                    <Label className="mb-1 block">业务名</Label>
+                    <Label className="mb-1 block">{t("k_a35ae2c7f1")}</Label>
                     <Input value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} />
                   </div>
                   <div>
-                    <Label className="mb-1 block">聚合方式 / 口径公式</Label>
+                    <Label className="mb-1 block">{t("k_7045c9b015")}</Label>
                     <div className="flex gap-2">
                       <Select value={form.agg_type} onValueChange={v => setForm({ ...form, agg_type: v })}>
                         <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
@@ -615,14 +617,14 @@ export default function EvolutionCenter() {
               {exitKind === 'dimension' && (
                 <>
                   <div>
-                    <Label className="mb-1 block">业务名</Label>
+                    <Label className="mb-1 block">{t("k_a35ae2c7f1")}</Label>
                     <Input value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} />
                   </div>
                   <div>
-                    <Label className="mb-1 block">对应业务属性（物理列由服务端映射，不手填）</Label>
+                    <Label className="mb-1 block">{t("k_f4ec4a6499")}</Label>
                     <Select value={form.property_name || undefined}
                       onValueChange={v => setForm({ ...form, property_name: v })}>
-                      <SelectTrigger><SelectValue placeholder="先选对象，再选业务属性" /></SelectTrigger>
+                      <SelectTrigger><SelectValue placeholder={t("k_f6120079d3")} /></SelectTrigger>
                       <SelectContent>
                         {propOptions.map(p => (
                           <SelectItem key={p.property} value={p.property}>{p.property}</SelectItem>
@@ -635,9 +637,9 @@ export default function EvolutionCenter() {
 
               {exitKind === 'term' && (
                 <div>
-                  <Label className="mb-1 block">说明（可选）</Label>
+                  <Label className="mb-1 block">{t("k_f946bf0221")}</Label>
                   <Textarea rows={2} value={form.note} onChange={e => setForm({ ...form, note: e.target.value })}
-                    placeholder="这个黑话在业务里指什么；后续要映射到哪个对象/字典" />
+                    placeholder={t("k_cf358d46dc")} />
                 </div>
               )}
 
@@ -645,7 +647,7 @@ export default function EvolutionCenter() {
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <Label className="mb-1 block">评测层</Label>
+                      <Label className="mb-1 block">{t("k_0e8e7b44a1")}</Label>
                       <Select value={form.suite} onValueChange={v => setForm({ ...form, suite: v })}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -654,7 +656,7 @@ export default function EvolutionCenter() {
                       </Select>
                     </div>
                     <div>
-                      <Label className="mb-1 block">能力契约</Label>
+                      <Label className="mb-1 block">{t("k_b13ab1ec69")}</Label>
                       <Select value={form.capability} onValueChange={v => setForm({ ...form, capability: v })}>
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -664,7 +666,7 @@ export default function EvolutionCenter() {
                     </div>
                   </div>
                   <div>
-                    <Label className="mb-1 block">expected（确定性断言，JSON）</Label>
+                    <Label className="mb-1 block">{t("k_1eae33674b")}</Label>
                     <Textarea rows={3} className="font-mono text-[11px]"
                       value={form.expected} onChange={e => setForm({ ...form, expected: e.target.value })} />
                   </div>
@@ -677,7 +679,7 @@ export default function EvolutionCenter() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setExitKind(''); setTarget(null); }}>取消</Button>
+            <Button variant="outline" onClick={() => { setExitKind(''); setTarget(null); }}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={submit} disabled={busy}>{busy ? '处理中…' : '确认执行'}</Button>
           </DialogFooter>
         </DialogContent>

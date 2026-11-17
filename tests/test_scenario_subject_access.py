@@ -119,7 +119,9 @@ def test_candidate_payload_field_names_match_frontend_contract(monkeypatch):
     """
     _patch_rows(monkeypatch, [_row(1, "可见", "方案", ["x"], subjects=["rum_event"])])
     items, _hidden = qp.list_visible_paths(allowed_subjects={"rum_event"})
-    assert set(items[0]) == {"key", "name", "description"}
+    # 双语下发（plan §P3）：`i18n_fallback` 记录本条是否走了回落（前端据此显示"暂无英文版"）。
+    # 除它之外的键仍须严格 = {key, name, description}（React key 与展示契约不变）。
+    assert set(items[0]) == {"key", "name", "description", "i18n_fallback"}
     assert items[0]["key"] == "1"
     # 内部 object_key 不随候选下发（对选择没意义，属实现细节）
     assert "subjects" not in items[0]

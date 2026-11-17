@@ -6,6 +6,8 @@ category: analysis
 exclusive_group: playbook
 requires_any: [run_semantic_query]
 triggers: [分析, 趋势, 环比, 同比, 增长, 下降, 上升, 波动, 异常, 留存, 漏斗, 转化, 流失, 画像, 分布, 占比, 排名, 对比, 归因, 为什么, 原因, 走势, 拐点, 指标, 统计, 汇总, 多少, 流量, 访问量, 访问, PV, UV, 页面, 渠道, 投放, 新增, 活跃, 复购, 会员, 门店, 工单, 销售]
+display_name_en: "Data Analysis"
+description_en: "Semantic-layer business data analysis: metrics, dimensions, drill-down, cross-site comparison and charts via governed queries."
 ---
 
 # 数据分析 Skill（ChatBI 分析师 · 语义层）

@@ -23,6 +23,7 @@ import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Plus, Edit, Trash2, RefreshCw } from 'lucide-react';
 import { governanceApi, type DataStandard } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useTranslation } from 'react-i18next';
 
 const TYPE_MAP: Record<string, { label: string; color: string }> = {
   naming: { label: '命名规范', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
@@ -46,6 +47,7 @@ const EMPTY_FORM: StandardForm = {
 };
 
 export default function Standards() {
+  const { t } = useTranslation('ui');
   const [standards, setStandards] = useState<DataStandard[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -153,8 +155,8 @@ export default function Standards() {
     <div className="flex flex-col h-full gap-4">
       <div className="flex items-center justify-between shrink-0">
         <div>
-          <h1 className="text-2xl font-bold">数据标准</h1>
-          <p className="text-muted-foreground text-sm mt-1">管理命名、编码、度量、格式等数据标准规范</p>
+          <h1 className="text-2xl font-bold">{t("k_32f7d476fd")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_1fd2fe33ef")}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={loadStandards}>
@@ -173,12 +175,12 @@ export default function Standards() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
-              <th className="text-left p-3 font-medium">标准名称</th>
-              <th className="text-left p-3 font-medium">类型</th>
-              <th className="text-left p-3 font-medium">描述</th>
-              <th className="text-center p-3 font-medium">启用</th>
-              <th className="text-left p-3 font-medium">创建时间</th>
-              <th className="text-right p-3 font-medium">操作</th>
+              <th className="text-left p-3 font-medium">{t("k_a888194c58")}</th>
+              <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+              <th className="text-left p-3 font-medium">{t("k_412f54dc38")}</th>
+              <th className="text-center p-3 font-medium">{t("k_d4e9ca3dd4")}</th>
+              <th className="text-left p-3 font-medium">{t("k_84e3802f60")}</th>
+              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
             </tr>
           </thead>
           <tbody>
@@ -221,7 +223,7 @@ export default function Standards() {
                         variant="ghost"
                         size="sm"
                         onClick={() => openEdit(standard)}
-                        title="编辑"
+                        title={t("k_a7f814c0a4")}
                       >
                         <Edit className="w-4 h-4" />
                       </Button>
@@ -229,7 +231,7 @@ export default function Standards() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setDeleteTarget(standard)}
-                        title="删除"
+                        title={t("k_3755f56f2f")}
                       >
                         <Trash2 className="w-4 h-4 text-destructive" />
                       </Button>
@@ -270,7 +272,7 @@ export default function Standards() {
                 className="mt-1"
                 value={form.name}
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                placeholder="输入标准名称"
+                placeholder={t("k_2c9348c596")}
               />
             </div>
             <div>
@@ -280,23 +282,23 @@ export default function Standards() {
                 onValueChange={v => setForm(f => ({ ...f, standard_type: v }))}
               >
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="选择标准类型" />
+                  <SelectValue placeholder={t("k_3941d2e565")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="naming">命名规范</SelectItem>
-                  <SelectItem value="encoding">编码规范</SelectItem>
-                  <SelectItem value="measurement">度量规范</SelectItem>
-                  <SelectItem value="format">格式规范</SelectItem>
+                  <SelectItem value="naming">{t("k_4d443c5242")}</SelectItem>
+                  <SelectItem value="encoding">{t("k_954c95280e")}</SelectItem>
+                  <SelectItem value="measurement">{t("k_d6e94ede0c")}</SelectItem>
+                  <SelectItem value="format">{t("k_b5720ccbe8")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="text-sm font-medium">描述</label>
+              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
               <Input
                 className="mt-1"
                 value={form.description}
                 onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="标准描述（可选）"
+                placeholder={t("k_ff09c92e48")}
               />
             </div>
             <div>
@@ -313,7 +315,7 @@ export default function Standards() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave}>{editStandard ? '更新' : '创建'}</Button>
           </DialogFooter>
         </DialogContent>
@@ -323,14 +325,14 @@ export default function Standards() {
       <Dialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
             <DialogDescription>
               确定要删除数据标准「{deleteTarget?.name}」吗？
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>取消</Button>
-            <Button variant="destructive" onClick={handleDelete}>删除</Button>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive" onClick={handleDelete}>{t("k_3755f56f2f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

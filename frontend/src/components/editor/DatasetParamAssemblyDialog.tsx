@@ -8,6 +8,7 @@
  * 勾选与显示名改动只在本地状态里收集，确认时一次性回传，不在这里碰 store。
  */
 import { useEffect, useMemo, useState } from 'react';
+import { t } from '@/i18n/runtime';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -62,7 +63,7 @@ export default function DatasetParamAssemblyDialog({
     <Dialog open={open} onOpenChange={(v) => { if (!v) onCancel(); }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>为看板补齐数据集的入参</DialogTitle>
+          <DialogTitle>{t("k_337f0d3e0f")}</DialogTitle>
           <DialogDescription>
             {datasetNames.join('、') || '本次引入的数据集'} 声明了参数化的取数口径。
             看板只做可视化装配，参数由数据集声明决定，这里列出**将要补上的东西**，确认后才写入草稿
@@ -76,10 +77,10 @@ export default function DatasetParamAssemblyDialog({
               <thead className="text-muted-foreground">
                 <tr>
                   <th className="w-8"></th>
-                  <th className="text-left font-normal">参数</th>
-                  <th className="text-left font-normal">显示名</th>
-                  <th className="text-left font-normal">形状 / 控件</th>
-                  <th className="text-left font-normal">来源数据集</th>
+                  <th className="text-left font-normal">{t("k_749d765242")}</th>
+                  <th className="text-left font-normal">{t("k_c10bbf5ddd")}</th>
+                  <th className="text-left font-normal">{t("k_e0b8ed3f4a")}</th>
+                  <th className="text-left font-normal">{t("k_8eec9f82c7")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -116,7 +117,7 @@ export default function DatasetParamAssemblyDialog({
           {!!plan.addButtons.length && (
             <label className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px]">
               <input type="checkbox" className="mt-0.5 h-3.5 w-3.5" checked={withButtons}
-                aria-label="同时放置搜索与重置按钮"
+                aria-label={t("k_ad2a6014cc")}
                 onChange={e => setWithButtons(e.target.checked)} />
               <span>
                 同时放置「{plan.addButtons.map(b => b.label).join('」「')}」按钮
@@ -151,7 +152,7 @@ export default function DatasetParamAssemblyDialog({
           )}
 
           {!!plan.constants.length && (
-            <Section title="这些入参是数据集正文里的口径常数，不该做成看板控件" tone="muted">
+            <Section title={t("k_cc9b6c35b0")} tone="muted">
               {plan.constants.map(c => (
                 <li key={c.key}>「{c.label}」（{c.datasetNames.join('、')}）</li>
               ))}
@@ -159,20 +160,20 @@ export default function DatasetParamAssemblyDialog({
           )}
 
           {!!plan.conflicts.length && (
-            <Section title="口径分歧（不阻塞出数，但建议去数据集页收敛）" tone="warn">
+            <Section title={t("k_b69ed78fe3")} tone="warn">
               {plan.conflicts.map((c, i) => <li key={i}>{c}</li>)}
             </Section>
           )}
 
           {!!plan.notes.length && (
-            <Section title="装配后的口径说明" tone="muted">
+            <Section title={t("k_10936d6c32")} tone="muted">
               {plan.notes.map((n, i) => <li key={i}>{n}</li>)}
             </Section>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" size="sm" onClick={onCancel}>取消</Button>
+          <Button variant="outline" size="sm" onClick={onCancel}>{t("k_4d0b4688c7")}</Button>
           <Button size="sm" disabled={!canConfirm}
             onClick={() => onConfirm(picked.map(r => r.key),
                                     Object.fromEntries(picked.map(r => [r.key, (labels[r.key] || r.label).trim() || r.label])),

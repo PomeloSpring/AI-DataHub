@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Empty } from '@/components/ui/empty';
 import DecisionTreeEditor from '@/components/decision/DecisionTreeEditor';
 import DecisionTreeGraph from '@/components/decision/DecisionTreeGraph';
+import { t } from '@/i18n/runtime';
 import {
   decisionsApi, errorText, TREE_STATUS_LABELS,
   type AdviceSeverity, type DecisionAdviceRow, type DecisionTreeDocInput, type DecisionTreeRow, type TreeStatus,
@@ -13,6 +14,7 @@ import { concreteSites, listSites, type Site } from '@/api/sites';
 import { listNotificationChannels, type NotificationChannel } from '@/api/scheduledTask';
 import { hasPerm } from '@/stores/permissionStore';
 import { toast } from '@/lib/toast';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 数据中台「决策建议」配置页（路由 /data/decisions ↔ 菜单 data:decisions）。
@@ -54,6 +56,7 @@ const blankForm = (): DraftForm => ({
 });
 
 export default function DecisionTreeConfig() {
+  const { t } = useTranslation('ui');
   const [tab, setTab] = useState<'trees' | 'advice'>('trees');
   const [trees, setTrees] = useState<DecisionTreeRow[]>([]);
   const [adviceRows, setAdviceRows] = useState<DecisionAdviceRow[]>([]);
@@ -169,14 +172,14 @@ export default function DecisionTreeConfig() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-center gap-3">
         <div>
-          <h1 className="text-lg font-semibold">决策建议 · 配置</h1>
+          <h1 className="text-lg font-semibold">{t("k_0effa92d4e")}</h1>
           <p className="text-sm text-muted-foreground">
             决策树是业务判断口径资产：条件只能引用指标/维度字典的业务名，判定由确定性引擎完成
           </p>
         </div>
         <div className="ml-auto flex gap-2">
-          <Button size="sm" variant={tab === 'trees' ? 'default' : 'outline'} onClick={() => setTab('trees')}>决策树</Button>
-          <Button size="sm" variant={tab === 'advice' ? 'default' : 'outline'} onClick={() => setTab('advice')}>建议文案库</Button>
+          <Button size="sm" variant={tab === 'trees' ? 'default' : 'outline'} onClick={() => setTab('trees')}>{t("k_642df3fd9d")}</Button>
+          <Button size="sm" variant={tab === 'advice' ? 'default' : 'outline'} onClick={() => setTab('advice')}>{t("k_a9511454bb")}</Button>
         </div>
       </header>
 
@@ -186,9 +189,9 @@ export default function DecisionTreeConfig() {
           <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
             <aside className="space-y-2">
               <Button size="sm" className="w-full" onClick={() => { setForm(blankForm()); setIsNew(true); setIssues(null); }}>
-                <Plus className="h-4 w-4" /><span className="ml-1">新建决策树</span>
+                <Plus className="h-4 w-4" /><span className="ml-1">{t("k_ec140df087")}</span>
               </Button>
-              {!trees.length && <p className="text-xs text-muted-foreground">还没有决策树。</p>}
+              {!trees.length && <p className="text-xs text-muted-foreground">{t("k_0a1ee1a953")}</p>}
               <ul className="space-y-1">
                 {trees.map(t => (
                   <li key={t.tree_key}>
@@ -207,24 +210,24 @@ export default function DecisionTreeConfig() {
 
             <section className="space-y-4">
               <div className="grid gap-3 md:grid-cols-2">
-                <Field label="决策树名称">
-                  <Input aria-label="决策树名称" value={form.name}
+                <Field label={t("k_c2a38044cb")}>
+                  <Input aria-label={t("k_c2a38044cb")} value={form.name}
                     onChange={e => setForm({ ...form, name: e.target.value })}
-                    placeholder="如：设备精度风险判定" className="h-8 text-sm" />
+                    placeholder={t("k_6726c93690")} className="h-8 text-sm" />
                 </Field>
-                <Field label="稳定标识（保存后不可改）">
-                  <Input aria-label="稳定标识" value={form.tree_key} disabled={!isNew}
+                <Field label={t("k_46c928248d")}>
+                  <Input aria-label={t("k_fc8eb0bf70")} value={form.tree_key} disabled={!isNew}
                     onChange={e => setForm({ ...form, tree_key: e.target.value })}
                     placeholder="accuracy-risk" className="h-8 text-sm" />
                 </Field>
-                <Field label="说明">
-                  <Input aria-label="说明" value={form.description}
+                <Field label={t("k_26670dda42")}>
+                  <Input aria-label={t("k_26670dda42")} value={form.description}
                     onChange={e => setForm({ ...form, description: e.target.value })}
-                    placeholder="这棵树解决什么判断问题" className="h-8 text-sm" />
+                    placeholder={t("k_ac83736a09")} className="h-8 text-sm" />
                 </Field>
                 <Field label="适用站点（空=按角色授权站点派生）">
                   <div className="flex flex-wrap gap-2 pt-1">
-                    {sites.length === 0 && <span className="text-xs text-muted-foreground">站点清单加载中或为空</span>}
+                    {sites.length === 0 && <span className="text-xs text-muted-foreground">{t("k_c3e54b616f")}</span>}
                     {sites.map(s => (
                       <label key={s.site_code} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs">
                         <input type="checkbox" checked={siteCodes.includes(s.site_code)}
@@ -235,15 +238,15 @@ export default function DecisionTreeConfig() {
                   </div>
                 </Field>
                 <Field label="定时评估 Cron（留空=不定时）">
-                  <Input aria-label="调度 Cron" value={form.schedule_cron}
+                  <Input aria-label={t("k_b1ad2c42da")} value={form.schedule_cron}
                     onChange={e => setForm({ ...form, schedule_cron: e.target.value })}
                     placeholder="0 8 * * *" className="h-8 text-sm" />
                 </Field>
-                <Field label="通知渠道（只存引用，命中才发）">
-                  <select aria-label="通知渠道" value={form.notify_channel_id}
+                <Field label={t("k_570cdddec0")}>
+                  <select aria-label={t("k_56807dfa08")} value={form.notify_channel_id}
                     onChange={e => setForm({ ...form, notify_channel_id: Number(e.target.value) })}
                     className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
-                    <option value={0}>不通知</option>
+                    <option value={0}>{t("k_8c6daa58db")}</option>
                     {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </Field>
@@ -251,12 +254,12 @@ export default function DecisionTreeConfig() {
 
               <div>
                 <div className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-medium">判定条件树</h2>
+                  <h2 className="text-sm font-medium">{t("k_fafe31fcdf")}</h2>
                   <div className="ml-auto flex gap-1">
                     <Button size="sm" variant={docView === 'graph' ? 'default' : 'outline'}
-                      aria-pressed={docView === 'graph'} onClick={() => setDocView('graph')}>图面</Button>
+                      aria-pressed={docView === 'graph'} onClick={() => setDocView('graph')}>{t("k_7e60f1359f")}</Button>
                     <Button size="sm" variant={docView === 'form' ? 'default' : 'outline'}
-                      aria-pressed={docView === 'form'} onClick={() => setDocView('form')}>表单</Button>
+                      aria-pressed={docView === 'form'} onClick={() => setDocView('form')}>{t("k_1f515561b6")}</Button>
                   </div>
                 </div>
                 {docView === 'graph' ? (
@@ -271,9 +274,9 @@ export default function DecisionTreeConfig() {
               <div className="flex flex-wrap items-center gap-2">
                 <Button size="sm" variant="outline" onClick={validate} disabled={busy === 'validate'}>
                   {busy === 'validate' && <Loader2 className="h-4 w-4 animate-spin" />}
-                  <span className="ml-1">校验口径</span>
+                  <span className="ml-1">{t("k_82c7038b77")}</span>
                 </Button>
-                <Button size="sm" onClick={save} disabled={busy === 'save'}>保存草案</Button>
+                <Button size="sm" onClick={save} disabled={busy === 'save'}>{t("k_23ba959a54")}</Button>
                 <span title={canPublish ? '' : `缺少权限码 ${PUBLISH_PERM}`}>
                   <Button size="sm" variant="secondary" disabled={!canPublish || !form.tree_key}
                     onClick={() => act('publish')}>
@@ -282,13 +285,13 @@ export default function DecisionTreeConfig() {
                   </Button>
                 </span>
                 {current?.status === 'active' && (
-                  <Button size="sm" variant="ghost" onClick={() => act('retire')}>下架</Button>
+                  <Button size="sm" variant="ghost" onClick={() => act('retire')}>{t("k_a2698bcf9e")}</Button>
                 )}
                 {current?.status === 'retired' && (
-                  <Button size="sm" variant="ghost" onClick={() => act('restore')}>恢复启用</Button>
+                  <Button size="sm" variant="ghost" onClick={() => act('restore')}>{t("k_3c3a525acc")}</Button>
                 )}
                 {current && (
-                  <Button size="sm" variant="ghost" className="text-red-600" onClick={() => act('delete')}>删除</Button>
+                  <Button size="sm" variant="ghost" className="text-red-600" onClick={() => act('delete')}>{t("k_3755f56f2f")}</Button>
                 )}
                 {!canPublish && (
                   <span className="text-xs text-amber-700 dark:text-amber-400">
@@ -301,7 +304,7 @@ export default function DecisionTreeConfig() {
               {issues && (
                 <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-xs">
                   {issues.errors.length === 0 && issues.warnings.length === 0 && (
-                    <p className="text-emerald-700 dark:text-emerald-400">没有发现问题。</p>
+                    <p className="text-emerald-700 dark:text-emerald-400">{t("k_68fd6dea38")}</p>
                   )}
                   {issues.errors.map((e, i) => (
                     <p key={`e${i}`} className="text-red-700 dark:text-red-400">
@@ -365,10 +368,10 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-xs text-muted-foreground">
             <tr className="text-left">
-              <th className="px-3 py-2 font-medium">标识</th>
-              <th className="px-3 py-2 font-medium">建议动作</th>
-              <th className="px-3 py-2 font-medium">严重级</th>
-              <th className="px-3 py-2 font-medium">知识出处</th>
+              <th className="px-3 py-2 font-medium">{t("k_3537d5ef90")}</th>
+              <th className="px-3 py-2 font-medium">{t("k_a77d2fb1b0")}</th>
+              <th className="px-3 py-2 font-medium">{t("k_af156f3ea7")}</th>
+              <th className="px-3 py-2 font-medium">{t("k_1dcd7aacf3")}</th>
             </tr>
           </thead>
           <tbody>
@@ -392,7 +395,7 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
             ))}
             {!rows.length && (
               <tr><td colSpan={4}>
-                <Empty title="建议文案库为空"
+                <Empty title={t("k_7ad3348774")}
                   description="叶子只存 advice_key 引用，文案在这里登记一次，多棵树共用（同一概念只登记一处）。" />
               </td></tr>
             )}
@@ -402,40 +405,40 @@ function AdviceLibrary({ rows, onChanged }: { rows: DecisionAdviceRow[]; onChang
 
       <aside className="space-y-3 rounded-xl border border-border p-3">
         <h2 className="text-sm font-medium">{isNew ? '新增建议文案' : `编辑 ${form.advice_key}`}</h2>
-        <Field label="标识（英文短横线，保存后不可改）">
-          <Input aria-label="建议标识" value={form.advice_key} disabled={!isNew}
+        <Field label={t("k_10c3ff4d10")}>
+          <Input aria-label={t("k_0b7d3956a9")} value={form.advice_key} disabled={!isNew}
             onChange={e => setForm({ ...form, advice_key: e.target.value })}
             placeholder="adv_recalibrate" className="h-8 text-sm" />
         </Field>
-        <Field label="建议动作">
-          <Input aria-label="建议动作" value={form.action}
+        <Field label={t("k_a77d2fb1b0")}>
+          <Input aria-label={t("k_a77d2fb1b0")} value={form.action}
             onChange={e => setForm({ ...form, action: e.target.value })}
-            placeholder="安排一次现场校准并复核最近 7 日记录" className="h-8 text-sm" />
+            placeholder={t("k_5da2d27838")} className="h-8 text-sm" />
         </Field>
-        <Field label="理由">
-          <Input aria-label="理由" value={form.rationale}
+        <Field label={t("k_a207006f19")}>
+          <Input aria-label={t("k_a207006f19")} value={form.rationale}
             onChange={e => setForm({ ...form, rationale: e.target.value })}
-            placeholder="为什么该这么做（会显示在建议卡上）" className="h-8 text-sm" />
+            placeholder={t("k_c99c1da608")} className="h-8 text-sm" />
         </Field>
-        <Field label="严重级">
-          <select aria-label="严重级" value={form.severity}
+        <Field label={t("k_af156f3ea7")}>
+          <select aria-label={t("k_af156f3ea7")} value={form.severity}
             onChange={e => setForm({ ...form, severity: e.target.value })}
             className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
             {['low', 'medium', 'high', 'critical'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </Field>
-        <Field label="知识出处（内容中心文章 slug，逗号分隔）">
-          <Input aria-label="知识出处" value={form.kb_refs}
+        <Field label={t("k_c010667ec0")}>
+          <Input aria-label={t("k_1dcd7aacf3")} value={form.kb_refs}
             onChange={e => setForm({ ...form, kb_refs: e.target.value })}
             placeholder="calibration-sop,precision-standard" className="h-8 text-sm" />
         </Field>
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={save} disabled={busy || !form.advice_key || !form.action}>保存</Button>
+          <Button size="sm" onClick={save} disabled={busy || !form.advice_key || !form.action}>{t("k_fadf24dbc5")}</Button>
           {!isNew && (
             <Button size="sm" variant="ghost" onClick={() => {
               setIsNew(true);
               setForm({ advice_key: '', action: '', rationale: '', severity: 'medium', kb_refs: '', is_active: true });
-            }}>新建</Button>
+            }}>{t("k_0cda8d1c71")}</Button>
           )}
         </div>
       </aside>

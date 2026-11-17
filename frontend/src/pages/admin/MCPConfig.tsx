@@ -11,6 +11,7 @@ import {
 import { toast } from '@/lib/toast';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 interface MCPServer {
   id: number;
@@ -50,6 +51,7 @@ const builtinBadge = (s: MCPServer) =>
 const EMPTY_FORM: Record<string, any> = { transport: 'sse', is_active: 1 };
 
 export default function MCPConfig() {
+  const { t } = useTranslation('ui');
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<MCPServer | null>(null);
@@ -170,8 +172,8 @@ export default function MCPConfig() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">MCP 服务</h1>
-          <p className="text-muted-foreground text-sm mt-1">注册 MCP 服务，为 Agent 提供工具能力</p>
+          <h1 className="text-2xl font-bold">{t("k_463f3bc770")}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t("k_be7afb815d")}</p>
         </div>
         <div className="flex gap-2">
           <Button size="sm" onClick={openCreate}>
@@ -188,11 +190,11 @@ export default function MCPConfig() {
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
-              <Label>服务名称</Label>
+              <Label>{t("k_d82acb1b50")}</Label>
               <Input value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="filesystem" />
             </div>
             <div className="space-y-1.5">
-              <Label>传输方式</Label>
+              <Label>{t("k_e659fd134c")}</Label>
               <Select value={form.transport} onValueChange={v => setForm({ ...form, transport: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -204,19 +206,19 @@ export default function MCPConfig() {
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>描述</Label>
-            <Input value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="文件系统访问服务" />
+            <Label>{t("k_412f54dc38")}</Label>
+            <Input value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} placeholder={t("k_3ab1d1dbf4")} />
           </div>
           {form.transport === 'sse' || form.transport === 'streamable_http' ? (
             <div className="space-y-1.5">
-              <Label>服务地址</Label>
+              <Label>{t("k_86e118291e")}</Label>
               <Input value={form.url || ''} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="http://localhost:3001/mcp" />
             </div>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label>命令</Label>
+                  <Label>{t("k_b114b91547")}</Label>
                   <Input value={form.command || ''} onChange={e => setForm({ ...form, command: e.target.value })} placeholder="npx" />
                 </div>
                 <div className="space-y-1.5">
@@ -232,14 +234,14 @@ export default function MCPConfig() {
                   rows={2}
                   placeholder={'{"ES_URL": "http://localhost:9200", "ES_AUTH": "user:password"}'}
                 />
-                <p className="text-xs text-muted-foreground">stdio 模式下传递给子进程的环境变量</p>
+                <p className="text-xs text-muted-foreground">{t("k_a4cdf0b1da")}</p>
               </div>
             </>
           )}
           {discoveredToolsList.length > 0 ? (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label>可用工具（勾选需要启用的工具）</Label>
+                <Label>{t("k_2a83bbaad0")}</Label>
                 <span className="text-xs text-muted-foreground">
                   已选 {selectedToolNames.size} / {discoveredToolsList.length}
                 </span>
@@ -247,9 +249,9 @@ export default function MCPConfig() {
               <div className="border rounded-md p-3 max-h-60 overflow-y-auto space-y-1.5 bg-background">
                 <div className="flex gap-3 mb-2 pb-2 border-b">
                   <button type="button" className="text-xs text-primary hover:underline"
-                    onClick={() => setSelectedToolNames(new Set(discoveredToolsList.map(t => t.name)))}>全选</button>
+                    onClick={() => setSelectedToolNames(new Set(discoveredToolsList.map(t => t.name)))}>{t("k_3e44b2a933")}</button>
                   <button type="button" className="text-xs text-muted-foreground hover:underline"
-                    onClick={() => setSelectedToolNames(new Set())}>全不选</button>
+                    onClick={() => setSelectedToolNames(new Set())}>{t("k_ba20eba2d6")}</button>
                 </div>
                 {discoveredToolsList.map((t: any, i: number) => (
                   <label key={i} className="flex items-start gap-2 cursor-pointer group">
@@ -275,16 +277,16 @@ export default function MCPConfig() {
             <div className="space-y-1.5">
               <Label>Tools 配置 (JSON)</Label>
               <Textarea value={form.tools_config || ''} onChange={e => setForm({ ...form, tools_config: e.target.value })} placeholder='[{"name":"query_sql","description":"执行SQL查询"}]' rows={3} />
-              <p className="text-xs text-muted-foreground">先测试连通性以自动发现工具，或手动输入 JSON 配置。</p>
+              <p className="text-xs text-muted-foreground">{t("k_cb765303ba")}</p>
             </div>
           )}
           <div className="flex items-center gap-2">
             <Switch checked={form.is_active === 1} onCheckedChange={v => setForm({ ...form, is_active: v ? 1 : 0 })} />
-            <span className="text-sm">启用</span>
+            <span className="text-sm">{t("k_d4e9ca3dd4")}</span>
           </div>
           <DialogFooter>
-            <Button size="sm" variant="ghost" onClick={closeForm}>取消</Button>
-            <Button size="sm" onClick={handleSave}>保存</Button>
+            <Button size="sm" variant="ghost" onClick={closeForm}>{t("k_4d0b4688c7")}</Button>
+            <Button size="sm" onClick={handleSave}>{t("k_fadf24dbc5")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -299,13 +301,13 @@ export default function MCPConfig() {
                   {s.label || s.name}
                   {s.builtin ? (
                     <>
-                      <span className="ml-2 text-xs text-muted-foreground">平台内置</span>
+                      <span className="ml-2 text-xs text-muted-foreground">{t("k_7bec3656c9")}</span>
                       <span className={`ml-2 text-xs ${builtinBadge(s).cls}`}>{builtinBadge(s).text}</span>
                     </>
                   ) : (
                     <>
                       <span className="ml-2 text-xs text-muted-foreground">({s.transport})</span>
-                      {!s.is_active && <span className="ml-2 text-xs text-destructive">已禁用</span>}
+                      {!s.is_active && <span className="ml-2 text-xs text-destructive">{t("k_0fe5a98e9f")}</span>}
                       {s.last_test_status === 'success' && <span className="ml-2 text-xs text-green-600">✅ 已连接</span>}
                       {s.last_test_status === 'failed' && <span className="ml-2 text-xs text-destructive">❌ 连接失败</span>}
                     </>
@@ -374,7 +376,7 @@ export default function MCPConfig() {
           </div>
         ))}
         {!loading && servers.length === 0 && (
-          <div className="text-sm text-muted-foreground text-center py-12">暂无 MCP 服务，点击上方按钮添加</div>
+          <div className="text-sm text-muted-foreground text-center py-12">{t("k_5a72647e0e")}</div>
         )}
       </div>
     </div>

@@ -15,6 +15,7 @@ import {
   Monitor, Globe, Cloud, ChevronDown, ChevronUp, Terminal, CheckCircle, XCircle, Clock,
 } from 'lucide-react';
 import client from '@/api/client';
+import { useTranslation } from 'react-i18next';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -192,6 +193,7 @@ function ResourceInfo({ info }: { info: Record<string, any> }) {
 // ── Main Component ─────────────────────────────────────────────────
 
 export default function SandboxManagement() {
+  const { t } = useTranslation('ui');
   const [sandboxes, setSandboxes] = useState<SandboxEnvironment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -388,7 +390,7 @@ export default function SandboxManagement() {
 
   return (
     <div className="h-full overflow-auto">
-      <h1 className="text-2xl font-bold mb-6">沙箱环境</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("k_1d010d15fb")}</h1>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
@@ -416,16 +418,16 @@ export default function SandboxManagement() {
           </div>
           <Select value={filterType || 'all'} onValueChange={(v) => { setFilterType(v === 'all' ? '' : v); }}>
             <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="全部类型" />
+              <SelectValue placeholder={t("k_fa6968d9f0")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部类型</SelectItem>
+              <SelectItem value="all">{t("k_fa6968d9f0")}</SelectItem>
               {sandboxTypes.map((t) => (
                 <SelectItem key={t.key} value={t.key}>{t.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={() => load(1)}>筛选</Button>
+          <Button variant="outline" onClick={() => load(1)}>{t("k_dcce9a144a")}</Button>
         </div>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4 mr-1" /> 添加沙箱
@@ -441,22 +443,22 @@ export default function SandboxManagement() {
         ) : sandboxes.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Server className="h-12 w-12 mb-3 opacity-30" />
-            <p className="text-sm">暂无沙箱环境</p>
-            <p className="text-xs mt-1">点击「添加沙箱」创建第一个执行环境</p>
+            <p className="text-sm">{t("k_b6f43a679d")}</p>
+            <p className="text-xs mt-1">{t("k_72e749aef9")}</p>
           </div>
         ) : (
           <div className="overflow-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">名称</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">类型</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">状态</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">资源</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">默认</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">启用</th>
-                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">最后测试</th>
-                  <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground">操作</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_1be7ae4fc2")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_e4e46c7235")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_c5ca3950cb")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_c8d09cf955")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_d4e9ca3dd4")}</th>
+                  <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_b6ecd3a780")}</th>
+                  <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -513,7 +515,7 @@ export default function SandboxManagement() {
                             size="sm"
                             onClick={() => handleTest(sb.id)}
                             disabled={testing === sb.id}
-                            title="测试连接"
+                            title={t("k_10b7d8eccc")}
                           >
                             {testing === sb.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -526,7 +528,7 @@ export default function SandboxManagement() {
                               variant="ghost"
                               size="sm"
                               onClick={() => handleSetDefault(sb.id)}
-                              title="设为默认"
+                              title={t("k_536a009a9b")}
                             >
                               <Star className="h-4 w-4" />
                             </Button>
@@ -535,7 +537,7 @@ export default function SandboxManagement() {
                             variant="ghost"
                             size="sm"
                             onClick={() => openEdit(sb)}
-                            title="编辑"
+                            title={t("k_a7f814c0a4")}
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -548,7 +550,7 @@ export default function SandboxManagement() {
                               setActiveTab('logs');
                               loadLogs(1, sb.id);
                             }}
-                            title="执行日志"
+                            title={t("k_5518c28749")}
                           >
                             <Terminal className="h-4 w-4" />
                           </Button>
@@ -556,7 +558,7 @@ export default function SandboxManagement() {
                             variant="ghost"
                             size="sm"
                             onClick={() => setDeleteConfirm(sb)}
-                            title="删除"
+                            title={t("k_3755f56f2f")}
                             className="text-destructive hover:text-destructive"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -603,10 +605,10 @@ export default function SandboxManagement() {
                   placeholder="如 gpu-server, local-docker"
                   disabled={!!editing}
                 />
-                <p className="text-xs text-muted-foreground">唯一标识，创建后不可修改</p>
+                <p className="text-xs text-muted-foreground">{t("k_e6c3be3d8f")}</p>
               </div>
               <div className="space-y-1.5">
-                <Label>沙箱类型</Label>
+                <Label>{t("k_f0c5c0d156")}</Label>
                 <Select
                   value={form.sandbox_type}
                   onValueChange={handleTypeChange}
@@ -627,21 +629,21 @@ export default function SandboxManagement() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>显示名称</Label>
+              <Label>{t("k_75ae6a8a7d")}</Label>
               <Input
                 value={form.display_name || ''}
                 onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-                placeholder="如 GPU 计算服务器、本地开发沙箱"
+                placeholder={t("k_ef187109b6")}
               />
             </div>
 
             <div className="space-y-1.5">
-              <Label>描述</Label>
+              <Label>{t("k_412f54dc38")}</Label>
               <Textarea
                 value={form.description || ''}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
                 rows={2}
-                placeholder="沙箱用途说明"
+                placeholder={t("k_2320ed9b37")}
               />
             </div>
 
@@ -652,14 +654,14 @@ export default function SandboxManagement() {
                   checked={!!form.is_active}
                   onCheckedChange={(checked) => setForm({ ...form, is_active: checked })}
                 />
-                <Label>启用</Label>
+                <Label>{t("k_d4e9ca3dd4")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Switch
                   checked={!!form.is_default}
                   onCheckedChange={(checked) => setForm({ ...form, is_default: checked })}
                 />
-                <Label>设为默认</Label>
+                <Label>{t("k_536a009a9b")}</Label>
               </div>
             </div>
 
@@ -694,7 +696,7 @@ export default function SandboxManagement() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>取消</Button>
+            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
             <Button onClick={handleSave} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
               {editing ? '保存' : '创建'}
@@ -707,13 +709,13 @@ export default function SandboxManagement() {
       <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
         <DialogContent className="max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
+            <DialogTitle>{t("k_3c06abe116")}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             确定要删除沙箱 <strong>{deleteConfirm?.display_name || deleteConfirm?.name}</strong> 吗？此操作不可撤销。
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={() => deleteConfirm && handleDelete(deleteConfirm)}>
               删除
             </Button>
@@ -742,7 +744,7 @@ export default function SandboxManagement() {
                   </Button>
                 </div>
               ) : (
-                <span className="text-sm text-muted-foreground">全部沙箱执行记录</span>
+                <span className="text-sm text-muted-foreground">{t("k_86766bc305")}</span>
               )}
             </div>
             <Button variant="outline" size="sm" onClick={() => loadLogs()}>
@@ -757,19 +759,19 @@ export default function SandboxManagement() {
             ) : logs.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Terminal className="h-12 w-12 mb-3 opacity-30" />
-                <p className="text-sm">暂无执行日志</p>
+                <p className="text-sm">{t("k_698dd6c75b")}</p>
               </div>
             ) : (
               <div className="overflow-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b bg-muted/50">
-                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">沙箱</th>
-                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">状态</th>
-                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">耗时</th>
-                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">代码预览</th>
-                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">时间</th>
-                      <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground">操作</th>
+                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_026a819ed5")}</th>
+                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_62e951a692")}</th>
+                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_a9704e1997")}</th>
+                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_41e1026b60")}</th>
+                      <th className="h-10 px-4 text-left text-sm font-medium text-muted-foreground">{t("k_89b4aa6364")}</th>
+                      <th className="h-10 px-4 text-right text-sm font-medium text-muted-foreground">{t("k_f3ea6d345e")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -828,7 +830,7 @@ export default function SandboxManagement() {
           <Dialog open={!!logDetail} onOpenChange={() => setLogDetail(null)}>
             <DialogContent className="max-w-[700px] max-h-[85vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>执行详情</DialogTitle>
+                <DialogTitle>{t("k_8d0204b083")}</DialogTitle>
               </DialogHeader>
               {logDetail && (
                 <div className="space-y-4">
@@ -848,7 +850,7 @@ export default function SandboxManagement() {
                   </div>
 
                   <div>
-                    <div className="text-sm font-medium mb-2">执行代码</div>
+                    <div className="text-sm font-medium mb-2">{t("k_1377744008")}</div>
                     <pre className="text-xs bg-[#1e1e1e] text-[#d4d4d4] rounded p-3 overflow-x-auto max-h-[200px]">
                       <code>{logDetail.code}</code>
                     </pre>
@@ -856,7 +858,7 @@ export default function SandboxManagement() {
 
                   {logDetail.requirements && logDetail.requirements.length > 0 && (
                     <div>
-                      <div className="text-sm font-medium mb-2">依赖包</div>
+                      <div className="text-sm font-medium mb-2">{t("k_c94ba74fda")}</div>
                       <div className="flex gap-2">
                         {logDetail.requirements.map((pkg, i) => (
                           <Badge key={i} variant="outline">{pkg}</Badge>
@@ -885,7 +887,7 @@ export default function SandboxManagement() {
 
                   {logDetail.error && (
                     <div>
-                      <div className="text-sm font-medium mb-2 text-red-500">错误</div>
+                      <div className="text-sm font-medium mb-2 text-red-500">{t("k_b859c7be75")}</div>
                       <pre className="text-xs bg-red-500/10 rounded p-3 overflow-x-auto max-h-[200px] whitespace-pre-wrap text-red-400">
                         {logDetail.error}
                       </pre>
@@ -894,7 +896,7 @@ export default function SandboxManagement() {
 
                   {logDetail.result && (
                     <div>
-                      <div className="text-sm font-medium mb-2">返回值</div>
+                      <div className="text-sm font-medium mb-2">{t("k_6483dab423")}</div>
                       <pre className="text-xs bg-muted/30 rounded p-3 overflow-x-auto whitespace-pre-wrap">
                         {logDetail.result}
                       </pre>

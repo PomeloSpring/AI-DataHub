@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { PageParam } from '@/stores/dashboardStore';
+import { t } from '@/i18n/runtime';
 import {
   decisionsApi, errorText, type DecisionParamBinding, type DecisionTreeRow,
 } from '@/api/decisions';
@@ -52,14 +53,14 @@ export default function DecisionWidgetConfig({
   return (
     <div className="space-y-3">
       <div className="space-y-1">
-        <Label className="text-xs">决策树（只列已发布的）</Label>
+        <Label className="text-xs">{t("k_890aa44f97")}</Label>
         <select
-          aria-label="决策树"
+          aria-label={t("k_642df3fd9d")}
           className="h-7 w-full rounded-md border border-input bg-background px-2 text-xs"
           value={treeKey}
           onChange={e => onWidgetConfigChange(chart.id, 'treeKey', e.target.value)}
         >
-          <option value="">请选择决策树</option>
+          <option value="">{t("k_85731442bb")}</option>
           {trees.map(t => (
             <option key={t.tree_key} value={t.tree_key}>{t.name}（v{t.version}）</option>
           ))}
@@ -83,9 +84,9 @@ export default function DecisionWidgetConfig({
 
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <Label className="text-xs">看板筛选绑定</Label>
+          <Label className="text-xs">{t("k_5c688242ef")}</Label>
           <Button size="sm" variant="outline" className="ml-auto h-6 px-1.5 text-[10px]"
-            aria-label="加一条筛选绑定"
+            aria-label={t("k_d35f92ed7c")}
             onClick={() => writeBindings([...bindings, { key: '', slot: 'time_window' }])}>
             <Plus className="h-3 w-3" />
           </Button>
@@ -104,7 +105,7 @@ export default function DecisionWidgetConfig({
                 value={b.key}
                 onChange={e => patch(i, { key: e.target.value })}
               >
-                <option value="">选择看板参数</option>
+                <option value="">{t("k_93cabe1e51")}</option>
                 {pageParams.map(p => (
                   <option key={p.name} value={p.name}>{p.label || p.name}</option>
                 ))}
@@ -127,7 +128,7 @@ export default function DecisionWidgetConfig({
               <Input
                 aria-label={`第 ${i + 1} 条绑定的维度业务名`}
                 className="h-6 text-[11px]"
-                placeholder="维度业务名（指标与维度里登记的，不是列名）"
+                placeholder={t("k_a3b595cf93")}
                 value={b.dimension || ''}
                 onChange={e => patch(i, { dimension: e.target.value })}
               />

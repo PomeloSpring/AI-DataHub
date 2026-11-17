@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
+import { t } from '@/i18n/runtime';
 import {
   Activity, RefreshCw, Play, Square, Trash2, Pause, ListChecks, Timer,
   AlertTriangle, XCircle, Clock, Database, Search,
@@ -34,6 +35,7 @@ import {
   type MonitorSummary, type MonitoredTask, type QueuedRun, type SyncTaskRow, type KbSyncRow,
 } from '@/api/taskMonitor';
 import { dagApi, type DagRun } from '@/api/dag';
+import { useTranslation } from 'react-i18next';
 
 const STATUS_MAP: Record<string, { label: string; className: string }> = {
   queued: { label: '排队中', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
@@ -102,18 +104,18 @@ function RunHistoryTable({ runs, loading, onOpenRun }: {
       <table className="w-full text-sm">
         <thead className="bg-muted/50">
           <tr>
-            <th className="text-left p-2 font-medium">开始时间</th>
-            <th className="text-left p-2 font-medium">状态</th>
-            <th className="text-left p-2 font-medium">进度</th>
-            <th className="text-left p-2 font-medium">耗时</th>
-            <th className="text-left p-2 font-medium">结果</th>
+            <th className="text-left p-2 font-medium">{t("k_e8868af6eb")}</th>
+            <th className="text-left p-2 font-medium">{t("k_62e951a692")}</th>
+            <th className="text-left p-2 font-medium">{t("k_acf014bff8")}</th>
+            <th className="text-left p-2 font-medium">{t("k_a9704e1997")}</th>
+            <th className="text-left p-2 font-medium">{t("k_0a2c91cec6")}</th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
             <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">加载中...</td></tr>
           ) : runs.length === 0 ? (
-            <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">暂无执行记录</td></tr>
+            <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">{t("k_71ad137eca")}</td></tr>
           ) : runs.map(run => (
             <tr key={`${run.kind}-${run.run_id}`}
                 className="border-t hover:bg-muted/30 cursor-pointer"
@@ -123,7 +125,7 @@ function RunHistoryTable({ runs, loading, onOpenRun }: {
                 <div className="flex items-center gap-1">
                   <StatusBadge status={run.normalized_status} />
                   {run.stuck && (
-                    <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20">卡住</Badge>
+                    <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20">{t("k_5a55e67093")}</Badge>
                   )}
                 </div>
               </td>
@@ -143,6 +145,7 @@ function RunHistoryTable({ runs, loading, onOpenRun }: {
 }
 
 export default function TaskMonitor() {
+  const { t } = useTranslation('ui');
   const [summary, setSummary] = useState<MonitorSummary | null>(null);
   const [tasks, setTasks] = useState<MonitoredTask[]>([]);
   const [taskSource, setTaskSource] = useState<'all' | 'system' | 'user'>('all');
@@ -324,35 +327,35 @@ export default function TaskMonitor() {
       {/* Summary */}
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatCard icon={Timer} label="定时任务（启用）" value={summary.scheduled_tasks.active} />
-          <StatCard icon={Database} label="系统内置任务" value={summary.system_jobs.total} />
-          <StatCard icon={Activity} label="排队/运行中" value={summary.runs.active} />
-          <StatCard icon={AlertTriangle} label="卡住待清理" value={summary.runs.stuck} warn />
-          <StatCard icon={XCircle} label="累计失败" value={summary.runs.failed_total + summary.runs.timeout_total} warn />
+          <StatCard icon={Timer} label={t("k_1b4617fcc9")} value={summary.scheduled_tasks.active} />
+          <StatCard icon={Database} label={t("k_286b4866f7")} value={summary.system_jobs.total} />
+          <StatCard icon={Activity} label={t("k_f83c5bc23a")} value={summary.runs.active} />
+          <StatCard icon={AlertTriangle} label={t("k_8b0b572e65")} value={summary.runs.stuck} warn />
+          <StatCard icon={XCircle} label={t("k_2e8e089ffb")} value={summary.runs.failed_total + summary.runs.timeout_total} warn />
         </div>
       )}
 
       <Tabs defaultValue="tasks" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="tasks">定时任务</TabsTrigger>
-          <TabsTrigger value="runs">队列任务</TabsTrigger>
-          <TabsTrigger value="sync">同步任务</TabsTrigger>
+          <TabsTrigger value="tasks">{t("k_c97ffbda2e")}</TabsTrigger>
+          <TabsTrigger value="runs">{t("k_574104d329")}</TabsTrigger>
+          <TabsTrigger value="sync">{t("k_ce42176865")}</TabsTrigger>
         </TabsList>
 
         {/* ── Tab 1: 定时任务 ─────────────────────────────────── */}
         <TabsContent value="tasks" className="space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Select value={taskSource} onValueChange={v => { setTaskSource(v as any); setRunPage(1); }}>
-              <SelectTrigger className="w-[160px]"><SelectValue placeholder="任务来源" /></SelectTrigger>
+              <SelectTrigger className="w-[160px]"><SelectValue placeholder={t("k_7526ca012d")} /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部来源</SelectItem>
-                <SelectItem value="system">系统内置任务</SelectItem>
-                <SelectItem value="user">用户创建任务</SelectItem>
+                <SelectItem value="all">{t("k_f8d22fd22e")}</SelectItem>
+                <SelectItem value="system">{t("k_286b4866f7")}</SelectItem>
+                <SelectItem value="user">{t("k_9f782e965c")}</SelectItem>
               </SelectContent>
             </Select>
             <div className="relative">
               <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-muted-foreground" />
-              <Input className="pl-8 w-[220px]" placeholder="按任务名搜索" value={keyword}
+              <Input className="pl-8 w-[220px]" placeholder={t("k_36e71ae3b5")} value={keyword}
                      onChange={e => setKeyword(e.target.value)} />
             </div>
           </div>
@@ -361,21 +364,21 @@ export default function TaskMonitor() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="text-left p-3 font-medium">任务名称</th>
-                  <th className="text-left p-3 font-medium">来源</th>
-                  <th className="text-left p-3 font-medium">调度</th>
-                  <th className="text-left p-3 font-medium">状态</th>
-                  <th className="text-left p-3 font-medium">上次运行</th>
-                  <th className="text-left p-3 font-medium">累计次数</th>
-                  <th className="text-left p-3 font-medium">运行中实例</th>
-                  <th className="text-right p-3 font-medium">操作</th>
+                  <th className="text-left p-3 font-medium">{t("k_2e30469899")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_c63f79e636")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_36019dc2f4")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_416bcab8a0")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_64eb758abd")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_7905c153fa")}</th>
+                  <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
                 {loading && visibleTasks.length === 0 ? (
                   <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
                 ) : visibleTasks.length === 0 ? (
-                  <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">暂无任务</td></tr>
+                  <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">{t("k_15652e6de7")}</td></tr>
                 ) : visibleTasks.map(task => (
                   <tr key={`${task.kind}-${task.task_id}`}
                       className="border-t hover:bg-muted/30 cursor-pointer"
@@ -389,8 +392,8 @@ export default function TaskMonitor() {
                     </td>
                     <td className="p-3">
                       {task.source === 'system'
-                        ? <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">系统内置</Badge>
-                        : <Badge variant="outline">用户创建</Badge>}
+                        ? <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">{t("k_ae8da0a608")}</Badge>
+                        : <Badge variant="outline">{t("k_56964390ec")}</Badge>}
                     </td>
                     <td className="p-3 text-muted-foreground">{task.schedule || '—'}</td>
                     <td className="p-3">
@@ -424,18 +427,18 @@ export default function TaskMonitor() {
                                     onClick={() => handlePauseJob(task, task.enabled)}>
                               {task.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                             </Button>
-                            <Button variant="ghost" size="sm" disabled title="系统内置任务不可移除">
+                            <Button variant="ghost" size="sm" disabled title={t("k_c263c50822")}>
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </>
                         ) : (
                           <>
-                            <Button variant="ghost" size="sm" title="停止任务并取消运行中实例"
+                            <Button variant="ghost" size="sm" title={t("k_42156672d4")}
                                     disabled={!task.enabled && task.active_runs === 0}
                                     onClick={() => handleStopTask(task)}>
                               <Square className="h-4 w-4" />
                             </Button>
-                            <Button variant="ghost" size="sm" title="移除任务"
+                            <Button variant="ghost" size="sm" title={t("k_e2e82ef6f9")}
                                     onClick={() => { setRemoveKind('task'); setRemoveTarget(task); }}>
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -454,25 +457,25 @@ export default function TaskMonitor() {
         <TabsContent value="runs" className="space-y-4">
           <div className="flex items-center gap-2 flex-wrap">
             <Select value={runKind} onValueChange={v => { setRunKind(v as any); setRunPage(1); }}>
-              <SelectTrigger className="w-[160px]"><SelectValue placeholder="队列来源" /></SelectTrigger>
+              <SelectTrigger className="w-[160px]"><SelectValue placeholder={t("k_6ab6c14f48")} /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部队列</SelectItem>
-                <SelectItem value="scheduled">定时执行</SelectItem>
-                <SelectItem value="report">报告生成</SelectItem>
-                <SelectItem value="sync">同步执行</SelectItem>
+                <SelectItem value="all">{t("k_e4d036776f")}</SelectItem>
+                <SelectItem value="scheduled">{t("k_225dd64c40")}</SelectItem>
+                <SelectItem value="report">{t("k_8be9be9eb2")}</SelectItem>
+                <SelectItem value="sync">{t("k_6579270bad")}</SelectItem>
               </SelectContent>
             </Select>
             <Select value={runStatus} onValueChange={v => { setRunStatus(v); setRunPage(1); }}>
-              <SelectTrigger className="w-[160px]"><SelectValue placeholder="状态" /></SelectTrigger>
+              <SelectTrigger className="w-[160px]"><SelectValue placeholder={t("k_62e951a692")} /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部状态</SelectItem>
-                <SelectItem value="active">排队/运行中</SelectItem>
-                <SelectItem value="stuck">卡住</SelectItem>
-                <SelectItem value="success">成功</SelectItem>
-                <SelectItem value="partial">部分成功</SelectItem>
-                <SelectItem value="failed">失败</SelectItem>
-                <SelectItem value="timeout">超时</SelectItem>
-                <SelectItem value="cancelled">已取消</SelectItem>
+                <SelectItem value="all">{t("k_1a4c26d92d")}</SelectItem>
+                <SelectItem value="active">{t("k_f83c5bc23a")}</SelectItem>
+                <SelectItem value="stuck">{t("k_5a55e67093")}</SelectItem>
+                <SelectItem value="success">{t("k_51991a5d11")}</SelectItem>
+                <SelectItem value="partial">{t("k_2f2b7e05e3")}</SelectItem>
+                <SelectItem value="failed">{t("k_3e3c8068bb")}</SelectItem>
+                <SelectItem value="timeout">{t("k_ff06c243d7")}</SelectItem>
+                <SelectItem value="cancelled">{t("k_a5ffdc95ee")}</SelectItem>
               </SelectContent>
             </Select>
             <span className="text-sm text-muted-foreground">共 {runsTotal} 条</span>
@@ -482,22 +485,22 @@ export default function TaskMonitor() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="text-left p-3 font-medium">任务名称</th>
-                  <th className="text-left p-3 font-medium">队列</th>
-                  <th className="text-left p-3 font-medium">状态</th>
-                  <th className="text-left p-3 font-medium">进度</th>
-                  <th className="text-left p-3 font-medium">开始时间</th>
-                  <th className="text-left p-3 font-medium">耗时</th>
+                  <th className="text-left p-3 font-medium">{t("k_2e30469899")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_cd35413f05")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_acf014bff8")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_e8868af6eb")}</th>
+                  <th className="text-left p-3 font-medium">{t("k_a9704e1997")}</th>
                   <th className="text-left p-3 font-medium">Worker</th>
-                  <th className="text-left p-3 font-medium">结果</th>
-                  <th className="text-right p-3 font-medium">操作</th>
+                  <th className="text-left p-3 font-medium">{t("k_0a2c91cec6")}</th>
+                  <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
                 </tr>
               </thead>
               <tbody>
                 {loading && runs.length === 0 ? (
                   <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
                 ) : runs.length === 0 ? (
-                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">暂无执行实例</td></tr>
+                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">{t("k_4bbc49b9ea")}</td></tr>
                 ) : runs.map(run => (
                   <tr key={`${run.kind}-${run.run_id}`}
                       className={`border-t hover:bg-muted/30 cursor-pointer ${run.stuck ? 'bg-red-500/5' : ''}`}
@@ -511,7 +514,7 @@ export default function TaskMonitor() {
                       <div className="flex items-center gap-1.5">
                         <StatusBadge status={run.normalized_status} />
                         {run.stuck && (
-                          <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20">卡住</Badge>
+                          <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20">{t("k_5a55e67093")}</Badge>
                         )}
                       </div>
                     </td>
@@ -527,7 +530,7 @@ export default function TaskMonitor() {
                     </td>
                     <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                       {(run.raw_status === 'queued' || run.raw_status === 'running') ? (
-                        <Button variant="ghost" size="sm" title="停止该执行实例"
+                        <Button variant="ghost" size="sm" title={t("k_578e6e096e")}
                                 onClick={() => handleStopRun(run)}>
                           <Square className="h-4 w-4" />
                         </Button>
@@ -559,18 +562,18 @@ export default function TaskMonitor() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="text-left p-3 font-medium">任务名称</th>
-                    <th className="text-left p-3 font-medium">同步方式</th>
-                    <th className="text-left p-3 font-medium">调度</th>
-                    <th className="text-left p-3 font-medium">状态</th>
-                    <th className="text-left p-3 font-medium">上次运行</th>
-                    <th className="text-left p-3 font-medium">运行中实例</th>
-                    <th className="text-right p-3 font-medium">操作</th>
+                    <th className="text-left p-3 font-medium">{t("k_2e30469899")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_3cc9cef15c")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_36019dc2f4")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_416bcab8a0")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_7905c153fa")}</th>
+                    <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {syncTasks.length === 0 ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无同步任务</td></tr>
+                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_0e7aa874aa")}</td></tr>
                   ) : syncTasks.map(task => (
                     <tr key={task.id} className="border-t hover:bg-muted/30 cursor-pointer"
                         onClick={() => openSyncDetail(task)}>
@@ -601,7 +604,7 @@ export default function TaskMonitor() {
                       <td className="p-3">{task.active_runs}</td>
                       <td className="p-3" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="sm" title="停止任务并取消运行中实例"
+                          <Button variant="ghost" size="sm" title={t("k_42156672d4")}
                                   disabled={!task.is_active && task.active_runs === 0}
                                   onClick={async () => {
                                     try {
@@ -614,7 +617,7 @@ export default function TaskMonitor() {
                                   }}>
                             <Square className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" title="移除同步任务"
+                          <Button variant="ghost" size="sm" title={t("k_20b8ec995d")}
                                   onClick={() => { setRemoveKind('sync'); setRemoveTarget(task); }}>
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -638,18 +641,18 @@ export default function TaskMonitor() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="text-left p-3 font-medium">工作流</th>
-                    <th className="text-left p-3 font-medium">触发</th>
-                    <th className="text-left p-3 font-medium">状态</th>
-                    <th className="text-left p-3 font-medium">节点</th>
-                    <th className="text-left p-3 font-medium">开始</th>
-                    <th className="text-left p-3 font-medium">结束</th>
-                    <th className="text-right p-3 font-medium">操作</th>
+                    <th className="text-left p-3 font-medium">{t("k_cc19798b0c")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_27eccf9785")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_e840cd6f1e")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_79cc871ca9")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_76b9880829")}</th>
+                    <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dagRuns.length === 0 ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">暂无 DAG 运行</td></tr>
+                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground">{t("k_e4186ac887")}</td></tr>
                   ) : dagRuns.map(run => (
                     <tr key={run.id} className="border-t hover:bg-muted/30">
                       <td className="p-3 font-medium">{run.workflow_name || `工作流 ${run.workflow_id}`}</td>
@@ -681,16 +684,16 @@ export default function TaskMonitor() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    <th className="text-left p-3 font-medium">本体模型</th>
-                    <th className="text-left p-3 font-medium">同步版本</th>
-                    <th className="text-left p-3 font-medium">状态</th>
-                    <th className="text-left p-3 font-medium">同步时间</th>
-                    <th className="text-left p-3 font-medium">提示</th>
+                    <th className="text-left p-3 font-medium">{t("k_85eb6d1ab7")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_928728223d")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_62e951a692")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_6decd8ba8a")}</th>
+                    <th className="text-left p-3 font-medium">{t("k_ab3656a956")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {kbRows.length === 0 ? (
-                    <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">暂无同步记录</td></tr>
+                    <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">{t("k_c191a30ec6")}</td></tr>
                   ) : kbRows.map(row => (
                     <tr key={row.model_id} className="border-t hover:bg-muted/30">
                       <td className="p-3 font-medium">{row.model_name}</td>
@@ -722,41 +725,41 @@ export default function TaskMonitor() {
           {detailTask && (
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-2 gap-3">
-                <div><span className="text-muted-foreground">任务类型：</span>
+                <div><span className="text-muted-foreground">{t("k_40c038ae23")}</span>
                   {detailTask.task_type === 'system' ? '系统任务' : detailTask.task_type === 'agent' ? 'Agent 分析' : '查询任务'}
                 </div>
-                <div><span className="text-muted-foreground">调度：</span>
+                <div><span className="text-muted-foreground">{t("k_baa09a2f5d")}</span>
                   {detailTask.schedule || '—'}
                   {detailTask.timezone ? `（${detailTask.timezone}）` : ''}
                 </div>
-                <div><span className="text-muted-foreground">创建者：</span>
+                <div><span className="text-muted-foreground">{t("k_ee1a71ad74")}</span>
                   {detailTask.owner_name}{detailTask.ownership === 'unclaimed' ? '（待认领）' : ''}
                 </div>
-                <div><span className="text-muted-foreground">运行状态：</span>
+                <div><span className="text-muted-foreground">{t("k_882c4b8269")}</span>
                   {detailTask.enabled ? '启用中' : detailTask.kind === 'system_job' ? '已暂停' : '已停用'}
                 </div>
-                <div><span className="text-muted-foreground">上次运行：</span>
+                <div><span className="text-muted-foreground">{t("k_ec6be5e49e")}</span>
                   {fmtTime(detailTask.last_run_at)}
                   {detailTask.last_status && <span className="ml-1.5"><StatusBadge status={detailTask.last_status} /></span>}
                 </div>
-                <div><span className="text-muted-foreground">累计运行：</span>{detailTask.run_count} 次</div>
-                <div><span className="text-muted-foreground">运行中实例：</span>{detailTask.active_runs}</div>
-                <div><span className="text-muted-foreground">卡住实例：</span>
+                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailTask.run_count} 次</div>
+                <div><span className="text-muted-foreground">{t("k_6b8aa6fecb")}</span>{detailTask.active_runs}</div>
+                <div><span className="text-muted-foreground">{t("k_fc6a3587c6")}</span>
                   <span className={detailTask.stuck_runs > 0 ? 'text-destructive font-medium' : ''}>
                     {detailTask.stuck_runs}
                   </span>
                 </div>
                 {detailTask.kind === 'system_job' ? (
                   <>
-                    <div><span className="text-muted-foreground">暂停时间：</span>{fmtTime(detailTask.paused_at)}</div>
-                    <div><span className="text-muted-foreground">暂停操作者：</span>{detailTask.paused_by || '—'}</div>
+                    <div><span className="text-muted-foreground">{t("k_dd374c1333")}</span>{fmtTime(detailTask.paused_at)}</div>
+                    <div><span className="text-muted-foreground">{t("k_4aec93a2e5")}</span>{detailTask.paused_by || '—'}</div>
                   </>
                 ) : (
                   <>
-                    <div><span className="text-muted-foreground">执行问题数：</span>
+                    <div><span className="text-muted-foreground">{t("k_ed72d00d99")}</span>
                       {detailTask.questions_total ?? '—'} 项
                     </div>
-                    <div><span className="text-muted-foreground">超时限制：</span>
+                    <div><span className="text-muted-foreground">{t("k_0f50091697")}</span>
                       {detailTask.timeout_seconds ? `${detailTask.timeout_seconds} 秒` : '—'}
                     </div>
                   </>
@@ -765,14 +768,14 @@ export default function TaskMonitor() {
 
               {detailTask.kind === 'system_job' ? (
                 <div>
-                  <div className="text-muted-foreground mb-1">最近一次运行结果</div>
+                  <div className="text-muted-foreground mb-1">{t("k_f1b432750f")}</div>
                   <div className="p-2 rounded bg-muted/50 whitespace-pre-wrap">
                     {detailTask.last_result || '尚未运行'}
                   </div>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="text-muted-foreground">最近执行历史（点击行查看详情）</div>
+                  <div className="text-muted-foreground">{t("k_8d5a896920")}</div>
                   <RunHistoryTable runs={taskRuns} loading={taskRunsLoading}
                     onOpenRun={run => { setDetailTask(null); setDetailRun(run); }} />
                 </div>
@@ -797,7 +800,7 @@ export default function TaskMonitor() {
                 </Button>
               </>
             )}
-            <Button variant="outline" onClick={() => setDetailTask(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setDetailTask(null)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -812,21 +815,21 @@ export default function TaskMonitor() {
           {detailSync && (
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-2 gap-3">
-                <div><span className="text-muted-foreground">同步方式：</span>{detailSync.sync_mode || '—'}</div>
-                <div><span className="text-muted-foreground">同步方向：</span>
+                <div><span className="text-muted-foreground">{t("k_2bd306908f")}</span>{detailSync.sync_mode || '—'}</div>
+                <div><span className="text-muted-foreground">{t("k_56441cdbc8")}</span>
                   {detailSync.source_type || '—'} → {detailSync.target_type || '—'}
                 </div>
-                <div><span className="text-muted-foreground">调度：</span>{detailSync.schedule_cron || '手动触发'}</div>
-                <div><span className="text-muted-foreground">运行状态：</span>{detailSync.is_active ? '启用中' : '已停用'}</div>
-                <div><span className="text-muted-foreground">上次运行：</span>
+                <div><span className="text-muted-foreground">{t("k_baa09a2f5d")}</span>{detailSync.schedule_cron || '手动触发'}</div>
+                <div><span className="text-muted-foreground">{t("k_882c4b8269")}</span>{detailSync.is_active ? '启用中' : '已停用'}</div>
+                <div><span className="text-muted-foreground">{t("k_ec6be5e49e")}</span>
                   {fmtTime(detailSync.last_run_at)}
                   {detailSync.last_status && <span className="ml-1.5"><StatusBadge status={detailSync.last_status} /></span>}
                 </div>
-                <div><span className="text-muted-foreground">累计运行：</span>{detailSync.run_count} 次</div>
-                <div><span className="text-muted-foreground">运行中实例：</span>{detailSync.active_runs}</div>
+                <div><span className="text-muted-foreground">{t("k_54d0f046e5")}</span>{detailSync.run_count} 次</div>
+                <div><span className="text-muted-foreground">{t("k_6b8aa6fecb")}</span>{detailSync.active_runs}</div>
               </div>
               <div className="space-y-2">
-                <div className="text-muted-foreground">最近执行历史（点击行查看详情）</div>
+                <div className="text-muted-foreground">{t("k_8d5a896920")}</div>
                 <RunHistoryTable runs={taskRuns} loading={taskRunsLoading}
                   onOpenRun={run => { setDetailSync(null); setDetailRun(run); }} />
               </div>
@@ -854,7 +857,7 @@ export default function TaskMonitor() {
                 </Button>
               </>
             )}
-            <Button variant="outline" onClick={() => setDetailSync(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setDetailSync(null)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -863,7 +866,7 @@ export default function TaskMonitor() {
       <Dialog open={!!detailRun} onOpenChange={open => { if (!open) setDetailRun(null); }}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>执行实例详情</DialogTitle>
+            <DialogTitle>{t("k_7ece65d16c")}</DialogTitle>
             <DialogDescription>
               {detailRun ? `${detailRun.task_name || '未命名任务'} · ${RUN_KIND_LABEL[detailRun.kind] || detailRun.kind}` : ''}
             </DialogDescription>
@@ -871,24 +874,24 @@ export default function TaskMonitor() {
           {detailRun && (
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-2 gap-3">
-                <div><span className="text-muted-foreground">状态：</span><StatusBadge status={detailRun.normalized_status} /></div>
-                <div><span className="text-muted-foreground">触发方式：</span>{detailRun.trigger_type || '—'}</div>
-                <div><span className="text-muted-foreground">开始时间：</span>{fmtTime(detailRun.started_at)}</div>
-                <div><span className="text-muted-foreground">结束时间：</span>{fmtTime(detailRun.finished_at)}</div>
-                <div><span className="text-muted-foreground">耗时：</span>{fmtElapsed(detailRun)}</div>
+                <div><span className="text-muted-foreground">{t("k_bf0ac89783")}</span><StatusBadge status={detailRun.normalized_status} /></div>
+                <div><span className="text-muted-foreground">{t("k_b576c74e33")}</span>{detailRun.trigger_type || '—'}</div>
+                <div><span className="text-muted-foreground">{t("k_68bf8fa2d4")}</span>{fmtTime(detailRun.started_at)}</div>
+                <div><span className="text-muted-foreground">{t("k_c57df104eb")}</span>{fmtTime(detailRun.finished_at)}</div>
+                <div><span className="text-muted-foreground">{t("k_c8b22316eb")}</span>{fmtElapsed(detailRun)}</div>
                 <div><span className="text-muted-foreground">Worker：</span>{detailRun.worker_id || '—'}</div>
-                <div><span className="text-muted-foreground">进度：</span>{runProgress(detailRun)}</div>
-                <div><span className="text-muted-foreground">阶段错误码：</span>{detailRun.stage_error_code || '—'}</div>
+                <div><span className="text-muted-foreground">{t("k_960bcbcd93")}</span>{runProgress(detailRun)}</div>
+                <div><span className="text-muted-foreground">{t("k_32aa10ff4b")}</span>{detailRun.stage_error_code || '—'}</div>
               </div>
               <div>
-                <div className="text-muted-foreground mb-1">结果摘要</div>
+                <div className="text-muted-foreground mb-1">{t("k_46be292ff4")}</div>
                 <div className="p-2 rounded bg-muted/50 whitespace-pre-wrap">
                   {detailRun.result_summary || '—'}
                 </div>
               </div>
               {detailRun.error_hint && (
                 <div>
-                  <div className="text-muted-foreground mb-1">失败提示</div>
+                  <div className="text-muted-foreground mb-1">{t("k_87a7db7f60")}</div>
                   <div className="p-2 rounded bg-destructive/10 text-destructive whitespace-pre-wrap">
                     {detailRun.error_hint}
                   </div>
@@ -908,7 +911,7 @@ export default function TaskMonitor() {
                 <Square className="h-4 w-4 mr-1.5" />停止
               </Button>
             )}
-            <Button variant="outline" onClick={() => setDetailRun(null)}>关闭</Button>
+            <Button variant="outline" onClick={() => setDetailRun(null)}>{t("k_6c14bd7f6f")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -917,13 +920,13 @@ export default function TaskMonitor() {
       <Dialog open={!!removeTarget} onOpenChange={open => { if (!open) setRemoveTarget(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>确认移除任务</DialogTitle>
+            <DialogTitle>{t("k_f852f6235c")}</DialogTitle>
             <DialogDescription>
               将移除「{removeTarget?.name}」及其执行记录，此操作不可恢复。运行中的实例会先被停止。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRemoveTarget(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setRemoveTarget(null)}>{t("k_4d0b4688c7")}</Button>
             <Button variant="destructive" onClick={confirmRemove}>
               <Trash2 className="h-4 w-4 mr-1.5" />移除
             </Button>

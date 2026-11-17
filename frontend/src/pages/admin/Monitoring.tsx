@@ -17,6 +17,7 @@ import {
   MonitoringResult, MonitoredService, SystemMetrics, NodeMetrics,
   MiddlewareResult, MiddlewareItem,
 } from '../../api/monitoring';
+import { useTranslation } from 'react-i18next';
 
 const AUTO_REFRESH_INTERVAL = 30000;
 
@@ -67,6 +68,7 @@ function MetricBlock({ icon: Icon, title, percent, detail }: {
 }
 
 function NodePanel({ node }: { node: NodeMetrics }) {
+  const { t } = useTranslation('ui');
   const { cpu, memory, disk } = node;
   return (
     <Card>
@@ -92,7 +94,7 @@ function NodePanel({ node }: { node: NodeMetrics }) {
               : `${cpu.cores ?? '-'} 核`}
           />
           <MetricBlock
-            icon={MemoryStick} title="内存" percent={memory?.percent ?? null}
+            icon={MemoryStick} title={t("k_d014ab7703")} percent={memory?.percent ?? null}
             detail={memory ? `已用 ${formatBytes(memory.used)} / 共 ${formatBytes(memory.total)}` : '-'}
           />
           <MetricBlock
@@ -106,12 +108,13 @@ function NodePanel({ node }: { node: NodeMetrics }) {
 }
 
 function SystemPanel({ metrics }: { metrics: SystemMetrics | null }) {
+  const { t } = useTranslation('ui');
   if (!metrics || metrics.nodes.length === 0) return null;
   return (
     <section className="space-y-3">
       <div className="flex items-center gap-2">
         <Cpu className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold">服务器性能</h2>
+        <h2 className="text-sm font-semibold">{t("k_407ebd3d26")}</h2>
         <span className="text-xs text-muted-foreground">共 {metrics.node_count} 个节点</span>
       </div>
       {metrics.nodes.map(node => <NodePanel key={node.hostname} node={node} />)}
@@ -158,6 +161,7 @@ function ServiceCard({ svc }: { svc: MonitoredService }) {
 }
 
 function MiddlewareCard({ mw }: { mw: MiddlewareItem }) {
+  const { t } = useTranslation('ui');
   const healthy = mw.status === 'healthy';
   const skipped = mw.status === 'skipped';
   const statusIcon = healthy ? CheckCircle2 : skipped ? MinusCircle : XCircle;
@@ -170,7 +174,7 @@ function MiddlewareCard({ mw }: { mw: MiddlewareItem }) {
           <div className="flex items-center gap-2 min-w-0">
             <StatusIcon className={`h-4 w-4 flex-shrink-0 ${healthy ? 'text-green-500' : skipped ? 'text-muted-foreground' : 'text-destructive'}`} />
             <span className="font-medium truncate">{mw.name}</span>
-            {mw.required && !skipped && <Badge variant="outline" className="text-[10px]">必需</Badge>}
+            {mw.required && !skipped && <Badge variant="outline" className="text-[10px]">{t("k_a83f091c44")}</Badge>}
           </div>
           <Badge variant={healthy ? 'default' : skipped ? 'secondary' : 'destructive'}
             className={healthy ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-100' : ''}>
@@ -193,13 +197,14 @@ function MiddlewareCard({ mw }: { mw: MiddlewareItem }) {
 }
 
 function MiddlewarePanel({ mw }: { mw: MiddlewareResult | null }) {
+  const { t } = useTranslation('ui');
   if (!mw) return null;
   const categories = Array.from(new Set(mw.items.map(i => i.category)));
   return (
     <section className="space-y-3">
       <div className="flex items-center gap-2">
         <Database className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-semibold">中间件依赖</h2>
+        <h2 className="text-sm font-semibold">{t("k_e467636591")}</h2>
         <span className="text-xs text-muted-foreground">
           {mw.summary.healthy}/{mw.summary.total - mw.summary.skipped} 正常
           {mw.summary.required_down > 0 && <span className="text-destructive"> · {mw.summary.required_down} 个必需项故障</span>}
@@ -238,6 +243,7 @@ function SectionError({ label, msg, onRetry }: { label: string; msg?: string; on
 }
 
 export default function Monitoring() {
+  const { t } = useTranslation('ui');
   const [data, setData] = useState<MonitoringResult | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [middleware, setMiddleware] = useState<MiddlewareResult | null>(null);
@@ -322,23 +328,23 @@ export default function Monitoring() {
 
       {/* Server performance */}
       {metrics ? <SystemPanel metrics={metrics} />
-        : err.system ? <SectionError label="服务器性能" msg={err.system} onRetry={() => load()} /> : null}
+        : err.system ? <SectionError label={t("k_407ebd3d26")} msg={err.system} onRetry={() => load()} /> : null}
 
       {/* Middleware / infrastructure dependencies */}
       {middleware ? <MiddlewarePanel mw={middleware} />
-        : err.middleware ? <SectionError label="中间件依赖" msg={err.middleware} onRetry={() => load()} /> : null}
+        : err.middleware ? <SectionError label={t("k_e467636591")} msg={err.middleware} onRetry={() => load()} /> : null}
 
       {/* Summary + Services grouped by architecture layer */}
       {data ? (
         <>
           {summary && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard icon={Server} label="服务总数" value={summary.total} />
-              <StatCard icon={CheckCircle2} label="运行中" value={summary.healthy}
+              <StatCard icon={Server} label={t("k_e8e76dcb72")} value={summary.total} />
+              <StatCard icon={CheckCircle2} label={t("k_5942497005")} value={summary.healthy}
                 accent="bg-green-500/10" />
-              <StatCard icon={XCircle} label="已停止" value={summary.down}
+              <StatCard icon={XCircle} label={t("k_75dddf524e")} value={summary.down}
                 accent={summary.down > 0 ? 'bg-destructive/10' : 'bg-muted'} />
-              <StatCard icon={Gauge} label="平均延迟"
+              <StatCard icon={Gauge} label={t("k_7d397aa196")}
                 value={summary.avg_latency_ms !== null ? `${summary.avg_latency_ms} ms` : '-'} />
             </div>
           )}
@@ -361,7 +367,7 @@ export default function Monitoring() {
           ))}
         </>
       ) : err.services ? (
-        <SectionError label="服务健康" msg={err.services} onRetry={() => load()} />
+        <SectionError label={t("k_c3d8f76c5d")} msg={err.services} onRetry={() => load()} />
       ) : null}
     </div>
   );

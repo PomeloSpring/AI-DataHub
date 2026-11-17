@@ -10,5 +10,18 @@
     "reports": "报告中心",
     "assets": "资产清单",
     "scheduled": "任务调度"
+  },
+  "switcher": {
+    "trigger": "切换模块",
+    "label": "模块切换",
+    "home": "首页",
+    "workspace": "工作空间",
+    "data": "数据中台",
+    "content": "内容中心",
+    "system": "系统配置"
+  },
+  "releaseNotes": {
+    "trigger": "版本更新公告",
+    "error": "公告加载失败"
   }
 }

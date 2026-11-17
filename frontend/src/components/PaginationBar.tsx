@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { t } from '@/i18n/runtime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -95,13 +96,13 @@ export function PaginationBar({
         </span>
         {onPageSizeChange && (
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">每页</span>
+            <span className="text-xs text-muted-foreground">{t("k_309c98d313")}</span>
             <Select
               value={String(pageSize)}
               disabled={busy}
               onValueChange={(v) => onPageSizeChange(Number(v))}
             >
-              <SelectTrigger className="h-7 w-[72px] text-xs" aria-label="每页条数">
+              <SelectTrigger className="h-7 w-[72px] text-xs" aria-label={t("k_e4523b2473")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

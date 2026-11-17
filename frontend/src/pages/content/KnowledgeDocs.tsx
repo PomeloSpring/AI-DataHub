@@ -4,6 +4,7 @@ import { ChevronRight, FolderTree, RefreshCw, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { kbDocError, kbDocsApi, kbTypeLabel, type KbBase } from '@/api/kbDocs';
 import { EmptyState, ErrorBanner, LoadingRow, useContentPerms } from './shared';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 知识库文档 — 清单页（内容中心「知识运营」入口）。
@@ -21,6 +22,7 @@ import { EmptyState, ErrorBanner, LoadingRow, useContentPerms } from './shared';
  * 3. 清单拉失败必须显式报错并可重试，不回空卡片列表（no-silent-degradation）。
  */
 export default function KnowledgeDocs() {
+  const { t } = useTranslation('ui');
   const { has } = useContentPerms();
   const canWrite = has('kbdoc:write');
 
@@ -42,7 +44,7 @@ export default function KnowledgeDocs() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
-          <h1 className="text-xl font-semibold">知识库文档</h1>
+          <h1 className="text-xl font-semibold">{t("k_e08c3272fc")}</h1>
           <p className="text-sm text-muted-foreground">
             选择一个知识库进入，按目录树查看与编辑其中的文档（AS-BOT 检索的语料）。
             这里改的是 AI 的知识来源，不是门户发布内容 —— 因此不走内容审核流，但每次写入都会落审计。
@@ -56,8 +58,8 @@ export default function KnowledgeDocs() {
       <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/30 p-3 text-xs leading-5">
         <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-muted-foreground">
-          保存只提交<b>当前改动的这一篇</b>，其余文档不动；云端没有"原地更新"接口，所以保存后该文档的标识会更换
-          （云端需重新解析才能被检索命中）。<b>改名 / 移动 / 删除</b>本批未开放（云端无回收站），请到 Qoder 端维护；
+          保存只提交<b>{t("k_64b9128928")}</b>，其余文档不动；云端没有"原地更新"接口，所以保存后该文档的标识会更换
+          （云端需重新解析才能被检索命中）。<b>{t("k_2fd2a9fdba")}</b>本批未开放（云端无回收站），请到 Qoder 端维护；
           本体建模自动上云的文档是派生物，只读。建库与绑定 AS-BOT 在「系统配置 → 知识库」。
         </span>
       </div>
@@ -68,7 +70,7 @@ export default function KnowledgeDocs() {
 
       {!loading && !error && bases.length === 0 && (
         <EmptyState
-          title="还没有登记的知识库"
+          title={t("k_a9bde6fc17")}
           hint="先到「系统配置 → 知识库」从 Qoder 导入或新建一个知识库，这里才会列出它。"
         />
       )}

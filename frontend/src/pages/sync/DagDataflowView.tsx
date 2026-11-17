@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, X, FileSearch } from 'lucide-react';
 import { dagApi, type DagGraph, type DataflowGraph, type DataflowNode } from '@/api/dag';
+import { useTranslation } from 'react-i18next';
 
 // ── 数据流视图：源表 → 转换 → 目标表（定义期静态解析 + 实际血缘验证） ──
 // 画风遵循 graph-visualization.md：BaseEdge + 柔和贝塞尔 + fill:none、
@@ -22,6 +23,7 @@ const KIND_STYLE: Record<string, { border: string; head: string; icon: string; s
 };
 
 function DataflowNodeCard({ data, selected }: NodeProps) {
+  const { t } = useTranslation('ui');
   const kind = (data as any).kind === 'transform' ? 'transform' : 'table';
   const st = KIND_STYLE[kind];
   return (
@@ -30,7 +32,7 @@ function DataflowNodeCard({ data, selected }: NodeProps) {
       <div className={`flex items-center gap-2 px-3 py-2 border-b ${st.head}`}>
         <div className={`w-2.5 h-2.5 rounded-sm ${st.icon}`} />
         <span className="font-semibold text-xs truncate">{String((data as any).label || '')}</span>
-        {kind === 'transform' && <Badge variant="outline" className="ml-auto text-[9px] px-1 py-0">转换</Badge>}
+        {kind === 'transform' && <Badge variant="outline" className="ml-auto text-[9px] px-1 py-0">{t("k_8b7977d94b")}</Badge>}
       </div>
       <div className={`px-3 py-1.5 text-[10px] text-muted-foreground ${st.sub}`}>
         {kind === 'table'

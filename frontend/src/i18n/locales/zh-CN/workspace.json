@@ -501,5 +501,19 @@
       "transitionValue": "{{effect}} · {{duration}}ms",
       "revealNone": "一次性出现（现状）"
     }
-  }
+  },
+  "contentDraftsTitle": "我的草稿",
+  "contentManageTitle": "内容管理",
+  "contentSearchPlaceholder": "搜索标题或摘要，回车检索",
+  "contentSearchAria": "搜索内容",
+  "filterByStatus": "状态筛选",
+  "filterByCategory": "栏目筛选",
+  "filterByKind": "形态筛选",
+  "filterByLang": "语言筛选",
+  "allCategories": "全部栏目",
+  "allKinds": "全部形态",
+  "allLanguages": "全部语言",
+  "langZhBody": "中文正文",
+  "langEnBody": "English 正文",
+  "createArticle": "新建内容"
 }

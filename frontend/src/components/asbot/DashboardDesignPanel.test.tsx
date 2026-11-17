@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import DashboardDesignPanel from './DashboardDesignPanel';
+import { t } from '@/i18n/runtime';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), getDesign: vi.fn() }));
 vi.mock('../../api/client', () => ({ default: mocks }));
 vi.mock('../../api/dashboardDesign', async importOriginal => ({ ...await importOriginal<object>(), getDesign: mocks.getDesign }));
-vi.mock('../DashboardChart', () => ({ default: () => <div>真实图表预览</div>, CHART_TYPES: [{ value: 'bar', label: '柱状图' }] }));
+vi.mock('../DashboardChart', () => ({ default: () => <div>{t("k_4c6353462d")}</div>, CHART_TYPES: [{ value: 'bar', label: '柱状图' }] }));
 vi.mock('../../stores/dashboardStore', () => ({ useDashboardStore: { getState: () => ({ loadDashboards: vi.fn(), refreshCharts: vi.fn() }) } }));
 
 const design = {

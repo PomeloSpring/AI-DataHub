@@ -463,7 +463,7 @@ export default function AssetPoolWorkbench() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Inbox className="h-5 w-5 text-amber-500" />
-            <h1 className="text-lg font-semibold">建模待办</h1>
+            <h1 className="text-lg font-semibold">{"建模待办"}</h1>
             <Badge variant="outline"
               className={total ? 'border-amber-500/40 text-amber-600' : pool ? 'border-green-500/40 text-green-600' : 'border-border text-muted-foreground'}>
               {total ? `${total} 项待处理` : pool ? '已清空' : '未加载'}
@@ -491,7 +491,7 @@ export default function AssetPoolWorkbench() {
       {loadError && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/5 px-3 py-2 text-sm text-red-600">
           <AlertTriangle className="h-4 w-4 mr-1 inline" />{loadError}
-          <Button size="sm" variant="ghost" className="ml-2 h-6 text-xs" onClick={() => void load()}>重试</Button>
+          <Button size="sm" variant="ghost" className="ml-2 h-6 text-xs" onClick={() => void load()}>{"重试"}</Button>
         </div>
       )}
 
@@ -509,7 +509,7 @@ export default function AssetPoolWorkbench() {
         {/* 左栏：分诊队列 */}
         <Card className="xl:col-span-1 h-fit">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">分诊队列</CardTitle>
+            <CardTitle className="text-sm">{"分诊队列"}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-1">
             <button
@@ -539,7 +539,7 @@ export default function AssetPoolWorkbench() {
             {loadOptsError && (
               <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-600">
                 对象/词表清单未加载（{loadOptsError}），归属选择框可能为空；
-                <button className="underline ml-1" onClick={() => void loadOptions()}>重试</button>
+                <button className="underline ml-1" onClick={() => void loadOptions()}>{"重试"}</button>
               </div>
             )}
             <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
@@ -561,7 +561,7 @@ export default function AssetPoolWorkbench() {
               <div className="relative ml-auto w-52">
                 <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input value={kw} onChange={(e) => setKw(e.target.value)}
-                  placeholder="搜索业务名 / 数据源" className="h-8 pl-7 text-xs" />
+                  placeholder={"搜索业务名 / 数据源"} className="h-8 pl-7 text-xs" />
               </div>
             </div>
             {pickedAssign.length > 0 && (
@@ -573,7 +573,7 @@ export default function AssetPoolWorkbench() {
                   批量归属到对象
                 </Button>
                 <Button size="sm" variant="ghost" className="h-6 text-xs"
-                  onClick={() => setPickedIds(new Set())}>取消选择</Button>
+                  onClick={() => setPickedIds(new Set())}>{"取消选择"}</Button>
               </div>
             )}
           </CardHeader>
@@ -592,7 +592,7 @@ export default function AssetPoolWorkbench() {
             ) : !total ? (
               <div className="py-12 text-center">
                 <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-green-500 opacity-70" />
-                <div className="text-sm font-medium">语义层没有待办缺口</div>
+                <div className="text-sm font-medium">{"语义层没有待办缺口"}</div>
                 <div className="text-xs text-muted-foreground mt-1">
                   字典行都已归属、术语都有映射、没有回流失败的用户说法。
                 </div>
@@ -663,7 +663,7 @@ export default function AssetPoolWorkbench() {
                                 <ExternalLink className="h-3 w-3 mr-1" />去指标中心
                               </Button>
                               <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
-                                title="删除字典行（不可恢复）" disabled={busy} onClick={() => setDialog({ kind: 'delete', task: t })}>
+                                title={"删除字典行（不可恢复）"} disabled={busy} onClick={() => setDialog({ kind: 'delete', task: t })}>
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
                             </>
@@ -904,7 +904,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
               待办：<span className="text-foreground font-medium">{task.title}</span>
               {task.cand?.datasource_name && <span className="ml-1">（数据源 {task.cand.datasource_name}）</span>}
               {task.cand?.source === 'parse_fail' && (
-                <span className="ml-1">· 用户这么问没解析通才进到这里</span>)}
+                <span className="ml-1">{"· 用户这么问没解析通才进到这里"}</span>)}
             </div>
           )}
 
@@ -915,7 +915,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                 指向后取数与检索才能把它算进这个对象的口径。
               </p>
               <OptionList options={objectOptions} value={objKey} onChange={setObjKey}
-                placeholder="搜索并选择对象（显示业务名）" />
+                placeholder={"搜索并选择对象（显示业务名）"} />
             </>
           )}
 
@@ -934,21 +934,21 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                 目标资产不存在时应改走「转指标/维度草稿」出口。
               </p>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground shrink-0">目标类型</span>
+                <span className="text-xs text-muted-foreground shrink-0">{"目标类型"}</span>
                 <Select value={targetType} onValueChange={(v) => { setTargetType(v); setTargetRef(''); }}>
                   <SelectTrigger className="h-8 text-xs w-40"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="dimension">维度字典行</SelectItem>
-                    <SelectItem value="metric">指标字典行</SelectItem>
-                    <SelectItem value="object">本体对象</SelectItem>
+                    <SelectItem value="dimension">{"维度字典行"}</SelectItem>
+                    <SelectItem value="metric">{"指标字典行"}</SelectItem>
+                    <SelectItem value="object">{"本体对象"}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="text-xs text-muted-foreground flex items-center gap-1">
-                {optsLoading ? <><Loader2 className="h-3 w-3 animate-spin" />加载目标清单…</> : null}
+                {optsLoading ? <><Loader2 className="h-3 w-3 animate-spin" />{"加载目标清单…"}</> : null}
               </div>
               <OptionList options={targetOptions} value={targetRef} onChange={setTargetRef}
-                placeholder="搜索并选择目标" disabled={optsLoading} />
+                placeholder={"搜索并选择目标"} disabled={optsLoading} />
             </>
           )}
 
@@ -958,7 +958,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                 转入按数据源分桶的业务术语缓冲区（还没确定该绑哪个对象的黑话先收在这里）。
               </p>
               <Textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={3}
-                placeholder="术语释义（可选，写清业务含义便于后续绑定）" className="text-xs" />
+                placeholder={"术语释义（可选，写清业务含义便于后续绑定）"} className="text-xs" />
             </>
           )}
 
@@ -969,20 +969,20 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
               </p>
               <div className="space-y-2">
                 <div>
-                  <label className="text-xs text-muted-foreground">归属对象</label>
+                  <label className="text-xs text-muted-foreground">{"归属对象"}</label>
                   <OptionList options={objectOptions} value={objKey}
                     onChange={(v) => { setObjKey(v); setForm((f) => ({ ...f, property_name: '' })); }}
-                    placeholder="搜索并选择对象" />
+                    placeholder={"搜索并选择对象"} />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs text-muted-foreground">业务显示名</label>
+                    <label className="text-xs text-muted-foreground">{"业务显示名"}</label>
                     <Input value={form.display_name || ''} className="h-8 text-xs"
                       onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))} />
                   </div>
                   {dialog.kind === 'metric-draft' ? (
                     <div>
-                      <label className="text-xs text-muted-foreground">聚合方式</label>
+                      <label className="text-xs text-muted-foreground">{"聚合方式"}</label>
                       <Select value={form.agg_type || 'COUNT'}
                         onValueChange={(v) => setForm((f) => ({ ...f, agg_type: v }))}>
                         <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
@@ -994,7 +994,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                     </div>
                   ) : (
                     <div>
-                      <label className="text-xs text-muted-foreground">分类</label>
+                      <label className="text-xs text-muted-foreground">{"分类"}</label>
                       <Select value={form.category || '属性'}
                         onValueChange={(v) => setForm((f) => ({ ...f, category: v }))}>
                         <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
@@ -1009,28 +1009,28 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
                 {dialog.kind === 'metric-draft' ? (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-xs text-muted-foreground">口径公式（可选，服务端治理后才可执行）</label>
+                      <label className="text-xs text-muted-foreground">{"口径公式（可选，服务端治理后才可执行）"}</label>
                       <Input value={form.formula || ''} className="h-8 text-xs"
                         onChange={(e) => setForm((f) => ({ ...f, formula: e.target.value }))} />
                     </div>
                     <div>
-                      <label className="text-xs text-muted-foreground">单位</label>
+                      <label className="text-xs text-muted-foreground">{"单位"}</label>
                       <Input value={form.unit || ''} className="h-8 text-xs"
                         onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} />
                     </div>
                   </div>
                 ) : (
                   <div>
-                    <label className="text-xs text-muted-foreground">业务属性名（从对象主表的属性清单里选）</label>
-                    {optsLoading && <div className="text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 inline animate-spin mr-1" />加载属性清单…</div>}
-                    {!objKey && <div className="text-[11px] text-muted-foreground">先选归属对象，属性清单按对象的物理表带出</div>}
+                    <label className="text-xs text-muted-foreground">{"业务属性名（从对象主表的属性清单里选）"}</label>
+                    {optsLoading && <div className="text-[11px] text-muted-foreground"><Loader2 className="h-3 w-3 inline animate-spin mr-1" />{"加载属性清单…"}</div>}
+                    {!objKey && <div className="text-[11px] text-muted-foreground">{"先选归属对象，属性清单按对象的物理表带出"}</div>}
                     {!!objKey && <OptionList options={props} value={form.property_name || ''}
                       onChange={(v) => setForm((f) => ({ ...f, property_name: v }))}
-                      placeholder="搜索并选择业务属性" disabled={optsLoading} />}
+                      placeholder={"搜索并选择业务属性"} disabled={optsLoading} />}
                   </div>
                 )}
                 <div>
-                  <label className="text-xs text-muted-foreground">口径说明</label>
+                  <label className="text-xs text-muted-foreground">{"口径说明"}</label>
                   <Textarea value={form.description || ''} rows={2} className="text-xs"
                     onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
                 </div>
@@ -1045,7 +1045,7 @@ function ExitDialog({ dialog, onClose, objectOptions, candObjectOptions, aggType
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>{"取消"}</Button>
           <Button onClick={() => void submit()} disabled={!canSubmit}>
             {submitting && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
             {dialog.kind === 'delete' ? '确认删除' : '确定'}

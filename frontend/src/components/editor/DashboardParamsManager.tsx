@@ -22,6 +22,7 @@ import type { DashboardParam, PageParam } from '@/stores/dashboardStore';
 import {
   boundParamKeys, CONTROL_BY_PARAM_SHAPE, PARAM_SHAPES, PARAM_SHAPE_LABELS, type ParamShape,
 } from '@/lib/dashboardParamAssembly';
+import { useTranslation } from 'react-i18next';
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -81,6 +82,7 @@ export interface Props {
 }
 
 export default function DashboardParamsManager({ params = [], pageParams = [], charts, onChange, onConvertToControl }: Props) {
+  const { t } = useTranslation('ui');
   const rows = toParamRows(params, pageParams);
   const driven = charts ? boundParamKeys(charts) : [];
   const dup = rows.some(r => !NAME_RE.test(r.name.trim())) ||
@@ -110,13 +112,13 @@ export default function DashboardParamsManager({ params = [], pageParams = [], c
         const isDriven = driven.includes(row.name.trim());
         return <div key={`${row.via}:${row.index}`} className="space-y-2 rounded border p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">显示名</span>
+            <span className="text-xs text-muted-foreground">{t("k_c10bbf5ddd")}</span>
             <Input aria-label={`显示名 ${row.name || '新参数'}`} className="h-8 w-40 text-xs" value={row.label}
-              placeholder="如 统计时间窗口" onChange={e => patch(row.via, row.index, { label: e.target.value })} />
-            <span className="text-xs text-muted-foreground">参数名</span>
+              placeholder={t("k_7d6764c207")} onChange={e => patch(row.via, row.index, { label: e.target.value })} />
+            <span className="text-xs text-muted-foreground">{t("k_ecb6c72b4c")}</span>
             <Input aria-label={`参数名 ${row.label || row.name || '新参数'}`} className="h-8 w-40 text-xs" value={row.name}
               placeholder="start_time" onChange={e => patch(row.via, row.index, { name: e.target.value })} />
-            <span className="text-xs text-muted-foreground">形状</span>
+            <span className="text-xs text-muted-foreground">{t("k_2899ac972c")}</span>
             <Select value={row.shape} onValueChange={v => patch(row.via, row.index, { shape: v as ParamShape })}>
               <SelectTrigger aria-label={`形状 ${row.name || '新参数'}`} className="h-8 w-[110px] text-xs">
                 <SelectValue />
@@ -125,7 +127,7 @@ export default function DashboardParamsManager({ params = [], pageParams = [], c
                 {PARAM_SHAPES.map(s => <SelectItem key={s} value={s} className="text-xs">{PARAM_SHAPE_LABELS[s]}</SelectItem>)}
               </SelectContent>
             </Select>
-            {isDriven && <Badge variant="secondary" title="画布上的控件已在驱动这个键，顶部不会再重复出现输入口">
+            {isDriven && <Badge variant="secondary" title={t("k_7f7618cd2e")}>
               画布控件已驱动</Badge>}
             {row.via === 'param' && onConvertToControl && (
               <Button size="sm" variant="outline" className="h-8 text-xs" title={`在画布放置「${PARAM_SHAPE_LABELS[row.shape]}」控件并改由控件录入`}
@@ -138,12 +140,12 @@ export default function DashboardParamsManager({ params = [], pageParams = [], c
               onClick={() => remove(row.via, row.index)}><Trash2 className="h-4 w-4" /></Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">默认值</span>
+            <span className="text-xs text-muted-foreground">{t("k_d93919c37b")}</span>
             <Input aria-label={`默认值 ${row.name || '新参数'}`} className="h-8 w-52 text-xs" value={row.defaultValue}
               placeholder={row.shape === 'date_range' ? '留空由用户选择' : ''}
               onChange={e => patch(row.via, row.index, { defaultValue: e.target.value })} />
             {row.shape === 'select' && <>
-              <span className="text-xs text-muted-foreground">候选值（逗号分隔）</span>
+              <span className="text-xs text-muted-foreground">{t("k_57f47e6486")}</span>
               <Input aria-label={`候选值 ${row.name || '新参数'}`} className="h-8 w-64 text-xs" value={row.options.join(',')}
                 placeholder="华东,华北" onChange={e => patch(row.via, row.index,
                   { options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />

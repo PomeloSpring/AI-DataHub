@@ -14,6 +14,7 @@ import { contentApi, contentError, VERSIONING_LABELS,
   type ContentArticle, type ReleaseItem } from '@/api/content';
 import ArticleFiles from './ArticleFiles';
 import { ErrorBanner, LoadingRow, StatusBadge, TagChips, formatDate } from './shared';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 稿件预览（内容中心内部视图，**不是资讯门户**）。
@@ -30,6 +31,7 @@ import { ErrorBanner, LoadingRow, StatusBadge, TagChips, formatDate } from './sh
  * 在编排页做会把统计污染成"同事审了几次"。
  */
 export default function ContentPreview() {
+  const { t } = useTranslation('ui');
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   // 正文出现效果与门户同一份解析（预览里看到的就等读者看到的）；默认档 reveal=none 不加任何 class
@@ -86,7 +88,7 @@ export default function ContentPreview() {
         {/* 期次切换：与报告中心“只有一版不给下拉”同一判据（候选 ≤ 1 就不画开关） */}
         {releases.length > 1 && (
           <Select value={String(release)} onValueChange={v => setRelease(Number(v))}>
-            <SelectTrigger className="w-[210px]" aria-label="选择要预览的期次">
+            <SelectTrigger className="w-[210px]" aria-label={t("k_f4793ce0f0")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -213,7 +215,7 @@ export default function ContentPreview() {
                   ? <div className={reveal} style={cssVars}><HtmlArticle html={article.body} className="text-sm leading-7" /></div>
                   : <HtmlArticle html={article.body} className="text-sm leading-7" />)
                 : <MarkdownWithCharts text={article.body} className="text-sm leading-7" reveal />)
-              : <p className="text-center text-sm text-muted-foreground">这篇没有站内正文。</p>}
+              : <p className="text-center text-sm text-muted-foreground">{t("k_9e4a662dd6")}</p>}
           </div>
 
           {/* 附件卡：预览页只给下载（与门户一致），上传/删除回编辑器做 */}

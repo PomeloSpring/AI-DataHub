@@ -362,7 +362,12 @@
     "jumpToCitation": "Jump to this retrieval",
     "citationHits": "{{count}} chunks hit · see that turn's execution process for the original text",
     "untitledDraft": "Untitled report draft",
-    "op": { "in": "in", "not_in": "not in", "like": "contains", "between": "between" },
+    "op": {
+      "in": "in",
+      "not_in": "not in",
+      "like": "contains",
+      "between": "between"
+    },
     "citationObject": "Business object · {{name}}",
     "citationModel": "Ontology model · {{name}}",
     "citationFragment": "Knowledge base fragment"
@@ -442,10 +447,16 @@
     "htmlEditHint": "To change the content, go back to the chat and ask the assistant to regenerate the report (editing the whole HTML as plain text loses styles and charts).",
     "previewAria": "Report preview",
     "saveDraft": "Save draft",
-    "archive": "Archive to Report Center"
+    "archive": "Archive to Report Center",
+    "charCount": "{count} characters"
   },
   "page": {
-    "category": { "image": "Image", "table": "Table", "document": "Document", "model3d": "3D model" },
+    "category": {
+      "image": "Image",
+      "table": "Table",
+      "document": "Document",
+      "model3d": "3D model"
+    },
     "errorHint": {
       "provider_busy": "The model service is overloaded — this is not about how you asked. Trying again later usually works.",
       "rate_limited": "Too many requests to the model service; wait a few seconds and retry, or switch to another model.",

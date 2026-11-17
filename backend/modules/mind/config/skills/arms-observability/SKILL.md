@@ -5,6 +5,8 @@ description: 阿里云 ARMS/SLS 可观测域（Web 端用户体验监控 RUM，�
 category: analysis
 requires_any: [run_semantic_query]
 triggers: [arms, rum, 可观测, 观测, 监控, 用户体验, 前端性能, 首屏, 加载耗时, 页面性能, 卡顿, 崩溃, 错误率, 可用性, 长任务, 慢请求, 资源加载, web vitals, 埋点, 会话数, 活跃设备, 设备, 运营商, 访问量, 访问, PV, UV, 独立访客, 流量, 页面, 落地页, 官网, URL, 链接, 域名, 渠道, 投放, EDM, utm, 来源页]
+display_name_en: "ARMS Observability"
+description_en: "Query and interpret ARMS application monitoring (traces, metrics, service topology, error rates); read-only observability data, never used for business data queries."
 ---
 
 # ARMS 可观测数据分析 Skill（RUM 前端体验 · 语义层）

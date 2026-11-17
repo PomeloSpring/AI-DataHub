@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMenuAccess } from '@/hooks/useMenuAccess';
 import { EmptyState, LoadingRow } from './shared';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 内容中心落地页：跳到当前角色**第一个能进**的页面。
@@ -22,6 +23,7 @@ const ORDER = [
 ];
 
 export default function ContentHome() {
+  const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const menuAccess = useMenuAccess();
 
@@ -38,7 +40,7 @@ export default function ContentHome() {
 
   return (
     <EmptyState
-      title="内容中心还没有你的可进页面"
+      title={t("k_2012a6d21f")}
       hint="内容创作需要「编辑内容条目」权限，审核与发布各有独立权限。请联系管理员在「角色与菜单」中配置。"
     />
   );

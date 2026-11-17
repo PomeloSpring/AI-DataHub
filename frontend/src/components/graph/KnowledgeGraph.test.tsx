@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import KnowledgeGraphView from './KnowledgeGraph';
+import { t } from '@/i18n/runtime';
 
 const { graphData, fitView } = vi.hoisted(() => ({
   fitView: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     MiniMap: () => null,
     ReactFlow: ({ nodes, edges, nodeTypes, edgeTypes, children, ...handlers }: any) => (
       <div>
-        <button onClick={handlers.onPaneClick}>画布空白</button>
+        <button onClick={handlers.onPaneClick}>{t("k_06aa7a8aff")}</button>
         {nodes.map((node: any) => {
           const Component = nodeTypes[node.type];
           return <div key={node.id} data-testid={`node-${node.id}`} style={node.style}
