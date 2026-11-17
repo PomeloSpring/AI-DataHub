@@ -1,0 +1,273 @@
+{
+  "_note": "ISV 对接分析的业务术语映射（唯一事实源）。key=技术口径原文（出向回调事件名 / 入向接口路径 / 结果状态），value=对外业务名。来源：离线深化脚本 isv_deep_excel.py 的 BIZ 字典；改口径要同步改这里，两边不得各写一份。消费方：logs/build_isv_datasets.py（数据集正文 CASE 映射）、logs/build_isv_html.py（文章对外净化）。未命中一律退成 fallback_biz/fallback_url 并打印 WARNING，禁止把原始名写进对外产物（no-silent-degradation）。 2026-11-14 追加：isv_notify_service* / accept_order_callback / activation_completed_callback / smartee_* 由 ES 实机取证补登（requestUrl 指向合作方 ProcessCaseData / PlaceAnOrder / fileNotice / order 接口），未登记的名称不得回显到对外产物。",
+  "push_action": {
+    "send_order_callback": {
+      "cn": "订单下发通知",
+      "en": "Order dispatch notice"
+    },
+    "upload_convert_completed_callback": {
+      "cn": "数据处理完成通知",
+      "en": "Data processing completed notice"
+    },
+    "authorization_completed_callback": {
+      "cn": "授权完成通知",
+      "en": "Authorization completed notice"
+    },
+    "upload_attachments_completed_callback": {
+      "cn": "附件上传完成通知",
+      "en": "Attachment upload completed notice"
+    },
+    "upload_zip_completed_callback": {
+      "cn": "数据包上传完成通知",
+      "en": "Data package upload completed notice"
+    },
+    "scan_completed_callback": {
+      "cn": "扫描完成通知",
+      "en": "Scan completed notice"
+    },
+    "dcarer.upload_convert_completed_callback": {
+      "cn": "数据处理完成通知（专用通道）",
+      "en": "Data processing completed notice (dedicated channel)"
+    },
+    "dcarer.upload_attachments_completed_callback": {
+      "cn": "附件上传完成通知（专用通道）",
+      "en": "Attachment upload completed notice (dedicated channel)"
+    },
+    "common.upload_convert_completed_callback": {
+      "cn": "数据处理完成通知（通用通道）",
+      "en": "Data processing completed notice (shared channel)"
+    },
+    "chaoshou-ortho-register": {
+      "cn": "正畸系统账号注册通知",
+      "en": "Orthodontic system account registration notice"
+    },
+    "isv_notify_service": {
+      "cn": "定制数据推送通知",
+      "en": "Custom data push notice"
+    },
+    "isv_notify_service_start": {
+      "cn": "定制数据推送开始通知",
+      "en": "Custom data push started"
+    },
+    "isv_notify_service_end": {
+      "cn": "定制数据推送结束通知",
+      "en": "Custom data push finished"
+    },
+    "accept_order_callback": {
+      "cn": "订单接单通知",
+      "en": "Order acceptance notice"
+    },
+    "activation_completed_callback": {
+      "cn": "设备激活完成通知",
+      "en": "Device activation notice"
+    },
+    "smartee-fast-design-aim": {
+      "cn": "快速方案设计通知",
+      "en": "Rapid design notice"
+    },
+    "smartee_arrangement_result_notify": {
+      "cn": "排牙方案结果通知",
+      "en": "Tooth arrangement result notice"
+    },
+    "smartee_get_fast_design_aim_result": {
+      "cn": "快速方案设计结果通知",
+      "en": "Rapid design result notice"
+    }
+  },
+  "pull_action": {
+    "/open/order/getOrderDetail": {
+      "cn": "查询订单详情",
+      "en": "Read order details"
+    },
+    "/open/order/listOrders": {
+      "cn": "查询订单列表",
+      "en": "List orders"
+    },
+    "/open/order/orderShow": {
+      "cn": "查看订单进展",
+      "en": "View order progress"
+    },
+    "/open/order/setOrderStatus": {
+      "cn": "更新订单状态",
+      "en": "Update order status"
+    },
+    "/open/order/sendOrder": {
+      "cn": "下发订单",
+      "en": "Submit order"
+    },
+    "/open/order/createCase": {
+      "cn": "创建病例",
+      "en": "Create case"
+    },
+    "/open/order/getCaseDetail": {
+      "cn": "查询病例详情",
+      "en": "Read case details"
+    },
+    "/open/order/listCases": {
+      "cn": "查询病例列表",
+      "en": "List cases"
+    },
+    "/open/order/isv_list": {
+      "cn": "查询合作方病例列表",
+      "en": "List partner cases"
+    },
+    "/open/order/direct_isv_detail": {
+      "cn": "查询合作方病例详情",
+      "en": "Read partner case details"
+    },
+    "/open/order/getOrderTreatmentPdf": {
+      "cn": "获取治疗方案文件",
+      "en": "Fetch treatment plan file"
+    },
+    "/open/order/arrangement_result": {
+      "cn": "获取排牙方案结果",
+      "en": "Fetch tooth arrangement result"
+    },
+    "/open/patient/listPatients": {
+      "cn": "查询患者列表",
+      "en": "List patients"
+    },
+    "/open/patient/createPatient": {
+      "cn": "创建患者档案",
+      "en": "Create patient record"
+    },
+    "/open/patient/refreshCommand": {
+      "cn": "刷新患者数据",
+      "en": "Refresh patient data"
+    },
+    "/open/v3/case/refreshCommand": {
+      "cn": "刷新病例数据",
+      "en": "Refresh case data"
+    },
+    "/open/v3/user/createUser": {
+      "cn": "创建使用账号",
+      "en": "Create user account"
+    },
+    "/open/admin/equipment/saveEquipmentTickets": {
+      "cn": "登记设备工单",
+      "en": "Register equipment ticket"
+    },
+    "/open/admin/equipment/updateOutboundOrderInfo": {
+      "cn": "更新设备出库信息",
+      "en": "Update equipment dispatch info"
+    },
+    "/open/admin/equipment/createWarrantyOrder": {
+      "cn": "创建设备质保订单",
+      "en": "Create warranty order"
+    },
+    "/open/admin/equipment/updateDealerInfo": {
+      "cn": "更新代理商信息",
+      "en": "Update dealer information"
+    },
+    "/open/equipment/cancel": {
+      "cn": "注销设备",
+      "en": "Cancel equipment"
+    },
+    "/open/portal/auth/getToken": {
+      "cn": "系统登录认证",
+      "en": "System login authentication"
+    },
+    "/open/portal/auth/credential": {
+      "cn": "账号凭证校验",
+      "en": "Account credential check"
+    },
+    "/open/portal/findCompany": {
+      "cn": "查询企业信息",
+      "en": "Look up company"
+    },
+    "/open/portal/internal/findCompany": {
+      "cn": "查询企业信息（内部流程）",
+      "en": "Look up company (internal flow)"
+    },
+    "/open/portal/username": {
+      "cn": "按账号查询归属",
+      "en": "Look up account ownership"
+    },
+    "/open/portal/usernameByEmail": {
+      "cn": "按邮箱查询归属",
+      "en": "Look up account by email"
+    },
+    "/open/portal/changePass": {
+      "cn": "修改账号密码",
+      "en": "Change account password"
+    },
+    "/open/portal/partnerName": {
+      "cn": "查询合作方名称",
+      "en": "Look up partner name"
+    },
+    "/open/portal/update_user": {
+      "cn": "更新账号信息",
+      "en": "Update account information"
+    },
+    "/open/portal/confirm_email": {
+      "cn": "确认邮箱",
+      "en": "Confirm email address"
+    },
+    "/open/v2/portal/createUser": {
+      "cn": "创建使用账号",
+      "en": "Create user account"
+    },
+    "/open/v2/portal/createOrg": {
+      "cn": "创建机构信息",
+      "en": "Create organization"
+    },
+    "/open/doc/getDocMenus": {
+      "cn": "查询文档目录",
+      "en": "List document menus"
+    }
+  },
+  "push_status": {
+    "SUCCESS": {
+      "cn": "成功",
+      "en": "Success"
+    },
+    "FAIL": {
+      "cn": "失败 · 合作方业务校验未通过",
+      "en": "Failed - rejected by partner"
+    },
+    "ERROR": {
+      "cn": "失败 · 合作方系统异常",
+      "en": "Failed - partner system error"
+    }
+  },
+  "fallback_push": {
+    "cn": "其他数据推送通知",
+    "en": "Other data push notice"
+  },
+  "fallback_pull": {
+    "cn": "其他数据交互",
+    "en": "Other data exchange"
+  },
+  "partner_unlisted": {
+    "cn": "未登记的合作方",
+    "en": "Unlisted partner"
+  },
+  "partner_longtail": {
+    "cn": "其他 / 未识别",
+    "en": "Other / unrecognized"
+  },
+  "excluded_appids": {
+    "20231114227519039012864": "深化分析阶段按需求整体剔除的合作方（对外报告不出现其名称，数据集正文以编号等值排除）"
+  },
+  "site_tz_offset_hours": {
+    "cn": 8,
+    "global": 8,
+    "eu": 2,
+    "uk": 1,
+    "jp": 9
+  },
+  "sites": [
+    "cn",
+    "global",
+    "eu",
+    "uk",
+    "jp"
+  ],
+  "site_labels": {
+    "cn": "中国 cn",
+    "global": "国际站 global",
+    "eu": "欧洲 eu",
+    "uk": "英国 uk",
+    "jp": "日本 jp"
+  }
+}

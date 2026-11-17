@@ -86,7 +86,11 @@ jieba.cache
 /services/dataengine/*.db-shm
 /services/dataengine/*.db-wal
 
-scripts
+# 只忽略根目录的一次性脚本目录；曾写成裸 `scripts`，会连带吃掉 backend/scripts/**
+# （frontend_port.sh 等被 start-all/stop-all/kill-ports source 的文件因此没进仓库，
+#  同事拉码后 ./start-all.sh 直接报 No such file or directory）
+/scripts/
+backend/scripts/_tmp_*.py
 # pytest tmp artifacts
 pytest-of-*/
 .qoder/plan
