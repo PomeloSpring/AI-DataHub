@@ -68,7 +68,8 @@ def test_unresolved_source_payload_aggregate_site_teaches_per_site_orchestration
         assert wrong not in out["error"], out["error"]
     assert "这不代表数据未建模" in out["error"], out["error"]
     assert "不得" in out["hint"] and "暂无数据" in out["hint"]   # 禁语作为口径明写
-    assert out["retry_with"] == "site"
+    # 聚合态下两个旋钮都要给：跨站聚合仓（如云平台 ES，不归任何站点）只能带 datasource
+    assert out["retry_with"] == "datasource 或 site"
 
 
 def test_unresolved_source_payload_concrete_site_offers_both_knobs():
@@ -100,6 +101,8 @@ def test_semantic_query_guard_uses_fact_not_capability(monkeypatch):
 
     fake, calls = _binding_stub({0: None})        # 业务对象在 ds=0 上没有绑定
     monkeypatch.setattr(binding_resolver, "resolve_binding", fake)
+    # 授权集内也没有该对象的部署事实 → 不得自动定源，走事实探针给可操作提示
+    monkeypatch.setattr(sq, "_object_source_candidates", lambda ctx, key: [])
     payload, is_error = asyncio.run(sq._execute_single(
         {"object": "rum_event", "metrics": ["pv"]}, _ctx(site_code="global")))
     assert is_error is True
@@ -115,6 +118,7 @@ def test_semantic_query_system_object_on_ds_zero_not_blocked(monkeypatch):
 
     fake, _calls = _binding_stub({0: SimpleNamespace(object_key="sys_usage", model_id=7001)})
     monkeypatch.setattr(binding_resolver, "resolve_binding", fake)
+    monkeypatch.setattr(sq, "_object_source_candidates", lambda ctx, key: [])
     from backend.modules.mind.execution import resource_guard
     monkeypatch.setattr(resource_guard, "validate_binding", lambda *a, **k: None)
     # 放行后走到 plan：用空 SQL 的护栏返回证明"已过守卫"（不是未定源文案）
@@ -139,6 +143,141 @@ def test_semantic_query_business_guard_without_system_capability(monkeypatch):
         _ctx(site_code="cn", system=False, available=[])))
     assert is_error is True and "site" in payload["error"]
     assert calls == []          # 没有系统能力就不必先探 ds=0（少一趟无谓查询）
+
+
+# ── 1b. 聚合态按**对象部署事实**自动定源（跨站聚合仓不得被站点推导卡死） ──────
+
+
+def test_object_source_candidates_only_counts_authorized(monkeypatch):
+    """部署事实要按角色授权集过滤：未授权的部署源不得参与定源判定。"""
+    from backend.core import site_service
+    from backend.modules.mind.execution.sdk_tools import semantic_query as sq
+    from backend.semantics import cross_site
+
+    monkeypatch.setattr(cross_site, "object_deployments", lambda key: [
+        {"site": "中国站点", "datasource": "prd-cn"},
+        {"site": "cloud-platform-es", "datasource": "cloud-platform-es"}])
+    monkeypatch.setattr(site_service, "datasource_name_id_map",
+                        lambda: {"prd-cn": 111, "cloud-platform-es": 222})
+    monkeypatch.setattr(site_service, "datasource_name_site_map",
+                        lambda: {"prd-cn": "cn", "cloud-platform-es": ""})
+    out = sq._object_source_candidates(_ctx(available=[222]), "x")
+    assert [c["datasource"] for c in out] == ["cloud-platform-es"]
+
+
+def test_object_source_candidates_scoped_to_session_site(monkeypatch):
+    """具体站点会话不得把别站源的部署算作候选（否则会静默拿别站数据当本站答案）；
+    未归站的跨站聚合仓不受站点收口限制。"""
+    from backend.core import site_service
+    from backend.modules.mind.execution.sdk_tools import semantic_query as sq
+    from backend.semantics import cross_site
+
+    monkeypatch.setattr(cross_site, "object_deployments", lambda key: [
+        {"site": "日本站点", "datasource": "prd-jp"},
+        {"site": "中国站点", "datasource": "prd-cn"},
+        {"site": "cloud-platform-es", "datasource": "cloud-platform-es"}])
+    monkeypatch.setattr(site_service, "datasource_name_id_map",
+                        lambda: {"prd-jp": 1, "prd-cn": 2, "cloud-platform-es": 3})
+    monkeypatch.setattr(site_service, "datasource_name_site_map",
+                        lambda: {"prd-jp": "jp", "prd-cn": "cn", "cloud-platform-es": ""})
+
+    cn_ctx = _ctx(site_code="cn", available=[1, 2, 3])
+    assert [c["datasource"] for c in sq._object_source_candidates(cn_ctx, "x")] \
+        == ["prd-cn", "cloud-platform-es"]
+    # 聚合态不按站点收口：全部授权部署源都算候选（多候选时由调用方回抛歧义）
+    agg_ctx = _ctx(site_code="global", available=[1, 2, 3])
+    assert len(sq._object_source_candidates(agg_ctx, "x")) == 3
+
+
+def test_semantic_query_auto_source_on_unique_authorized_deployment(monkeypatch):
+    """聚合态 + 对象在授权集内**仅一处**部署 → 自动定源并留痕。
+
+    历史缺陷（会话 1783069459339）：聚合态 `session_source_for_site('global')` 恒 0，
+    旧判据直接拒“对象不属于当前会话选择的数据源”，使不归属任何站点的跨站聚合仓
+    （云平台 ES，site_code 为空）即使本体可检索也永远查不了；绑站点也修不了
+    （站点推导仍得 0）。
+    """
+    from backend.modules.mind.execution import resource_guard
+    from backend.modules.mind.execution.sdk_tools import semantic_query as sq
+    from backend.semantics import binding_resolver, planner
+
+    es_id = ADMIN_DS[1]
+    monkeypatch.setattr(sq, "_object_source_candidates", lambda ctx, key: [
+        {"site": "cloud-platform-es", "datasource": "cloud-platform-es", "datasource_id": es_id}])
+    seen = {}
+
+    def fake_bind(object_ref, datasource_id=0, **kw):
+        seen["ds"] = int(datasource_id or 0)
+        return SimpleNamespace(object_key=object_ref, model_id=1,
+                               datasource_id=int(datasource_id or 0)), []
+
+    monkeypatch.setattr(binding_resolver, "resolve_binding", fake_bind)
+    captured = {}
+    monkeypatch.setattr(resource_guard, "validate_binding",
+                        lambda ctx, binding, effective=0: captured.setdefault("effective", int(effective or 0)))
+    monkeypatch.setattr(planner, "plan", lambda q, b: SimpleNamespace(
+        sql="", warnings=[], provenance={}, guardrail=SimpleNamespace(
+            query_mode="", size_class="", allow_full_scan=False)))
+
+    payload, is_error = asyncio.run(sq._execute_single(
+        {"object": "cloud_es_equipment_operation_log", "metrics": ["qps"]},
+        _ctx(site_code="global")))
+    assert is_error is True and payload["error"] == "语义层护栏拒绝了本次查询", payload
+    assert seen["ds"] == es_id, seen          # 绑定按自动定出的源解析
+    assert captured["effective"] == es_id, captured   # 鉴权按同一生效源裁决
+
+
+def test_semantic_query_ambiguous_deployments_returns_candidate_names(monkeypatch):
+    """同一对象在多个授权源都有部署 → 回抛候选业务名，绝不猜源/串站。"""
+    from backend.modules.mind.execution.sdk_tools import semantic_query as sq
+
+    monkeypatch.setattr(sq, "_object_source_candidates", lambda ctx, key: [
+        {"site": "中国站点", "datasource": "prd-cn", "datasource_id": 111},
+        {"site": "日本站点", "datasource": "prd-jp", "datasource_id": 222}])
+    payload, is_error = asyncio.run(sq._execute_single(
+        {"object": "case", "metrics": ["cnt"]}, _ctx(site_code="global")))
+    assert is_error is True
+    assert "多个已授权数据源" in payload["error"], payload
+    assert payload["candidate_sources"] == ["中国站点（prd-cn）", "日本站点（prd-jp）"]
+    assert "datasource_id" not in payload["error"] and "111" not in payload["error"]
+
+
+def test_semantic_query_falls_back_when_session_source_has_no_binding(monkeypatch):
+    """会话源上没有该对象、且本次未点名源 → 按授权集内唯一部署源重试一次（留痕）。
+
+    cn 会话问云平台 ES 就是这条：ES 未归站、cn 源上没有该对象。旧行为直接报“未绑定”，
+    模型据此下“该站无数据/未建模”；实际对象就在唯一授权的跨站聚合仓上。
+    """
+    from backend.modules.mind.execution import resource_guard
+    from backend.modules.mind.execution.sdk_tools import semantic_query as sq
+    from backend.semantics import binding_resolver, planner
+
+    cn_id, es_id = 2002, 3001
+    monkeypatch.setattr(sq, "_object_source_candidates", lambda ctx, key: [
+        {"site": "cloud-platform-es", "datasource": "cloud-platform-es", "datasource_id": es_id}])
+    calls = []
+
+    def fake_bind(object_ref, datasource_id=0, **kw):
+        calls.append(int(datasource_id or 0))
+        if int(datasource_id or 0) == cn_id:
+            return None, ["no binding found"]      # cn 源上没有该对象
+        return SimpleNamespace(object_key=object_ref, model_id=1,
+                               datasource_id=es_id), []
+
+    monkeypatch.setattr(binding_resolver, "resolve_binding", fake_bind)
+    captured = {}
+    monkeypatch.setattr(resource_guard, "validate_binding",
+                        lambda ctx, binding, effective=0: captured.setdefault("effective", int(effective or 0)))
+    monkeypatch.setattr(planner, "plan", lambda q, b: SimpleNamespace(
+        sql="", warnings=[], provenance={}, guardrail=SimpleNamespace(
+            query_mode="", size_class="", allow_full_scan=False)))
+
+    payload, is_error = asyncio.run(sq._execute_single(
+        {"object": "cloud_es_equipment_operation_log", "metrics": ["qps"]},
+        _ctx(site_code="cn", datasource_id=cn_id, available=[cn_id, es_id])))
+    assert calls == [cn_id, es_id], calls        # 先会话源，再按唯一部署源重试
+    assert captured["effective"] == es_id, captured   # 执行/鉴权都按新源
+    assert is_error is True and payload["error"] == "语义层护栏拒绝了本次查询", payload
 
 
 # ── 2. 大屏/图表生成入口同一条链路 ────────────────────────────────

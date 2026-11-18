@@ -142,6 +142,30 @@ def _load_facts() -> tuple[list[dict], dict[str, str], dict[str, dict]]:
     return bind_rows, site_map, meta
 
 
+def object_deployments(object_key: str) -> list[dict]:
+    """单个对象的部署事实（数据源业务名 + 站点业务名）。
+
+    复用 `_load_facts` 的同一份口径（deploy_sites 展开 + object_site_rules 收紧 +
+    未声明站点模型按绑定行），不新写第二套解析。供聚合态/未定源时判定“能否按对象
+    唯一部署定源”——非站点源（如跨站聚合仓 ES）不参与站点推导，只能靠绑定事实定源。
+
+    只回业务名（站点/数据源），物理标识不外泄（护栏 §7）；按数据源去重、稳定排序。
+    """
+    key = str(object_key or "").strip()
+    if not key:
+        return []
+    bind_rows, site_map, _meta = _load_facts()
+    seen: dict[str, dict] = {}
+    for r in bind_rows:
+        if str(r.get("object_key") or "") != key:
+            continue
+        ds = str(r.get("datasource_name") or "")
+        if not ds or ds in seen:
+            continue
+        seen[ds] = {"site": site_map.get(ds, ds), "datasource": ds}
+    return [seen[k] for k in sorted(seen)]
+
+
 def list_deployments() -> list[dict]:
     """对象部署清单（LLM 编排知识）。
 

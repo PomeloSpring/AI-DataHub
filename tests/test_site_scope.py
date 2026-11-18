@@ -720,6 +720,32 @@ class TestPromptSiteScope:
         assert " 1" not in text.replace("①", "").replace("②", "")  # 不出现裸 id 清单
         assert "datasource_id" not in text
 
+    def test_unsited_authorized_sources_listed_with_business_names(self):
+        """未归站授权源（跨站聚合仓，如云平台 ES）必须在拓扑段可见。
+
+        它们 site_code 为空 ⇒ 不进 `authorized_sites` 派生、也推导不出生效源，
+        只能按 `datasource`（业务名）寻址。不列出来时，没有 `list_datasources`
+        的角色（catalog 组为空 + 角色无 datasource:read）完全拿不到这些源名，
+        唯一的定源方式不可达（历史缺陷）。
+        """
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        text = "\n".join(_datasource_topology_lines(
+            "global", self.SITES, 0, ["cloud-platform-es", "Doris"]))
+        assert "未归站授权源" in text
+        assert "cloud-platform-es" in text and "Doris" in text
+        # 口径：不归任何站点 ⇒ 直接带 datasource，不能靠 site 定位、不能按站分报
+        assert "datasource=<源业务名>" in text
+        assert "不属任何站点" in text
+
+    def test_unsited_only_role_still_gets_topology(self):
+        """只授权了未归站源的账号（无任何站点）也要注入拓扑段（否则连源名都没有）。"""
+        from backend.modules.mind.execution.prompt_composer import _datasource_topology_lines
+        text = "\n".join(_datasource_topology_lines("global", [], 0, ["cloud-platform-es"]))
+        assert "## 数据源拓扑" in text and "cloud-platform-es" in text
+        assert "不要带 site" in text
+        assert "可查站点" not in text          # 无站点时不写空站点清单
+        assert "各调一次" not in text          # 也不教无意义的分站编排
+
     def test_tool_descriptions_point_to_the_renamed_section(self):
         """段名改名必须全链路同步：工具描述若还指向旧「站点范围」，模型会被指到一个不存在的段。"""
         import pathlib

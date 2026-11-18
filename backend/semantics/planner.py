@@ -13,9 +13,16 @@
   - 结构化窗口模式(window 字段)编译为"内层聚合 + 外层窗口"两层结构;
     窗口表达式仅进 SELECT 投影层; 自由形状 SQL 不在本层(走模板对象/nl2sql)。
 
-方言两级口径见 `backend/semantics/dialect.py`: 语法骨架按**方言族**(mysql/postgres)编译,
-函数实现按**引擎**(mysql/doris/postgres/sls)取变体 —— 指标 `formula_dialects` 与模板
+方言两级口径见 `backend/semantics/dialect.py`: 语法骨架按**方言族**(mysql/postgres/es)编译,
+函数实现按**引擎**(mysql/doris/postgres/sls/es)取变体 —— 指标 `formula_dialects` 与模板
 `sql_bodies` 共用同一套 engine → family → 通用回落规则。
+
+ES(Elasticsearch SQL = Calcite 子集)是**骨架级**差异, 不是同族换函数(实机取证见
+`semantics/es_dialect.py` 与本文件 `_ES_*` 常量)：双引号标识符、下标从 1 起的 3 参
+`SUBSTRING`、无 `DATE_FORMAT/to_char/DATE_SUB/INTERVAL`、无 JOIN/窗口/派生表/OFFSET。
+因此 ES 的时间桶走「定长字符串切片」、时间边界由**服务端算好后下推**(不依赖引擎时钟),
+不可表达的形态(window/JOIN/季度粒度/裸 datetime 比较)一律编译期 fail-loud, 产物再经
+`es_rejection` 复核 —— 不用"换成别的形状凑合"掩盖(no-silent-degradation)。
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import json
 import logging
 import re
 import time
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
@@ -190,9 +198,86 @@ def _grain_from_dim_name(name: str) -> str:
     return ""
 
 
+# ── ES(Elasticsearch SQL) 编译常量 ─────────────────────────────
+# 引擎无 DATE_FORMAT/to_char, 时间桶一律用「定长字符串切片」(实机 2026-11-18)：
+#   "operationTime.keyword" = '2026-11-18 14:12:30'
+#   SUBSTRING(CAST(<col> AS VARCHAR), 1, 7) -> '2026-11' (月) / 10=日 / 13=时 / 4=年
+# datetime 型列(@timestamp)先 CAST AS VARCHAR 再切片(裸 datetime 进 SUBSTRING 直接 400)。
+_ES_SUBSTR_GRAIN_LEN = {
+    "second": 19, "minute": 16, "hour": 13, "day": 10, "month": 7, "year": 4,
+}
+# ES 元数据里 datetime 型列的 data_type 取值(其余 keyword/text/long 等按字符串/数值处理)
+_ES_DATE_TYPES = {"date", "datetime", "timestamp"}
+# time_window 单位 -> timedelta 关键字(月/年另走日历加减)
+_ES_WINDOW_DELTA = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def _add_months(dt, k: int):
+    """按日历加月(date/datetime 通用, 月末自动收敛到当月最后一天)。"""
+    total = dt.year * 12 + (dt.month - 1) + int(k)
+    year, month0 = divmod(total, 12)
+    month = month0 + 1
+    # 当月天数: 下月 1 号 - 1 天
+    nxt = date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1)
+    last_day = (nxt - timedelta(days=1)).day
+    return dt.replace(year=year, month=month, day=min(dt.day, last_day))
+
+
+def _es_window_start(n: int, unit_key: str, now: Optional[datetime] = None) -> str:
+    """相对窗口起点 -> 'YYYY-MM-DD HH:MM:SS'(服务端单一时钟)。
+
+    ES SQL 没有 `DATE_SUB(NOW(), INTERVAL ...)` 之类写法, 边界必须算好再下推; 用服务端
+    时钟与其余引擎的 `NOW()/CURRENT_DATE` 同源, 不引入第二种"现在"。
+    """
+    t = (now or datetime.now()).replace(microsecond=0)
+    if unit_key == "M":
+        t = _add_months(t, -n)
+    elif unit_key == "y":
+        t = _add_months(t, -12 * n)
+    else:
+        t = t - timedelta(**{_ES_WINDOW_DELTA[unit_key]: n})
+    return t.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _es_calendar_range(key: str, now: Optional[datetime] = None) -> Optional[tuple[str, str]]:
+    """日历区间 -> (起, 止) 的 'YYYY-MM-DD'(止为右开, ISO 周一起算)。
+
+    与 `_MY_RANGE/_PG_RANGE/_SLS_RANGE` 同口径(左闭右开), 只是把边界算在服务端 ——
+    ES 既没有 `CURDATE()` 系函数也没有 INTERVAL 语法, 让引擎算等于各站各表各时区。
+    """
+    d = (now or datetime.now()).date()
+    if key == "today":
+        s, e = d, d + timedelta(days=1)
+    elif key == "yesterday":
+        s, e = d - timedelta(days=1), d
+    elif key in ("this_week", "last_week"):
+        start = d - timedelta(days=d.weekday())
+        s = start if key == "this_week" else start - timedelta(days=7)
+        e = s + timedelta(days=7)
+    elif key in ("this_month", "last_month"):
+        first = d.replace(day=1)
+        s = first if key == "this_month" else _add_months(first, -1)
+        e = _add_months(s, 1)
+    elif key in ("this_quarter", "last_quarter"):
+        qstart = date(d.year, 3 * ((d.month - 1) // 3) + 1, 1)
+        s = qstart if key == "this_quarter" else _add_months(qstart, -3)
+        e = _add_months(s, 3)
+    elif key in ("this_year", "last_year"):
+        s = date(d.year, 1, 1) if key == "this_year" else date(d.year - 1, 1, 1)
+        e = date(s.year + 1, 1, 1)
+    else:
+        return None
+    return s.isoformat(), e.isoformat()
+
+
 def _dialect_of(db_type: str) -> str:
-    """数据源 db_type -> SQL 编译方言族。未知类型保守回落 mysql(与旧行为一致)并出 warning。"""
-    return sem_dialect.family_of(db_type)
+    """数据源 db_type -> **对象编译**方言族(ES 单列一族)。
+
+    不用 `family_of`: 那是**数据集正文**的方言族(es 不登在那里, 正文走透传)。单表对象的
+    编译骨架需要 ES 自己的写法, 故走 `compile_family_of`。未知类型保守回落 mysql(与旧行为
+    一致)并出 warning。
+    """
+    return sem_dialect.compile_family_of(db_type)
 
 
 # ── 跨对象 JOIN（Phase 2「Link 参与编译」）────────────────────────
@@ -249,8 +334,10 @@ def _qualify_bare(expr: str, alias: str, cols: set[str]) -> str:
 #   SELECT "view.url"   -> OK
 #   GROUP BY view.url   -> 同上报错；GROUP BY "view.url" -> OK
 # 裸写会被 Presto 解析成「行变量.字段」访问，因此这类列必须整体加引号。
+# ES 同理(探针 2026-11-18)：`appCode.keyword` 裸写被当 `appCode`.`keyword` 解析；
+# 整体双引号 `"appCode.keyword"` 是 ES SQL 引用多字段子字段的唯一正确写法。
 # 其余引擎不列入：列名不含点，改写路径行为完全不变(不制造第二条口径)。
-_DOTTED_COLUMN_ENGINES = frozenset({"sls"})
+_DOTTED_COLUMN_ENGINES = frozenset({"sls", "es"})
 
 # 字符串字面量 / 已加引号片段：公式规范化时必须跳过(否则会改坏 'view' 这类码值)
 _QUOTED_SEG_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
@@ -379,7 +466,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     warnings: list[str] = []
     g = binding.guardrail
     dialect = _dialect_of(binding.db_type)
-    if not sem_dialect.is_known_db_type(binding.db_type):
+    engine = sem_dialect.engine_of(binding.db_type)
+    is_es = engine == "es"
+    if not sem_dialect.is_known_db_type(binding.db_type) and not is_es:
         warnings.append(
             f"unknown db_type '{binding.db_type}', compiled with mysql dialect fallback")
 
@@ -395,6 +484,19 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     # 数据集对象: 绑定的是参数化预制 SQL 而非单表聚合, 走独立编译分支
     if binding.bind_kind == "dataset":
         return _plan_dataset(query, binding, dialect, warnings)
+
+    # ES(Elasticsearch SQL) 不可表达形态: 编译期 fail-loud(不降级/不拿别的形状凑合)
+    if is_es:
+        if query.window:
+            warnings.append(
+                "Elasticsearch 不支持窗口函数(结构化 window)：已拒绝编译；"
+                "请改用时间粒度分组 + 多轮取数（环比/排名在平台侧计算）")
+            return _empty_plan(binding, query, dialect, warnings)
+        if str(query.time_grain or "").strip().lower() == "quarter":
+            warnings.append(
+                "Elasticsearch 不支持季度粒度的时间桶（未取证的安全写法，不静默凑合）："
+                "已拒绝编译；请改用 月/年 粒度，或用 time_range(如 this_quarter/last_quarter) 过滤")
+            return _empty_plan(binding, query, dialect, warnings)
 
     # ① 护栏预检: huge + raw_source 且未开全表扫 -> 必须有 filters 或 LIMIT
     if g.size_class == "huge" and not g.allow_full_scan:
@@ -573,6 +675,15 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
             return None, rest, False
         return ctx[0], rest, True
 
+    # ES 无 JOIN(实机 400)：跨对象字段在本引擎根本编译不出来，先拒并说清原因，
+    # 不静默丢掉跨对象部分只算本表(那会把“某客户在某设备的操作数”算成全量)。
+    if is_es and join_parts:
+        warnings.append(
+            "Elasticsearch 不支持 JOIN：本次请求引用了其他对象的字段（"
+            + "、".join(sorted(alias_by_obj)) + "），无法在本源上联合取数；"
+            "已拒绝编译，请只问本对象内的维度/指标，或改用数据集通道")
+        return _empty_plan(binding, query, dialect, warnings)
+
     select_items: list[tuple[str, str]] = []   # (expr, alias)
     group_by: list[str] = []
     col_roles: dict[str, str] = {}
@@ -714,6 +825,10 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     elif g.max_rows and limit_val > g.max_rows:
         limit_val = g.max_rows
         warnings.append(f"guardrail: limit clamped to max_rows ({limit_val})")
+    if is_es and limit_val is None:
+        # ES SQL 不带 LIMIT 一律被引擎拒(硬要求)；这里显式补齐并留痕，不靠执行层兜
+        limit_val = _DEFAULT_LIMIT
+        warnings.append(f"Elasticsearch 必须带 LIMIT: 已按默认 {limit_val} 行补齐")
 
     table_ref = _exec_table_ref(binding, dialect)
     if join_parts:
@@ -741,6 +856,16 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
             limit=limit_val,
             dialect=dialect,
         )
+
+    # ES 产物守门(纵深)：上面各分支已避开 ES 不认的形态，这里再按产物白名单复核一道，
+    # 防后续新增图型/函数在没人注意时把 SUBSTR/反引号/派生表写进去。
+    if is_es:
+        from backend.semantics.es_dialect import es_rejection
+
+        _reject = es_rejection(sql)
+        if _reject:
+            warnings.append(f"ES 编译产物形态不被引擎接受，已拒绝执行：{_reject}")
+            return _empty_plan(binding, query, dialect, warnings)
 
     prov = _provenance(binding, query)
     # 服务端诊断用(工具侧 provenance 已剥离): 供 gates/Playground 在解析失败时给出候选
@@ -943,8 +1068,11 @@ def _exec_table_ref(b: ResolvedBinding, dialect: str = "mysql") -> str:
     PG 路: 不拼 `database.table` —— psycopg 连接已定 dbname, 二段式会被当成
     `schema.table` 报 schema 不存在;DataFusion 侧同样按注册的默认 schema 解析,
     故用裸表名(由 search_path/默认 schema 解析)。
+
+    ES 路: 裸索引名 + **双引号**(ES SQL 用 `FROM "index"`; 反引号直接 400), 索引本身
+    就是全域，拼 `database.table` 反而不存在。
     """
-    if dialect == "postgres":
+    if dialect in ("postgres", "es"):
         return _quote_ident(b.physical_table, dialect)
     parts = [p for p in (b.db_name, b.physical_table) if p]
     return ".".join(parts) or b.physical_table
@@ -1289,21 +1417,57 @@ class _ColumnResolver:
         whens = " ".join(
             f"WHEN {_lit(str(code))} THEN {_lit(label)}"
             for code, label in sorted(labels.items()))
-        else_ = f"{q}::text" if self.dialect == "postgres" else f"CAST({q} AS CHAR)"
+        if self.dialect == "es":
+            # ES 无 `CAST(x AS CHAR)`；keyword 本身已是字符串，原样作 ELSE（实测同一
+            # CASE 同时出现在 SELECT 与 GROUP BY 时不混型）
+            else_ = q
+        elif self.dialect == "postgres":
+            else_ = f"{q}::text"
+        else:
+            else_ = f"CAST({q} AS CHAR)"
         return f"CASE {q} {whens} ELSE {else_} END"
     
     @staticmethod
     def _label_to_code(entry: dict[str, Any], value: Any) -> Any:
-        """WHERE 值反查: 业务标签 → 码值; 非标签(含已是码值)原样保留。"""
+        """WHERE 值反查: 业务标签 → 码值; 非标签(含已是码值)原样保留。
+
+        一个业务标签可能对应**多个码值**（如维度「应用分组」把 17 个三方集成码归为
+        「三方集成App」这一个桶）：此时必须返回全部码值，由 `_render_condition` 渲染成
+        `IN (...)`。只取其中一个码值 = 静默少算（错数比回绝危害大）。
+        """
         labels = entry.get("labels") or {}
-        if not labels or isinstance(value, (list, dict)):
+        if not labels or isinstance(value, dict):
             return value
-        rev = {_norm_name(v): str(k) for k, v in labels.items()}
-        return rev.get(_norm_name(value), value)
+        rev: dict[str, list[str]] = {}
+        for code, label in labels.items():
+            rev.setdefault(_norm_name(label), []).append(str(code))
+        if isinstance(value, (list, tuple)):
+            out: list[Any] = []
+            for v in value:
+                out.extend(rev.get(_norm_name(v), [v]))
+            return out
+        codes = rev.get(_norm_name(value))
+        if not codes:
+            return value
+        return codes[0] if len(codes) == 1 else codes
     
     def _maybe_wrap_time(self, col: str, grain: Optional[str],
                          dim_name: str = "") -> str:
         q = self._col(col)
+        if self.engine == "es":
+            # ES 无 DATE_FORMAT/to_char：时间桶 = 定长字符串切片(探针 2026-11-18：
+            # SUBSTRING(CAST("operationTime.keyword" AS VARCHAR),1,7) -> '2026-11')
+            if not grain:
+                return q
+            n = _ES_SUBSTR_GRAIN_LEN.get(grain)
+            if n:
+                return f"SUBSTRING(CAST({q} AS VARCHAR), 1, {n})"
+            if grain == "week":
+                # ES 无 ISO 周年-周格式串：取周起始日(周一对齐, 实测 2026-11-16)
+                return (f"SUBSTRING(CAST(DATE_TRUNC('WEEK', CAST({q} AS TIMESTAMP)) AS VARCHAR),"
+                        " 1, 10)")
+            # quarter 等未取证粒度：返回空串让调用方显式回绝(不静默出错误时间轴)
+            return ""
         if self.engine == "sls":
             kind = self._sls_time_kind(col)
             if not kind:
@@ -1439,6 +1603,10 @@ class _ColumnResolver:
             value = self._label_to_code(entry, f.value)
             values = ([self._label_to_code(entry, v) for v in f.values]
                       if f.values is not None else None)
+            if values is not None:
+                # 单个值反查可能出多码(见 _label_to_code) → 拍平成一维码值列表
+                values = [c for v in values
+                          for c in (v if isinstance(v, (list, tuple)) else [v])]
         else:
             value, values = f.value, f.values
         return _render_condition(expr, f.op, value, values)
@@ -1456,6 +1624,38 @@ class _ColumnResolver:
             return "native"
         # bigint/int 类(如业务侧毫秒时间戳) 或元数据未登记: 单位未知, 不猜
         return ""
+
+    def _es_time_kind(self, col: str) -> str:
+        """ES 时间列取值形态: 'date'(datetime 型) / 'text'(可直接字符串比较)。
+
+        实机（2026-11-18）：datetime 型列与裸字符串字面量比较直接 400
+        （`"@timestamp" >= '2026-11-18 00:00:00'` -> parse_exception），而 keyword/text
+        列（`operationTime.keyword` 存 'YYYY-MM-DD HH:MM:SS'）可字符串比较与切片。
+        边界渲染按本形态分流：date 先 CAST 成 VARCHAR 再与 ISO-T 串比较。
+        """
+        bare = str(col or "").strip().strip('"').strip("`")
+        meta = self._load_phys().get(bare) or {}
+        dt = str(meta.get("data_type") or "").split("(")[0].lower()
+        return "date" if dt in _ES_DATE_TYPES else "text"
+
+    @staticmethod
+    def _es_cmp_expr(col_expr: str, kind: str) -> str:
+        """ES 时间比较左端。
+
+        两种列型都不包转换，直接在列上比较（包 `CAST(列 AS VARCHAR)` 会让索引条件下沉
+        失效，2.8 亿文档的索引会直接超时）：
+        - text 列（'YYYY-MM-DD HH:MM:SS' 字符串）与同形字符串字面量比较；
+        - date 列与 `CAST('...' AS TIMESTAMP)` 比较（裸字符串字面量在 ES 上 400）。
+        """
+        return col_expr
+
+    @staticmethod
+    def _es_bound(kind: str, value: str) -> str:
+        """ES 时间边界字面量：date 列必须 CAST 成 TIMESTAMP（裸字符串比较实机 400）。"""
+        v = str(value)
+        if kind == "date":
+            return f"CAST({_lit(v)} AS TIMESTAMP)"
+        return _lit(v)
 
     def _resolve_time_column_name(
         self, time_column: Optional[str], warnings: list[str],
@@ -1503,6 +1703,10 @@ class _ColumnResolver:
         if not col:
             return None, ""
         q = self._col(col)
+        if self.engine == "es":
+            # datetime 型列与裸字符串比较在 ES 上直接 400(实机)，故按列型带回取值形态：
+            # 'date' 的边界渲染/值比较要先 CAST 成 VARCHAR 再比。
+            return q, self._es_time_kind(col)
         if self.engine != "sls":
             return q, ""
         kind = self._sls_time_kind(col)
@@ -1534,6 +1738,10 @@ class _ColumnResolver:
         col_expr, kind = self._time_target(time_column, warnings)
         if col_expr is None:
             return None
+        if self.engine == "es":
+            # 边界在服务端算好再下推（ES 无 DATE_SUB/INTERVAL，也不拿引擎时钟当时区基准）
+            lhs = self._es_cmp_expr(col_expr, kind)
+            return f"{lhs} >= {self._es_bound(kind, _es_window_start(n, unit_key))}"
         if self.engine == "sls" and kind == "epoch_sec":
             # 边界包 to_unixtime 与 epoch 秒同型(探针 Q1 ERR/S1 OK), INTERVAL 单位写在字符串里(G ERR/H OK)
             return f"{col_expr} >= to_unixtime(now() - INTERVAL '{n} {pg_unit}')"
@@ -1546,7 +1754,9 @@ class _ColumnResolver:
     ) -> Optional[str]:
         """把日历 time_range('last_week' 等) 编译为左闭右开区间谓词(col >= 起 AND col < 止)。"""
         key = str(rng or "").strip()
-        if self.engine == "sls":
+        if self.engine == "es":
+            bounds = _es_calendar_range(key)
+        elif self.engine == "sls":
             bounds = _SLS_RANGE.get(key)
         else:
             bounds = (_PG_RANGE if self.dialect == "postgres" else _MY_RANGE).get(key)
@@ -1557,6 +1767,10 @@ class _ColumnResolver:
         if col_expr is None:
             return None
         start, end = bounds
+        if self.engine == "es":
+            lhs = self._es_cmp_expr(col_expr, kind)
+            return (f"{lhs} >= {self._es_bound(kind, start + ' 00:00:00')} AND "
+                    f"{lhs} < {self._es_bound(kind, end + ' 00:00:00')}")
         if self.engine == "sls" and kind == "epoch_sec":
             # epoch 秒列与日期表达式不同型, 边界取 unix 秒(T1/U4/U6/U7 均为 to_unixtime(...) OK)
             start, end = f"to_unixtime({start})", f"to_unixtime({end})"
@@ -1577,6 +1791,21 @@ class _ColumnResolver:
         col_expr, kind = self._time_target(time_column, warnings)
         if col_expr is None:
             return None
+
+        if self.engine == "es":
+            # ES：纯日期右端按左闭右开取次日零点（字符串形态下 `<= 当日` 会把当天
+            # 00:00 之后的记录全漏掉；`CONCAT(end,'~')` 那种花招不可维护，不用）
+            lhs = self._es_cmp_expr(col_expr, kind)
+            parts: list[str] = []
+            if s:
+                parts.append(f"{lhs} >= {self._es_bound(kind, s if len(s) > 10 else s + ' 00:00:00')}")
+            if e:
+                if len(e) == 10:
+                    nxt = (date.fromisoformat(e) + timedelta(days=1)).isoformat()
+                    parts.append(f"{lhs} < {self._es_bound(kind, nxt + ' 00:00:00')}")
+                else:
+                    parts.append(f"{lhs} <= {self._es_bound(kind, e)}")
+            return " AND ".join(parts) if parts else None
 
         def _bound(v: str) -> str:
             if self.engine == "sls":
@@ -1834,8 +2063,15 @@ def _plan_dataset(
 def _render_condition(lhs: str, op: str, value: Any, values: Optional[list[Any]]) -> Optional[str]:
     lit = _lit
 
-    if op == "eq":       return f"{lhs} = {lit(value)}"
-    if op == "ne":       return f"{lhs} <> {lit(value)}"
+    if op == "eq":
+        # 业务标签反查出多个码值时，等值语义等价于 IN（不得只取首个码值）
+        if isinstance(value, (list, tuple)):
+            return (f"{lhs} IN (" + ", ".join(lit(v) for v in value) + ")") if value else None
+        return f"{lhs} = {lit(value)}"
+    if op == "ne":
+        if isinstance(value, (list, tuple)):
+            return (f"{lhs} NOT IN (" + ", ".join(lit(v) for v in value) + ")") if value else None
+        return f"{lhs} <> {lit(value)}"
     if op == "gt":       return f"{lhs} > {lit(value)}"
     if op == "gte":      return f"{lhs} >= {lit(value)}"
     if op == "lt":       return f"{lhs} < {lit(value)}"

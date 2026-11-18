@@ -498,6 +498,22 @@ def datasource_name_id_map() -> dict[str, int]:
     return {str(r["name"]): int(r["id"]) for r in rows}
 
 
+def datasource_name_site_map() -> dict[str, str]:
+    """数据源业务名 → `site_code`（空串 = 未归站）。
+
+    供“按对象部署事实定源”时按会话站点收口：具体站点会话不得把别站的数据
+    当作本站答案（未归站的跨站聚合仓例外，它本就不属于任何站点）。
+    """
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, site_code FROM adh_datasources")
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    return {str(r["name"]): str(r.get("site_code") or "") for r in rows}
+
+
 def model_source_scope_ids(model_id: int, datasource_id: int = 0,
                            name_id_map: dict[str, int] | None = None) -> set[int]:
     """模型触达的数据源 id 集 = 主源 ∪ deploy_sites 路由源（按名解析为 id）。
@@ -567,6 +583,40 @@ def authorized_sites(user_id: int, workspace_id: int = 0) -> list[dict]:
         if s["is_aggregate"] and len(concrete) >= 2
     ]
     return sorted(out + concrete, key=lambda x: (x["sort_order"], x["site_code"]))
+
+
+def unsited_authorized_sources(user_id: int, workspace_id: int = 0) -> list[str]:
+    """已授权但**未归站**的数据源业务名（跨站聚合仓/共享仓，如云平台 ES）。
+
+    这些源 `site_code` 为空 ⇒ 既进不了 `authorized_sites` 的派生站点（被
+    `COALESCE(site_code,'') <> ''` 过滤），也推导不出生效源
+    （`session_source_for_site` 恒得 0）；它们本来就是**跨站聚合**的仓，语义上
+    不属于任何站点，只能按 `datasource`（业务名）直接寻址。
+
+    提示词「数据源拓扑」段必须把它们列出来：否则没有 `list_datasources` 的角色
+    （如 Operations Manager 的 catalog 组为空且角色无 `datasource:read`）拿不到
+    这些源名，唯一可定源的方式（`datasource="<源业务名>"`）就不可达——历史缺陷。
+
+    只回业务名（护栏 §7）；空授权 fail-closed 返回空，不解释为全量。
+    """
+    from backend.core.role_service import role_service
+
+    allowed = sorted(set(role_service.get_user_allowed_datasources(
+        int(user_id or 0), int(workspace_id or 0))))
+    if not allowed:
+        return []
+    marks = ",".join(["%s"] * len(allowed))
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT name FROM adh_datasources "
+                f"WHERE id IN ({marks}) AND COALESCE(site_code, '') = '' ORDER BY name",
+                tuple(allowed))
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    return [str(r["name"]) for r in rows]
 
 
 # ── 站点 → 生效数据源（服务端解析，LLM 只见业务名）────────────────────

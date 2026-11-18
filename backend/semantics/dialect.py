@@ -2,9 +2,13 @@
 
 两级方言是必要的：
 - **family** 决定 SQL 语法骨架（标识符引用、时间函数、INTERVAL 写法），编译层按族出文：
-  `mysql|doris -> mysql 族`，`postgres|postgresql|pg|sls -> postgres 族`；
+  `mysql|doris -> mysql 族`，`postgres|postgresql|pg|sls -> postgres 族`，`es -> es 族`；
 - **engine** 决定"同族不同实现"的函数差异（Doris `window_funnel`、SLS 的 Presto 函数系、
   原生 PG 的 `date_trunc`），是**变体选择键**，不参与语法骨架生成。
+
+ES 分两级登记（两件事，不是两条口径）：数据集正文的方言覆盖（`FAMILY_OF_DBTYPE`）
+**不含** es（ES 数据集走透传，正文不被二次包裹编译）；单表对象编译骨架（
+`COMPILE_FAMILY_OF_DBTYPE`）**含** es（平台编译形状需要 ES 自己的写法）。
 
 历史缺陷（本模块要根治的那类）：`adh_metrics.formula_dialects` 早期只认族键，建模人员
 按引擎写 `{"doris": "window_funnel(...)"}` 时，Doris 源解析成 `mysql` 族 → 键永不命中，
@@ -26,20 +30,31 @@ from typing import Any, Iterable, Optional
 # 的 `from backend.semantics.dialect import is_es_db_type` 写法不变。
 from backend.common.db_types import ES_DB_TYPES, is_es_db_type  # noqa: F401 (re-export)
 
-# db_type -> 编译方言族（SQL 语法骨架）
-# 注意：`es` **故意不登在这里**。语义编译层（planner/dataset_compiler）只认
-# mysql/postgres 两族骨架，ES 的形状（必带 LIMIT、`.keyword` 子字段、无 JOIN/派生表/窗口
-# 函数、CONCAT 只两参）需要专门的 es 引擎才能表达；而 planner 入口有
-# `is_known_db_type(binding.db_type)` 硬门 —— 不登 family 就等于“绑不上语义对象”，
-# 比默默走 mysql 骨架编出一条错 SQL 好得多（阶段四做 es 引擎时再一并放开）。
+# db_type -> 数据集正文方言族（预制 SQL 的方言覆盖判定：sql_bodies 键、跨源兼容告警）
+# 注意：`es` **故意不登在这里**。ES 型数据集在语义层走「透传正文」契约（正文已定形状，
+# 平台只做参数渲染/投影裁剪/谓词下推/LIMIT 收紧），而 dataset_compiler 的聚合分支会产
+# 两级包裹 `SELECT ... FROM (正文) ...` —— ES 无派生表（实机 400：派生表列不透传 /
+# 子查询 LIMIT 与外层 GROUP BY 互斥），把 es 拉进本表等于让 ES 正文被二次包裹编译。
+# ES 的**单表对象**编译骨架由下面的 COMPILE_FAMILY_OF_DBTYPE 单独登记（见该常量注释）。
 FAMILY_OF_DBTYPE: dict[str, str] = {
     "mysql": "mysql", "doris": "mysql",
     "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "postgres",
 }
 
+# db_type -> **对象编译骨架**方言族（planner 把 SemanticQuery 编成单表 SQL 时用）
+# 与 FAMILY_OF_DBTYPE 的分工（不是双口径，是两个不同问题）：
+#   - 数据集对象 = 预制 SQL 透传，正文自带形状 -> 按正文方言覆盖判定（上表，es 不参与）；
+#   - 单表对象 = 平台编译形状 `SELECT 维度, 聚合 FROM t WHERE ... GROUP BY ... LIMIT n`
+#     -> 需要 ES 自己的骨架（双引号标识符、必带 LIMIT、时间桶走 SUBSTRING、无 JOIN/窗口/派生表）。
+# ES 骨架的形态约束由 planner 的 es 分支 + `es_dialect.es_rejection` 复核（产物级护栏）。
+COMPILE_FAMILY_OF_DBTYPE: dict[str, str] = {
+    **FAMILY_OF_DBTYPE,
+    "es": "es", "elasticsearch": "es",
+}
+
 # db_type -> 引擎名（同族内的函数/特性差异 + 模板可用范围）
-# es 只登 engine：治理层（RLS 注入形态 / mask 函数系 / 渲染产物复核）需要按引擎分支，
-# 取证见 `semantics/es_dialect.py` 与 `security/masking.py` 的 ES 支。
+# es 登 engine：治理层（RLS 注入形态 / mask 函数系 / 渲染产物复核）与 planner 的 ES 代码
+# 分支都按引擎名判定；取证见 `semantics/es_dialect.py` 与 `security/masking.py` 的 ES 支。
 ENGINE_OF_DBTYPE: dict[str, str] = {
     "mysql": "mysql", "doris": "doris",
     "postgres": "postgres", "postgresql": "postgres", "pg": "postgres", "sls": "sls",
@@ -57,8 +72,17 @@ def _norm(db_type: Any) -> str:
 
 
 def family_of(db_type: str) -> str:
-    """db_type -> 编译方言族；未知类型保守回落 mysql（与既有行为一致，调用方须出 warning）。"""
+    """db_type -> 数据集正文方言族；未知类型保守回落 mysql（与既有行为一致，调用方须出 warning）。
+
+    **ES 不在此列**（数据集透传口径，见 FAMILY_OF_DBTYPE 注释）：对象编译请用
+    `compile_family_of`。
+    """
     return FAMILY_OF_DBTYPE.get(_norm(db_type), "mysql")
+
+
+def compile_family_of(db_type: str) -> str:
+    """db_type -> 对象编译方言族（planner 单表编译用）；ES 单独一族，其余同 FAMILY_OF_DBTYPE。"""
+    return COMPILE_FAMILY_OF_DBTYPE.get(_norm(db_type), "mysql")
 
 
 def engine_of(db_type: str) -> str:
@@ -163,11 +187,16 @@ def quote_ident(name: Any, family: str = "mysql") -> str:
     return quote_alias(s, family)
 
 
+# ANSI 双引号族：postgres 家族 + es（ES SQL 用双引号标识符，反引号直接 400）。
+# es 既是引擎名也是它的编译骨架族名（COMPILE_FAMILY_OF_DBTYPE），故一并处理。
+_ANSI_QUOTE_FAMILIES = frozenset({"postgres", "es"})
+
+
 def quote_alias(name: Any, family: str = "mysql") -> str:
     """投影/排序别名引用：无论长什么样都当标识符包引号（别名永远是名字，不是表达式）。"""
     s = str(name or "").strip()
     if not s:
         return s
-    if family == "postgres":
+    if family in _ANSI_QUOTE_FAMILIES:
         return '"' + s.replace('"', '""') + '"'
     return f"`{s}`"

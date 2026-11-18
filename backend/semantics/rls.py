@@ -93,8 +93,14 @@ def apply_rls(
     sql: str,
     table_filters: dict[str, str],
     dialect: str = "mysql",
+    engine: str = "",
 ) -> tuple[str, list[str], Optional[str]]:
     """把 baseSql 按 {table: predicate} 改写为 securedSql。
+
+    `engine` 决定注入形态：ES 不认包裹子查询（派生表）形态，必须走「AND 进顶层
+    WHERE」专支（`sql_guard._inject_filters_es`）；漏传 engine 会生成派生表 -> ES 直接
+    400（或更坏：包上去后 .keyword 子字段不透传）。dialect="es" 时自动补 engine，
+    使唯一调用口径（方言）足以推导形态，不靠每个调用点各自记得传。
 
     Returns:
         (secured_sql, applied_tables, error) — error 非空表示改写失败(调用方应拒绝执行,
@@ -110,7 +116,8 @@ def apply_rls(
 
     try:
         from backend.semantics.sql_guard import inject_filters
-        secured, applied = inject_filters(sql, table_filters, dialect)
+        secured, applied = inject_filters(sql, table_filters, dialect,
+                                          engine or ("es" if dialect == "es" else ""))
         return secured, applied, None
     except Exception:
         logger.exception("[rls] 无法安全应用行策略")

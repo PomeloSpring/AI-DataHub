@@ -296,6 +296,14 @@ def validate_binding(ctx, binding, effective_datasource_id=0):
     角色授权集内解析，见 semantic_query._execute_single / GLOBAL_SEMANTIC_LAYER_DESIGN §7/§8），
     0 表示沿用会话绑定源。非会话源同样必须 ∈ 角色授权集（fail-closed），
     不因"调用方声明了源"就放行。
+
+    **会话源为 0 不等于“没有源”**：聚合态（全部站点）与站点内多源时，0 是“由本次查询
+    按对象部署事实定源”的合法态。此时裁决依据换成**绑定事实**——该绑定落在角色授权集内
+    即放行（与 handler 侧 `resolve_binding(obj, 0)` 的探针结论一致），否则同样 fail-closed。
+    历史缺陷（会话 1783069459339）：旧写法把 0 直接判成“对象属于别的源”，使不归属任何
+    站点的跨站聚合仓（如云平台 ES，site_code 为空）在聚合态会话下永远查不了，且与本函数
+    上游“按事实 probe”的结论自相矛盾。歧义（同对象多个授权部署源）由工具层回抛候选，
+    不在本层猜源。
     """
     runtime = (getattr(ctx, "extra", None) or {}).get("secure_runtime") if ctx else None
     if runtime is None:
@@ -311,7 +319,13 @@ def validate_binding(ctx, binding, effective_datasource_id=0):
             return
     session_source = int(getattr(ctx, "datasource_id", 0) or 0)
     source = int(effective_datasource_id or 0) or session_source
-    if not source or int(getattr(binding, "datasource_id", 0) or 0) != source:
+    binding_source = int(getattr(binding, "datasource_id", 0) or 0)
+    if not source:
+        allowed = bind_resources(ctx, runtime.policy)
+        if not binding_source or binding_source not in allowed:
+            raise ResourceScopeError("对象不属于当前会话选择的数据源")
+        return
+    if binding_source != source:
         raise ResourceScopeError("对象不属于当前会话选择的数据源")
     allowed = bind_resources(ctx, runtime.policy)
     if source != session_source and source not in allowed:

@@ -36,6 +36,13 @@ PHYS: dict[str, dict[str, dict]] = {
         "region_code": {"data_type": "varchar", "business_desc": ""},
         "region_name": {"data_type": "varchar", "business_desc": "区域名称"},
     },
+    # ── ES 源（cloud-platform-es）运行日志: 业务时间/分类列都是 keyword 带点列名 ──
+    "t_equipment_operation_log": {
+        "operationTime.keyword": {"data_type": "keyword", "business_desc": "操作时间"},
+        "action.keyword": {"data_type": "keyword", "business_desc": "操作类型"},
+        "serialNumber.keyword": {"data_type": "keyword", "business_desc": "设备序列号"},
+        "level.keyword": {"data_type": "keyword", "business_desc": "告警级别"},
+    },
 }
 
 # 物理表 -> 维度字典(name 为主键)
@@ -63,6 +70,21 @@ DIMS: dict[str, dict[str, dict]] = {
     "t_region": {
         "区域名": {"name": "区域名", "name_en": "region_name", "target_column": "region_name",
                  "category": "地理", "aliases": ["大区名"], "value_labels": {}},
+    },
+    # ES: 时间列是 text(keyword)，边界由服务端算好下推（引擎无 NOW()/INTERVAL）
+    "t_equipment_operation_log": {
+        "设备操作时间": {"name": "设备操作时间", "name_en": "es_op_time",
+                   "target_column": "operationTime.keyword", "category": "时间",
+                   "aliases": ["云平台操作时间"], "value_labels": {}},
+        "操作类型": {"name": "操作类型", "name_en": "es_op_action",
+                 "target_column": "action.keyword", "category": "分类",
+                 "aliases": [], "value_labels": {}},
+        "操作设备序列号": {"name": "操作设备序列号", "name_en": "es_op_device",
+                   "target_column": "serialNumber.keyword", "category": "设备",
+                   "aliases": [], "value_labels": {}},
+        "告警级别": {"name": "告警级别", "name_en": "es_warn_level",
+                 "target_column": "level.keyword", "category": "分类",
+                 "aliases": [], "value_labels": {}},
     },
 }
 
@@ -94,6 +116,23 @@ METRICS: dict[str, dict[str, dict]] = {
                  "unit": "个", "description": "客户去重计数", "aliases": [],
                  "formula_dialects": None},
     },
+    # ES: 公式里的列引用整体加双引号；'scan' 是码值字面量，不得被当列名改写
+    "t_equipment_operation_log": {
+        "设备操作次数": {"name": "设备操作次数", "name_en": "es_equip_operation_count",
+                   "formula": "COUNT(*)", "formula_dsl": None, "agg_type": "COUNT",
+                   "default_agg": "COUNT", "unit": "次", "description": "操作日志条数",
+                   "aliases": ["云平台设备操作次数"], "formula_dialects": None},
+        "设备操作设备数": {"name": "设备操作设备数", "name_en": "es_equip_operation_devices",
+                    "formula": 'COUNT(DISTINCT "serialNumber.keyword")',
+                    "formula_dsl": None, "agg_type": "COUNT_DISTINCT",
+                    "default_agg": "COUNT_DISTINCT", "unit": "台",
+                    "description": "涉及设备去重计数", "aliases": [], "formula_dialects": None},
+        "扫描操作次数": {"name": "扫描操作次数", "name_en": "es_equip_scan_count",
+                   "formula": 'SUM(CASE WHEN "action.keyword" = \'scan\' THEN 1 ELSE 0 END)',
+                   "formula_dsl": None, "agg_type": "SUM", "default_agg": "SUM",
+                   "unit": "次", "description": "扫码操作条数", "aliases": [],
+                   "formula_dialects": None},
+    },
 }
 
 # 查询数据集(内存版), 供"缺参/未声明参数"与"行为路径/漏斗多方言"用例。
@@ -112,6 +151,7 @@ _FUNNEL_SLS_SQL = (
 DATASOURCES: dict[int, str] = {
     1: "hospital", 2: "retail", 3: "hospital-pg",
     4: "doris-analytics", 5: "sls-observability",
+    6: "cloud-platform-es",
 }
 
 DATASETS: dict[str, dict] = {
@@ -157,6 +197,13 @@ BINDINGS: dict[tuple[int, str], ResolvedBinding] = {
     # 跨对象 JOIN 素材(B2/B3)
     (1, "customer"): _b(1, "customer", "t_customer"),
     (1, "region"): _b(1, "region", "t_region"),
+    # ES 运行日志源：force_limit=False 是故意的——ES 引擎硬要求 LIMIT，
+    # planner 必须自行补齐并留痕（用例 es_mandatory_limit_with_trace 锁这条）
+    (6, "cloud_es_equipment_operation_log"): _b(
+        6, "cloud_es_equipment_operation_log", "t_equipment_operation_log",
+        datasource_name="cloud-platform-es", db_type="es",
+        guardrail=Guardrail(query_mode="raw_source", size_class="huge",
+                            allow_full_scan=True, force_limit=False)),
 }
 
 

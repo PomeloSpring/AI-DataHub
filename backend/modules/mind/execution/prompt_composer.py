@@ -22,7 +22,7 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
   由语义层完成 intent→binding→plan→受控执行，并自动施加权限/RLS/护栏/审计。
 - **第一步（强制）：本体/源意图识别**——取数前先确认数据在哪个本体/数据源，再查目录或组装 intent：
   ① 先从问题与 `knowledge_search` 线索（`routes`/`hit_object_keys`）判断对象属于哪个源/本体；
-  ② 多数据源时结合问题用 `list_datasources` 选定 `datasource`（业务名），不确定就 `ask_user`；
+  ② 多数据源时结合问题用 `datasource`（业务名）选源——候选见「数据源拓扑」段（或 `list_datasources`，仅当本会话已授权）；不确定就 `ask_user`；
   ③ 目录/检索为空时**先怀疑“源/本体没选对”**（返回带 `incomplete_scope` 标注时必须先选源再重查），
      不得据此断言“该对象不存在”——目录为空 ≠ 对象不存在。
 - **意图三要素齐备**：每个取数问题先从自然语言抽出「指标 / 维度 / 时间」三类要素再组装 intent——
@@ -60,7 +60,7 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
      `filters[]`（如 站点=日本），它是维度过滤、不是独立数据源；
   ④ `routes[].scenarios` 给出跨源场景清单（`sources[]` + `join_hint`）：逐源分别查询后在结论中
      合并对比，`join_hint` 仅作关联口径说明，不跨源连表；
-  ⑤ `route_resolution` 为 `failed` 时路由解析不可用（不代表无路由），按②用 `list_datasources` 确认候选源。
+  ⑤ `route_resolution` 为 `failed` 时路由解析不可用（不代表无路由），按②用「数据源拓扑」段的源业务名（或 `list_datasources`，仅当已授权）确认候选源。
 - 指标/维度名必须从 `get_metrics` 目录原文复制（其 name 或任一 alias 都合法，系统会解析别名）；
   按天/按月趋势 = is_time 维度 + `time_grain`；枚举维度结果已自动把码值翻成业务名，结论中直接使用业务名；
   若告警出现“无法解析”，**不要臆造名称**：告警若附带“近似候选”，先判断候选是否就是用户要的口径，
@@ -103,7 +103,7 @@ NL2SQL_QUERY_RULES = """## 数据查询规范（语义层主路 + 受治理 SQL 
   结果里 `failure_category=sql_dialect/missing_object/sql_shape` 是**确定性缺陷**（需重写或换源；sql_shape = 非聚合列没进 GROUP BY），重试同一句永远不会好。
 - `execute_sql` 规范：业务背景/指标口径/字段含义一律先用 `knowledge_search`（已绑定知识库）了解，不靠直接翻表结构去猜业务语义；只有需要把口径落到具体物理表/列以拼装 SQL 时，才用 `get_table_schema` / `search_metadata` 确认表名列名。查询形状（时间/过滤/聚合/JOIN）由你自主组织，但写 SQL 前必须先 `check_sql` 预检、只读 SELECT/WITH、禁止 DDL/DML 与多语句；huge 表无过滤谓词的全表扫描会被护栏拒绝，需加 WHERE。
 - 指标/维度名、枚举业务名以 `get_metrics` / 字典为准；相对时间优先用 `run_semantic_query` 的 `time_window`，SQL 路径不得臆造列名。
-- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先用 `list_datasources` 看候选（只返回业务名与方言，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
+- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先看候选业务名（`list_datasources`，仅当已授权；否则看「数据源拓扑」段；均只给业务名，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
 - 不确定口径先检索（knowledge_search / get_metrics / get_glossary / 元数据），宁缺勿错；两档权威冲突时名称以 `get_metrics` 实时目录为准。
   检索**一次传齐**：多个候选问法用 `knowledge_search` 的 `questions`、多个术语用 `get_glossary` 的 `keywords`（工具内已合并成一次检索）；
   `get_glossary` 只译业务黑话/枚举口径，资料类事实问题（入口地址/联系方式/组织分工）不收录，不得拿它补 `knowledge_search` 的未命中。
@@ -789,7 +789,24 @@ def _permission_summary(
     return "\n".join(parts)
 
 
-def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int = 0) -> list[str]:
+def _unsited_for_prompt(site_code: str, user_id: int, workspace_id: int) -> list[str]:
+    """未归站授权源（跨站聚合仓/共享仓）业务名，供拓扑段列出。
+
+    只在会话显式选了站点时现推（与可查站点同口径）；取不到就不注入并留日志，
+    不阻断提示词组装（旁路失败不得影响主链路，但不得假装有）。
+    """
+    if not str(site_code or "").strip() or not user_id:
+        return []
+    try:
+        from backend.core.site_service import unsited_authorized_sources
+        return list(unsited_authorized_sources(int(user_id), int(workspace_id or 0)) or [])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[PromptComposer] unsited authorized sources unavailable: %s", e)
+        return []
+
+
+def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int = 0,
+                               unsited_sources: list | None = None) -> list[str]:
     """数据源拓扑段（服务端派生，不再硬编码在技能提示词里）。
 
     原「站点范围」段升级（呈现层）：除可查站点清单外，必须把**默认呈现口径**
@@ -801,31 +818,51 @@ def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int =
     可查站点 = 角色已授权数据源的**派生视图**（core.site_service.authorized_sites），
     不是第二套「谁能查什么」判断。只在会话显式选定站点时注入：定时分析/评测/Playground
     等绑定单一数据源的无人值守链路不应被鼓励去逐站展开（会改变取数范围）。
+
+    未归站源（`unsited_sources`，core.site_service.unsited_authorized_sources）= 已授权但
+    `site_code` 为空的跨站聚合仓/共享仓（如云平台 ES）：它不进站点派生、也推导不出生效源，
+    只能按 `datasource`（业务名）直接寻址。它们必须在此段**显式列出**：否则没有
+    `list_datasources` 的角色拿不到这些源名，唯一可定源的方式不可达（历史缺陷）。
     只列站点业务名与数据源业务名（护栏 §7：不外泄 id/host）。
     """
     sites = [s for s in (sites or []) if isinstance(s, dict) and s.get("site_code")]
+    unsited = [str(n) for n in (unsited_sources or []) if str(n or "").strip()]
     current = str(site_code or "").strip()
-    if not current or not sites:
+    if not current or (not sites and not unsited):
         return []
     concrete = [s for s in sites if not int(s.get("is_aggregate") or 0)]
-    if not concrete:
-        return []
     aggregate = next((s for s in sites if int(s.get("is_aggregate") or 0)), None)
     current_label = ""
     for s in sites:
         if str(s.get("site_code")) == current:
             current_label = str(s.get("display_name") or current)
             break
-    if not current_label:
+    if not current_label and not unsited:
         # 会话带的站点已不在可查清单里（授权被收回/站点已停用）：不注入假范围
         return []
     lines = ["## 数据源拓扑（服务端派生，本轮生效）"]
-    suffix = "（聚合态：跨站汇总，不对应单一数据源）" if aggregate and current == str(aggregate["site_code"]) else ""
-    lines.append(f"- 会话查询站点: {current_label}{suffix}；未点名站点时默认按该范围取数")
-    listing = " / ".join(
-        f"{s['display_name']}({'、'.join(d['name'] for d in (s.get('datasources') or [])[:4]) or '未挂数据源'})"
-        for s in concrete)
-    lines.append(f"- 可查站点（共 {len(concrete)} 站，括号内为该站数据源业务名）: {listing}")
+    if current_label:
+        suffix = "（聚合态：跨站汇总，不对应单一数据源）" if aggregate and current == str(aggregate["site_code"]) else ""
+        lines.append(f"- 会话查询站点: {current_label}{suffix}；未点名站点时默认按该范围取数")
+    if concrete:
+        listing = " / ".join(
+            f"{s['display_name']}({'、'.join(d['name'] for d in (s.get('datasources') or [])[:4]) or '未挂数据源'})"
+            for s in concrete)
+        lines.append(f"- 可查站点（共 {len(concrete)} 站，括号内为该站数据源业务名）: {listing}")
+    if unsited:
+        lines.append("- 未归站授权源（跨站聚合仓/共享仓，不属任何站点，括号内即源业务名）: "
+                     + "、".join(unsited[:6]))
+    if not concrete:
+        # 只授权了未归站源：分站规则无从落地，只教按源取数（不得把聚合仓当某个站点）。
+        lines.append("- 规则：")
+        lines.extend([
+            "  ① 未归站源直接带 datasource=<源业务名> 取数；它们不归属任何站点，不要带 site"
+            "（带了也定不到它们），也不要按站分报",
+            "  ② 对用户直接回答数字，不得标成“某站点数据”；用户点名某站点时，"
+            "如实说明当前账号没有该站点的数据源授权，不换源重试、不猜源名",
+        ])
+        del datasource_id  # 生效源仅服务端使用，不进提示词（黑盒）
+        return lines
     rules = [
         "① 用户未点名站点时按会话查询站点取数：查询工具带 site=<站点业务名>（如 site=\"中国\"）",
         "② 用户在对话里点名某站点 → 本轮只用该站点（自然语言覆盖会话默认），不要反过来要求用户改选择；"
@@ -851,6 +888,10 @@ def _datasource_topology_lines(site_code: str, sites: list, datasource_id: int =
         "——可查范围就是他的数据世界，直接回答数字；"
         "某站失败标“部分站点暂无数据”，不展开错误细节",
     ]
+    if unsited:
+        rules.append(
+            "⑦ 未归站授权源（见上方清单）不属于任何站点：带 datasource=<源业务名> 直接取数，"
+            "不带 site、不按站分报，也不得把它们的结果当作某站点的数据")
     lines.append("- 规则：")
     lines.extend(f"  {r}" for r in rules)
     del datasource_id  # 生效源仅服务端使用，不进提示词（黑盒）
@@ -1129,7 +1170,8 @@ def compose_system_prompt(
         except Exception as e:  # noqa: BLE001 — 站点拓扑不可用就不注入，不假装有
             logger.debug("[PromptComposer] authorized sites unavailable: %s", e)
             sites_for_prompt = []
-    site_lines = _datasource_topology_lines(site_code, sites_for_prompt or [], datasource_id)
+    site_lines = _datasource_topology_lines(site_code, sites_for_prompt or [], datasource_id,
+                                           _unsited_for_prompt(site_code, user_id, workspace_id))
     if site_lines:
         sections.append("\n".join(site_lines))
 

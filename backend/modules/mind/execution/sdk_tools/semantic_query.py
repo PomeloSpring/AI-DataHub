@@ -64,25 +64,115 @@ def unresolved_source_payload(ctx, object_key: str = "") -> dict:
     who = f"对象「{object_key}」" if object_key else "本次查询"
     if is_aggregate_site(code):
         return {
-            "error": (f"{who} 需要先定站点：当前会话站点是聚合态（全部站点），没有单一生效源，"
-                      "而业务本体的物理绑定按站点登记，聚合态下不会命中任何绑定。"
-                      "这不代表数据未建模：请对本次查询带上 site（站点业务名，如 '中国'）逐站各调一次，"
-                      "分站呈现结果，不得把各站数字相加当作全局值。"),
-            "hint": "可查站点见「数据源拓扑」段；不确定就问用户，不要猜站点名，也不得据此向用户说“该站点暂无数据”。",
-            "retry_with": "site",
+            "error": (f"{who} 需要先定数据源：当前会话站点是聚合态（全部站点），没有单一生效源；"
+                      "业务本体按对象登记了部署源，聚合态下不会命中任何单站绑定。"
+                      "请带 site（站点业务名）逐站编排、分站呈现；跨站/未归站的数据源改带 datasource（源业务名）。"
+                      "这不代表数据未建模，也不可据此宣称该站点没有数据。"),
+            "hint": ("请带 datasource（源业务名）或 site（站点业务名）指定其一后重试："
+                     "跨站/未归站的数据源（如云平台聚合仓）只能带 datasource（它们不属任何站点）；"
+                     "按站分布的业务对象带 site 逐站各调一次、分站呈现，不得把各站数字相加当作全局值。"
+                     "可查站点与源业务名见「数据源拓扑」段；不确定就问用户，不要猜名称；"
+                     "不得据未命中绑定向用户回答“该站点暂无数据”。"),
+            "retry_with": "datasource 或 site",
         }
     if code:
         return {
             "error": (f"{who} 需要先定数据源：会话站点「{site_label}」下有多个已授权数据源（或本站没有唯一默认源），"
                       "本次调用没有确定的生效源，因此没命中任何绑定。"
-                      "请带上 site（站点业务名）或 datasource（list_datasources 里的源业务名）重试。"),
-            "hint": "站点内多源时 datasource 更准（观测类源与业务库常在同一站点下）；不确定就问用户，不要猜名称。",
+                      "请带上 site（站点业务名）或 datasource（「数据源拓扑」段里的源业务名）重试。"),
+            "hint": ("站点内多源时 datasource 更准（观测类源与业务库常在同一站点下）；"
+                     "不归属任何站点的源（如云平台聚合仓）只能用 datasource；不确定就问用户，不要猜名称。"),
             "retry_with": "site 或 datasource",
         }
     return {
         "error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源后重试。",
-        "hint": "可选源见 list_datasources（只回业务名与方言）。",
+        "hint": "可选站点/源业务名见「数据源拓扑」段（只回业务名与方言），或直接询问用户。",
         "retry_with": "datasource",
+    }
+
+
+def _available_source_ids(ctx) -> list[int]:
+    """当前角色授权集（服务端注入，供聚合态定源判定；不来自模型入参）。"""
+    extra = getattr(ctx, "extra", None) or {}
+    return sorted({int(i) for i in (extra.get("available_datasource_ids") or []) if int(i or 0) > 0})
+
+
+def _object_source_candidates(ctx, object_key: str) -> list[dict]:
+    """对象在**角色授权集内**的部署源（业务名，不含物理标识，护栏 §7）。
+
+    聚合态/未定源时用来判定“能否按对象唯一部署定源”。0 候选（未建模/无权限）与
+    多候选（跨站同名对象或同对象多源）都不得猜，交调用方 fail-loud。
+
+    具体站点会话另按站点收口：只收**本会话站点的源**与**未归站源**（跨站聚合仓）。
+    否则 cn 会话可能因某对象只在 jp 部署而静默查了日本库（结果错站）；带显式
+    site/datasource 的逐站编排不经过这里，不受此限。
+    """
+    available = set(_available_source_ids(ctx))
+    if not available or not object_key:
+        return []
+    from backend.core.site_service import (
+        datasource_name_id_map, datasource_name_site_map, is_aggregate_site,
+    )
+    from backend.semantics.cross_site import object_deployments
+
+    name_id = datasource_name_id_map()
+    name_site = datasource_name_site_map()
+    session_site = str((getattr(ctx, "extra", None) or {}).get("site_code") or "").strip()
+    site_scoped = bool(session_site) and not is_aggregate_site(session_site)
+    out: list[dict] = []
+    for dep in object_deployments(object_key):
+        name = str(dep.get("datasource") or "")
+        ds_id = int(name_id.get(name) or 0)
+        if not ds_id or ds_id not in available:
+            continue
+        src_site = str(name_site.get(name) or "").strip()
+        if site_scoped and src_site and src_site != session_site:
+            continue
+        out.append({**dep, "datasource_id": ds_id})
+    return out
+
+
+def _auto_source_for_object(ctx, object_key: str) -> tuple[int, str, list[dict]]:
+    """聚合态/未定源：对象仅在**一个**已授权源有部署时自动定源。
+
+    返回 (datasource_id, note, candidates)。多部署源返回 (0, "", candidates) 由调用方
+    回抛歧义（宁缺勿错，绝不串站）；0 部署源返回 (0, "", [])，沿用既有未定源/未绑定提示。
+
+    为何不能靠站点：跨站聚合仓（如云平台 ES）不归属任何站点，站点推导永远得 0；
+    它们的绑定事实才是唯一可校验的定源依据。
+    """
+    cands = _object_source_candidates(ctx, object_key)
+    if len(cands) != 1:
+        return 0, "", cands
+    dep = cands[0]
+    site = str(dep.get("site") or "")
+    ds_name = str(dep.get("datasource") or "")
+    where = f"{site}（{ds_name}）" if site and site != ds_name else ds_name
+    note = (f"会话未选定单一数据源：对象「{object_key}」在已授权数据源中仅部署于 {where}，"
+            "已按该源自动定源；如需按站点分报请显式带 site，未归站/跨站聚合源请直接用源业务名。")
+    return int(dep["datasource_id"]), note, cands
+
+
+def ambiguous_source_payload(object_key: str, candidates: list[dict]) -> dict:
+    """对象在多个已授权源都有部署且会话未定源：回抛可选业务名，要求显式指定。
+
+    只回业务名（站点/源），不含 id/host；不引用调用方可能未授权的 list_datasources。
+    """
+    names: list[str] = []
+    for c in candidates:
+        site = str(c.get("site") or "")
+        ds_name = str(c.get("datasource") or "")
+        label = f"{site}（{ds_name}）" if site and site != ds_name else ds_name
+        if label and label not in names:
+            names.append(label)
+    listing = "、".join(names[:8])
+    return {
+        "error": (f"对象「{object_key}」在多个已授权数据源上都有部署（{listing}），"
+                  "当前会话未选定单一数据源，无法确定本次取哪个源（跨站同名对象不得混算）。"),
+        "hint": ("请带 datasource（源业务名，即上方括号内名称）或 site（站点业务名）指定其一后重试；"
+                 "不确定就问用户，不要猜名称，也不要把多个源的结果相加。"),
+        "retry_with": "datasource 或 site",
+        "candidate_sources": names[:8],
     }
 
 
@@ -136,7 +226,8 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         except (ValueError, PermissionError) as exc:
             return ({"error": str(exc),
                      "hint": "site 传「数据源拓扑」段里的站点业务名(如 '中国'/'日本'), "
-                             "datasource 传 list_datasources 显示的业务名; 不确定就问用户, 不要猜。"}, True)
+                             "datasource 传该段（或 list_datasources，若已授权）里的源业务名; "
+                             "不确定就问用户, 不要猜。"}, True)
     elif ctx:
         payload["datasource_id"] = int(ctx.datasource_id or 0)
     if ctx:
@@ -152,6 +243,21 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         if session_site and available:
             from backend.core.site_service import session_source_for_site
             payload["datasource_id"] = int(session_source_for_site(session_site, available) or 0)
+
+    # 聚合态/多源站点仍未定源：按**对象在角色授权集内的部署事实**定源。
+    # 跨站聚合仓（如云平台 ES）不归属任何站点（site_code 为空），站点推导永远得 0，
+    # 绑站点反而会把跨站数据当单站数据；这类源只能用其绑定事实定源。
+    # 唯一部署源 → 自动采用并在结果里留痕；多部署源 → 回抛可选业务名，绝不串站。
+    auto_source_note = ""
+    if not int(payload.get("datasource_id") or 0) and ctx is not None:
+        _probe_obj = _peek_intent_object(payload)
+        if _probe_obj:
+            _auto_id, auto_source_note, _cands = await asyncio.to_thread(
+                _auto_source_for_object, ctx, _probe_obj)
+            if _auto_id:
+                payload["datasource_id"] = _auto_id
+            elif len(_cands) > 1:
+                return (ambiguous_source_payload(_probe_obj, _cands), True)
 
     # fail-loud: 业务会话未确定数据源时明确报错, 不下探 resolve_binding(datasource_id=0)
     # 把"未选源"误报成"对象未绑定"（系统域 ds=0 是合法系统域, 不拦）。
@@ -192,6 +298,22 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     binding, bind_warnings = await asyncio.to_thread(
         resolve_binding, q.object, datasource_id=q.datasource_id,
     )
+    if binding is None and ctx is not None and not site_arg and not ds_arg:
+        # 会话源上没有该对象的绑定：若对象在授权集内**只有一处**部署（含未归站的
+        # 跨站聚合仓），改用该源重试一次并留痕。否则会报“未绑定”，把模型引向
+        # “该对象未建模/该站无数据”（历史缺陷：cn 会话问云平台 ES 就撞在这）。
+        # 只在本次**未显式点名** site/datasource 时兜底：点名了就该尊重调用方选择。
+        _auto_id, auto_source_note, _cands = await asyncio.to_thread(
+            _auto_source_for_object, ctx, q.object)
+        if _auto_id and _auto_id != int(q.datasource_id or 0):
+            binding, bind_warnings = await asyncio.to_thread(
+                resolve_binding, q.object, datasource_id=_auto_id)
+            if binding is not None:
+                # 生效源随绑定切走：执行/RLS/敏感策略必须按同一源施力，不得
+                # 用旧会话源的策略去跑新源的 SQL。
+                q.datasource_id = _auto_id
+            else:
+                auto_source_note = ""
     if binding is None:
         return ({
             "error": f"object '{q.object}' 在本次生效数据源上未绑定到任何物理表",
@@ -275,7 +397,8 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
                 list((e.detail or {}).get("masked_columns") or []),
                 **gov_kwargs,
             ),
-            "warnings": _safe_warnings(p.warnings, bind_warnings),
+            "warnings": _safe_warnings(p.warnings, bind_warnings,
+                                       [auto_source_note] if auto_source_note else []),
             "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
             "error": _sanitize_execute_error(e, _effective_db_type(q.datasource_id)),
             "blocked_at": e.blocked_at,
@@ -314,7 +437,8 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         "intent": intent_echo,
         "query_mode": binding.guardrail.query_mode,
         **_safe_governance_notes(result.applied_rls, result.masked_columns, **gov_kwargs),
-        "warnings": _safe_warnings(p.warnings, bind_warnings),
+        "warnings": _safe_warnings(p.warnings, bind_warnings,
+                                   [auto_source_note] if auto_source_note else []),
         **{k: rows_result[k] for k in
            ("columns", "rows", "row_count", "execution_ms", "truncated") if k in rows_result},
     }

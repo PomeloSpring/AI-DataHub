@@ -22,6 +22,7 @@ PHYS = {
     "company_name": {"data_type": "varchar", "business_desc": "医院名称"},
     "patient_phone": {"data_type": "varchar", "business_desc": "患者手机号"},
     "del_flag": {"data_type": "int", "business_desc": ""},
+    "app_code": {"data_type": "varchar", "business_desc": ""},
 }
 DIMS = {
     "创建日期": {"name": "创建日期", "name_en": "create_date", "target_column": "create_time",
@@ -31,6 +32,12 @@ DIMS = {
                "value_labels": {"0": "仅表单", "1": "需要处理", "3": "已上传"}},
     "就诊医院": {"name": "就诊医院", "name_en": "hospital", "target_column": "company_name",
                "category": "组织", "aliases": ["医院"], "value_labels": {}},
+    # 多码同标签：应用分桶维度（17 个集成码 → 「第三方集成App」）的最小复现
+    "应用分组": {"name": "应用分组", "name_en": "app_group", "target_column": "app_code",
+               "category": "分类", "aliases": ["应用分桶"],
+               "value_labels": {"A1": "第三方集成App", "A2": "第三方集成App",
+                                "S1": "Ortho Simulation", "S2": "Ortho Simulation",
+                                "M1": "ModelBuilder"}},
 }
 METRICS = {
     "案例数量": {"name": "案例数量", "name_en": "case_count", "formula": "COUNT(*)",
@@ -167,6 +174,57 @@ class TestEnumLabels:
         assert 'CASE "case_status"' in expr
         assert 'ELSE "case_status"::text END' in expr
         assert "::text" in expr
+
+
+class TestMultiCodeLabel:
+    """一个业务标签对应多个码值（分桶维度）：过滤必须展开成全部码值，不得只取一个。
+
+    "只取首个码值" = 静默少算（错数比回绝危害大），单例钉在这里。
+    """
+
+    def test_eq_multi_code_renders_in(self, patched, binding):
+        r = _resolver(binding)
+        cond = r.render_filter(SemanticFilter(dim="应用分组", op="eq", value="第三方集成App"))
+        assert cond is not None and cond.startswith("`app_code` IN (")
+        assert "'A1'" in cond and "'A2'" in cond
+
+    def test_ne_multi_code_renders_not_in(self, patched, binding):
+        r = _resolver(binding)
+        cond = r.render_filter(SemanticFilter(dim="应用分组", op="ne", value="第三方集成App"))
+        assert cond == "`app_code` NOT IN ('A1', 'A2')"
+
+    def test_eq_two_code_label_also_in(self, patched, binding):
+        # 2 个码的标签走 IN；单码标签仍走等值（不改变原行为）
+        r = _resolver(binding)
+        assert r.render_filter(SemanticFilter(dim="应用分组", op="eq", value="Ortho Simulation")) \
+            == "`app_code` IN ('S1', 'S2')"
+        assert r.render_filter(SemanticFilter(dim="应用分组", op="eq", value="ModelBuilder")) \
+            == "`app_code` = 'M1'"
+
+    def test_raw_code_passthrough(self, patched, binding):
+        r = _resolver(binding)
+        assert r.render_filter(SemanticFilter(dim="应用分组", op="eq", value="A1")) \
+            == "`app_code` = 'A1'"
+
+    def test_in_values_expand_and_flatten(self, patched, binding):
+        # values 里的标签逐个反查，多码结果拍平成一维（不出现嵌套数组/重复括号）
+        r = _resolver(binding)
+        cond = r.render_filter(SemanticFilter(dim="应用分组", op="in",
+                                              values=["第三方集成App", "ModelBuilder"]))
+        assert cond is not None and cond.startswith("`app_code` IN (")
+        assert set(cond[len("`app_code` IN "):].strip("()").split(", ")) == {"'A1'", "'A2'", "'M1'"}
+
+    def test_group_by_bucket_labels(self, patched, binding):
+        # 分组表达式中每个码值都翻成业务标签，SELECT/GROUP BY 同表达式
+        q = SemanticQuery(object="case", metrics=["案例数量"], dimensions=["应用分组"], limit=20)
+        p = plan(q, binding)
+        assert "WHEN 'A1' THEN '第三方集成App'" in p.sql
+        assert "WHEN 'A2' THEN '第三方集成App'" in p.sql
+        group_line = [l for l in p.sql.splitlines() if l.startswith("GROUP BY")][0]
+        select_line = p.sql.splitlines()[0]
+        sel_expr = select_line[len("SELECT "):select_line.index(", COUNT(")]
+        sel_expr = sel_expr[:sel_expr.rindex(" AS ")]
+        assert group_line[len("GROUP BY "):] == sel_expr
 
 
 # ── did-you-mean 提示安全 ──────────────────────────────────────

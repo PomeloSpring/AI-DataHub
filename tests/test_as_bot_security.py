@@ -896,6 +896,30 @@ def test_effective_source_zero_falls_back_to_session_source(datasource_scope):
         guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=8), 0)
 
 
+def test_aggregate_session_binding_in_grant_passes(datasource_scope):
+    """聚合态会话（会话源=0，全部站点）不得把 0 当成“对象属于别的源”。
+
+    历史缺陷（会话 1783069459339）：聚合态 `session_source_for_site('global')` 恒 0，
+    旧判据 `if not source` 直接拒，连不归属任何站点的跨站聚合仓（云平台 ES）都查 不了；
+    而同一请求上一步的 `resolve_binding(obj, 0)` 探针已经证明“绑定就在这里”。
+    现在改按**绑定事实**裁决：绑定落角色授权集内即放行。
+    """
+    guard, state, context = datasource_scope
+    ctx, _ = context(0)
+    guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=7))
+    assert ctx.datasource_id == 0   # 不得静默把聚合态会话钉到某个源
+
+
+def test_aggregate_session_binding_outside_grant_rejected(datasource_scope):
+    """聚合态同样 fail-closed：绑定源不在授权集（或绑定源为 0）一律拒。"""
+    guard, state, context = datasource_scope
+    ctx, _ = context(0)
+    with pytest.raises(PermissionError, match="不属于当前会话"):
+        guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=9))
+    with pytest.raises(PermissionError, match="不属于当前会话"):
+        guard.validate_binding(ctx, SimpleNamespace(model_id=3, datasource_id=0))
+
+
 @pytest.mark.parametrize("args", [{}, {"datasource_id": None}, {"datasource_id": 7}])
 def test_tool_source_optional_null_uses_confirmed_scope(datasource_scope, args):
     guard, state, context = datasource_scope
