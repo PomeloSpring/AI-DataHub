@@ -16,7 +16,7 @@ import { ExternalLink, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ResponsiveDashboardCanvas } from '@/components/DashboardCanvas';
-import { useDashboardStore, type Dashboard } from '@/stores/dashboardStore';
+import { useDashboardStore, isRefreshableDataChart, type Dashboard } from '@/stores/dashboardStore';
 import { useVisLibrary } from '@/hooks/useVisLibrary';
 import { useCancelChartRefreshOnLeave } from '@/hooks/useCancelChartRefreshOnLeave';
 import client from '@/api/client';
@@ -53,9 +53,14 @@ export default function DashboardPreviewDialog({ dashboardId, onClose }: Props) 
       setBoard(data);
       // 登记为当前看板：卡片的参数提示/刷新/导出都以 store 上下文为唯一通道（与浏览页、大屏同口径）
       useDashboardStore.getState().adoptDashboard(data);
-      // 设计发布时图表不带缓存（publish 把 data_cache 置空），打开即按图表重查一次；
-      // 失败/排队落在卡片上显式标注（dashboardStore 的 paramDiagnostics），不拿空图充"看板详情"
-      void useDashboardStore.getState().refreshCharts(Number(data?.id) || dashboardId, data?.charts || []);
+      // 预览默认**读缓存**（GET 只回 data_cache）：每次打开都逐图重查会把同一块板反复压到
+      // 数据源上（用户反馈：“预览不要每次都刷新数据”），看板页/大屏本来也是缓存优先。
+      // 例外只补“从来没有缓存”的图（发布期/老数据 cache 为空）：不补就会留白，被误读成
+      // “这块板没数据”。其余图要看最新数字由下面的「刷新数据」按钮显式发起。
+      const missing = ((data?.charts || []) as Dashboard['charts']).filter(c => isRefreshableDataChart(c) && !c.data_cache);
+      if (missing.length) {
+        void useDashboardStore.getState().refreshCharts(Number(data?.id) || dashboardId, missing);
+      }
     }).catch(() => {
       // 看板不可用要显式可见（可能已删除/无可见权），不静默留一个空白框
       if (!cancelled) setError(t('dashboardPreview.unavailable'));
@@ -64,6 +69,8 @@ export default function DashboardPreviewDialog({ dashboardId, onClose }: Props) 
   }, [dashboardId, retry, t]);
 
   const chartCount = board?.charts?.length || 0;
+  // 缓存态要说在明处：预览不再自动重查，用户得知道“看到的是上次的缓存、要新数点刷新”
+  const cachedCount = ((board?.charts || []) as Dashboard['charts']).filter(c => !!c.data_cache).length;
   const reload = () => {
     void useDashboardStore.getState().refreshCharts(Number(board?.id) || dashboardId, board?.charts || []);
   };
@@ -81,6 +88,7 @@ export default function DashboardPreviewDialog({ dashboardId, onClose }: Props) 
           {board
             ? <>{t('dashboardPreview.meta', { count: chartCount })}{board.description ? ` · ${board.description}` : ''}</>
             : t('dashboardPreview.loading')}
+          {board && cachedCount > 0 && <span className="ml-1">{t('dashboardPreview.cachedHint', { count: cachedCount })}</span>}
         </p>
         {/* 字模库没加载到：图表会退回默认样式，必须在弹窗里说在明处并给重试（不做静默降级） */}
         {library.error && <p role="alert" className="shrink-0 text-xs text-amber-600">
@@ -93,7 +101,8 @@ export default function DashboardPreviewDialog({ dashboardId, onClose }: Props) 
           : <div className="flex min-h-0 flex-1 items-center justify-center"><Loader2 className="animate-spin" aria-hidden /></div>}
       </>}
       <div className="flex shrink-0 items-center justify-end gap-2">
-        {board && <Button size="sm" variant="ghost" onClick={reload} disabled={refreshing}>
+        {board && <Button size="sm" variant="ghost" onClick={reload} disabled={refreshing}
+          aria-label={t('dashboardPreview.refresh')}>
           <RefreshCw className={`mr-1 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />{t('dashboardPreview.refresh')}
         </Button>}
         <Button variant="outline" size="sm" asChild>

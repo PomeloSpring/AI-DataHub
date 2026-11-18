@@ -143,14 +143,20 @@ export function resolvePageLayout(dashboard: PageDashboard, bp: PageBreakpoint):
     const ratio = parent ? columns / PAGE_COLUMNS.desktop : columns / width;
     // 未手动放置的控件按自然尺寸生成（ceil 保证装得下内容），不再从大屏 position(默认 300×60)按比例放大；
     // 图表保留按 position 等比映射（大屏布局是有意义的起点，round 即等比例）
+    const sourceX = parent?.x ?? origin.x;
     const sourceW = parent?.w ?? (widget ? natural.w : origin.w);
-    // 图表默认跳“四分之一屏”（v2 时代是 3/12 列），不随列数膨胀
-    const w = bp === 'mobile' ? 1 : Math.min(columns, Math.max(widget ? 1 : Math.round(columns / 4),
-      widget ? Math.max(1, Math.ceil(sourceW * ratio)) : Math.round(sourceW * ratio)));
+    const left = Math.round(sourceX * ratio);
+    // 图表宽度用「右边缘 − 左边缘」换算：x 与 w **各自 round** 会在 screen/tablet 档由 desktop 矩形放大时
+    // 累积误差（screen = desktop × 4/3），5 连 KPI（384px ≈ 1/5 屏）每张多抢 1 列互相压住，
+    // 下面避让循环就把整排逐张挤到下一行——用户看到的是一条斜阶梯 + 右侧大片空白（历史缺陷 2026-11-17）。
+    // 另外**不得**再用「1/4 屏」下限抬宽图表：抬宽不改 x 同样造成横叠。
+    // 控件仍按自然宽 ceil 取列（列宽含 gap，round 会压掉一个 gap 装不下内容）。
+    const spanBy = (value: number) => widget ? Math.max(1, Math.ceil(value * ratio)) : Math.max(1, Math.round(value * ratio));
+    const w = bp === 'mobile' ? 1 : Math.min(columns, widget ? spanBy(sourceW) : Math.max(1, spanBy(sourceX + sourceW) - left));
     const height = parent ? pageRowPx(parent.h)
       : widget ? natural.h : Math.min(600, origin.h);
     return { chart, automatic: !explicit, rect: explicit || {
-      x: Math.max(0, Math.min(columns - w, Math.round((parent?.x ?? origin.x) * ratio))),
+      x: Math.max(0, Math.min(columns - w, left)),
       y: parent?.y ?? Math.round(origin.y / PAGE_ROW), w,
       h: pageRows(Math.max(pageMinHeight(chart.chart_type), height)),
     } };

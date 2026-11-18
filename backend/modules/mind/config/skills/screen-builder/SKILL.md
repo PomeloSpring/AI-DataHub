@@ -106,9 +106,13 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 
 口径确实有歧义(同名指标多口径/时间范围未定/站点未定)时**一次** `ask_user` 问清,然后继续;不要拿默认值先跑。
 
-### B2.5 交互参数不支持(直建口径)
-- 直建通道**不支持看板交互筛选参数**:每图的取数口径已固化在数据集里(数据集正文/意图),看板参数没有消费方,传了就是"能填不出数"的死控件——工具会**直接拒收** `filters`。
-- 用户确需参数控件(如日期区间筛选),告诉他到「数据集」页把正文改成 `${变量}` 外置形式后**人工挂图**,不要在本会话里绕。
+### B2.5 参数控件与交互筛选（直建口径）
+
+先分清：**参数控件（`widget_*`）是看板参数的输入口，不是图表**——自己不取数，值要经看板参数翻译成数据集 `${变量}` 才生效（三层链路：控件 `paramKey`/`bind_param` → 看板参数 → 数据集入参声明 `variables`/`dash_key` → 正文 `${}` 渲染）。没被数据集接住的参数会回传 `unbound_params` 并在图卡上标“参数未生效”。
+
+- **直建通道不产控件**：每图口径已固化在数据集里（`chart_preset.intent`），控件绑的变量没有消费方 → 传 `filters` 或 `widget_*` 会被**显式拒收**。这是口径边界，不是遗漏：不生成“看着能筛、其实筛不动”的死控件。
+- **用户要筛选交互时怎么回**（先说明限制，再给可落地选项，不自行绕）：① 到「数据集」页把谓词改成 `${变量}` 外置并声明入参，再在看板编辑器拖 `widget_select`/`widget_daterange` 绑定；② 多版本固定口径图（分站点/分类型各一张）；③ “最近 7 天/本月/今年”这类用 `time_window`，不造日期控件。
+- **控件清单（编辑器/人工挂件用，类型名只能逐字用这些）**：`widget_select`（下拉，`options:[{label,value}]`）/ `widget_multi_select`（多选，值为数组）/ `widget_date` / `widget_daterange`（`bind_param` 写 `"start,end"` 两个键）/ `widget_text` / `widget_number` / `widget_label`（静态文本，`content`）/ `widget_search`（整板重查）/ `widget_reset`（恢复默认后重查）/ `widget_export`（**必须** `targetChartId`）/ `widget_decision`（展示型）。**`widget_input`/`widget_button` 不存在**；控件不写 `paramKey`/`bind_param` = 填了不生效的空框；控件按自然尺寸、不按 position 等比放大。
 
 ### B2.6 取数预算与超时
 - 一图一问题:高基数 GROUP BY(用户/设备/明细级)或全量宽窗容易顶到执行超时;默认收窄 `time_window`,排行类配 `limit`/TopN,不要靠"多塞几个维度"堆一张图。
@@ -135,22 +139,26 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 - **同族同排**:趋势族(`line/area/timeseries_line/timeseries_bar/timeseries_area`)不跟饼图/表格/地图混在一行;
 - **多站一屏:列 = 站点、行 = 指标**,站点顺序与用户给出的顺序一致(中国→新加坡→欧洲→日本→英国);
 - **异构卡(饼图/表格/地图)不当对比项**:只在部分站点有时别按站点列摆(会空出右侧一大片),工具会自动居中;自己写 `position` 时也不要把它拉成整屏或死靠左上;
-- **不重叠、留白 ≥12px**,总图数 ≤24(超了拆板,不硬塞);
+- **不重叠、留白 ≥12px**,总图数 ≤24(超了拆板,不硬塞)。重叠的坐标**不会报错**,渲染器会把后来者整体下移一行——用户看到的是“卡片一张比一张靠右下、右侧一大片空白”的斜阶梯;所以宁可排紧,不能横叠;
+- 建/改屏返回里的 **`layout_audit`** 是这件事的硬判据:`ok=false` 就按其 `overlaps`/`out_of_canvas` 指名修坐标(或删 `position` 让服务端重排)后再交付,不要带着重叠汇报成功;`idle_rows` 只是整行留白参考(单张异构卡居中属预期)。
 - 需要精确网格(列数/行高/间距)只能在编辑器「页面布局」里保存,本工具只保证**相对比例**——不要向用户承诺像素级还原。
 
 ### B5. 创建
-调用 `create_data_screen`,widgets 每项含 `title`、`chart_type`、`query`(意图)、`site`/`datasource`(多站时,业务名)、`component_ids`(可选)、`config`(可选,如 xCol/yCol/legend)、`position`(可选,否则自动布局)。成功返回 `url`(如 `/screen/<id>`)、`actions`(会话内预览入口)、`layout`(逐图坐标)、每图对应的 `datasets`、`data_audit`。
+调用 `create_data_screen`,widgets 每项含 `title`、`chart_type`、`query`(意图)、`site`/`datasource`(多站时,业务名)、`component_ids`(可选)、`config`(可选,如 xCol/yCol/legend)、`position`(可选,否则自动布局)。成功返回 `url`(如 `/screen/<id>`)、`actions`(会话内预览入口)、`layout`(逐图坐标)、`layout_audit`(版面自检:重叠/越界/整行留白)、每图对应的 `datasets`、`data_audit`。
 
 - **汇报必须给可点入口**:返回体里的 `actions`(type=`open_screen`)是聊天界面里的「预览大屏」按钮来源,同时把 `url` 以链接形式给用户;只贴纯文本路径(`/screen/123`)等于没给入口。
+- **入口是回合级的,不要逐图贴**:界面在**最终回答末尾**统一给一个「预览大屏」(同一块板的多次 update 不重复出按钮)。逐图调用 `update_data_screen_chart` 后不必每步都宣告“可预览了”,把板子改完之后一次性汇报即可。
+- **预览默认读缓存**:建屏时已预填首屏数据(`data_cache`)，用户打开预览/播放页**不会自动重查数据源**；要看最新数字由用户点回复/弹窗/大屏顶栏的「刷新数据」。汇报时说“看板已建好、当前展示建屏数据，需要最新数据点刷新”——不得把缓存数字说成实时。
 - 工具会先落数据集(同用户+同对象+同源+同意图会**复用**,不重复造资产)再挂图;`query` 不合法/对象未绑定会在**落库前**整单拒绝,不会留半截大屏。
 - 若某图返回"未绑定对象/护栏拒绝"等声明式错误,按提示调整该图意图后重试一次;执行阶段失败属系统侧问题,不要猜测或展示数据源细节。
 - **版面几何的真实口径**:`position` 基于 1920×1080,但播放页按**响应式网格**渲染——像素会被**等比换算**成当前断点的列格重排,`w/h` 只保证相对比例,不保证像素级所见即所得;控件类组件按自然尺寸而非等比放大。要精确版面(网格列数、控件行、间距)需在前端编辑器保存页面布局,本工具无该入口——**不要向用户承诺像素级还原**。
 - **受众与权限**:`create_data_screen` 建的大屏 `is_public=false` 且只属当前工作空间。别人能否打开取决于共享设置 + 查看者对图中对象/数据源的权限——"我这边出数、他那边空白/被拒"是权限没配,不是图坏了。生成后提醒用户这一步。
 
 ### B6. 创建后自检
-1. 看返回里的 **`data_audit`(逐图行数)与 `empty_charts`**:零行的图必须逐张向用户点名并给原因/下一步——不得拿"已创建 N 个图表"当作数据正常。
-2. `get_data_screen(dashboard_id)` 核对:图表数、每图 `dataset_name`、`chart_type`/`position` 是否按意图落库;多站屏核对**站点列有没有串列**(每列应同一站点)。
-3. 汇报里**分开说**五件事:已验数的图 / 取数为空的图 / 口径未覆盖的图 / 新建或复用了哪些数据集 / **预览入口**(`actions` 按钮 + `url` 链接)。
+1. 看返回里的 **`data_audit`(逐图行数)与 `empty_charts`**:零行的图必须逐张向用户点名并给原因/下一步——不得拿“已创建 N 个图表”当作数据正常。
+2. 看返回里的 **`layout_audit`**:`ok=false` 先重排再交付(逐图 update 同样会回整板自检,挪一张也可能压住邻居)。
+3. `get_data_screen(dashboard_id)` 核对:图表数、每图 `dataset_name`、`chart_type`/`position` 是否按意图落库;多站屏核对**站点列有没有串列**(每列应同一站点)。
+4. 汇报里**分开说**五件事:已验数的图 / 取数为空的图 / 口径未覆盖的图 / 新建或复用了哪些数据集 / **预览入口**(`actions` 按钮 + `url` 链接)。
 
 ## 路径 C:修改已有大屏
 
@@ -165,7 +173,7 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 ## 禁止行为
 
 - 要求用户填写/确认 SQL、输出 ```design 块、开设计面板或说"到面板确认发布"(本会话无此入口);无歧义却反复追问"确认生成?"。
-- 把 `filters`(交互参数)传给 `create_data_screen`——直建不支持,工具会直接拒收;需要参数控件引导到数据集页外置变量。
+- 把 `filters`(交互参数)传给 `create_data_screen`——直建不支持,工具会直接拒收;需要参数控件时按 B2.5 如实说明限制并引导到数据集参数化 + 人工挂控件。
 - 以"`create_data_screen` 返回成功"为依据宣称数据已验证;零行图被报成"已建好"。
 - 承诺像素级版面(位图坐标只保证相对比例,播放页按响应式网格重排)。
 - 图跑空时换指标凑数、拿默认值糊过缺参报错,或静默收窄时间窗假装出数。
@@ -173,4 +181,4 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 - 编造对象/指标/维度名;找不到数据如实告知,不用"业务逻辑推测"补齐。
 - 同一工具相同参数连续调用超过 2 次;报错后最多换参数重试 1 次。
 
-更多细节见 `references/`:布局与栅格、字模库用法、设计模板参考。
+更多细节见 `references/`（维护文档，不随技能正文下发；正文口径以上文为准）：布局与栅格、字模库用法、参数控件与看板参数、设计模板参考。

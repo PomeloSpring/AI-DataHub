@@ -9,14 +9,13 @@
 import { useState, useMemo } from 'react';
 import {
   Wrench, CheckCircle, XCircle, Loader2,
-  ChevronRight, ChevronDown, SquareArrowOutUpRight,
+  ChevronRight, ChevronDown,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import i18n from '@/i18n';
 import type { ToolCall, ProgressStage } from '../stores/chatStore';
 import { KnowledgeSummary } from './InlineDetails';
 import { SlideCollapse } from './chat/StageCard';
-import DashboardPreviewDialog from './asbot/DashboardPreviewDialog';
 // 工具名人话 = 全站一份（报告重跑的过程面板与这里同一口径），不在页面里各拼一套
 import { getToolLabel } from '../lib/toolLabel';
 
@@ -79,57 +78,9 @@ function groupToolCalls(toolCalls: ToolCall[]): ToolCallGroup[] {
   return groups;
 }
 
-// ── 直建大屏：会话内预览入口 ────────────────────
-
-/** 建屏/改图工具名（mcp__datahub_screen__xxx）。 */
-const SCREEN_TOOL_RE = /datahub_screen__(create_data_screen|update_data_screen_chart)$/;
-
-/**
- * 从工具结果里取出可预览的 dashboard_id。
- *
- * 后端在返回体里给出了 `actions:[{type:'open_screen',dashboard_id,url}]`（历史结果
- * 也可能只有 dashboard_id/url）。之前聊天里只把 `/screen/<id>` 当纯文本念给用户，
- * 界面上没有任何可点入口 —— 用户反馈“建成功了但没有预览的选项”，这里补齐。
- */
-function screenPreviewId(tc: ToolCall): number | null {
-  if (!SCREEN_TOOL_RE.test(tc.tool) || tc.error) return null;
-  const raw = tc.result || tc.result_preview || '';
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    const act = (Array.isArray(parsed?.actions) ? parsed.actions : [])
-      .find((a: any) => a?.type === 'open_screen');
-    if (act?.dashboard_id) return Number(act.dashboard_id);
-    if (parsed?.dashboard_id) return Number(parsed.dashboard_id);
-  } catch {
-    // 展示层会截断长结果（JSON 不完整），不能因此丢掉入口：按开头出现的面板 id 兜底解析
-  }
-  const m = raw.match(/"dashboard_id"\s*:\s*(\d+)/) ?? raw.match(/\/screen\/(\d+)/);
-  return m ? Number(m[1]) : null;
-}
-
-/** 「预览大屏」按钮 + 同源预览弹窗（与设计卡片预览同一个组件，不另造一套画布）。 */
-function ScreenPreviewEntry({ dashboardId }: { dashboardId: number }) {
-  const { t } = useTranslation('chat');
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        type="button"
-        className="ml-9 mb-1 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-      >
-        <SquareArrowOutUpRight className="h-3 w-3" />
-        {t('toolTimeline.previewScreen')}
-      </button>
-      {open ? (
-        <DashboardPreviewDialog dashboardId={dashboardId} onClose={() => setOpen(false)} />
-      ) : null}
-    </>
-  );
-}
-
 // ── Single Tool Item ───────────────────────────────────────────
+// 大屏预览入口不挂在这里：一个回合一个入口，由回合级 TurnScreenPreview 渲染
+// （历史缺陷 2026-11-17：逐图 update_data_screen_chart 各出一个「预览大屏」）。
 // 导出供 ProcessTimeline(思考/工具穿插的有序时间线)复用
 export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index: number }; conversationId?: number | null }) {
   const { t } = useTranslation('chat');
@@ -139,7 +90,6 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
   const summary = extractSummary(tc);
   const argsStr = formatArgs(tc.arguments);
   const stepNum = tc.step || tc._index + 1;
-  const previewId = screenPreviewId(tc);
 
   return (
     <div>
@@ -188,7 +138,6 @@ export function SingleToolItem({ tc, conversationId }: { tc: ToolCall & { _index
         )}
       </div>
 
-      {previewId ? <ScreenPreviewEntry dashboardId={previewId} /> : null}
       {tc.knowledge && <KnowledgeSummary data={tc.knowledge} conversationId={conversationId} />}
       {/* 滑动展开的明细(参数/返回) */}
       <SlideCollapse open={expanded}>

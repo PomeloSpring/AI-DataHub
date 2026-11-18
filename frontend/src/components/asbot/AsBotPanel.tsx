@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import MarkdownWithCharts from '../MarkdownWithCharts';
 import ProcessTimeline from '../ProcessTimeline';
+import { TurnScreenPreview } from '../ScreenPreviewEntry';
 import BotAvatar from '../chat/BotAvatar';
 import WaitingIndicator from '../chat/WaitingIndicator';
 import { useAsBotStore } from '../../stores/asBotStore';
@@ -347,6 +348,11 @@ function MessageBubble({
               </div>
             )}
           </div>
+        )}
+
+        {/* 整回合的产物入口：建/改大屏任务完成后只给一次（与 Chat 同一组件、同一口径） */}
+        {!isUser && (
+          <TurnScreenPreview toolCalls={msg.tool_calls as any} streaming={isStreaming} />
         )}
 
         {/* Error */}

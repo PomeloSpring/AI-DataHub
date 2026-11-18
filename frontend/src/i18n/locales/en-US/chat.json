@@ -707,6 +707,7 @@
     "unavailable": "Dashboard unavailable (deleted or no permission)",
     "open": "Open in new window",
     "refresh": "Refresh data",
+    "cachedHint": "({{count}} charts show cached data — click “Refresh data” for the latest)",
     "retry": "Retry"
   },
   "designStatus": {

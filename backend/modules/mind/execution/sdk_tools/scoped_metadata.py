@@ -2,7 +2,7 @@
 import json
 
 from backend.common.db import execute_query
-from backend.modules.mind.execution.sdk_tools.semantic_tools import _sanitize_dict_desc
+from backend.modules.mind.execution.sdk_tools.semantic_tools import _prop_view, _public_aliases, _sanitize_dict_desc
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
          "list_ontology_models", "get_metadata_summary", "get_glossary", "get_metrics"}
@@ -126,16 +126,33 @@ def execute(name, args, ctx, resource_scope=None):
         for row in rows:
             doc = json.loads(row["json_content"]) if isinstance(row["json_content"], str) else row["json_content"]
             allowed_keys.update(o.get("key") for o in (doc or {}).get("objects", []))
-        objects = {}
+        keyword = str(args.get("keyword") or "").strip().lower()
+
+        def _kw_hay(entry: dict) -> set[str]:
+            """关键词命中面：名称/英文名/别名 + 枚举业务名。
+
+            不得把整条 JSON 当干草堆（description 里的口径文字会意外命中，
+            模型据此以为命中的是同一个概念）。
+            """
+            hay = {str(entry.get("name") or ""), str(entry.get("name_en") or "")}
+            hay |= {str(a) for a in (entry.get("aliases") or [])}
+            labels = entry.get("enum") or entry.get("value_labels") or {}
+            if isinstance(labels, dict):
+                hay |= {str(v) for v in labels.values()}
+            return {h.lower() for h in hay if h}
+
+        def _kw_hit(entry: dict) -> bool:
+            return (not keyword) or any(keyword in h for h in _kw_hay(entry))
+
+        entries_all: dict[str, list] = {}
         for table, fields, category in (("adh_metrics", "name,name_en,aliases,description,unit", "metrics"),
                                         ("adh_dimensions", "name,name_en,aliases,description,value_labels,category", "dimensions")):
-            entries = execute_query(f"SELECT bound_object_key,{fields} FROM {table} WHERE {dict_condition} AND is_active=1", dict_params)
-            for entry in entries:
+            bucket_rows: list = []
+            for entry in execute_query(
+                    f"SELECT bound_object_key,{fields} FROM {table} WHERE {dict_condition} AND is_active=1",
+                    dict_params):
                 key = entry.pop("bound_object_key", None)
                 if key not in allowed_keys:
-                    continue
-                keyword = str(args.get("keyword") or "").lower()
-                if keyword and keyword not in json.dumps(entry, ensure_ascii=False).lower():
                     continue
                 for field in ("aliases", "value_labels"):
                     if isinstance(entry.get(field), str):
@@ -146,10 +163,35 @@ def execute(name, args, ctx, resource_scope=None):
                 if category == "dimensions":
                     entry["enum"] = entry.pop("value_labels", None) or {}
                     entry["is_time"] = entry.pop("category", "") == "时间"
-                objects.setdefault(key, {"object": key, "metrics": [], "dimensions": []})[category].append(entry)
-        return _scope_note({"objects": list(objects.values()), "total": len(objects)})
-    models, objects = [], []
+                bucket_rows.append((key, entry))
+            entries_all[category] = bucket_rows
+        # keyword 语义：**命中即整对象补全**。历史缺陷（会话 1783069459337）：keyword="订单"
+        # 只回名称含“订单”的 3 个维度，模型把子集当对象全量，断言“订单只有 4 个维度、
+        # 没有接单方字段”，反复判定“无法按时代天使查订单”——而该对象实有 13 个维度
+        # （含「接单技工所」）与 55 个属性。子集不得冒充全量（no-silent-degradation）。
+        hit_keys = {key for bucket_rows in entries_all.values() for key, entry in bucket_rows if _kw_hit(entry)}
+        objects: dict[str, dict] = {}
+        for category, bucket_rows in entries_all.items():
+            for key, entry in bucket_rows:
+                matched = _kw_hit(entry)
+                if keyword and not matched and key not in hit_keys:
+                    continue
+                row = dict(entry)
+                if keyword:
+                    row["matched_by_keyword"] = matched
+                objects.setdefault(key, {"object": key, "metrics": [], "dimensions": []})[category].append(row)
+        out = {"objects": list(objects.values()), "total": len(objects)}
+        if keyword:
+            out["keyword"] = keyword
+            out["keyword_note"] = (
+                "keyword 只决定“哪些对象被命中”：命中对象的指标/维度是**该对象全量**"
+                "（matched_by_keyword=true 为词直命中，false 为同对象其余口径，同样可查）。"
+                "未出现在结果里的对象=其对象名/别名/枚举业务名不含该词，不代表平台没有该口径；"
+                "查询某对象的完整可用口径请不传 keyword，或直接用它自己的对象名作 keyword。")
+        return _scope_note(out)
+    models, candidates = [], []
     keyword = str(args.get("query") or args.get("keyword") or args.get("table_name") or "").strip().lower()
+    object_key_want = str(args.get("object_key") or args.get("key") or "").strip()
     for row in rows:
         doc = row["json_content"]
         if isinstance(doc, str):
@@ -159,13 +201,40 @@ def execute(name, args, ctx, resource_scope=None):
             display = obj.get("display_name") or obj.get("label")
             if not display:
                 continue
+            raw_props = obj.get("properties") or []
             view = {"object_key": obj.get("key"), "name": display,
-                    "aliases": obj.get("aliases") or [], "description": obj.get("description") or "",
-                    "properties": [{"name": p["display_name"], "description": p.get("description") or ""}
-                                   for p in obj.get("properties", []) if p.get("display_name")]}
-            if not keyword or keyword in json.dumps(view, ensure_ascii=False).lower():
-                objects.append(view)
+                    "aliases": _public_aliases(obj.get("aliases"), obj.get("primary_table")),
+                    "description": obj.get("description") or "",
+                    "property_count": len(raw_props)}
+            if object_key_want:
+                hit = str(view.get("object_key") or "") == object_key_want
+            else:
+                # 命中面只放业务名/别名/描述/属性业务名（物理列名不得进匹配面，护栏 §7）
+                hay = json.dumps({"name": display, "aliases": _public_aliases(obj.get("aliases")),
+                                  "description": obj.get("description") or "",
+                                  "properties": [p.get("name") or p.get("display_name")
+                                                 for p in raw_props]}, ensure_ascii=False).lower()
+                hit = (not keyword) or keyword in hay
+            if hit:
+                candidates.append((view, raw_props))
+    # 属性展开口径：
+    #   - search_metadata / search_ontology：发现面，命中的对象直接带属性（既有口径，不改窄）；
+    #   - get_ontology_model：全模型摘要（十几对象 × 数十属性），默认只回 property_count，
+    #     传 object_key 才展开该对象全量属性，避免一次回上千行把上下文撞满。
+    expand = bool(object_key_want) or name in ("search_metadata", "search_ontology")
+    objects = []
+    for view, raw_props in candidates[:50]:
+        if expand:
+            props = [v for v in (_prop_view(p) for p in raw_props) if v]
+            view["properties"] = props
+            if raw_props and not props:
+                # 登记了属性却投影不出业务名 = 建模数据缺业务名，必须显式暴露，不得伪装成“无字段”
+                view["properties_note"] = "该对象已登记属性但缺失业务名，无法投影；不得据此认为对象没有字段"
+        else:
+            view["properties_note"] = (f"属性未展开（已登记 {len(raw_props)} 个）；"
+                                       "需要字段清单时传 object_key=该对象 key 重新调用")
+        objects.append(view)
     if name == "list_ontology_models":
         return _scope_note({"models": models})
-    return _scope_note({"objects": objects[:50], "models": models if requested else [],
+    return _scope_note({"objects": objects, "models": models if requested else [],
             "view": "business_ontology", "notice": "仅提供已授权的业务本体属性，不提供物理表结构"})

@@ -384,6 +384,13 @@ async def _prepare_widget(w, index: int, args: dict, ctx, identity: dict,
             "请用 query 传声明式语义意图 {object, metrics[], dimensions[], filters[], order, limit, time_window}。"))
     title = str(w.get("title") or f"图表 {index + 1}").strip()
     chart_type = _normalize_chart_type(w.get("chart_type") or "bar")
+    if chart_type.startswith("widget_"):
+        # 参数控件单独说明：否则“不支持的图表类型”会引导模型去换别的图，而不是解释口径边界
+        raise ScreenIntentError(_error(
+            f"widgets[{index}]({title}) 是参数控件（{chart_type}）：直建通道不产控件——每图口径"
+            "已固化为数据集意图，控件绑定的变量没有消费方（填了不出数）。需要筛选交互时如实告知"
+            "用户：数据集正文改 ${变量} 外置 + 声明入参，再到看板编辑器挂 widget_* 绑定，"
+            "或改用相对时间窗 time_window（口径见 screen-builder 技能 B2.5）。"))
     if chart_type not in _CHART_TYPES:
         raise ScreenIntentError(_error(
             f"widgets[{index}] 不支持的图表类型: {w.get('chart_type')}, 可选: {', '.join(sorted(_CHART_TYPES))}"))
@@ -503,6 +510,33 @@ def _widget_family(chart_type: str) -> str:
     if chart_type in _TREND_TYPES:
         return "trend"
     return "other"
+
+
+def _layout_audit(rects: list[dict]) -> dict:
+    """版面自检：重叠 / 超出画布 / 整行留白。
+
+    坐标是模型自己填的，光靠生成端"觉得排好了"没有依据（历史缺陷：五连 KPI 坐标互相压住，
+    渲染层避让后成一排斜阶梯，用户截图才发现）。这里把判据算好随结果回传，
+    模型可据此在交付前重排——不静默、也不代替重排。
+    """
+    clean = [{"title": str(r.get("title") or ""), "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
+              "w": int(r.get("w") or 0), "h": int(r.get("h") or 0)} for r in rects]
+    overlaps = [[a["title"], b["title"]] for i, a in enumerate(clean) for b in clean[i + 1:]
+                if a["x"] < b["x"] + b["w"] and a["x"] + a["w"] > b["x"]
+                and a["y"] < b["y"] + b["h"] and a["y"] + a["h"] > b["y"]]
+    outside = [r["title"] for r in clean if r["x"] < 0 or r["y"] < 0
+               or r["x"] + r["w"] > _CANVAS_W or r["y"] + r["h"] > _CANVAS_H]
+    bands: dict[tuple, int] = {}
+    for r in clean:
+        key = (r["y"], r["h"])
+        bands[key] = bands.get(key, 0) + r["w"]
+    idle = [{"y": y, "unused_px": _CANVAS_W - used} for (y, _h), used in bands.items() if used < _CANVAS_W]
+    ok = not overlaps and not outside
+    audit = {"ok": ok, "overlaps": overlaps, "out_of_canvas": outside, "idle_rows": idle}
+    if not ok:
+        audit["hint"] = ("版面自检未通过：先修重叠/越界再交付（可省略 position 让服务端自动布局；"
+                         "异构卡不当对比项，见 layout-guide）")
+    return audit
 
 
 def _auto_layout(widgets: list[dict]) -> list[tuple]:
@@ -667,9 +701,11 @@ async def create_data_screen(args: dict) -> dict:
     if args.get("filters"):
         # 数据集正文/意图已固化为本次口径，看板参数没有消费方 → 生成了就是死控件
         return _error(
-            "直建大屏不支持交互筛选参数：“每张图的口径存放在数据集里（已固定为本次意图），"
-            "看板参数没有消费方，生成了就是“能填不出数”的死控件。确实需要参数控件的，"
-            "请到「数据集」页把正文改成 ${参数} 外置形式后人工挂图。")
+            "直建大屏不支持交互筛选参数：每张图的口径存放在数据集里（已固定为本次意图），"
+            "看板参数没有消费方，生成了就是“能填不出数”的死控件。确实需要参数控件（日期区间/"
+            "下拉/搜索按钮等）时，请告知用户：到「数据集」页把正文改成 ${参数} 外置并声明入参，"
+            "再在看板编辑器挂 widget_* 控件绑定该参数（口径见 screen-builder 技能 B2.5）；"
+            "控件没有取数语义，不要把它当图表提交。")
     
     from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
     from backend.modules.viz.services.dashboard_service import (
@@ -775,10 +811,14 @@ async def create_data_screen(args: dict) -> dict:
                           else len(item["result"].get("rows") or []))),
     } for item in prepared]
     empty_charts = [a["title"] for a in data_audit if a["row_count"] == 0]
+    layout_audit = _layout_audit(layout_log)
     message = f"数据大屏「{name}」已创建({len(prepared)} 个图表), 访问路径: {url}"
     if empty_charts:
         message += (f"；其中 {len(empty_charts)} 个图表取数为空: {'、'.join(empty_charts)} —— "
                     "空图不是成功, 请核对时间窗/过滤条件/口径覆盖, 并向用户逐图说明(不得换近似指标凑数)")
+    if not layout_audit["ok"]:
+        message += (f"；版面自检未通过(重叠 {len(layout_audit['overlaps'])} 处、"
+                    f"越界 {len(layout_audit['out_of_canvas'])} 张) —— 请按 layout-guide 重排后再交付")
     return _text({
         "dashboard_id": dashboard_id,
         "name": name,
@@ -790,6 +830,7 @@ async def create_data_screen(args: dict) -> dict:
                       "dataset": (it["dataset"] or {}).get("name")} for it in prepared],
         "style": style or None,
         "layout": layout_log,
+        "layout_audit": layout_audit,
         # 会话内的可点入口：chat 前端按这个渲染「预览大屏」按钮（不再只靠模型
         # 把 /screen/<id> 当纯文本讲给用户——那样用户点不了，等于没有预览入口）。
         "actions": [{"type": "open_screen", "label": "预览大屏",
@@ -905,6 +946,11 @@ async def update_data_screen_chart(args: dict) -> dict:
         update_data["name"] = str(args["title"]).strip()
     if args.get("chart_type"):
         ct = _normalize_chart_type(args["chart_type"])
+        if ct.startswith("widget_"):
+            return _error(
+                f"{ct} 是参数控件：直建/改图通道不产控件（控件绑定的变量没有消费方，填了不出数）。"
+                "需要筛选交互请告知用户：数据集正文改 ${变量} 外置 + 声明入参，再到看板编辑器挂 widget_* 绑定；"
+                "口径见 screen-builder 技能 B2.5")
         if ct not in _CHART_TYPES:
             return _error(f"不支持的图表类型: {args['chart_type']}, 可选: {', '.join(sorted(_CHART_TYPES))}")
         update_data["chart_type"] = ct
@@ -985,10 +1031,34 @@ async def update_data_screen_chart(args: dict) -> dict:
         return _safe_exec_error(e, "update chart persist")
     _invalidate_dashboard_cache(user_id)
 
+    # 版面自检必须在**整板**上算：只挪一张图也可能压住邻居（逐图改位置正是模型的常见动作），
+    # 单图视角看永远"没重叠"。
+    rects = []
+    for c in (dashboard.get("charts") or []):
+        pos = c.get("position") or {}
+        if isinstance(pos, str):
+            try:
+                pos = json.loads(pos)
+            except Exception:  # noqa: BLE001 — 脏数据不得盖住主流程, 仅跳过该图几何
+                pos = {}
+        rects.append({"id": c.get("id"), "title": c.get("name"), **pos})
+    if pos_arg or update_data.get("name"):
+        for r in rects:
+            if r.get("id") != chart_id:
+                continue
+            r.update({k: pos_arg[k] for k in ("x", "y", "w", "h") if k in (pos_arg or {})})
+            # 名字也同步成本次改后的：自检报告里指旧名会让人找错图
+            if update_data.get("name"):
+                r["title"] = update_data["name"]
+    layout_audit = _layout_audit(rects)
+
     message = f"图表已更新, 访问路径: /screen/{dashboard_id}"
     if row_count == 0:
         message += ("；本次取数为空 —— 空图不是成功, 请核对时间窗/过滤条件/口径覆盖"
                     "并向用户说明(不得换近似指标凑数)")
+    if not layout_audit["ok"]:
+        message += (f"；版面自检未通过(重叠 {len(layout_audit['overlaps'])} 处、"
+                    f"越界 {len(layout_audit['out_of_canvas'])} 张) —— 请按 layout-guide 重排后再交付")
     return _text({
         "dashboard_id": dashboard_id,
         "chart_id": chart_id,
@@ -996,6 +1066,7 @@ async def update_data_screen_chart(args: dict) -> dict:
         "updated_fields": list(update_data.keys()),
         "dataset_name": dataset_name,
         "row_count": row_count,
+        "layout_audit": layout_audit,
         "message": message,
     })
 

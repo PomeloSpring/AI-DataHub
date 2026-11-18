@@ -251,6 +251,29 @@ def test_create_screen_rejects_interactive_filters(box):
     assert box["datasets"] == [] and box["charts"] == []
 
 
+def test_create_screen_rejects_widget_control_with_param_guidance(box):
+    """参数控件不得被当成"一种图表类型"含糊拒掉：必须说清控件的消费链路去哪配。
+
+    历史反馈（2026-11-18）：模型以为直建能造筛选器，被"不支持的图表类型"打发后
+    换别的图型重试，用户拿到的板还是不能筛；skill 侧同样缺少控件指导。
+    """
+    res = asyncio.run(screen_tools.create_data_screen(
+        {"name": "S", "widgets": [{"title": "日期", "chart_type": "widget_daterange",
+                                    "query": {"object": "x"}}]}))
+    assert _is_err(res)
+    text = _text_of(res)
+    assert "参数控件" in text and "widget_daterange" in text
+    assert "B2.5" in text          # 指向技能里真正会下发的口径（references 不随正文下发）
+    assert box["datasets"] == [] and box["charts"] == []
+
+
+def test_update_screen_chart_rejects_widget_type(monkeypatch, box):
+    res = asyncio.run(screen_tools.update_data_screen_chart(
+        {"dashboard_id": 9001, "chart_id": 5, "chart_type": "widget_select"}))
+    assert _is_err(res)
+    assert "参数控件" in _text_of(res)
+
+
 def test_create_screen_resolves_site_business_name(box):
     box["site_map"] = {"中国站": 102}
     args = _one_widget(site="中国站")
@@ -339,6 +362,62 @@ def test_create_screen_iframe_has_no_row_count(box):
     assert payload["data_audit"][0]["row_count"] is None
     assert payload["empty_charts"] == []      # iframe 不取数, 不得被当成空图误报
     assert box["datasets"] == []              # iframe 不落数据集
+
+
+# ── 版面自检：坐标可核验，不靠“看着排好了” ───────────────────
+
+def test_layout_audit_flags_overlap_and_out_of_canvas():
+    audit = screen_tools._layout_audit([
+        {"title": "A", "x": 0, "y": 0, "w": 384, "h": 168},
+        {"title": "B", "x": 300, "y": 0, "w": 384, "h": 168},      # 与 A 横叠 84px
+        {"title": "C", "x": 1800, "y": 200, "w": 384, "h": 300},    # 越出 1920 画布
+    ])
+    assert audit["ok"] is False
+    assert ["A", "B"] in audit["overlaps"]
+    assert audit["out_of_canvas"] == ["C"]
+    assert audit["hint"]
+
+
+def test_layout_audit_passes_tiling_row_and_reports_idle_px():
+    kpis = [{"title": f"K{i}", "x": i * 384, "y": 0, "w": 384, "h": 168} for i in range(5)]
+    audit = screen_tools._layout_audit(kpis)
+    assert audit["ok"] is True and not audit["overlaps"]
+    assert audit["idle_rows"] == []            # 5×384 正好铺满 1920
+    half = screen_tools._layout_audit([{"title": "A", "x": 0, "y": 0, "w": 960, "h": 300}])
+    assert half["ok"] is True
+    assert half["idle_rows"] == [{"y": 0, "unused_px": 960}]   # 半屏卡旁边留白如实报
+
+
+def test_create_screen_returns_layout_audit(box):
+    payload = json.loads(_text_of(asyncio.run(screen_tools.create_data_screen(_one_widget()))))
+    assert payload["layout_audit"]["ok"] is True
+    assert payload["layout_audit"]["overlaps"] == []
+
+
+def test_update_screen_chart_audits_whole_board(monkeypatch, box):
+    """只挪一张图也可能压住邻居：自检必须算整板，并在 message 里显式暴露。"""
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+
+    class _DS:
+        def get_dashboard(self, dashboard_id, user_id, enforce_visibility=False):
+            return {"id": dashboard_id, "name": "S", "charts": [
+                {"id": 5, "name": "A", "chart_type": "bar", "config": {},
+                 "position": {"x": 0, "y": 0, "w": 960, "h": 400}},
+                {"id": 6, "name": "B", "chart_type": "bar", "config": {},
+                 "position": {"x": 480, "y": 0, "w": 960, "h": 400}},
+            ]}
+
+        def update_chart(self, *a, **k):
+            return True
+
+    monkeypatch.setattr(dash_mod, "DashboardService", _DS)
+    res = asyncio.run(screen_tools.update_data_screen_chart(
+        {"dashboard_id": 9001, "chart_id": 5, "title": "A2"}))
+    assert not _is_err(res), _text_of(res)
+    payload = json.loads(_text_of(res))
+    assert payload["layout_audit"]["ok"] is False
+    assert ["A2", "B"] in payload["layout_audit"]["overlaps"]
+    assert "版面自检未通过" in payload["message"]
 
 
 # ── update_data_screen_chart: 换意图 → 重挂数据集并清空旧 SQL ─────────

@@ -28,6 +28,7 @@ import ChartPicker from '../components/ChartPicker';
 import { chartTypeLabel } from '../components/DashboardChart';
 import MarkdownWithCharts from '../components/MarkdownWithCharts';
 import ExecutionProcess from '../components/ExecutionProcess';
+import { TurnScreenPreview } from '../components/ScreenPreviewEntry';
 import InlineDetails from '../components/InlineDetails';
 import Model3DViewer from '../components/chat/Model3DViewer';
 import ConversationSidePanel from '../components/chat/ConversationSidePanel';
@@ -2161,6 +2162,13 @@ export default function Chat() {
                         />
                       </div>
                     )}
+
+                    {/* 整回合的产物入口：建/改大屏任务完成后**只给一次**「预览大屏」。
+                        不挂在每条 MCP 工具结果下（逐图 update 会冒出好几个，看着像每步各交付一屏）。 */}
+                    <TurnScreenPreview
+                      toolCalls={msg.tool_calls}
+                      streaming={loading && idx === messages.length - 1}
+                    />
 
                     {/* 消息操作行（复制 / 赞踩 / 更多）：整条回答只有这一行，不分两端也不分两行 */}
                     {renderMessageActions(idx, msg)}

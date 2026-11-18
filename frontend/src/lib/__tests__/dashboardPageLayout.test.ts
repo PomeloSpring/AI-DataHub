@@ -116,6 +116,18 @@ describe('响应式页面布局', () => {
     expect(items[0].rect.w).toBe(3);
     expect(items[0].rect.h).toBe(10);
   });
+  it('五连 KPI 按 position 等比取列，不被「1/4 屏」下限抬宽叠成斜阶梯', () => {
+    // 1/5 屏宽的卡（384px / 1920 画布）比 1/4 屏下限窄，曾被抬宽 → 相邻横叠 → 逐张挤到下一行
+    const kpis = Array.from({ length: 5 }, (_, i) => ({ ...chart(i + 1, 'big_number_trend'), position: { x: i * 384, y: 0, w: 384, h: 180 } })) as DashboardChart[];
+    const five = { filters: { design: { version: 1, canvas: { width: 1920, height: 1080 } } }, charts: kpis };
+    for (const bp of ['screen', 'desktop'] as PageBreakpoint[]) {
+      const items = resolvePageLayout(five, bp);
+      expect(new Set(items.map(i => i.rect.y)).size, `${bp} 应在同一排`).toBe(1);
+      expect(new Set(items.map(i => i.rect.x)).size).toBe(5);
+      expect(items.reduce((sum, i) => sum + i.rect.w, 0)).toBeLessThanOrEqual(PAGE_COLUMNS[bp]);
+      assertNoOverlap(items);
+    }
+  });
   it('resize 只受 1 行/1 列量子约束：可缩到很小，不被类型下限抬回', () => {
     const items = resolvePageLayout(dashboard, 'desktop');
     const moved = movePageItem(items, 10, { x: 0, y: 0, w: 1, h: 1 }, 'desktop');

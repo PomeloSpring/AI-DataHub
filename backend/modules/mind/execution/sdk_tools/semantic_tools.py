@@ -53,6 +53,70 @@ def _sanitize_dict_desc(text: str) -> str:
 _MAX_CONCURRENT_RETRIEVE = 4
 
 
+#: snake_case 纯小写标识符 = 物理表/列名（如 t_order_records、t_user_customer）
+_PHYSICAL_ALIAS_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+
+
+def _public_aliases(aliases, physical: str = "") -> list[str]:
+    """对象别名的对 LLM 投影：剥除物理表/列名（护栏 §7）。
+
+    建模时常把 primary_table 写进 aliases（如 t_order_records），它本身就是
+    physical_table，不得随对象摘要下发给 LLM/前端。
+    """
+    out: list[str] = []
+    items = aliases
+    if isinstance(items, str):
+        # 表里 aliases 可能是 JSON 字符串（"[\"a\",\"b\"]"）或逗号串；
+        # 直接迭代字符串会逐字符拆成单个字母，必须归一为列表。
+        raw = items.strip()
+        try:
+            loaded = json.loads(raw)
+            items = loaded if isinstance(loaded, list) else [raw]
+        except (ValueError, TypeError):
+            items = [p for p in re.split(r"[,，;；]", raw) if p.strip()]
+    elif items is None:
+        items = []
+    phys = str(physical or "").strip().lower()
+    for a in items:
+        s = str(a or "").strip()
+        if not s:
+            continue
+        if phys and s.lower() == phys:
+            continue
+        if _PHYSICAL_ALIAS_RE.match(s):
+            continue
+        out.append(s)
+    return out
+
+
+def _prop_view(prop) -> dict | None:
+    """本体对象属性的**业务投影**（护栏 §7：物理列名一律剥离）。
+
+    canonical doc 的属性业务名键是 `name`（历史/导入数据可能用 `display_name`，
+    两者都要认）。历史缺陷（会话 1783069459337）：投影只认 `display_name`，
+    而实际 100% 是 `name` → 每个对象的 properties 都被过滤成空数组，
+    模型据此反复断言“Order 属性登记为空、订单没有接单方字段”，
+    本体建得再全也永远查不出来。属性缺失必须显式可见，不能伪装成“没有属性”。
+    """
+    if not isinstance(prop, dict):
+        return None
+    label = str(prop.get("name") or prop.get("display_name") or prop.get("business_desc") or "").strip()
+    if not label:
+        return None
+    out: dict = {"name": label}
+    if prop.get("type"):
+        out["type"] = str(prop["type"])
+    if prop.get("is_key"):
+        out["is_key"] = True
+    enum = prop.get("enum")
+    if enum:
+        out["enum"] = enum
+    desc = _sanitize_dict_desc(str(prop.get("description") or ""))
+    if desc:
+        out["description"] = desc
+    return out
+
+
 # ── 工具 handler(SDK 无关) ─────────────────────────────────────
 
 async def get_metrics(args):
@@ -159,6 +223,8 @@ async def get_metrics(args):
                "deployments": deployments,
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
                         "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
+                        "问题里给出具体机构/企业名（某技工所、某医院、某客户）时，用同名或近似名的**名称类维度**"
+                        "（如「接单技工所」「医院名称」）做 like 过滤（value 写 %名称%），不要因为名称不在维度名里就断言“没有该维度/无法查询”; "
                         "relations 列出对象间关联(跨对象字段用 '对象名.业务名' 限定引用); "
                         "**全部站点/多站点问题：按 deployments 对每个可查站点分别调用 run_semantic_query（site 参数）逐站查询，"
                         "站点不是维度；会话默认站点与可查站点清单见上下文「数据源拓扑」段**; "

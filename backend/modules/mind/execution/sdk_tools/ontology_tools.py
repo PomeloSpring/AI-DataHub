@@ -51,6 +51,7 @@ async def search_ontology(args):
         keyword = args.get("keyword", "").strip()
         datasource_id = args.get("datasource_id") or 0
         limit = min(args.get("limit", 10), 20)
+        object_key_want = str(args.get("object_key") or "").strip()
 
         if not keyword:
             return _text({"error": "keyword 不能为空"}, is_error=True)
@@ -58,17 +59,34 @@ async def search_ontology(args):
         hits = await asyncio.to_thread(
             ontology_service.search_objects, keyword, datasource_id=datasource_id, limit=limit
         )
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import _prop_view, _public_aliases
+
+        results = []
+        for h in hits:
+            obj = h.get("object") or {}
+            raw_props = obj.get("properties") or []
+            item = {
+                "object_key": h.get("object_key"),
+                "display_name": h.get("display_name"),
+                "aliases": _public_aliases(h.get("aliases"), obj.get("primary_table") or h.get("primary_table")),
+                "description": h.get("description"),
+                "property_count": len(raw_props),
+            }
+            if object_key_want and str(h.get("object_key") or "") == object_key_want:
+                item["properties"] = [v for v in (_prop_view(p) for p in raw_props) if v]
+                if raw_props and not item["properties"]:
+                    item["properties_note"] = "该对象已登记属性但缺失业务名，无法投影；不得据此认为对象没有字段"
+            results.append(item)
+        if object_key_want:
+            results = [r for r in results if str(r.get("object_key") or "") == object_key_want]
+            if not results:
+                return _text({"error": f"对象 {object_key_want} 不在检索结果中"}, is_error=True)
         return _text({
-            "results": [
-                {
-                    "object_key": h.get("object_key"),
-                    "display_name": h.get("display_name"),
-                    "aliases": h.get("aliases"),
-                    "description": h.get("description"),
-                }
-                for h in hits
-            ],
-            "total": len(hits),
+            "results": results,
+            "total": len(results),
+            "properties_note": "" if object_key_want else (
+                "属性未展开：传 object_key=<对象 key> 获取业务属性清单（业务名/类型/枚举，不含物理列）；"
+                "属性为空≠对象没有字段。"),
         })
     except Exception as e:
         logger.error("search_ontology error: %s", e)
@@ -76,7 +94,7 @@ async def search_ontology(args):
 
 
 async def get_ontology_model(args):
-    """获取本体模型详情."""
+    """获取本体模型详情（对象摘要 + 按需展开对象业务属性）."""
     try:
         from backend.modules.catalog.services import ontology_service
 
@@ -95,21 +113,40 @@ async def get_ontology_model(args):
         except (json.JSONDecodeError, TypeError):
             pass
 
+        # 护栏 §7：datasource_id / primary_table 属内部标识，读接口不得下发；
+        # 属性的 physical column 同样不下发（只回业务名/类型/枚举）。
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import _prop_view
+
+        object_key_want = str(args.get("object_key") or "").strip()
+        summary: list[dict] = []
+        for obj in doc.get("objects", []):
+            key = obj.get("key") or obj.get("class")
+            props = obj.get("properties") or []
+            item = {
+                "key": key,
+                "display_name": obj.get("display_name") or obj.get("label"),
+                "description": (obj.get("description") or "")[:200],
+                "property_count": len(props),
+            }
+            if object_key_want and str(key or "") == object_key_want:
+                item["properties"] = [v for v in (_prop_view(p) for p in props) if v]
+                if props and not item["properties"]:
+                    item["properties_note"] = "该对象已登记属性但缺失业务名，无法投影；不得据此认为对象没有字段"
+            summary.append(item)
+        if object_key_want:
+            summary = [s for s in summary if str(s.get("key") or "") == object_key_want]
+            if not summary:
+                return _text({"error": f"对象 {object_key_want} 不在模型 {model_id} 中"}, is_error=True)
+
         return _text({
             "id": model["id"],
             "name": model.get("name"),
-            "datasource_id": model.get("datasource_id"),
             "status": model.get("status"),
             "object_count": model.get("object_count"),
-            "objects_summary": [
-                {
-                    "key": obj.get("key") or obj.get("class"),
-                    "display_name": obj.get("display_name") or obj.get("label"),
-                    "primary_table": obj.get("primary_table"),
-                    "description": (obj.get("description") or "")[:200],
-                }
-                for obj in doc.get("objects", [])
-            ],
+            "objects_summary": summary,
+            "properties_note": "" if object_key_want else (
+                "对象属性未展开：传 object_key=<对象 key> 获取该对象的业务属性清单"
+                "（业务名/类型/枚举，不含物理列）。属性为空≠对象没有字段，两者不可混为一谈。"),
             "created_at": model.get("created_at"),
             "updated_at": model.get("updated_at"),
         })
@@ -852,11 +889,14 @@ TOOL_SPECS = [
         "name": "search_ontology",
         "description": (
             "Search ontology objects by keyword. Returns matching object classes, "
-            "their display names, aliases and descriptions. Use to discover existing "
-            "ontology models before creating new ones."
+            "their display names, aliases and descriptions. Pass object_key to expand "
+            "that object's business properties (name/type/enum); a non-empty "
+            "property_count with no properties means the projection failed, not that "
+            "the object has no fields."
         ),
         "schema": {
             "keyword": Annotated[str, "Search keyword, e.g. '订单' or 'Shipment'"],
+            "object_key": Annotated[Optional[str], "Optional exact object key to expand its properties"],
             "datasource_id": Annotated[Optional[int], "Filter by datasource (0 or omit = all)"],
             "limit": Annotated[Optional[int], "Max results (default 10, max 20)"],
         },
@@ -867,10 +907,13 @@ TOOL_SPECS = [
         "name": "get_ontology_model",
         "description": (
             "Get details of a specific ontology model by ID. Returns model metadata "
-            "and a summary of its objects (key, display_name, primary_table)."
+            "and a summary of its objects (key, display_name, property_count). "
+            "Pass object_key to get that object's business properties (name/type/enum), "
+            "which is the authoritative field list for query planning."
         ),
         "schema": {
             "model_id": Annotated[int, "The ontology model ID"],
+            "object_key": Annotated[Optional[str], "Optional object key to expand its properties"],
         },
         "handler": get_ontology_model,
         "readonly": True,

@@ -695,6 +695,7 @@
     "unavailable": "看板不可用（可能已被删除或无权限）",
     "open": "在新窗口打开",
     "refresh": "刷新数据",
+    "cachedHint": "（{{count}} 个图表显示缓存数据，要最新数字点「刷新数据」）",
     "retry": "重试"
   },
   "designStatus": {
