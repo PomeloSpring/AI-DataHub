@@ -853,36 +853,14 @@ def delete_user(user_id: int) -> tuple[bool, str]:
 # ── Audit logs ──────────────────────────────────────────────────────────
 
 def list_audit_logs(page: int = 1, size: int = 50, user_id: int = 0,
-                    action: str = "", module: str = "") -> tuple[list[dict], int]:
-    """List audit logs with pagination. Returns (items, total)."""
-    try:
-        with _get_connection() as conn:
-            with conn.cursor() as cur:
-                where_clauses = []
-                params = []
-                if user_id:
-                    where_clauses.append("user_id = %s")
-                    params.append(user_id)
-                if action:
-                    where_clauses.append("action = %s")
-                    params.append(action)
-                if module:
-                    where_clauses.append("module = %s")
-                    params.append(module)
+                    action: str = "", module: str = "",
+                    keyword: str = "") -> tuple[list[dict], int]:
+    """List audit logs with pagination. Returns (items, total).
 
-                where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-                cur.execute(f"SELECT COUNT(*) AS cnt FROM adh_audit_logs{where_sql}", params)
-                total = cur.fetchone()["cnt"]
-
-                offset = (page - 1) * size
-                cur.execute(
-                    f"SELECT id, user_id, username, action, target_type, target_id, "
-                    f"detail, ip_address, module, created_at "
-                    f"FROM adh_audit_logs{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
-                    params + [size, offset],
-                )
-                return cur.fetchall(), total
-    except Exception as e:
-        logger.error("Failed to list audit logs: %s", e)
-        return [], 0
+    读取口径收敛到 `auth_service.list_audit_logs`（/api/audit/logs 实际消费的那份）：
+    历史上本文件与 auth_service 各写一份，其中一份 SELECT 漏了 module 列、也不支持
+    module 筛选，两套口径漂移后页面上的模块列/筛选静默失效。
+    """
+    from backend.modules.auth.services.auth_service import list_audit_logs as _impl
+    return _impl(page=page, size=size, user_id=user_id, action=action,
+                 module=module, keyword=keyword)

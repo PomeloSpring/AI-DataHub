@@ -21,6 +21,8 @@ const MODULE_OPTIONS = [
   { value: 'model', label: i18nTr('k_98fd0cbd9c') },
   { value: 'workspace', label: i18nTr('k_1bf3defde7') },
   { value: 'scheduled_task', label: i18nTr('k_c97ffbda2e') },
+  { value: 'content', label: i18nTr('k_0841684ad2') },
+  { value: 'auth', label: i18nTr('k_b7158a42ca') },
   { value: 'system', label: i18nTr('k_1a1f6dff78') },
 ];
 
@@ -120,9 +122,11 @@ export default function AuditLog() {
   const [filterModule, setFilterModule] = useState('');
   const [filterKeyword, setFilterKeyword] = useState('');
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [error, setError] = useState('');
 
   const load = useCallback(async (p?: number) => {
     setLoading(true);
+    setError('');
     try {
       const params: any = { page: p ?? page, size: pageSize };
       if (filterModule) params.module = filterModule;
@@ -130,8 +134,10 @@ export default function AuditLog() {
       const data = await listAuditLogs(params);
       setLogs(data.items || []);
       setTotal(data.total || 0);
-    } catch {
-      // 静默处理，后端未启动时不弹错误
+    } catch (err: any) {
+      // 不得静默成“暂无审计日志”（no-silent-degradation）：接口失败必须让管理员看到
+      const msg = err?.response?.data?.detail || err?.message;
+      setError(typeof msg === 'string' && msg ? msg : i18nTr('k_73026bb9e2'));
       setLogs([]);
       setTotal(0);
     } finally {
@@ -201,6 +207,14 @@ export default function AuditLog() {
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Spinner className="h-6 w-6 mr-2" /> {t('k_26b5bd4947')}
+        </div>
+      ) : error ? (
+        <div className="text-center py-12 text-destructive" role="alert">
+          <Shield className="h-12 w-12 mx-auto mb-3 opacity-30" />
+          <p className="mb-3">{i18nTr('k_73026bb9e2')}：{error}</p>
+          <Button variant="outline" size="sm" onClick={() => load()}>
+            <RefreshCw className="h-4 w-4 mr-1" /> {t('k_38108eaa1d')}
+          </Button>
         </div>
       ) : logs.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">

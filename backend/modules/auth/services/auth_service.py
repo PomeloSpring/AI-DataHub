@@ -725,8 +725,15 @@ def log_audit(user_id: int, username: str, action: str,
 
 
 def list_audit_logs(page: int = 1, size: int = 50, user_id: int = 0,
-                    action: str = "") -> tuple[list[dict], int]:
-    """List audit logs with pagination. Returns (items, total)."""
+                    action: str = "", module: str = "",
+                    keyword: str = "") -> tuple[list[dict], int]:
+    """List audit logs with pagination. Returns (items, total).
+
+    筛选全部下推 SQL（module 精确匹配 + keyword 模糊匹配详情/用户/操作/对象），
+    不得拉全量后由前端 filter；total 取服务端 COUNT（真分页）。
+    `module` 同时要出现在 SELECT 里：列表列需要渲染模块徽标，缺列会让前端看到的
+    模块永远是空（历史缺陷）。
+    """
     try:
         with DBConnection() as conn:
             with conn.cursor() as cur:
@@ -738,6 +745,16 @@ def list_audit_logs(page: int = 1, size: int = 50, user_id: int = 0,
                 if action:
                     where_clauses.append("action = %s")
                     params.append(action)
+                if module:
+                    where_clauses.append("module = %s")
+                    params.append(module)
+                if keyword:
+                    like = f"%{keyword}%"
+                    where_clauses.append(
+                        "(detail LIKE %s OR username LIKE %s OR action LIKE %s "
+                        "OR target_type LIKE %s)"
+                    )
+                    params.extend([like, like, like, like])
 
                 where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -747,11 +764,12 @@ def list_audit_logs(page: int = 1, size: int = 50, user_id: int = 0,
                 offset = (page - 1) * size
                 cur.execute(
                     f"SELECT id, user_id, username, action, target_type, target_id, "
-                    f"detail, ip_address, created_at "
+                    f"detail, ip_address, module, created_at "
                     f"FROM adh_audit_logs{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
                     params + [size, offset],
                 )
                 return cur.fetchall(), total
     except Exception as e:
+        # 查询失败不得被当成“没有日志”：向上抛，由 API 显式报错
         logger.error("Failed to list audit logs: %s", e)
-        return [], 0
+        raise

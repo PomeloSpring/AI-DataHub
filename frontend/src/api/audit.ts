@@ -34,8 +34,11 @@ export interface AuditLogParams {
 
 /**
  * 获取审计日志列表
+ *
+ * 后端路由挂在 `/api/audit/logs`（main.py: mount("auth", audit_router, "/api/audit")），
+ * 不是历史上的 `/api/auth/audit-logs` —— 旧路径 404 会被页面 catch 吞成“暂无审计日志”。
  */
 export async function listAuditLogs(params: AuditLogParams = {}): Promise<AuditLogResponse> {
-  const { data } = await client.get('/auth/audit-logs', { params });
+  const { data } = await client.get('/audit/logs', { params });
   return data;
 }
