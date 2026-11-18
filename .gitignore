@@ -42,6 +42,11 @@ runtime/.npm-cache/
 backend/.env
 # 密钥轮换（backend/scripts/rotate_secret_key.py）写的旧值备份：含旧密钥，绝不入库
 .env.bak-*
+# 手工复制出来的 env 副本（编辑器生成 "backend/.env copy" 这类名字）含明文凭据，
+# 裸 `.env` 规则匹配不到带空格后缀的副本，必须单独钉住 —— 一旦入库等于把库/Redis/模型
+# 凭据推到 GitHub。
+.env copy
+*.env copy
 backend/.env.bak-*
 .pids
 pids/
