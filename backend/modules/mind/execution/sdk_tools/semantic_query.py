@@ -27,6 +27,13 @@ from backend.semantics.contract import (
 logger = logging.getLogger(__name__)
 
 _MAX_ROWS = 200
+# 单次工具调用的**行载荷字符预算**（含批量：各条均分，见 run_semantic_query）。
+# 为什么行数上限不够：_MAX_ROWS 只管条数，200 行高基数维度（如「页面URL」）序列化后仍是
+# 6~7 万字符，被 agent 运行时判「输出过大」整份落盘换成文件指针 —— 模型拿到的是半本数据，
+# 却以为自己拿到了全量（会话 1783069459337：73,446 / 62,406 字符两次截断后反复试错 11 步）。
+# 预算咬住的行必须显式标注（truncated / rows_shown / truncated_note），不得静默少给。
+_MAX_PAYLOAD_CHARS = 16000
+_MIN_PAYLOAD_CHARS = 2000  # 批量均分下限；_MAX_BATCH=8 ⇒ 16000//8=2000，整次调用仍不超预算
 
 
 def _peek_intent_object(payload: dict) -> str:
@@ -320,7 +327,7 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             "warnings": bind_warnings,
             "hint": "未绑定 ≠ 无数据：这表示该数据源/站点尚未为此对象生成业务本体或绑定物理表，"
                     "并非库里没有数据，严禁据此向用户回答'该站点暂无数据'。"
-                    "先用 get_metrics 看本目录实际有哪些对象（聚合态已按授权站点纳入业务本体），"
+                    "先用 get_metrics 带上对象名/业务关键词看本目录实际有哪些对象（不支持空关键词全量列举；聚合态已按授权站点纳入业务本体），"
                     "或如实告知用户该站点尚未建模、需先生成/部署业务本体。",
         }, True)
 
@@ -452,6 +459,66 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
 _MAX_BATCH = 8
 
 
+def _rows_chars(rows: list) -> int:
+    """行数组在工具信封里的真实字符数（与 `_text` 同一 dumper：ensure_ascii=False + indent=2）。
+
+    必须按信封口径量：紧凑 JSON 比实际下发正文小一半以上，按紧凑长度定预算等于没设防。
+    """
+    return len(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+
+
+def _fit_rows(rows: list, char_budget: int) -> list:
+    """二分出「信封字符数 ≤ 预算」的最长前缀（单调：加行必变长）。
+
+    首行无条件保留 —— 预算再小也要给出一条，空数组会被当成「查到了但没有」。
+    """
+    lo, hi = 1, len(rows) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _rows_chars(rows[:mid]) <= char_budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return rows[:lo]
+
+
+def _apply_payload_budget(payload: dict, char_budget: int) -> None:
+    """把单条结果的行载荷收进字符预算，截断事实**必须显式**（no-silent-degradation §1）。
+
+    只动 LLM 信封里的 rows：`row_count` 仍是数据源真实行数（不得改成已回行数），
+    服务端受控结果（unattended sink）与渲染机走各自通道，不经过这里。
+    """
+    if not isinstance(payload, dict):
+        return
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return
+    total_chars = _rows_chars(rows)
+    kept = rows if total_chars <= char_budget else _fit_rows(rows, char_budget)
+    payload["rows"] = kept
+    payload["rows_shown"] = len(kept)
+    reasons = []
+    if payload.get("truncated"):  # 先被 _MAX_ROWS 咬过一道
+        reasons.append(f"展示行数上限 {_MAX_ROWS} 行")
+    if len(kept) < len(rows):
+        reasons.append(f"单次返回字符预算 {char_budget}（本条 {len(rows)} 行共 {total_chars} 字符，"
+                       f"只回得下前 {len(kept)} 行 / {_rows_chars(kept)} 字符）")
+    if not reasons:
+        return
+    payload["truncated"] = True
+    payload["truncated_note"] = (
+        "行数据被截断展示，原因：" + "；".join(reasons) + "。"
+        f"row_count={payload.get('row_count')} 是数据源真实行数，被砍掉的行**没有**下发；"
+        "严禁对已回行做求和/计数/排名当全量结论，也不要据此断言“只有这些”。"
+        "要全量口径就让语义层直接算（metrics + 聚合 + having/order），"
+        "或去掉高基数维度（如逐条 URL/设备标识）、加 filters 收窄、调小 limit；"
+        "确实要逐行明细就走导出/下载通道，而不是反复重取。")
+    # 同一条“别拿截断行当全量”的告诫只留一份（_execute_single 在行数超限时已给过）。
+    payload.setdefault("aggregation_warning",
+                       "结果已被截断展示：不要对截断后的行做求和/计数并当作全量值，"
+                       "改为让语义层直接算（metrics + 聚合）后输出。")
+
+
 async def run_semantic_query(args):
     """LLM 面向语义层的主入口：intent -> binding -> plan -> (secured) SQL -> rows。
 
@@ -480,12 +547,16 @@ async def run_semantic_query(args):
     if batch_items is not None:
         results: list[dict] = []
         err_count = 0
+        # 预算是**整次调用**的：批量按条数均分（下限 _MIN_PAYLOAD_CHARS，8 条时正好等于均分值），
+        # 否则多维下钻一次回 8 份 × 16K 字符照样撞穿运行时上限，退化成半本数据。
+        per_result_budget = max(_MIN_PAYLOAD_CHARS, _MAX_PAYLOAD_CHARS // len(batch_items))
         for idx, it in enumerate(batch_items):
             if not isinstance(it, dict):
                 results.append({"index": idx, "error": "批量元素必须是 intent 对象"})
                 err_count += 1
                 continue
             res, is_err = await _execute_single(it, ctx)
+            _apply_payload_budget(res, per_result_budget)
             results.append({"index": idx, **res})
             if is_err:
                 err_count += 1
@@ -501,6 +572,7 @@ async def run_semantic_query(args):
     except json.JSONDecodeError as e:
         return _text({"error": f"intent_json 不是合法 JSON: {e}"}, is_error=True)
     res, is_err = await _execute_single(payload, ctx)
+    _apply_payload_budget(res, _MAX_PAYLOAD_CHARS)
     return _text(res, is_error=is_err)
 
 
@@ -556,6 +628,10 @@ TOOL_SPECS = [
             "explain that its caliber must be defined in the knowledge-base documentation rather than produced by summing sites. "
             "If the object is bound to a governed dataset (bind_kind=dataset), pass its declared "
             "variables via params — run knowledge_search first to see the dataset's parameter list. "
+            "Rows are returned within a per-call character budget (`rows_shown` / `truncated` / "
+            "`truncated_note` mark what was dropped while `row_count` stays the true source row count): "
+            "never sum, count or rank truncated rows as if they were the whole result — ask the semantic "
+            "layer for the aggregate instead (metrics + having/order), or drop high-cardinality dimensions. "
             "Use knowledge_search first to discover legal object/metric/dimension names. "
             "Prefer this over execute_sql for agent-mode queries."
         ),

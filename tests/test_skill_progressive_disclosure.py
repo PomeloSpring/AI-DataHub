@@ -1,7 +1,8 @@
 """技能作业细则的按需加载（渐进披露 A2）回归。
 
 锁定口径：
-- **三层披露**：metadata（name+description）常驻；正文由**模型自己**调 `load_skill_guide` 取回；
+- **三层披露**：metadata（name+description）常驻；触发词命中里**得分最高的一份正文常驻**，
+  其余降级为按需取回（`load_skill_guide`）—— 不是“全部交给模型自己取”，三轮重问实测它一次都没调；
 - **授权按事实自动接入**：助手绑了技能就接入壳工具（与平台功能惰性壳同一口径），
   管理员显式配置过 `mcp.skills` 时尊重配置，执行层 ceiling 同样管得住它；
 - **未接入 = 回到老行为，不是能力倒退**：清单里没有该工具时，装载策略整体退回
@@ -135,13 +136,21 @@ def test_progressive_flag_follows_tool_availability():
     assert pc._progressive_disclosure(None) is False
 
 
-def test_progressive_mode_does_not_expand_trigger_matched_bodies():
-    skills = [_skill("data-analysis", triggers=["转化"], body="剧本AAA"),
-              _skill("arms-observability", triggers=["渠道"], body="剧本BBB")]
+def test_progressive_mode_expands_only_the_top_scoring_body():
+    """渐进披露只降级“命中但非最优”的那批；最高分那份必须常驻。
+
+    刻意把得分高的技能放在清单末尾：常驻的必须是它，而不是绑定顺序里的第一个。
+    """
+    skills = [_skill("arms-observability", triggers=["渠道"], body="剧本BBB"),
+              _skill("data-analysis", triggers=["转化", "趋势"], body="剧本AAA")]
     loaded, reasons, _missing = pc._select_skill_bodies(
-        skills, _caps([SEM, GUIDE]), "各渠道转化怎么样", progressive=True)
-    assert loaded == []
-    assert "load_skill_guide(\"data-analysis\")" in reasons["data-analysis"]
+        skills, _caps([SEM, GUIDE]), "各渠道转化趋势怎么样", progressive=True)
+    assert [_skill_key(x) for x in loaded] == ["data-analysis"], \
+        "把口径寄托在模型自觉上等于没有口径（会话 335/336/337：load_skill_guide 零调用）"
+    assert "load_skill_guide(\"arms-observability\")" in reasons["arms-observability"], \
+        "降级的那份必须写明按需取回入口"
+    assert "data-analysis" in reasons["arms-observability"], "要写明常驻的是谁"
+    assert "data-analysis" not in reasons, "已常驻的技能不得再挂“未常驻”原因"
 
 
 def test_pinned_single_skill_and_force_all_still_expand():
@@ -189,17 +198,18 @@ def _compose(caps, skills, question):
     return text, state
 
 
-def test_progressive_prompt_drops_bodies_and_tells_the_model_how_to_fetch():
+def test_progressive_prompt_residents_one_body_and_offers_the_rest():
     skills = [_skill("data-analysis", display="数据分析", triggers=["转化"], body="剧本AAA" * 1200),
               _skill("arms-observability", display="可观测分析", triggers=["渠道"], body="剧本BBB" * 1200)]
     old, old_state = _compose(_caps([SEM]), skills, "各渠道转化怎么样")
     new, new_state = _compose(_caps([SEM, GUIDE]), skills, "各渠道转化怎么样")
-    assert "剧本AAA" in old and "技能详细指引" in old
-    assert "剧本AAA" not in new and "技能详细指引" not in new
-    assert "load_skill_guide(\"data-analysis\")" in new, "清单必须给出按需取回的入口，否则细则无从获得"
-    assert len(old) - len(new) > 5000, "改了却没省下正文 = 渐进披露没生效"
+    assert "剧本AAA" in old and "剧本BBB" in old, "不接壳=命中几份展几份（上限 2）"
+    assert "剧本AAA" in new and "技能详细指引" in new, "最高分那份必须常驻"
+    assert "剧本BBB" not in new, "次优那份仍按需取回（不然渐进披露没省任何字数）"
+    assert "load_skill_guide(\"arms-observability\")" in new, "降级项必须给出取回入口，否则细则无从获得"
+    assert len(old) - len(new) > 5000, "改了却没省下第二份正文 = 渐进披露没生效"
     assert old_state == {"loaded": ["data-analysis", "arms-observability"], "progressive": False}
-    assert new_state == {"loaded": [], "progressive": True}
+    assert new_state == {"loaded": ["data-analysis"], "progressive": True}
 
 
 def test_prompt_never_names_the_guide_tool_when_it_is_not_granted():
@@ -209,12 +219,12 @@ def test_prompt_never_names_the_guide_tool_when_it_is_not_granted():
     assert "load_skill_guide" not in text
 
 
-def test_production_shape_with_auto_granted_shell_clears_the_guardrail():
-    """生产同形（绑定技能 → 壳工具自动接入）必须落在预算护栏内。
+def test_production_shape_residents_at_most_one_body():
+    """生产同形（绑定技能 → 壳工具自动接入）：常驻正文从“命中即展（上限 2 份）”降到最多 1 份。
 
-    这条只新增断言，**不改** tests/test_prompt_compose_budget.py 里那两条既有红载荷：
-    它们量的是“没接入壳”的回退路径（被 ceiling 筛掉/管理员关掉），那条路径仍然超阈、
-    仍然应该响。拿它变绿来交差就是把护栏自己掩了。
+    护栏口径从绝对字数改成**相对量**是有意的：阈值 26,000 是“0 份常驻”下的产物，而 0 份常驻
+    已被实测证伪（会话 335/336/337 里模型从不调 `load_skill_guide`，整轮没有作业口径）。
+    现在锁的是可核查的不变式：**常驻份数 ≤1**，且比不接壳严格省下一份正文。
     """
     skills = [_skill("data-analysis", display="数据分析", triggers=["访问", "页面"],
                      body="剧本AAA" * 2200, requires=["run_semantic_query"]),
@@ -224,9 +234,15 @@ def test_production_shape_with_auto_granted_shell_clears_the_guardrail():
                      body="剧本CCC" * 1800)]
     names = [SEM, "mcp__datahub_semantic__get_metrics", "mcp__datahub_semantic__knowledge_search",
              "mcp__datahub_skills__load_skill_guide"]
-    text, state = _compose(_caps(names), skills, "这个页面的访问量和上周比怎么样")
-    assert state["loaded"] == [] and state["progressive"] is True
-    assert len(text) < 26_000, f"接入壳后生产同形仍超护栏（{len(text)}）= 渐进披露没真生效"
+    question = "这个页面的访问量和上周比怎么样"
+    text, state = _compose(_caps(names), skills, question)
+    assert len(state["loaded"]) <= 1, "接入壳后仍全量展开 = 渐进披露没真生效"
+    assert state["loaded"] == ["data-analysis"] and state["progressive"] is True
+
+    off_text, off_state = _compose(_caps(names[:-1]), skills, question)
+    assert off_state["loaded"] == ["data-analysis", "arms-observability"]
+    assert len(off_text) - len(text) > 8000, "没省下第二份正文 = 机制没接线"
+    assert "load_skill_guide(\"arms-observability\")" in text
 
 
 # ── 5. handler：只回已绑定技能，四种档位都可诊断 ───────────────────────────────

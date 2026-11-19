@@ -2,7 +2,9 @@
 import json
 
 from backend.common.db import execute_query
-from backend.modules.mind.execution.sdk_tools.semantic_tools import _prop_view, _public_aliases, _sanitize_dict_desc
+from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+    KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, metric_keywords,
+)
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
          "list_ontology_models", "get_metadata_summary", "get_glossary", "get_metrics"}
@@ -108,6 +110,13 @@ def execute(name, args, ctx, resource_scope=None):
         return {"datasources": out}
     if name == "get_metadata_summary":
         return _scope_note({"ontology_models": len(_fetch_visible_models(require_active=False))})
+    if name == "get_metrics":
+        # keyword 必填（2026-11-19 拍板）：空关键词=整层字典一次下发（会话 1783069459335 实测
+        # 29 对象 / 180 指标 / 230 维度 = 63,226 字符），被运行时判「输出过大」截断成文件指针，
+        # 模型拿到的是半本目录。拦在取本体清单与字典之前：空关键词不发任何 SQL，文案与字典层同源。
+        keywords = metric_keywords(args)
+        if not keywords:
+            raise PermissionError(KEYWORD_REQUIRED_HINT)
     rows = _fetch_visible_models(require_active=(name != "get_ontology_model"))
     requested = int(args.get("model_id") or 0)
     if requested:
@@ -126,8 +135,6 @@ def execute(name, args, ctx, resource_scope=None):
         for row in rows:
             doc = json.loads(row["json_content"]) if isinstance(row["json_content"], str) else row["json_content"]
             allowed_keys.update(o.get("key") for o in (doc or {}).get("objects", []))
-        keyword = str(args.get("keyword") or "").strip().lower()
-
         def _kw_hay(entry: dict) -> set[str]:
             """关键词命中面：名称/英文名/别名 + 枚举业务名。
 
@@ -142,7 +149,7 @@ def execute(name, args, ctx, resource_scope=None):
             return {h.lower() for h in hay if h}
 
         def _kw_hit(entry: dict) -> bool:
-            return (not keyword) or any(keyword in h for h in _kw_hay(entry))
+            return any(kw in h for kw in keywords for h in _kw_hay(entry))
 
         entries_all: dict[str, list] = {}
         for table, fields, category in (("adh_metrics", "name,name_en,aliases,description,unit", "metrics"),
@@ -165,8 +172,8 @@ def execute(name, args, ctx, resource_scope=None):
                     entry["is_time"] = entry.pop("category", "") == "时间"
                 bucket_rows.append((key, entry))
             entries_all[category] = bucket_rows
-        # keyword 语义：**命中即整对象补全**。历史缺陷（会话 1783069459337）：keyword="订单"
-        # 只回名称含“订单”的 3 个维度，模型把子集当对象全量，断言“订单只有 4 个维度、
+        # keyword 语义：**命中即整对象补全**（keyword 必填之后仍是唯一形态）。历史缺陷（会话 1783069459337）：
+        # keyword="订单" 只回名称含“订单”的 3 个维度，模型把子集当对象全量，断言“订单只有 4 个维度、
         # 没有接单方字段”，反复判定“无法按时代天使查订单”——而该对象实有 13 个维度
         # （含「接单技工所」）与 55 个属性。子集不得冒充全量（no-silent-degradation）。
         hit_keys = {key for bucket_rows in entries_all.values() for key, entry in bucket_rows if _kw_hit(entry)}
@@ -174,20 +181,17 @@ def execute(name, args, ctx, resource_scope=None):
         for category, bucket_rows in entries_all.items():
             for key, entry in bucket_rows:
                 matched = _kw_hit(entry)
-                if keyword and not matched and key not in hit_keys:
+                if not matched and key not in hit_keys:
                     continue
                 row = dict(entry)
-                if keyword:
-                    row["matched_by_keyword"] = matched
+                row["matched_by_keyword"] = matched
                 objects.setdefault(key, {"object": key, "metrics": [], "dimensions": []})[category].append(row)
-        out = {"objects": list(objects.values()), "total": len(objects)}
-        if keyword:
-            out["keyword"] = keyword
-            out["keyword_note"] = (
-                "keyword 只决定“哪些对象被命中”：命中对象的指标/维度是**该对象全量**"
-                "（matched_by_keyword=true 为词直命中，false 为同对象其余口径，同样可查）。"
-                "未出现在结果里的对象=其对象名/别名/枚举业务名不含该词，不代表平台没有该口径；"
-                "查询某对象的完整可用口径请不传 keyword，或直接用它自己的对象名作 keyword。")
+        out = {"objects": list(objects.values()), "total": len(objects), "keywords": keywords}
+        out["keyword_note"] = (
+            "keywords 只决定“哪些对象被命中”：命中对象的指标/维度是**该对象全量**"
+            "（matched_by_keyword=true 为词直命中，false 为同对象其余口径，同样可查）。"
+            "未出现在结果里的对象=其对象名/别名/枚举业务名不含这些词，不代表平台没有该口径；"
+            "要看某对象的完整口径就用它自己的对象名作 keyword，多个概念一次带齐（不空传、也不逐词多轮）。")
         return _scope_note(out)
     models, candidates = [], []
     keyword = str(args.get("query") or args.get("keyword") or args.get("table_name") or "").strip().lower()

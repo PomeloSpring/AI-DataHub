@@ -333,7 +333,7 @@ def test_aggregate_scope_note_precedes_unselected_source_note(monkeypatch):
                         lambda sql, params=None, fetchone=False: [])
     ctx = _ctx(site_code="global", datasource_id=0)
     ctx.extra["site_code"] = "global"
-    out = sm.execute("get_metrics", {}, ctx)
+    out = sm.execute("get_metrics", {"keyword": "订单"}, ctx)
     note = out.get("note", "")
     assert "聚合态" in note and "已按授权集内各具体站点纳入业务本体" in note
     assert "仅系统本体可见" not in note, note
@@ -347,7 +347,28 @@ def test_unselected_business_source_still_marks_incomplete_scope(monkeypatch):
     monkeypatch.setattr(sm, "execute_query",
                         lambda sql, params=None, fetchone=False: [])
     with pytest.raises(PermissionError):
-        sm.execute("get_metrics", {}, _ctx(site_code="cn", datasource_id=0, system=False))
+        sm.execute("get_metrics", {"keyword": "订单"},
+                 _ctx(site_code="cn", datasource_id=0, system=False))
+
+
+def test_get_metrics_business_projection_requires_keyword_before_any_sql(monkeypatch):
+    """业务投影实现的关键词必填：拒在发 SQL **之前**（整层字典既白查又会被运行时截断）。
+
+    文案与字典层实现同源（semantic_tools.KEYWORD_REQUIRED_HINT）：两处各写一份
+    就会有一处不给出路，模型拿到的只是"参数不对"。
+    """
+    from backend.modules.mind.execution.sdk_tools import scoped_metadata as sm
+    from backend.modules.mind.execution.sdk_tools.semantic_tools import KEYWORD_REQUIRED_HINT
+
+    calls: list = []
+    monkeypatch.setattr(sm, "execute_query",
+                        lambda sql, params=None, fetchone=False: calls.append(sql) or [])
+    for args in ({}, {"keyword": "  "}, {"keyword": '[]'}):
+        with pytest.raises(PermissionError) as exc:
+            sm.execute("get_metrics", args, _ctx(site_code="global", datasource_id=0))
+        assert "必须带 keyword" in str(exc.value), args
+    assert not calls, "关键词必填必须拦在字典查询之前"
+    assert "knowledge_search" in KEYWORD_REQUIRED_HINT and "一次带齐" in KEYWORD_REQUIRED_HINT
 
 
 # ── 4. 数据集：确定性失败不得说成"稍后重试" ──────────────────────

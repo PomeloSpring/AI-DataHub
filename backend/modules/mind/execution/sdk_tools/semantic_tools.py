@@ -123,6 +123,8 @@ async def get_metrics(args):
     """对象级语义目录: 每个本体对象可用的指标/维度(含别名与枚举业务标签)。
 
     只暴露字典层信息(name/aliases/unit/枚举标签), 不回显 target_table 等物理细节。
+    `keyword` **必填**且可一次带多个词：空关键词会把整层字典一次性下发并被运行时截断
+    （见 KEYWORD_REQUIRED_HINT），命中对象仍回该对象全量口径。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
 
@@ -143,7 +145,10 @@ async def get_metrics(args):
             if not is_aggregate_site((getattr(ctx, "extra", None) or {}).get("site_code") or ""):
                 return _text({"error": "当前会话未确定数据源，无法加载语义目录；请先在会话中选择一个已授权数据源后重试。"},
                              is_error=True)
-        keyword = (args.get("keyword") or "").strip().lower()
+        keywords = metric_keywords(args)
+        if not keywords:
+            # 空关键词=整层字典（见 KEYWORD_REQUIRED_HINT 的历史缺陷说明）：显式拒，不静默回全量
+            return _text({"error": KEYWORD_REQUIRED_HINT}, is_error=True)
         metrics = await asyncio.to_thread(_get_metrics, ds_id)
         dims = await asyncio.to_thread(_get_dimensions, ds_id)
         # 目录层（bound_object_key）与编译层（target_table=物理表）必须同一口径：
@@ -156,11 +161,10 @@ async def get_metrics(args):
         blocked: list[dict] = []
 
         def _match(row):
-            if not keyword:
-                return True
             hay = {str(row.get("name") or ""), str(row.get("name_en") or "")}
             hay |= {str(a) for a in (row.get("aliases") or [])}
-            return any(keyword in h.lower() for h in hay if h)
+            low = {h.lower() for h in hay if h}
+            return any(kw in h for kw in keywords for h in low)
 
         objects: dict[str, dict] = {}
 
@@ -276,6 +280,26 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(it)
         out.append(it)
     return out
+
+
+# ── get_metrics 关键词必填（2026-11-19 拍板）────────────────────────
+# 空关键词=把整层字典一次下发：会话 1783069459335 实测 29 对象 / 180 指标 / 230 维度
+# = 63,226 字符（落盘 72,588 字节），被 agent 运行时判「输出过大」截断成文件指针 ——
+# 模型拿到的是**半本目录**，于是又出现"目录挂着、模型说没这个口径"（no-silent-degradation
+# 的反面：不是静默空结果，是静默残缺结果）。发现层因此改为必须先由知识检索 / 技能细则
+# 定出业务词，再带词检索；拒绝文案是唯一口径，两条实现（字典层 / 业务投影）共用。
+KEYWORD_REQUIRED_HINT = (
+    "get_metrics 必须带 keyword，不提供空关键词全量列举（整层字典会被运行时判「输出过大」截断，"
+    "目录反而看不全）。关键词直接取自问题里的业务对象/指标/维度词——问题说清楚了就带上直接查，不必先绕知识库；"
+    "只有不知道该用什么词时，才先用 `knowledge_search`（业务知识库）或技能细则定词。"
+    "多个概念一次带齐（逗号分隔或 JSON 数组，如 \"页面浏览量,渠道\"），不要拆成多轮。"
+    "命中对象会回该对象的**全量**口径；结果里没有某对象=它的名称/别名/枚举业务名不含这些词，"
+    "**不代表平台没有该口径**，可换更贴近业务的词再查一次，或 ask_user 让用户点名要看什么。")
+
+
+def metric_keywords(args: dict) -> list[str]:
+    """get_metrics 关键词归一（唯一取法）：多词一次传齐（逗号/换行/JSON 数组），小写供匹配。"""
+    return [w.lower() for w in _dedupe(_split_multi(args.get("keyword")))][:10]
 
 
 async def get_glossary(args):
@@ -602,14 +626,19 @@ TOOL_SPECS = [
     {
         "name": "get_metrics",
         "description": (
-            "List the semantic catalog grouped by ontology object: for each object the usable "
-            "metrics (name/aliases/unit/calculation) and dimensions (name/aliases/is_time/enum "
-            "value labels). ALWAYS copy metric/dimension names (or their aliases) from this "
-            "catalog into run_semantic_query instead of inventing names; use is_time dimensions "
-            "with time_grain for trends; enum maps stored codes to business labels "
-            "(filters accept either). Optional keyword narrows by name/alias."
+            "指标定义检索：对象级语义目录（字典层）已登记的可用名称，是 object/metric/dimension 命名的唯一权威。"
+            "指标/维度名只能从这里原文复制（name 或任一 alias 都合法，系统自动解析别名），"
+            "不要凭术语表、SQL 结果或常识推断、改写或另造；目录里没有的名称一律不得使用。"
+            "趋势用 is_time=true 的维度并配 time_grain；enum 给出枚举码值→业务名，filter 两种写法都可；"
+            "relations 列出对象间关联；dimensions/metrics 的 name/aliases/unit/口径以本目录返回为准。"
+            "**keyword 必填**：空关键词的全量列举已取消（整层字典 60KB+ 会被运行时判「输出过大」截断，"
+            "目录反而看不全）。问题里已有业务词就直接带上查，不必先绕知识库；只有不知道该用什么词时，"
+            "才先用 knowledge_search / 技能细则定词。多个概念用逗号分隔或 JSON 数组一次带齐，别拆成多轮。"
+            "命中对象返回该对象的**全量**口径；某对象没出现只代表它的名称/别名不含这些词，不代表平台没有。"
         ),
-        "schema": {"keyword": Annotated[Optional[str], "Metric/dimension name keyword; empty means list all"]},
+        "schema": {"keyword": Annotated[str,
+                     "指标/维度/对象的业务关键词（必填）。多个概念一次带齐：逗号分隔或 JSON 数组，"
+                     "如「订单,成交额」；留空会被拒，不做全量列举"]},
         "handler": get_metrics,
     },
     {

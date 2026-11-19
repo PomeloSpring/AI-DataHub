@@ -175,7 +175,7 @@ def test_system_scope_metadata_superposes_business(monkeypatch):
                           extra={"secure_runtime": SimpleNamespace(policy=policy)})
     calls = []
     monkeypatch.setattr(scoped_metadata, 'execute_query', lambda sql, *a, **k: calls.append(sql) or [])
-    scoped_metadata.execute('get_metrics', {}, ctx)
+    scoped_metadata.execute('get_metrics', {'keyword': '浏览量'}, ctx)
     assert calls, "目录查询必须发出"
     for sql in calls:
         if "adh_ontology_models" in sql:

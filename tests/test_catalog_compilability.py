@@ -88,7 +88,8 @@ class TestBindingScope:
         assert "部署绑定" in mc.dict_unavailable_reason(row, scope, kind="metric")
 
 
-def _run_get_metrics(monkeypatch, metrics, dims, tables=(ALL_TABLES, BY_OBJECT), binding=None):
+def _run_get_metrics(monkeypatch, metrics, dims, tables=(ALL_TABLES, BY_OBJECT), binding=None,
+                     args=None):
     from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
 
     monkeypatch.setattr(mc, "_get_metrics", lambda ds: metrics)
@@ -98,10 +99,43 @@ def _run_get_metrics(monkeypatch, metrics, dims, tables=(ALL_TABLES, BY_OBJECT),
     monkeypatch.setattr("backend.semantics.cross_site.list_deployments", lambda: [])
     token = set_execution_context(ExecutionContext(user_id=7, workspace_id=3, datasource_id=5))
     try:
-        out = asyncio.run(stl.get_metrics({}))
+        out = asyncio.run(stl.get_metrics(args if args is not None else {"keyword": "页面,会话,统计,异常"}))
     finally:
         ExecutionContextVar.reset(token)
     return json.loads(out["content"][0]["text"])
+
+
+def test_get_metrics_rejects_empty_keyword(monkeypatch):
+    """空关键词=把整层字典一次下发（会话 1783069459335 实测 63KB 被运行时截断成半本目录）：必显式拒。
+
+    拒绝文案必须给出路（该带什么词、多词一次传、未命中不代表平台没有），
+    否则模型只会拿一个"参数错误"去改词瞎试（no-silent-degradation §1）。
+    """
+    for args in ({}, {"keyword": ""}, {"keyword": "   "}, {"keyword": "[]"}):
+        payload = _run_get_metrics(monkeypatch, [METRIC_OK], [DIM_OK], args=args)
+        assert "error" in payload, args
+        text = payload["error"]
+        assert "必须带 keyword" in text and "knowledge_search" in text, text
+        assert "一次带齐" in text, text
+
+
+def test_metric_keywords_accepts_multi_words_and_dedupes():
+    """多概念一次传齐（逗号/换行/JSON 数组）：拆成多轮 = 多烧模型往返，且会被预算判超支。"""
+    from backend.modules.mind.execution.sdk_tools.semantic_tools import metric_keywords
+
+    assert metric_keywords({"keyword": "页面浏览量, 渠道"}) == ["页面浏览量", "渠道"]
+    assert metric_keywords({"keyword": '["页面浏览量","渠道","页面浏览量"]'}) == ["页面浏览量", "渠道"]
+    assert metric_keywords({"keyword": "页面\n渠道"}) == ["页面", "渠道"]
+    assert metric_keywords({"keyword": "PageViews"}) == ["pageviews"]   # 匹配面小写，入参不必小写
+
+
+def test_get_metrics_multi_keyword_single_call_unions(monkeypatch):
+    """两个概念一次查全：命中集是并集，不必为第二个概念再调一次。"""
+    second = {**METRIC_OK, "id": 9, "name": "异常数", "formula": "COUNT(err.id)"}
+    payload = _run_get_metrics(monkeypatch, [METRIC_OK, second], [DIM_OK],
+                               args={"keyword": "页面浏览量,异常数"})
+    names = {m["name"] for o in payload["objects"] for m in o["metrics"]}
+    assert names == {"页面浏览量", "异常数"}
 
 
 def test_get_metrics_moves_uncompilable_rows_into_unavailable(monkeypatch):

@@ -88,11 +88,11 @@ def test_keyword_expands_whole_object_and_declares_subset(monkeypatch):
 
 
 def test_keyword_without_hit_returns_empty_not_whole_catalog(monkeypatch):
-    """无命中就是空（并保留 keyword 回显），不得把所有对象当命中回给模型。"""
+    """无命中就是空（并保留 keywords 回显），不得把所有对象当命中回给模型。"""
     _patch(monkeypatch)
     out = sm.execute("get_metrics", {"keyword": "时代天使"}, _ctx())
     assert out["total"] == 0 and out["objects"] == []
-    assert out["keyword"] == "时代天使"
+    assert out["keywords"] == ["时代天使"]
 
 
 def test_object_aliases_strip_physical_table_names(monkeypatch):

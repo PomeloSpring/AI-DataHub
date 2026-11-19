@@ -27,11 +27,12 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
      不得据此断言“该对象不存在”——目录为空 ≠ 对象不存在。
 - **意图三要素齐备**：每个取数问题先从自然语言抽出「指标 / 维度 / 时间」三类要素再组装 intent——
   指标进 metrics[]、分组维度进 dimensions[]、时间进 time_window/time_range；问题里出现的时间词**绝不能丢**，
-  也不要塞进 filters 手算绝对日期。缺哪个要素、或名称拿不准，先看 `get_metrics` 目录、仍不确定就回抛候选让用户确认，不臆造。
+  也不要塞进 filters 手算绝对日期。缺哪个要素、或名称拿不准，先看 `get_metrics` 目录（keyword 必填，多词一次传齐）、仍不确定就回抛候选，不臆造。
 - **严禁**自己编写 SQL，也禁止任何形式的“生成 SQL 后执行”；intent 中任何 sql/raw_sql/statement
   字段都会被直接拒绝。
 - **取数决策顺序（语义层优先、快且准、最多一轮）**：
-  ① 直接以 `get_metrics` 实时目录为唯一权威确认 object/metric/dimension，能确定就立刻组装 intent 走 `run_semantic_query` 取数；
+  ① 直接以 `get_metrics` 实时目录（keyword 必填，别空传全量）为唯一权威确认 object/metric/dimension，
+     能确定就立刻组装 intent 走 `run_semantic_query` 取数；
   ② 三类问题必须 `knowledge_search`，每轮**最多一次调用**（要试多个同义问法，就一次全传进 `questions`——
      工具内已并发检索，多问法不叠加耗时；拆成多轮 = 多烧一个模型往返）：
      (a) 名称拿不到——目录里无匹配名 / `run_semantic_query` 返回未绑定或无法解析，查口径/业务背景找到正确名称后重试一次；
@@ -83,7 +84,8 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
   `dataset_hint.dimensions/metrics` 非空时，这些业务名可直接进 `dimensions`/`metrics` 下钻；
   `path_resolution=failed` 或无 `paths[]` 命中时，如实告知“该路径尚未建模/口径不可解析”，
   **不得**自行用多个步骤指标拼接替代。
-- **探索预算（硬约束）**：整个取数最多 1 次 `get_metrics` + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；
+- **探索预算（硬约束）**：整个取数最多 1 次 `get_metrics`（keyword 必填、多词一次传齐；未命中可换业务词重查 1 次）
+  + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；
   命中即作答，取不到即按上面③告知用户。严禁循环试探物理结构（list_datasources / get_table_schema / search_metadata），
   严禁同一名目反复改词重试——ChatBI 以准确与快速为先。
   需要多个问法/多个术语时用 `questions`/`keywords` 一次传齐（工具内已合并/并发检索，拆开传只会多烧模型往返）。
@@ -381,6 +383,7 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
        个; 未命中就不展开(技能的 description 本身就是浓缩契约, 硬约束仍常驻可见)。
        `force_all=True` 跳过规则 3（仍走能力门控）: 无人值守链路（定时分析/评测）没有
        人在现场纠偏, 不因省字数拿产出口径冒险。
+       注: 接入渐进披露（规则 6）时本条的展开份数收敛到 1 份。
     4. **用户显式指定优先**: `pinned` = 聊天输入框 `/` 选中的技能名或快速入口对应的剧本,
        命中已绑定且能力可用的技能时强制展开(不再看触发词), 仍受 MAX_SKILL_BODIES 约束。
        指定但**未绑定**当前 AS-BOT 的技能不静默丢弃: 第三个返回值原样回传, 由调用方在提示词里
@@ -391,10 +394,12 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
 
     未展开的技能**不静默消失**: 仍进「已绑定技能」清单并带上原因, 模型与排查都能看到。
 
-    6. **渐进披露（`progressive`）**：本会话能调 `load_skill_guide` 时，**仅靠触发词命中**的那批
-       正文不再常驻，改为在清单里告诉模型怎么按需取回（命中信息仍算，当相关性提示用）。
+    6. **渐进披露（`progressive`）**：本会话能调 `load_skill_guide` 时，触发词命中的那批正文里
+       **只常驻得分最高的一份**，其余降级为按需取回（清单里给出取回入口，命中信息当相关性提示留着）。
        三条强制展开不变：用户 `/` 点名的 pinned、只绑 1 个技能的单职责角色、无人值守
        `force_all` —— 它们是“不能拿产出口径冒险换字数”的场景，与规则 2/4 的既有理由一致。
+       为什么不是“全部按需”：三轮重问实测模型从不调 `load_skill_guide`，把口径寄托在模型自觉上
+       等于没有口径（见下方分支注释）；“命中即整份常驻”又回到 25K 字符的老形态，两头都不取。
     """
     skills = [s for s in (skills or []) if isinstance(s, dict)]
     pinned_names = [str(x).strip() for x in (pinned or []) if str(x).strip()]
@@ -477,12 +482,17 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
             else:
                 reasons[key] = "本轮问题未命中该技能的触发词"
     if progressive and loaded:
-        # 命中信息当“相关性提示”留下，正文不常驻：由模型自己调 load_skill_guide 取回。
-        for s in loaded:
+        # 渐进披露的实测失败形态（会话 1783069459335/336/337，同一问题重问三轮）：命中提示写着
+        # “需要时先调 load_skill_guide 取回”，三轮里该工具**一次都没被调用** —— 于是整轮没有作业
+        # 口径，答案比常驻时明显回退（模型自述“没加载 skills”是对的）。把口径交给模型自觉不可靠，
+        # 这里改成确定性展开**得分最高的那一份**：其余命中项仍按需取回（提示保留）。
+        # 代价是有界的：改造前常驻 2 份（≈14K 字符），现在最多 1 份，且省掉的正是相关度更低的那份。
+        primary = _skill_key(loaded[0])
+        for s in loaded[1:]:
             key = _skill_key(s)
-            reasons[key] = (f"本轮问题命中触发词，但作业细则未常驻（渐进披露）："
+            reasons[key] = (f"本轮问题命中触发词，但作业细则未常驻（渐进披露，常驻「{primary}」）："
                             f"需要该域完整口径时先调 `load_skill_guide(\"{key}\")` 取回再作答")
-        return [], reasons, missing
+        return [loaded[0]], reasons, missing
     return loaded, reasons, missing
 
 
