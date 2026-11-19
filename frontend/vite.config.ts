@@ -60,6 +60,8 @@ export default defineConfig(({ mode }) => {
       port,
       // 端口被占时直接失败，不静默 +1：否则监听口与脚本/代理口径分叉，缺陷同样静默
       strictPort: true,
+      // nginx 反代透传的 Host 需在此登记，否则 Vite 6+ 的 host 检查返回 403
+      allowedHosts: ['datapilot.allied-star.com'],
       proxy: createProxyConfig(),
     },
   }
