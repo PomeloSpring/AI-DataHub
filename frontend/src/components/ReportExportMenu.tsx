@@ -8,9 +8,10 @@ import { useTranslation } from 'react-i18next';
 import { Download, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/lib/toast';
+import { containerForKind } from '@/lib/pageWidth';
 import {
-  availableExportFormats, exportLabel, isStandaloneHtmlDocument, printReport, renderedHtml, reportFileName,
-  standaloneHtml, downloadTextFile, type ReportExportFormat,
+  availableExportFormats, collectAppCss, exportLabel, isStandaloneHtmlDocument, printReport, renderedHtml,
+  reportFileName, standaloneHtml, downloadTextFile, type ReportExportFormat,
 } from '@/lib/reportExport';
 
 interface Props {
@@ -66,8 +67,18 @@ export default function ReportExportMenu({ title, createdAt, bodyFormat, body, g
         return;
       }
       if (fmt === 'html') {
+        // 所见即所得：内联本站编译 CSS + 镜像根主题类 + 保住正文容器自己的类 + 版心取屏幕上那份口径，
+        // 缺一就退回"只有语义结构 / 挤在中间一列"的裸排版
         downloadTextFile(reportFileName(title, createdAt, 'html'),
-          standaloneHtml({ title, innerHtml: await renderedHtml(container) }), 'text/html');
+          standaloneHtml({
+            title, innerHtml: await renderedHtml(container),
+            css: collectAppCss(),
+            rootClass: document.documentElement.className,
+            contentClass: container.className,
+            // 屏幕上的宽度口径由 pageWidth 一处裁决（html 版式填满、markdown 长文窄栏），
+            // 导出另写一份 max-width 就是第二个口径，必然与屏幕不一致
+            shellClass: containerForKind(bodyFormat),
+          }), 'text/html');
         toast.success(t('export.exportedHtml'));
         return;
       }

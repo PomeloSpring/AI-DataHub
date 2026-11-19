@@ -5,39 +5,64 @@
 // 再绕回服务端只会多出第二条正文寻址口径（与"两种存储后端只有一个 content_url"
 // 的收敛方向相反）。
 //
-// 三条口径：
+// 四条口径：
 // 1. **导出格式必须与正文格式相称** —— HTML 报告不给 .md 入口（把 HTML 塞进 .md
 //    是语义错），Markdown 报告两种都能出。
 // 2. **HTML/PDF 导出所见即所得** —— 从渲染后的容器取，图表（canvas）转成图片快照，
 //    否则导出的文件里图表是一片空白（canvas 的像素不在 innerHTML 里）。
-// 3. **降级事实报告的免责标注要跟着文件走** —— 正文里本来就写着（render_fact_report
+// 3. **样式必须跟着文件走** —— 单靠净化时剥掉 class/style、再套一份最小样式表，
+//    导出文件就只剩语义结构：屏幕上主题包的配色/卡片/间距全没了。本站主题是根元素上的
+//    类 + globals.css 里的 CSS 变量，所以导出时把**同源编译后的 CSS 原样内联**、
+//    保留 class/style、并把当前根类镜像到导出文档的 `<html>` 上；
+//    这样 `dark:` 变体与 prose 的伪元素也能复现（逐元素抄 computed style 做不到这两点）；
+//    版心宽度走 `lib/pageWidth.ts` 的同一份口径（html 版式填满、markdown 长文窄栏），
+//    导出侧不自带第二个 max-width —— 富版式被压回中间一列正是那份模块注释点名的事故。
+// 4. **降级事实报告的免责标注要跟着文件走** —— 正文里本来就写着（render_fact_report
 //    把它写进正文首行），所以原样导出即带上，不需要在这里再拼一遍。
 import DOMPurify from 'dompurify';
 import html2canvas from 'html2canvas';
 import i18n from '@/i18n';
+import { ARTICLE_ALLOWED_ATTR, ARTICLE_ALLOWED_TAGS } from '@/components/HtmlArticle';
 
 /**
- * 导出面的净化白名单 = 站内渲染口径 + 图表快照所需的 img。
+ * 导出面的净化白名单 = **渲染面白名单的超集** + 图表快照所需的 img/尺寸属性。
  *
- * 不能直接复用 ReportContent 的 sanitizeReportHtml：那份白名单**不含 img**
- * （站内图表是 canvas，不需要 img），拿来洗导出结果会把 canvas 转出来的
- * 图片快照整张删掉 —— 导出的 HTML 里图表凭空消失。
- * 拦的是**可执行的东西**：脚本、事件属性（onclick/onerror）、javascript: 伪协议。
- * 远程图片地址保留 —— 站内 markdown 渲染本来就出图（react-markdown 出 img 元素），
- * 导出侧再剥就是两个口径，且会让"屏幕上有的图、文件里没了"。
+ * "超集"是硬要求：导出取的是渲染后的 DOM，渲染面允许的结构标签若在导出侧被剥，
+ * DOMPurify 会删标签留子节点 —— 文字还在、结构塌了，看起来"导出了，但不是那一回事"。
+ * 历史缺陷：清单里没有 `section`/`header`，HTML 版式正文的章节头
+ * （`<header style="display:flex…">` 底栏 + `<section style="border…">` 卡片）整块散架，
+ * 序号徽章与标题被拆成两段。所以清单从渲染口（HtmlArticle）派生，不在这里抄一份 —— 抄两份必然漂移。
+ *
+ * 反过来也不能直接用 `sanitizeArticleHtml` 洗导出结果：它禁 `src`（正文不该外链图片）且不含 `img`，
+ * 而 canvas/地图拍出来的快照就是 `<img src="data:image/png…">`，复用会把图表整张洗掉。
+ * `del` 同理：markdown `~~划掉~~` 出 `<del>`，站内渲染认它，导出侧不能少。
+ * 拦的仍是**可执行的东西**：脚本、事件属性（onclick/onerror）、javascript: 伪协议。
  */
-const EXPORT_ALLOWED_TAGS = [
-  'p', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody',
-  'tfoot', 'tr', 'th', 'td', 'caption', 'ul', 'ol', 'li', 'strong', 'em', 'b', 'i',
-  'br', 'hr', 'blockquote', 'pre', 'code', 'a', 'img', 'del', 'sup', 'sub',
-];
-// width/height 给快照图定尺寸：用属性而不是内联 style，白名单就能继续不放 style
-// —— 而**不放 style 正是必须的**：Leaflet 的每张瓦片都是 <img style="position:absolute;
-// left/top:...">，一旦放行 style 又没走快照路径，瓦片会带着定位落进文档流。
-const EXPORT_ALLOWED_ATTR = ['href', 'title', 'src', 'alt', 'colspan', 'rowspan', 'width', 'height'];
+export const EXPORT_ALLOWED_TAGS = [...ARTICLE_ALLOWED_TAGS, 'img', 'del'];
+// class/style 由渲染面白名单带进来：这份正文的版式写在内联 style 上，剥掉就只剩裸结构。
+// 快照图只定宽、高交给 CSS 的 height:auto 按位图真实比例算：
+// 同时写死 width+height 会在"布局高度 ≠ 位图高度"时把图拉变形。
+export const EXPORT_ALLOWED_ATTR = [...ARTICLE_ALLOWED_ATTR, 'src', 'alt', 'width', 'height'];
+
+/**
+ * style 值里的可执行写法。DOMPurify 放行 style 属性，但**不拦** `url(javascript:…)`
+ * （实测 3.4.15 原样保留 —— 它赌现代浏览器不执行 CSS 里的 javascript:），
+ * 而导出文件会被别人用浏览器直接打开，现行口径是"文件里不得出现 javascript:"。
+ * 命中就整条丢掉该元素的 style：宁可少一点排版，也不猜哪一句声明是安全的。
+ */
+const UNSAFE_STYLE = /javascript:|vbscript:|expression\s*\(|@import|behavior\s*:/i;
+
+// 独立实例：钩子只作用于导出净化，不改动站内其它 DOMPurify 调用方（如 ReportContent）的口径
+const exportPurifier = DOMPurify();
+exportPurifier.addHook('afterSanitizeAttributes', (node) => {
+  const el = node as Element;
+  if (typeof el.getAttribute !== 'function' || typeof el.removeAttribute !== 'function') return;
+  const style = el.getAttribute('style');
+  if (style && UNSAFE_STYLE.test(style)) el.removeAttribute('style');
+});
 
 function sanitizeForExport(html: string): string {
-  return DOMPurify.sanitize(html, {
+  return exportPurifier.sanitize(html, {
     ALLOWED_TAGS: EXPORT_ALLOWED_TAGS,
     ALLOWED_ATTR: EXPORT_ALLOWED_ATTR,
     ALLOW_DATA_ATTR: false,
@@ -235,7 +260,8 @@ export async function renderedHtml(container: HTMLElement): Promise<string> {
       img.alt = label;
       // 只定宽、高交给 CSS 的 height:auto 按位图真实比例算：
       // 同时写死 width+height 会在"布局高度 ≠ 位图高度"时把图拉变形。
-      // 尺寸用属性而不是内联 style（白名单不放 style，见 EXPORT_ALLOWED_ATTR）。
+      // 尺寸仍用属性而不是内联 style：位图比例交给下面 CSS 的 height:auto 算，
+      // 写死内联 height 会盖掉那条规则，在"布局高度 ≠ 位图高度"时把图拉变形。
       if (rect.width) img.setAttribute('width', String(Math.round(rect.width)));
       ghost.replaceWith(img);
     }
@@ -262,33 +288,97 @@ export async function renderedHtml(container: HTMLElement): Promise<string> {
   }
 }
 
-/** 自包含 HTML 文档：内联基础排版，脱离本站样式也能读 */
-export function standaloneHtml(opts: { title: string; innerHtml: string; subtitle?: string }): string {
+/**
+ * 本站编译后的 CSS 正文（逐张同源样式表拼接规则文本），供导出文件内联，实现样式保真。
+ *
+ * 跨域样式表（CDN 字体等）读 `cssRules` 会抛 SecurityError，跳过即可 —— 本站样式经
+ * vite 打包是**同源**的，主题变量与工具类都在这几张表里，不会漏掉影响观感的规则。
+ * 拿不到（无 document / 一张表都读不了）回空串：`standaloneHtml` 只剩自带的基础排版，
+ * 正文内容照常导出 —— 这是排版退化，不是失败，所以不抛错。
+ */
+export function collectAppCss(): string {
+  if (typeof document === 'undefined' || !document.styleSheets) return '';
+  const rules: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const list = sheet.cssRules;
+      if (list) for (const rule of Array.from(list)) rules.push(rule.cssText);
+    } catch {
+      // SecurityError（跨域表）：这张跳过，其余照常
+    }
+  }
+  return rules.join('\n');
+}
+
+/**
+ * 自包含 HTML 文档。
+ *
+ * css / rootClass / contentClass / shellClass 四个入参是"所见即所得"的落点，缺任意一个都会退化成裸结构：
+ * - `css`：本站编译 CSS（`collectAppCss`）。放在内置基础样式**之后**，让主题规则覆盖兜底档；
+ *   只把 `</style` 转义掉 —— 它是 raw text 里唯一能提前结束标签、把后文当 HTML 解析的逃逸口。
+ * - `rootClass`：当前 `documentElement.className`（`dark` 或主题包名），CSS 变量按它取值；
+ * - `contentClass`：正文容器自身的类（如 `prose`、卡片内边距），`innerHTML` 不含它，需显式包一层；
+ * - `shellClass`：版心，取 `lib/pageWidth.ts` 的 `containerForKind(kind)` —— 与屏幕同一份口径
+ *   （html 版式=宽版填满、markdown 长文=窄栏）。**不得**在这里另写一个 max-width：
+ *   把富版式栅格压回中间一列正是那份模块注释点名的事故。
+ *
+ * 屏幕与文件两个口径的分工要写死在这里，否则会互相盖掉：
+ * - **本站 CSS 在场时**（正常路径）：正文的标题字号/表格/代码全由主题与 prose 决定，
+ *   导出侧一份内容级样式都不加，否则 `.report-body td` 这类权重压过 prose 的规则（prose 的
+ *   `:where()` 权重为 0）会把屏幕上的表格样式改写掉 —— 又是"文件与屏幕不一致"。
+ * - **本站 CSS 缺失时**（拿不到样式表的退化路径）：只剩一份兜底档，宁可排版朴素也不要裸结构。
+ * - 文件自己的标题与副标题是**我们造的**元素（屏幕上不存在），preflight 会把裸 `h1` 的
+ *   字号字重重置成 inherit，所以它们必须挂在自己的类上（类选择器权重压过元素选择器，与顺序无关）。
+ */
+export function standaloneHtml(opts: {
+  title: string;
+  innerHtml: string;
+  subtitle?: string;
+  css?: string;
+  rootClass?: string;
+  contentClass?: string;
+  shellClass?: string;
+}): string {
   const esc = (s: string) => String(s || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const appCss = String(opts.css || '').replace(/<\/style/gi, '<\\/style');
+  const fallback = appCss ? '' : `
+  .report-body h2, .report-body h3, .report-body h4 { line-height: 1.35; margin: 1.4em 0 .6em; font-weight: 600; }
+  .report-body h2 { font-size: 22px; }
+  .report-body h3 { font-size: 18px; }
+  .report-body h4 { font-size: 16px; }
+  .report-body table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 14px; }
+  .report-body th, .report-body td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; }
+  .report-body th { background: #f1f5f9; }
+  .report-body img { max-width: 100%; height: auto; }
+  .report-body code, .report-body pre { background: #f1f5f9; border-radius: 4px; }
+  .report-body pre { padding: 12px; overflow: auto; }
+  .report-body blockquote { margin: 1em 0; padding: 0 1em; color: #475569; border-left: 3px solid #cbd5e1; }`;
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN"${opts.rootClass ? ` class="${esc(opts.rootClass)}"` : ''}>
 <head>
 <meta charset="utf-8">
 <title>${esc(opts.title)}</title>
 <style>
+  /* 版心放 div 而不是 body：内联进来的 Tailwind preflight 带 body{margin:0}，
+     写在 body 上的居中会被它盖掉，导出文件变成通栏贴边 */
   body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-         max-width: 900px; margin: 32px auto; padding: 0 20px; color: #0f172a; line-height: 1.65; }
-  h1, h2, h3, h4 { line-height: 1.35; margin: 1.4em 0 .6em; }
-  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 14px; }
-  th, td { border: 1px solid #cbd5e1; padding: 6px 10px; text-align: left; }
-  th { background: #f1f5f9; }
-  img { max-width: 100%; height: auto; }
-  code, pre { background: #f1f5f9; border-radius: 4px; }
-  pre { padding: 12px; overflow: auto; }
-  blockquote { margin: 1em 0; padding: 0 1em; color: #475569; border-left: 3px solid #cbd5e1; }
-  .report-sub { color: #64748b; font-size: 13px; margin: 0 0 24px; }
+         color: #0f172a; line-height: 1.65; }
+  /* 兜底档（900px 居中）只在内联 CSS 缺失时说了算：shellClass 的 w-[94%]/max-w-[2200px]
+     与它同权重且排在后面（本站 CSS 在后），屏幕同款宽版口径照常胜出 */
+  .report-shell { max-width: 900px; margin: 32px auto; padding: 0 20px; }
+  .report-title { font-size: 30px; font-weight: 600; line-height: 1.3; margin: 0 0 8px; }
+  .report-sub { color: #64748b; font-size: 13px; margin: 0 0 24px; }${fallback}
 </style>
-</head>
+${appCss ? `<style>${appCss}</style>\n` : ''}</head>
 <body>
-<h1>${esc(opts.title)}</h1>
+<div class="report-shell${opts.shellClass ? ` ${esc(opts.shellClass)}` : ''}">
+<h1 class="report-title">${esc(opts.title)}</h1>
 ${opts.subtitle ? `<p class="report-sub">${esc(opts.subtitle)}</p>` : ''}
+${opts.contentClass ? `<div class="report-body ${esc(opts.contentClass)}">` : '<div class="report-body">'}
 ${opts.innerHtml}
+</div>
+</div>
 </body>
 </html>`;
 }

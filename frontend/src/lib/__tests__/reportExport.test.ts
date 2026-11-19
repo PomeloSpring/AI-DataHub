@@ -7,9 +7,10 @@
 // * 没有 window.print 时必须拒绝并说清出路，静默无反应看起来像按钮坏了。
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import {
-  availableExportFormats, isStandaloneHtmlDocument, printReport, renderedHtml, reportFileName, standaloneHtml,
-  downloadTextFile, PRINT_CLASS,
+  availableExportFormats, collectAppCss, isStandaloneHtmlDocument, printReport, renderedHtml, reportFileName,
+  standaloneHtml, downloadTextFile, PRINT_CLASS, EXPORT_ALLOWED_TAGS, EXPORT_ALLOWED_ATTR,
 } from '../reportExport'
+import { ARTICLE_ALLOWED_ATTR, ARTICLE_ALLOWED_TAGS } from '@/components/HtmlArticle'
 
 // jsdom 拍不出像素：html2canvas 用桩返回一张"有内容"的画布；
 // 空白判定另有全同色画布的用例。
@@ -98,6 +99,103 @@ describe('自包含 HTML 文档', () => {
     expect(doc).toContain('&lt;script&gt;x&lt;/script&gt;')
     expect(doc).toContain('<table><tr><td>1</td></tr></table>')
     expect(doc.startsWith('<!DOCTYPE html>')).toBe(true)
+  })
+
+  it('不带 css 时只有基础排版（老调用形状仍可用）', async () => {
+    const doc = standaloneHtml({ title: 't', innerHtml: '<p>a</p>' })
+    expect(doc).toContain('max-width: 900px')
+    expect(doc.match(/<style>/g) || []).toHaveLength(1)
+    expect(doc).not.toContain('<div class="">')
+  })
+
+  it('样式保真三件套：内联本站 CSS + 镜像根主题类 + 正文容器类包一层', async () => {
+    const doc = standaloneHtml({
+      title: '案例分布', innerHtml: '<p>正文</p>',
+      css: '.tech{--primary:200 80% 50%}.prose p{margin:1em}',
+      rootClass: 'tech dark', contentClass: 'mt-5 rounded-xl border bg-card p-5',
+    })
+    // 根类决定 CSS 变量取值（缺它 → 深色主题导出成浅色）
+    expect(doc).toContain('<html lang="zh-CN" class="tech dark">')
+    // 本站 CSS 必须在内置基础样式**之后**，否则主题规则被兜底档盖掉
+    const styles = doc.split('<style>')
+    expect(styles).toHaveLength(3)
+    expect(styles[2]).toContain('--primary:200 80% 50%')
+    // innerHtml 不含正文容器自身的类，靠这层包裹把卡片/prose 样式带进文件
+    expect(doc).toContain('<div class="report-body mt-5 rounded-xl border bg-card p-5">')
+    expect(doc).toContain('<p>正文</p>')
+  })
+
+  it('文件自己的标题挂类名而不是裸 h1：preflight 会把 h1~h6 字号字重置成 inherit', async () => {
+    // 这个标题是导出侧造的（屏幕上不存在），而内联进来的本站 CSS 排在基础档之后，
+    // preflight 的裸标签规则会盖掉裸标签写的规则 → 症状就是"导出文件里标题和正文一样大"。
+    // 类选择器权重压过元素选择器，与到达顺序无关，这才站得住。
+    const doc = standaloneHtml({ title: '入口点击分析', innerHtml: '<p>正文</p>', css: 'h1{font-size:inherit}' })
+    expect(doc).toContain('<h1 class="report-title">入口点击分析</h1>')
+    expect(doc).toMatch(/\.report-title\s*\{[^}]*font-size:/)
+    expect(doc).toMatch(/\.report-title\s*\{[^}]*font-weight:/)
+  })
+
+  it('内容级兜底档只在内联 CSS 缺失时出现：与本站 CSS 同场会盖掉 prose 的表格样式', async () => {
+    // prose 的规则几乎都写成 `.prose :where(td)…`（:where 权重 0）。兜底档写成 `.report-body td`
+    // 权重更高，一旦同时在场就会把屏幕上那套表格样式改写掉 → 又是两个口径。
+    const withCss = standaloneHtml({ title: 't', innerHtml: '<table><tr><td>1</td></tr></table>', css: '.prose td{padding:.4em}' })
+    expect(withCss).not.toContain('.report-body table')
+    expect(withCss).not.toContain('.report-body th')
+    // 拿不到本站 CSS 时才需要它兜底：宁排版朴素，也不要裸结构贴边
+    const degraded = standaloneHtml({ title: 't', innerHtml: '<table><tr><td>1</td></tr></table>' })
+    expect(degraded).toContain('.report-body table')
+    expect(degraded).toContain('.report-body th')
+    expect(degraded).toContain('max-width: 900px')
+  })
+
+  it('版心由调用方给屏幕同款口径，导出侧不再自带 900px 硬上限当唯一宽度', async () => {
+    // 富版式（kind='html'）屏幕走宽版填满；导出写死 900px 居中就是把卡片栅格压回中间一列
+    //（lib/pageWidth.ts 头注释点名的事故）。shellClass 上到版心后，同权重的工具类排在后面照样胜出。
+    const doc = standaloneHtml({ title: 't', innerHtml: '<p>a</p>', shellClass: 'mx-auto w-[94%] min-w-0 max-w-[2200px]' })
+    expect(doc).toContain('<div class="report-shell mx-auto w-[94%] min-w-0 max-w-[2200px]">')
+  })
+
+  it('内联 CSS 里的 </style 被转义：raw text 里它是唯一能把后文当 HTML 解析的逃逸口', async () => {    const doc = standaloneHtml({ title: 't', innerHtml: '<p>a</p>', css: 'a{content:"</style><img src=x onerror=1>"}' })
+    expect(doc).not.toContain('</style><img')
+    expect(doc).toContain('<\\/style')
+  })
+
+  it('根类/容器类走转义，属性拼接不开洞', async () => {
+    const doc = standaloneHtml({ title: 't', innerHtml: '<p>a</p>', rootClass: '" onload="evil()', contentClass: '"' })
+    expect(doc).not.toContain('onload="evil')
+    expect(doc).not.toContain('class=""')
+  })
+})
+
+describe('collectAppCss：同源样式表序列化', () => {
+  it('把本站 <style> 的规则文本拼出来（导出文件靠它复现配色/间距）', () => {
+    const tag = document.createElement('style')
+    tag.textContent = '.export-probe-rule{color: rgb(1, 2, 3);}'
+    document.head.appendChild(tag)
+    try {
+      expect(collectAppCss()).toContain('.export-probe-rule')
+    } finally {
+      tag.remove()
+    }
+  })
+
+  it('跨域样式表读 cssRules 抛错时跳过该表，不整份导出失败', () => {
+    const own = Object.getOwnPropertyDescriptor(document, 'styleSheets')
+    Object.defineProperty(document, 'styleSheets', {
+      configurable: true,
+      value: [
+        { get cssRules() { throw new DOMException('The operation is insecure.', 'SecurityError'); } },
+        { cssRules: [{ cssText: '.after-cross-origin{color:red}' }] },
+      ],
+    })
+    try {
+      const css = collectAppCss()
+      expect(css).toContain('.after-cross-origin')   // 坏表之后的表照收
+      expect(css).not.toContain('insecure')
+    } finally {
+      if (own) Object.defineProperty(document, 'styleSheets', own)
+      else delete (document as unknown as { styleSheets?: unknown }).styleSheets
+    }
   })
 })
 
@@ -262,13 +360,49 @@ describe('所见即所得取正文（文字与图片）', () => {
     expect(html).not.toContain('<canvas')
   })
 
+  it('类名与内联排版样式保留：内联进来的本站 CSS 全靠类名命中，剥类=导出裸结构', async () => {
+    const host = mount('<h2 class="text-lg font-semibold">结论</h2>'
+      + '<table class="w-full"><tr><td style="text-align:right">1</td></tr></table>')
+    const html = await renderedHtml(host)
+    expect(html).toContain('class="text-lg font-semibold"')
+    expect(html).toContain('class="w-full"')
+    expect(html).toContain('text-align:right')
+  })
+
+  it('版式结构标签不塌：section/header 连同内联 style 必须整块留下', async () => {
+    // 资讯正文（kind='html'）的卡片/章节头就是写在 <section>/<header> 的内联 style 上的。
+    // DOMPurify 对不在白名单的标签是"删标签留子节点"：文字照常、结构静默塌掉，
+    // 导出的文件看起来成功、其实和屏幕上不是同一份东西。
+    const host = mount('<section style="border:1px solid hsl(var(--border));border-radius:16px">'
+      + '<header style="display:flex;align-items:center;gap:10px"><span>目</span><h3>站点分布</h3></header>'
+      + '<div style="padding:18px">正文</div></section>')
+    const html = await renderedHtml(host)
+    expect(html).toContain('<section')
+    expect(html).toContain('<header')
+    expect(html).toContain('border-radius:16px')
+    expect(html).toContain('display:flex')
+    expect(html).toContain('站点分布')
+  })
+
+  it('导出白名单必须是渲染白名单的超集（两份清单手抄必然漂移）', () => {
+    ARTICLE_ALLOWED_TAGS.forEach(tag => {
+      expect(EXPORT_ALLOWED_TAGS, `渲染面有 <${tag}>、导出面没有 → 屏幕上有的结构导出塌掉`)
+        .toContain(tag)
+    })
+    ARTICLE_ALLOWED_ATTR.forEach(attr => {
+      expect(EXPORT_ALLOWED_ATTR, `渲染面留 ${attr}、导出面剥掉 → 版式跟着掉`).toContain(attr)
+    })
+  })
+
   it('导出净化拦可执行内容：脚本、事件属性、javascript: 伪协议', async () => {
     // 导出文件会被别人用浏览器直接打开，这里漏一个就是存储型 XSS 换了个载体
-    const host = mount('<p>ok</p><script>alert(1)</script>'
+    // （放开 class/style 之后重新确认一遍：拦的是可执行的东西，不是排版属性）
+    const host = mount('<p class="lead" style="color:red">ok</p><script>alert(1)</script>'
       + '<a href="javascript:steal()" onclick="evil()">链接</a>'
-      + '<img src="x.png" onerror="boom()">')
+      + '<img src="x.png" onerror="boom()" style="background:url(javascript:steal())">')
     const html = await renderedHtml(host)
     expect(html).toContain('ok')
+    expect(html).toContain('class="lead"')
     expect(html).not.toContain('<script')
     expect(html).not.toContain('alert(1)')
     expect(html).not.toContain('onclick')

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useBrandStore } from '@/stores/brandStore';
 import { DEFAULT_APP_NAME } from '@/lib/brand';
@@ -6,7 +6,8 @@ import BrandLogo from '@/components/BrandLogo';
 import SectionSwitcher from '@/components/SectionSwitcher';
 import LanguageMenu from '@/components/LanguageMenu';
 import ReleaseNotesButton from '@/components/ReleaseNotesButton';
-import ArticleReader from './ArticleReader';
+import ReportExportMenu from '@/components/ReportExportMenu';
+import ArticleReader, { type ArticleExportSource } from './ArticleReader';
 
 /**
  * 文章阅读页 `/read/:slug` —— 内容中心已发布内容的独立阅读页（"相当于单独的网页"）。
@@ -26,8 +27,11 @@ export default function ReadArticle() {
   const release = Number.isFinite(Number(searchParams.get('release')))
     ? Math.max(0, Math.trunc(Number(searchParams.get('release') || 0))) : 0;
   const { brand, fetchBrand } = useBrandStore();
+  // 资讯导出源由 ArticleReader 回填（无正文/link 类为 null）；换文章先收起旧的，避免导出到上一篇
+  const [exportSrc, setExportSrc] = useState<ArticleExportSource | null>(null);
 
   useEffect(() => { void fetchBrand(); }, [fetchBrand]);
+  useEffect(() => { setExportSrc(null); }, [slug]);
 
   const pickRelease = (value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -46,6 +50,15 @@ export default function ReadArticle() {
             {brand.show_text && <span className="text-sm font-semibold tracking-tight">{brand.app_name || DEFAULT_APP_NAME}</span>}
           </span>
           <div className="flex items-center gap-1.5">
+            {exportSrc && (
+              <ReportExportMenu
+                title={exportSrc.title}
+                createdAt={exportSrc.createdAt}
+                bodyFormat={exportSrc.bodyFormat}
+                body={exportSrc.body}
+                getContainer={exportSrc.getContainer}
+              />
+            )}
             <ReleaseNotesButton />
             <SectionSwitcher current="home" />
             {/* 语言切换：顶栏常驻，不随模块切换显隐（与四套布局同口径） */}
@@ -59,6 +72,7 @@ export default function ReadArticle() {
         release={release}
         onPickRelease={pickRelease}
         onOpenArticle={(s) => navigate(`/read/${encodeURIComponent(s)}`)}
+        onExportSource={setExportSrc}
         asMain
       />
     </div>

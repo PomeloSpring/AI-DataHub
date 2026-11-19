@@ -24,8 +24,18 @@ import { useTaxonomy, ErrorBanner } from '@/pages/content/shared';
 import ArticleFiles from '@/pages/content/ArticleFiles';
 import { CategoryBadge, categoryOfArticle, relTime, stashQuestion, useReadState, viewCount } from './shared';
 
+export interface ArticleExportSource {
+  title: string;
+  createdAt: string;
+  /** 正文格式（markdown|html|link…）：link 与无正文时回 null，宿主据此收起导出入口 */
+  bodyFormat: string;
+  body: string;
+  getContainer: () => HTMLElement | null;
+}
+
 export default function ArticleReader({
   slug, release, onPickRelease, onOpenArticle, showHomeCrumb = false, asMain = false, countView = true,
+  onExportSource,
 }: {
   slug: string;
   /** 阅读的第几期（0 = 当前在线那一期）；由宿主持有（页面走 URL ?release=，内嵌走本地态） */
@@ -39,6 +49,9 @@ export default function ArticleReader({
   asMain?: boolean;
   /** 是否计入门户阅读数：读者主动打开=计；报告中心落地自动展示首项=不计（否则每次进页都顶高「最多阅读」） */
   countView?: boolean;
+  /** 把正文导出源交给宿主渲染导出入口（按钮位置由宿主定：报告中心放「全屏」旁、独立页放顶栏）；
+   *  无正文/link 类回 null。正文取数与渲染仍唯一在本组件，宿主只消费不自建第二套阅读口径。 */
+  onExportSource?: (src: ArticleExportSource | null) => void;
 }) {
   const getDefaultWorkspaceId = useWorkspaceStore(s => s.getDefaultWorkspaceId);
   const navigate = useNavigate();
@@ -53,6 +66,8 @@ export default function ArticleReader({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 正文渲染容器：导出 HTML/PDF 走所见即所得从这里取 DOM 快照（与报告同一管线）
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -73,6 +88,23 @@ export default function ArticleReader({
 
   // 换期次/换文章回到顶部（作用在自己的滚动口，不动整页 document）
   useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); }, [slug, release]);
+
+  // 把正文导出源交给宿主（宿主决定按钮位置，见 onExportSource）：link 类与无正文回 null。
+  // getContainer 用稳定闭包取本组件正文容器，宿主拿到的就是当前渲染面，不另起第二套取数/渲染。
+  useEffect(() => {
+    if (!onExportSource) return;
+    if (!article || article.kind === 'link' || !article.body?.trim()) {
+      onExportSource(null);
+      return;
+    }
+    onExportSource({
+      title: article.title,
+      createdAt: article.published_at || article.updated_at || '',
+      bodyFormat: article.kind || 'markdown',
+      body: article.body,
+      getContainer: () => bodyRef.current,
+    });
+  }, [article, onExportSource]);
 
   // 历史期次候选单独拉一次：清单与读者可读性是服务端同一份口径（history_hidden 直接用它）
   useEffect(() => {
@@ -125,7 +157,7 @@ export default function ArticleReader({
         )}
 
         {article && (
-          <article>
+          <article data-report-print>
             {/* 面包屑：栏目用业务名，不显示 category_id；内嵌视图不回首页 */}
             <nav aria-label={t("k_5b8edc5dfb")} className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
               {showHomeCrumb && (
@@ -192,7 +224,7 @@ export default function ArticleReader({
               const missingEn = cur === 'zh-CN' && !en.available;
               if (!target && !missingEn) return null;
               return (
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px]" data-testid="article-lang-bar">
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px]" data-testid="article-lang-bar" data-export-strip>
                   {target && (
                     <Button
                       variant="outline"
@@ -217,7 +249,7 @@ export default function ArticleReader({
             })()}
 
             {releases.length > 1 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-export-strip>
                 <span>{t("k_1d71660347")}</span>
                 <Select value={String(release)} onValueChange={onPickRelease}>
                   <SelectTrigger className="w-[240px]" aria-label={t("k_fa62b17149")}>
@@ -272,7 +304,7 @@ export default function ArticleReader({
               </div>
             )}
 
-            <div className="mt-5 rounded-xl border bg-card p-5 sm:p-6">
+            <div ref={bodyRef} className="mt-5 rounded-xl border bg-card p-5 sm:p-6">
               {article.body?.trim()
                 ? (article.kind === 'html'
                   ? (reveal
@@ -313,14 +345,14 @@ export default function ArticleReader({
               </section>
             )}
 
-            <div className="mt-6 flex justify-center">
+            <div className="mt-6 flex justify-center" data-export-strip>
               <Button onClick={askAbout} size="sm">
                 <MessageSquareQuote className="mr-1.5 h-4 w-4" />
                 {tr('k_ffdc32f7e6')}</Button>
             </div>
 
             {!!related.length && (
-              <section className="mt-8">
+              <section className="mt-8" data-export-strip>
                 <h2 className="mb-2.5 text-sm font-medium">{t("k_b5ab51f558")}</h2>
                 <div className="grid gap-2.5 sm:grid-cols-2">
                   {related.map(r => (

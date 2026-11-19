@@ -17,21 +17,24 @@ import DOMPurify from 'dompurify';
  * （`hsl(var(--primary))` 这类），暗/亮两套主题才不用各写一份。
  * `class` 允许保留但不保证有样式：Tailwind 只编译源码里出现过的类名，库内容扫不到。
  */
-const ALLOWED_TAGS = [
+// 导出（`reportExport` 的净化白名单）从这里取，不再各写一份：导出面必须是渲染面的**超集**，
+// 窄一格就会出现"屏幕上有的结构、导出文件里塌掉"（历史缺陷：section/header 被剥，
+// 章节头的 `display:flex` 底栏与卡片边框凭空消失）。
+export const ARTICLE_ALLOWED_TAGS = [
   'div', 'section', 'header', 'footer', 'article', 'aside', 'span', 'p', 'br', 'hr',
   'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'dl', 'dt', 'dd',
   'strong', 'em', 'b', 'i', 'small', 'sub', 'sup', 'blockquote', 'code', 'pre',
   'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
   'a', 'figure', 'figcaption',
 ];
-const ALLOWED_ATTR = ['style', 'class', 'href', 'title', 'colspan', 'rowspan', 'lang', 'dir'];
+export const ARTICLE_ALLOWED_ATTR = ['style', 'class', 'href', 'title', 'colspan', 'rowspan', 'lang', 'dir'];
 // 双保险：白名单本来就不含这些，再显式 forbid，避免日后加白名单时手滑放行
 const FORBID_TAGS = ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'svg', 'math'];
 
 export function sanitizeArticleHtml(html: string): string {
   return DOMPurify.sanitize(html || '', {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
+    ALLOWED_TAGS: ARTICLE_ALLOWED_TAGS,
+    ALLOWED_ATTR: ARTICLE_ALLOWED_ATTR,
     ALLOW_DATA_ATTR: false,
     FORBID_TAGS,
     FORBID_ATTR: ['src', 'srcset', 'onerror', 'onload', 'formaction'],

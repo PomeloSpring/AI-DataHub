@@ -31,7 +31,7 @@ import ReportExportMenu from '@/components/ReportExportMenu';
 import ReportTaskDialog from '@/components/ReportTaskDialog';
 import ReportPromoteDialog from '@/components/ReportPromoteDialog';
 import { useContentPerms } from '@/pages/content/shared';
-import ArticleReader from '@/pages/home/ArticleReader';
+import ArticleReader, { type ArticleExportSource } from '@/pages/home/ArticleReader';
 import { contentApi, type ContentArticle } from '@/api/content';
 import { triggerScheduledTask } from '@/api/scheduledTask';
 import {
@@ -192,6 +192,8 @@ export default function ReportsCenter() {
   // 内容内嵌阅读：选中哪篇（slug）与在读第几期（本地态，不进 URL）；置空 = 回到报告详情。
   const [activeArticleSlug, setActiveArticleSlug] = useState('');
   const [articleRelease, setArticleRelease] = useState(0);
+  // 资讯正文导出源（由内嵌 ArticleReader 回填）：放头部「全屏」旁，与报告分支同款导出入口
+  const [articleExport, setArticleExport] = useState<ArticleExportSource | null>(null);
   // 落地自动展示首项不计阅读（false），用户主动点击内容才计（true）——避免每次进报告中心都顶高门户「最多阅读」
   const [articleCountView, setArticleCountView] = useState(false);
   // 内容清单是否已落定（resolve 或 error）：自动选中首项需等它，否则报告先返回时会抢在内容之前锁错首项
@@ -292,6 +294,7 @@ export default function ReportsCenter() {
     if (refreshCtrl.current) { refreshCtrl.current.abort(); refreshCtrl.current = null; setRefresh(EMPTY_REFRESH); }
     setActiveArticleSlug(slug);
     setArticleRelease(0);
+    setArticleExport(null);   // 换文章即收起旧导出源，新正文加载完由 ArticleReader 回填（避免导出到上一篇）
     setArticleCountView(true);   // 用户主动点击（含同栏目推荐）= 一次真实阅读，计
     // 不清 activeKey：否则默认选中 effect（activeKey 为空时重选 series[0]）会把某报告重新选中并高亮；
     // 报告卡片高亮改由 !activeArticleSlug 门控（见列表渲染），内容阅读期间不高亮任何报告。
@@ -816,16 +819,30 @@ export default function ReportsCenter() {
                     </h2>
                   </div>
                   {/* 全屏 = 打开独立阅读页 /read/:slug（单独网页）；内嵌只读，编辑/发布回内容中心 */}
-                  <Button variant="outline" size="sm" className="h-8 text-xs shrink-0"
-                    title={t('center.contentFullscreenTitle')}
-                    onClick={() => navigate(`/read/${encodeURIComponent(activeArticleSlug)}`)}>
-                    <Maximize2 className="h-3 w-3 mr-1" />{t('center.contentFullscreen')}
-                  </Button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* 资讯导出：与报告分支同款 ReportExportMenu，放「全屏」旁（用户拍板：资讯也可导出，
+                        位置/形态与其他报告一致）。正文与渲染容器由 ArticleReader 回填到 articleExport。 */}
+                    {articleExport && (
+                      <ReportExportMenu
+                        title={articleExport.title}
+                        createdAt={articleExport.createdAt}
+                        bodyFormat={articleExport.bodyFormat}
+                        body={articleExport.body}
+                        getContainer={articleExport.getContainer}
+                      />
+                    )}
+                    <Button variant="outline" size="sm" className="h-8 text-xs"
+                      title={t('center.contentFullscreenTitle')}
+                      onClick={() => navigate(`/read/${encodeURIComponent(activeArticleSlug)}`)}>
+                      <Maximize2 className="h-3 w-3 mr-1" />{t('center.contentFullscreen')}
+                    </Button>
+                  </div>
                 </div>
                 <ArticleReader
                   slug={activeArticleSlug}
                   release={articleRelease}
                   countView={articleCountView}
+                  onExportSource={setArticleExport}
                   onPickRelease={v => setArticleRelease(Number(v) || 0)}
                   onOpenArticle={selectArticle}
                 />

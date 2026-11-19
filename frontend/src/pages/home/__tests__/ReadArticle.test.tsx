@@ -113,7 +113,17 @@ describe('首页资讯区的阅读页 /read/:slug', () => {
     const a = await screen.findByRole('link', { name: /看原始发布/ }, { timeout: 3000 });
     expect(a).toHaveAttribute('target', '_blank');
     expect(screen.queryByTestId('md')).not.toBeInTheDocument();
+    // 外链条目没有本站正文 → 导出入口不出现（无正文可导，属显式而非静默缺功能）
+    expect(document.querySelector('[data-report-export]')).toBeNull();
   });
+
+  it('正文条目给导出入口（与报告同款 ReportExportMenu，放顶栏）', async () => {
+    renderRead();
+    await screen.findByRole('heading', { name: /口内扫描精度怎么衡量/ }, { timeout: 3000 });
+    // ArticleReader 回填导出源 → ReadArticle 顶栏渲染带 data-report-export 的导出按钮
+    await waitFor(() => expect(document.querySelector('[data-report-export]')).not.toBeNull());
+  });
+
 
   it('阅读页自带滚动口：#root 是 overflow:hidden，正文区必须自己可滚', async () => {
     renderRead();
