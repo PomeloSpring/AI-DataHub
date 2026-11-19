@@ -1,10 +1,10 @@
 ---
 name: screen-builder
 display_name: 可视化大屏生成
-description: 生成多图表可视化数据大屏(仪表盘/BI看板/经营驾驶舱/数据大屏)。以声明式语义意图直建, 每图先落成数据集(adh_datasets)再挂成数据集图, 由 create_data_screen 一次建完; 不打开设计面板、不要求用户填写/确认 SQL。用户请求"生成/修改数据大屏、看板、仪表盘"时使用。
+description: 生成与修改多图表可视化数据大屏(仪表盘/BI看板/经营驾驶舱/数据大屏)。以声明式语义意图直建, 每图先落成数据集(adh_datasets)再挂成数据集图; 改板先按业务名定位再原地改(update_data_screen), 删除与组合编排各自有专门工具。用户请求"生成/修改/删除数据大屏、看板、仪表盘、看板组合"时使用。
 category: analysis
-requires_any: [create_data_screen]
-triggers: [大屏, 看板, 仪表盘, 驾驶舱, dashboard, 可视化, 多图表, 报表页, 布局, 字模, 图表样式, 数据大屏]
+requires_any: [create_data_screen, update_data_screen]
+triggers: [大屏, 看板, 仪表盘, 驾驶舱, dashboard, 可视化, 多图表, 报表页, 布局, 字模, 图表样式, 数据大屏, 看板组合, 组合, 轮播, 分组, 修改看板, 删除看板]
 display_name_en: "Screen Builder"
 description_en: "Build dashboard/screen layouts directly: each chart is materialized as a dataset and mounted as a dataset chart; style packs reused from the vis library."
 ---
@@ -44,18 +44,34 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 - **中文优先**:标题、标签、注释一律中文。
 - **提问方式**:需要向用户澄清/给选项时,**直接在正文里用编号列出选项并停下等待用户回复**,结束本轮,不要自问自答或替用户选。
 
+## 概念地图(先对齐名词, 别按字面猜)
+
+| 名词 | 它是什么 | 它不是什么 |
+|------|----------|-------------|
+| **看板 / 大屏** | `adh_dashboards` 里的**同一行**: 「看板」是浏览态, 「大屏」是同一资产的 `/screen/:id` 播放态 | 不是两种资产, 不必"另建一块大屏" |
+| **看板组合** | **仪表盘组** = 编排维度: 把已存在的看板分组 + 定展示/轮播顺序 + 按角色分配这组 | **不是"把几张图合成一张图"**; 也**不授予可见权**(能否打开只由角色的看板授权裁决) |
+| **报表** | 另一类资产(有独立的发布/审核链路) | 不是看板, 不用本技能工具建 |
+
+用户说"谁能看这块板/把这块板给某角色看"→ 那是**看板授权**(引导到角色权限页), 不是"放进某个组合";
+用户说"把这几块板排成一组分开播放/放进『经营』组里"→ 那才是**看板组合**(见路径 F)。
+
 ## 可用工具
 
 | 工具 | 用途 |
 |------|------|
-| `knowledge_search` / `get_metrics` | 发现可用的本体对象、指标、维度(建模取数对象前先查) |
+| `knowledge_search` / `get_metrics` | 发现可用的本体对象、指标、维度(建模取数对象前先查；`get_metrics` keyword 必填、多词一次传齐) |
 | `get_table_schema` / `list_datasources` | 了解数据结构(元数据,不取数据行) |
 | `run_semantic_query` | **创建前自验**:用与 widget 完全相同的 `query` 意图跑一次,看到真实行数(这是生成前唯一能验证出数的通道) |
 | `list_vis_components(category?)` | 浏览字模库(图表样式/背景/KPI卡/布局/配色/装饰) |
 | `get_vis_component(id\|code)` | 取单个字模配置 |
 | `create_data_screen` | 创建大屏(逐图落数据集 → 挂数据集图 → 预填充 → 自动布局),返回 url/data_audit/datasets |
 | `get_data_screen(dashboard_id)` | 查看已有大屏的图表意图与配置 |
-| `update_data_screen_chart` | 改单个图表(标题/类型/配置/位置);换数据给 `query` → 重新落数据集并重挂 |
+| `update_data_screen_chart` | 改**单个图表**(标题/类型/配置/位置);换数据给 `query` → 重新落数据集并重挂 |
+| `list_data_screens(keyword?,limit?)` | **改板/删板的第一步**: 按**业务名**定位已有看板, 回名称/说明/状态/图数/所属组合/`updated_at` + `editable`。空清单会显式说明"当前角色未获授任何看板"——那不是"没有板", 不得新建顶替 |
+| `update_data_screen` | **原地改一块板**(唯一正确的"改板"通道): `name` 或 `dashboard_id` 定位 + `new_name`/`description`/`status`/`tags`/`theme`/`style`/`add_charts`/`remove_charts`(按图表业务标题)/`relayout`+`emphasis`。主题与字模**合并**进 filters, 人在编辑器排的 `filters.design` 不会被抹掉; 返回 `layout_audit`/`data_audit`/`empty_charts`/`apply_errors` |
+| `delete_data_screen` | 删除整块板(**不可逆**: 图表、角色可见授权、组合成员一起清)。未带 `confirmed=true` 只回 `needs_user_confirmation`, 不删 |
+| `list_dashboard_groups` | 看板组合清单(组合名/描述/组内看板业务名/顺序/绑定角色) |
+| `manage_dashboard_groups` | 改看板组合(**仅管理员**): `action ∈ create/rename/delete/set_charts/set_roles/reorder`; 成员传**看板业务名**、角色传**角色业务名**, 删组需 `confirmed=true` |
 | `save_vis_component` | 把设计好的一段视觉回存为自定义字模(沉淀) |
 
 ## 路径判断
@@ -65,6 +81,9 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 | 模糊请求("生成一个数据大屏") | **A 引导建议** | 给方向选项(最多一次),然后直建 |
 | 明确主题、未给口径 | **B 直建** | 探数 → 逐图意图(歧义一次问清) → 选字模 → `create_data_screen` → 核对 data_audit/datasets |
 | 修改已有大屏某图 | **C 修改图表** | get_data_screen → 改 → `update_data_screen_chart` |
+| "把刚才那块板改名/加一张图/删掉空图/重排" | **D 原地改板** | `list_data_screens` 按名定位 → `update_data_screen`(**不得新建**) |
+| "删掉这块板" | **E 删除看板** | `ask_user` 确认 → `delete_data_screen(confirmed=true)` |
+| "分几组/排顺序/按角色分配这组" | **F 看板组合** | `list_dashboard_groups` → `manage_dashboard_groups`(仅管理员) |
 
 ---
 
@@ -72,7 +91,7 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 
 不要直接生成。先摸清平台有哪些数据,再给方向选项:
 
-1. `knowledge_search` / `get_metrics` 了解已建模的业务对象与指标;必要时 `list_datasources` 看数据源。
+1. `get_metrics`（keyword 必填）了解已建模的业务对象与指标，名称拿不准时才用 `knowledge_search` 定词;必要时 `list_datasources` 看数据源。
 2. 基于可用数据,在正文用编号给用户 3~5 个大屏方向,例如:
    1) 经营驾驶舱 — 收入/订单/利润等核心 KPI 总览 2) 用户增长 — DAU/MAU/留存/转化 3) 销售看板 — 区域/产品/客户 4) 生产运营 — 产能/良率/OEE。
 3. 停下等待用户选择,进入路径 B。
@@ -133,14 +152,23 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 
 ### B4.5 版面自检(自动布局之外,你还要确保这几条)
 
-工具未收到 `position` 时会自动布局,KPI 行与站点列都已处理;你仍要核对:
+服务端自动布局已按**主次**出带,不再等分;**手写 `position` 会把版面拍平**,所以默认**不要传 `position`**。
+几何事实(全由前端 `resolvePageLayout` 反推,服务端自己守住,不指望渲染层兜):
 
-- **KPI 一行最多 5 张**;单卡宽度已按 480 封顶(别自己手写整屏宽的 KPI,迷你趋势会被拉平、数字悬空);
+- **内容区从 `y=32` 起排**(顶部留白,内容不贴画布上沿);KPI 一行 `h=180`、单卡最宽 `480`(别自己写整屏宽的 KPI);
+- **首带是主图**: 左 2/3 一张趋势主图 + 右列 1~2 张辅图堆叠;其余带每行 2~4 张、明细/表格落整宽带;
+  **带高是算出来的**(在剩余空间里分配),硬上限 `h≤600`(超了前端截顶=白留),下限按类型 表格 `360` / 其他 `280` / KPI `128`(抬高压破下一带=斜阶梯);
+- 尺寸**一律取 4 的倍数**(前端行格 `PAGE_ROW=4`)、主图宽 **2/3 屏**、间隙 `12`;栅格列数由渲染端按断点换算,服务端只保证相对比例;
+- **单站内容图 >12 张会被显式拒绝**(排不出主次只能等分挤压)——按提示减少图表或拆板,拆了在汇报里列全 `url`;跨站矩阵按站点列排,上限仍是 24;
 - **同族同排**:趋势族(`line/area/timeseries_line/timeseries_bar/timeseries_area`)不跟饼图/表格/地图混在一行;
-- **多站一屏:列 = 站点、行 = 指标**,站点顺序与用户给出的顺序一致(中国→新加坡→欧洲→日本→英国);
+- **多站一屏:列 = 站点、行 = 指标**,站点顺序与用户给出的顺序一致(中国→新加坡→欧洲→日本→英国)。
+  跨站对比**本来就该等大**,该模式忽略 `emphasis`;`emphasis={hero, detail}` 只在单站分层时指定主图/整宽明细卡(标题必须原样命中,否则回清单);
 - **异构卡(饼图/表格/地图)不当对比项**:只在部分站点有时别按站点列摆(会空出右侧一大片),工具会自动居中;自己写 `position` 时也不要把它拉成整屏或死靠左上;
-- **不重叠、留白 ≥12px**,总图数 ≤24(超了拆板,不硬塞)。重叠的坐标**不会报错**,渲染器会把后来者整体下移一行——用户看到的是“卡片一张比一张靠右下、右侧一大片空白”的斜阶梯;所以宁可排紧,不能横叠;
-- 建/改屏返回里的 **`layout_audit`** 是这件事的硬判据:`ok=false` 就按其 `overlaps`/`out_of_canvas` 指名修坐标(或删 `position` 让服务端重排)后再交付,不要带着重叠汇报成功;`idle_rows` 只是整行留白参考(单张异构卡居中属预期)。
+- **不重叠、留白 ≥12px**,总图数 ≤24(超了拆板,不硬塞)。重叠的坐标**不会报错**,渲染器会把后来者整体下移一行——用户看到的是"卡片一张比一张靠右下、右侧一大片空白"的斜阶梯;所以宁可排紧,不能横叠;
+- 建/改屏返回里的 **`layout_audit`** 是这件事的硬判据,三个字段逐一核对:
+  `ok=false` → 按 `overlaps`/`out_of_canvas`/`squeezed`(带高不足) 指名修坐标,或删 `position` 让服务端重排;
+  **`hierarchy=false` → 版面所有卡片等宽等高(没有主次)**,必须减少图表或用 `emphasis` 指定主图后重排,不得就这么交付;
+  `over_tall` 非空 → 有卡 `h>600` 会被截顶,压回带内;`idle_rows` 只是整行留白参考(单张异构卡居中属预期)。
 - 需要精确网格(列数/行高/间距)只能在编辑器「页面布局」里保存,本工具只保证**相对比例**——不要向用户承诺像素级还原。
 
 ### B5. 创建
@@ -152,7 +180,7 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 - 工具会先落数据集(同用户+同对象+同源+同意图会**复用**,不重复造资产)再挂图;`query` 不合法/对象未绑定会在**落库前**整单拒绝,不会留半截大屏。
 - 若某图返回"未绑定对象/护栏拒绝"等声明式错误,按提示调整该图意图后重试一次;执行阶段失败属系统侧问题,不要猜测或展示数据源细节。
 - **版面几何的真实口径**:`position` 基于 1920×1080,但播放页按**响应式网格**渲染——像素会被**等比换算**成当前断点的列格重排,`w/h` 只保证相对比例,不保证像素级所见即所得;控件类组件按自然尺寸而非等比放大。要精确版面(网格列数、控件行、间距)需在前端编辑器保存页面布局,本工具无该入口——**不要向用户承诺像素级还原**。
-- **受众与权限**:`create_data_screen` 建的大屏 `is_public=false` 且只属当前工作空间。别人能否打开取决于共享设置 + 查看者对图中对象/数据源的权限——"我这边出数、他那边空白/被拒"是权限没配,不是图坏了。生成后提醒用户这一步。
+- **受众与权限**:`create_data_screen` 建的大屏 `is_public=false` 且只属当前工作空间, 同批把**当前账号所属角色**落进看板可见授权(所以你自己一定在「数据看板」页找得到它;账号无角色时工具会**显式报错**,不会建出一块你看不见的板)。**别人**能否打开取决于其角色的看板授权 + 对图中对象/数据源的权限——"我这边出数、他那边空白/被拒"是权限没配,不是图坏了(引导到角色权限页配置,别拿"看板组合"顶替)。生成后提醒用户这一步。
 
 ### B6. 创建后自检
 1. 看返回里的 **`data_audit`(逐图行数)与 `empty_charts`**:零行的图必须逐张向用户点名并给原因/下一步——不得拿“已创建 N 个图表”当作数据正常。
@@ -162,9 +190,58 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 
 ## 路径 C:修改已有大屏
 
+适用**单图微调**(改一张图的标题/类型/位置/配色/口径)。板级改动(改名、加图、删图、重排、状态、主题)走**路径 D**。
+
 1. `get_data_screen(dashboard_id)` 查看当前图表意图(`dataset_name`/`config`)与配置。
+   不知道 `dashboard_id` 时先用 `list_data_screens(keyword=业务名)` 定位——**这是唯一入口, 拿不到 id 不等于没有板**。
 2. 定位要改的 `chart_id`。只改标题/类型/位置/配色 → 直接改;要换数据 → 给新的 `query`(工具会重新落/复用数据集并重挂)。
 3. `update_data_screen_chart`(换数据用 `query`,改样式合并 `config`,挪位置给 `position`,多站给 `site`)。禁止传裸 SQL。
+
+## 路径 D:原地改一块板(用户说"修改这块板"时走这条)
+
+历史反馈: 用户说"把刚才那块板加张饼图", 结果**新建**了一块板, 原板没动——因为模型拿不到 `dashboard_id`
+就退回去 `create_data_screen`。这是错的路径: **改板不是建板**。
+
+1. **先找板**: `list_data_screens(keyword=...)`。用户说"刚才那块"且本会话刚建过 → 用刚返回的那块板;
+   会话里没有就用业务名查。命中多块同名/近似名 → 把候选清单原样给用户选(`ask_user`), 不猜。
+   **查不到就如实说"没找到这块板/当前角色没有可见看板", 不得新建一块顶替。**
+2. **再改板**: `update_data_screen`, 按意图只传需要改的字段:
+   - 改名/说明/状态/标签 → `new_name` / `description` / `status` / `tags`(`tags` 是显式覆盖, `[]` 即清空);
+   - 加图 → `add_charts[]`(与建屏同形状的声明式 `query`, 同样每图落数据集; 要先按 B1/B2 验口径);
+   - 删图 → `remove_charts=["图表业务标题"]`(精确且唯一命中才删, 重名会回清单);
+   - 换主题/字模 → `theme` / `style`(**合并**写, 人在编辑器保存的 `filters.design` 版面不被抹掉);
+   - 整板重排 → `relayout=true`(+`emphasis={hero, detail}` 指定主图)。**它会重写存量卡坐标**, 只在用户要求重排时用;
+     不传 `relayout` 时新图只追加到底部带, 版面满了会被拒并给提示。
+3. **只有用户明确要"再来一块新板/另做一份"才 `create_data_screen`。**
+4. 收尾核对返回: `apply_errors` 非空要如实说"部分改动没落上"(不得报成全部改好);
+   `layout_audit.ok=false` 按 `overlaps`/`squeezed`/`hierarchy` 重排后再交付;
+   `data_audit`/`empty_charts` 照 B6 逐图点名。
+
+## 路径 E:删除看板(破坏性动作)
+
+1. 先用 `list_data_screens` 定位并向用户**复述要删的是哪块板**(业务名 + 图数)。
+2. 用 `ask_user` 取得明确同意; 用户点头后**才**调 `delete_data_screen(name=..., confirmed=true)`。
+   不带 `confirmed=true` 时工具不会删, 只回 `needs_user_confirmation`——那是机制, 不是失败。
+3. 删除范围: 该板的图表、数据集引用、角色可见授权、**组合成员**一并清除(数据集本身不删)。
+4. 只有属主或管理员能删(角色"能看"不含"能删")。被拒时**原样转述拒绝原因**并建议由属主/管理员操作,
+   不得改拿别的板凑数、不得静默放弃。
+
+## 路径 F:看板组合(仪表盘组 = 编排维度, 仅管理员可改)
+
+组合**只回答"这几块板归为一组、按什么顺序播、这组分配给哪些角色"**, 与"谁能打开某块板"无关
+(可见性由角色的看板授权裁决)。用户要"合并成一张图/把几张图拼一块"→ 那是**一块新板**(`create_data_screen`
+多张 widget), 不是组合; 别把两件事混说。
+
+1. 先看现状: `list_dashboard_groups`(回组合名/描述/组内看板业务名与顺序/绑定角色)。
+2. 再改: `manage_dashboard_groups(action=..., group=组合业务名, ...)`:
+   - `create` 传 `name`(新组合名)〔+`description`〕;
+   - `rename` 传 `group`(旧名)+`name`(新名), 不传 `description` 则保留原文案;
+   - `set_charts` 传 `dashboards=[看板业务名...]`, **数组顺序即展示/轮播顺序**; `[]` = 清空成员(必须显式传);
+   - `set_roles` 传 `roles=[角色业务名...]`; `[]` = 取消全部角色分配(必须显式传), 并提醒用户这**不授予可见权**;
+   - `reorder` 传 `order=[全部组合名按先后]`(不针对单个组合, 漏一个就等于没排完);
+   - `delete` 先 `ask_user` 确认再带 `confirmed=true`(只清编排与角色分配, **不删看板**)。
+3. 成员看板名与角色名一律业务名, 解析不到或有重名会回候选清单——按清单澄清后重试, 不猜 id。
+4. 非管理员请求改组合: 如实告知"组合编排是全局配置, 仅管理员可改(可在「看板组合」管理页操作)", 不做绕行。
 
 ## 沉淀字模(活字学习)
 
@@ -177,6 +254,12 @@ description_en: "Build dashboard/screen layouts directly: each chart is material
 - 以"`create_data_screen` 返回成功"为依据宣称数据已验证;零行图被报成"已建好"。
 - 承诺像素级版面(位图坐标只保证相对比例,播放页按响应式网格重排)。
 - 图跑空时换指标凑数、拿默认值糊过缺参报错,或静默收窄时间窗假装出数。
+- **找不到 `dashboard_id`(或 `list_data_screens` 查空)就 `create_data_screen` 新建一块板**——改板永远是
+  `list_data_screens` 定位 → `update_data_screen` 原地改;新建只在用户明确要"再来一块/另做一份"时才是对的。
+- **未经用户确认就调 `delete_data_screen` / `manage_dashboard_groups(action=delete)`**(必须先 `ask_user`,
+  取得同意后才带 `confirmed=true`);被权限拒绝时改报"已删除"或换别的板凑数。
+- 把「看板组合」说成"把几张图合成一张图",或把"分配组合给角色"当成"授予该角色看这块板的权限"
+  (可见权只由角色的看板授权裁决,组合只做编排)。
 - 书写/传入任何 SQL 字段,或向用户复述数据源/物理表/生成的 SQL/数据源 id。
 - 编造对象/指标/维度名;找不到数据如实告知,不用"业务逻辑推测"补齐。
 - 同一工具相同参数连续调用超过 2 次;报错后最多换参数重试 1 次。

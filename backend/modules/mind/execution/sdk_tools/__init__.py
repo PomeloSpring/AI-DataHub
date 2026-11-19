@@ -17,8 +17,9 @@ ExecutionContextVar 注入(见 context.py)。
             (交付形态**渲染机**: 模型自选通道, 服务端只拒「HTML 做不到/会泄露」的能力硬门,
              不替模型判「该不该用整份文档」; 正文落 adh_render_documents, 消息内只留引用块)
 - skills:   load_skill_guide
-            (技能作业细则的**按需加载口** = 渐进披露第二层: 「已绑定技能」清单只常驻一句话
-             description, 模型判断需要该域完整口径时自己取回正文。它是**机制组**
+            (技能作业细则的**按需加载口** = 渐进披露第二层: 「已绑定技能」清单常驻一句话
+             description，本轮触发词命中里**得分最高的一份正文照常常驻**，其余由模型判断需要时
+             自己取回正文（实测全交给模型自觉不可靠：三轮重问零调用）。它是**机制组**
              （MECHANISM_GROUPS）: 不进 AS-BOT 授权面，绑定≥2 个技能时由 tool_policy 按事实
              自动接入；关掉渐进披露只能直接写 AS-BOT JSON 的 `mcp.skills: []`（应急回退阀）。
              未接入时 prompt_composer 回到“按触发词自动展开正文”，不会丢细则)
@@ -95,6 +96,10 @@ TOOL_SERVER_TOOLS = {
     ]),
     "screen": ("datahub_screen", [
         "create_data_screen", "get_data_screen", "update_data_screen_chart",
+        # 板级入口（改板不新建 / 删除）：按业务名定位、原地改、确认后删
+        "list_data_screens", "update_data_screen", "delete_data_screen",
+        # 看板组合（仪表盘组）= 编排维度：查清单 / 管理员改组
+        "list_dashboard_groups", "manage_dashboard_groups",
         "list_vis_components", "get_vis_component", "save_vis_component",
     ]),
     "system": ("datahub_system", ["system_usage", "system_overview"]),

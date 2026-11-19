@@ -18,6 +18,7 @@ save/list/get 不返回数据行。预制 SQL 属于数据集职责（已治理�
 import asyncio
 import json
 import logging
+import re
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
 from backend.modules.mind.execution.outbound_guard import SENSITIVE_OUTPUT_KEYS
@@ -35,10 +36,27 @@ _ROW_GAP = 12
 # KPI 单卡宽度上限：卡片被拉成整屏宽时迷你趋势线会被拉平、数字挤在中间（历史观感缺陷）
 _KPI_MAX_W = 480
 _KPI_MIN_W = 300
+# 前端渲染事实（frontend/src/lib/dashboardPageLayout.ts）：像素 position 按比例映射到
+# 64/48/24 列栅格，行高 PAGE_ROW=4px，**自动带高被截到 600px**，并按类型抬到最小高
+# （表格 360 / KPI 128 / 其他 280）。抬高会顶破下一带 —— 就是"卡片一张比一张靠下、
+# 右侧一大片空白"的斜阶梯根因。服务端出版面时必须自己守住这三条，不指望渲染层兜。
+_ROW_UNIT = 4
+_TOP_MARGIN = 32          # 画布顶部留白：内容贴上边缘会和播放页标题栏挤在一起（用户反馈）
+_CARD_MAX_H = 600         # 前端截顶值：超过它等于白留高度
+_MIN_CARD_H = 280         # 前端最小高：普通图
+_MIN_TABLE_H = 360        # 前端最小高：表格/明细
+_MIN_KPI_H = 128          # 前端最小高：KPI 数字卡
+_MAX_CONTENT_CARDS = 12   # 还能排出主次的上限：超了显式拒并建议拆板，不做等分挤压
+_MAX_PER_ROW = 4          # 常规每行张数（放不下时才放宽到 6/8）
 
 # 布局分层：KPI 数字卡一行，趋势族一行，其余（占比/明细/地图）一行
 _KPI_TYPES = {"text_display", "big_number_trend", "gauge"}
 _TREND_TYPES = {"line", "area", "timeseries_line", "timeseries_bar", "timeseries_area"}
+_TABLE_TYPES = {"table", "table_value"}
+_MAP_TYPES = {"china_map", "world_map"}
+_SHARE_TYPES = {"pie", "rose", "treemap", "radar", "funnel", "sankey", "word_cloud",
+                "radial_bar", "boxplot", "waterfall", "tree", "heatmap", "calendar_heatmap",
+                "scatter", "bubble"}
 
 # 大屏主题/字模可持久化键(挂在 adh_dashboards.filters 上, 前端 Screen 页读取)
 _THEME_KEYS = {"mode", "background", "backgroundImage", "header", "card"}
@@ -166,6 +184,23 @@ def _coerce_struct(value, label: str, expect, default=None):
         f"{label} 需要 {_type_label(expect)}，实际收到 {type(parsed).__name__}"))
 
 
+def _coerce_theme(raw_theme, label: str = "theme") -> dict:
+    """主题入参归一：既收对象也收 'light'/'dark' 简写。
+
+    模型只想改明暗时会直接传字符串，而 SDK 按 schema 类型先拒
+    （历史反馈 2026-11-17：Input validation error: 'light' is not of type 'object'）。
+    建屏与改板共用这一份口径，避免两处各写一份字符串白名单。
+    """
+    if isinstance(raw_theme, str):
+        mode = raw_theme.strip().lower()
+        if mode not in ("light", "dark"):
+            raise ScreenIntentError(_error(
+                f"{label} 字符串只接受 'light'/'dark'（要背景/卡片等更多字段请传对象 "
+                f"{{mode, background, ...}}），收到: {raw_theme[:40]}"))
+        return {"mode": mode}
+    return dict(raw_theme or {})
+
+
 # ── 直建通道：每图落数据集(adh_datasets) + 挂数据集图 ────────────────────────
 
 
@@ -278,6 +313,31 @@ def _grant_dataset_to_user_roles(user_id: int, dataset_id: int) -> list[int]:
     for rid in roles:
         execute_write("INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s,%s)",
                       (rid, int(dataset_id)))
+    return roles
+
+
+def _grant_dashboard_to_user_roles(user_id: int, dashboard_id: int, user_role: str = "") -> list[int]:
+    """看板可见性 = 角色授权（fail-closed）：建屏同批把看板授给创建者所属角色。
+
+    「数据看板」页与 /screen/<id> 的可看裁决只看 adh_role_dashboard_access——属主与
+    is_public 都不授予可见性（tests/test_dashboard_role_visibility.py 锁死）。漏这一步
+    就是「工具说建好了、用户自己找不到这块板」，下一次"改一下刚才那个看板"人和 AI
+    都拿不到它，只能重建。admin 全可见（visible_dashboard_ids 返回 None），不需补授。
+    """
+    from backend.common.db import execute_query, execute_write
+    from backend.modules.viz.services.dashboard_service import _is_admin_user
+
+    if _is_admin_user(int(user_id), user_role or ""):
+        return []
+    rows = execute_query("SELECT role_id FROM adh_user_roles WHERE user_id=%s", (int(user_id),)) or []
+    roles = sorted({int(r["role_id"]) for r in rows if r.get("role_id")})
+    if not roles:
+        raise ScreenIntentError(_error(
+            "当前账号没有任何角色，新建的看板无法授权给角色（本人也看不见）；"
+            "请先为该账号配置角色后重试。"))
+    for rid in roles:
+        execute_write("INSERT IGNORE INTO adh_role_dashboard_access (role_id, dashboard_id) VALUES (%s,%s)",
+                      (rid, int(dashboard_id)))
     return roles
 
 
@@ -472,6 +532,11 @@ async def _prepare_widget(w, index: int, args: dict, ctx, identity: dict,
     except Exception as e:  # noqa: BLE001 — 原始细节仅进日志, 回分类文案
         raise ScreenIntentError(_safe_exec_error(e, f"widgets[{index}]({title}) 取数"))
     config = _dataset_chart_config(dict(intent), dataset, raw_cfg, theme_mode)
+    # 生效站点（业务名）随图存档：整板重排（`update_data_screen` 的 relayout）只能拿
+    # 存量图重建布局，丢了站点就把跨站屏排成单站一块、站点列对不齐。
+    site_label = str(w.get("site") or args.get("site") or "").strip()
+    if site_label:
+        config["site"] = site_label
     cache = _chart_cache_json({"chart_type": chart_type, "config": config, "name": title},
                               result.get("columns"), result.get("rows"), _paging_extra(result))
     return {"title": title, "chart_type": chart_type, "intent": dict(intent), "dataset": dataset,
@@ -512,43 +577,199 @@ def _widget_family(chart_type: str) -> str:
     return "other"
 
 
+def _hero_rank(chart_type: str) -> int:
+    """主图优先级（越小越该占大位）：趋势 > 构成 > 地图 > 其他 > 表格。
+
+    表格不当主图：它要整宽带才读得动（挤在 1/3 列里每列都要横向滚动）。
+    """
+    ct = _normalize_chart_type(chart_type or "bar")
+    if ct in _TREND_TYPES:
+        return 0
+    if ct in _SHARE_TYPES:
+        return 1
+    if ct in _MAP_TYPES:
+        return 2
+    if ct in _TABLE_TYPES:
+        return 4
+    return 3
+
+
+def _snap4(value: int) -> int:
+    """取到 4px 行格（前端 PAGE_ROW=4）；不足一格按一格。"""
+    return max(_ROW_UNIT, int(value) // _ROW_UNIT * _ROW_UNIT)
+
+
+def _tile(total: int, parts: int, gap: int = 0) -> list[int]:
+    """把 total 切成 parts 份（含 (parts-1)*gap 间隙），每份 4px 倍数，余量给末份。"""
+    if parts <= 0:
+        return []
+    avail = total - gap * (parts - 1)
+    base = _snap4(avail // parts)
+    sizes = [base] * parts
+    sizes[-1] = max(_ROW_UNIT, avail - base * (parts - 1))
+    return sizes
+
+
+def _card_min_h(chart_type: str) -> int:
+    """前端 pageMinHeight：抬高是渲染层做的，服务端不守住就会被顶破下一带。"""
+    ct = _normalize_chart_type(chart_type or "bar")
+    if ct in _TABLE_TYPES:
+        return _MIN_TABLE_H
+    if ct in _KPI_TYPES:
+        return _MIN_KPI_H
+    return _MIN_CARD_H
+
+
+def _band_floor(band: list[dict], stacked: int) -> int:
+    """一带所需最小高：主图与右列辅图**并行**。辅图多于一张时纵向堆叠，需要堆叠总高。"""
+    hero_min = _card_min_h(band[0].get("chart_type") or "")
+    sides = [_card_min_h(w.get("chart_type") or "") for w in band[1:]]
+    flat = max([hero_min] + sides)
+    if stacked > 1 and sides:
+        return max(flat, _ROW_GAP * len(sides) + sum(sides))
+    return flat
+
+
+def _alloc_band_heights(avail: int, floors: list[int], hero_first: bool) -> list[int] | None:
+    """带高分配：首带明显高（主次来自高度差 + 宽度差），其余均分。
+
+    任何一带低于自身最小高即回 None 由调用方换配方——**不得**压破最小高后交给渲染层抬高
+    （抬高会顶到下一带，就是"卡片一张比一张靠下、右侧一大片空白"的斜阶梯）。
+    """
+    n = len(floors)
+    usable = avail - _ROW_GAP * (n - 1)
+    if usable < sum(floors):
+        return None
+    if n == 1:
+        return [_snap4(min(_CARD_MAX_H, usable))]
+    even = _snap4(usable // n)
+    heights = [min(_CARD_MAX_H, max(floors[i], even)) for i in range(n)]
+    if hero_first:
+        heights[0] = min(_CARD_MAX_H, max(floors[0], _snap4(usable - even * (n - 1))))
+    deficit = sum(heights) - usable
+    for i in range(n - 1, -1, -1):        # 先削辅带，保住首带主次
+        if deficit <= 0:
+            break
+        cut = min(deficit, heights[i] - floors[i]) // _ROW_UNIT * _ROW_UNIT
+        heights[i] -= cut
+        deficit -= cut
+    if deficit > 0:
+        return None
+    spare = usable - sum(heights)
+    if spare >= _ROW_UNIT:
+        idx = 0 if hero_first else n - 1
+        heights[idx] += min(_snap4(spare), spare)
+    return heights
+
+
+def _plan_content_bands(rest: list[dict], avail: int) -> tuple[list[list[dict]], list[int], bool] | None:
+    """内容区配方搜索：返回 (各带成员, 各带高, 首带是否为 hero 结构)。
+
+    依次尝试「hero + 右列 2 张」→「hero + 右列 1 张」→「每行 N 张的等高网格」，
+    每档再放宽每行张数（4→6→8）直到放得下；全都不行返回 None（调用方显式拒）。
+    """
+    n = len(rest)
+    hero_ok = bool(rest) and _hero_rank(rest[0].get("chart_type") or "") < 4
+    for stacked in (2, 1, 0):
+        if stacked > 0 and (not hero_ok or n == 1):
+            continue
+        head = stacked + 1 if stacked > 0 else 0
+        for per_row in (_MAX_PER_ROW, 6, 8):
+            if stacked > 0:
+                bands = [rest[:head]] + [rest[i:i + per_row] for i in range(head, n, per_row)]
+            else:
+                bands = [rest[i:i + per_row] for i in range(0, n, per_row)]
+            bands = [b for b in bands if b]
+            floors = [_band_floor(b, len(b) - 1 if stacked > 0 and i == 0 else 0)
+                      for i, b in enumerate(bands)]
+            heights = _alloc_band_heights(avail, floors, stacked > 0)
+            if heights:
+                return bands, heights, stacked > 0
+    return None
+
+
+def _idle_rows(clean: list[dict]) -> list[dict]:
+    """整行留白：把纵向有重叠的卡归成一带，按横向**并集**算实际占用宽度。
+
+    不能直接加宽（主图带的右列是两张辅图上下堆叠，加宽会算出 2560 > 1920 的假"占满"，
+    也会把铺得正好的一行误报成留白）。
+    """
+    groups: list[dict] = []
+    for r in sorted(clean, key=lambda r: (r["y"], r["x"])):
+        hit = [g for g in groups if r["y"] < g["y1"] and r["y"] + r["h"] > g["y0"]]
+        if hit:
+            g = hit[0]
+            for extra in hit[1:]:                       # 跨带的卡把两组并起来
+                g["items"] += extra["items"]
+                groups.remove(extra)
+            g["items"].append(r)
+            g["y0"], g["y1"] = min(g["y0"], r["y"]), max(g["y1"], r["y"] + r["h"])
+        else:
+            groups.append({"y0": r["y"], "y1": r["y"] + r["h"], "items": [r]})
+    idle: list[dict] = []
+    for g in sorted(groups, key=lambda g: g["y0"]):
+        cover, cur = 0, None
+        for x0, x1 in sorted((it["x"], it["x"] + it["w"]) for it in g["items"]):
+            if cur is None or x0 > cur[1]:
+                cover += x1 - x0
+                cur = (x0, x1)
+            elif x1 > cur[1]:
+                cover += x1 - cur[1]
+                cur = (cur[0], x1)
+        if _CANVAS_W - cover > 0:
+            idle.append({"y": g["y0"], "unused_px": _CANVAS_W - cover})
+    return idle
+
+
 def _layout_audit(rects: list[dict]) -> dict:
-    """版面自检：重叠 / 超出画布 / 整行留白。
+    """版面自检：重叠 / 超出画布 / 整行留白 / 挤破前端最小高 / 被截顶 / 有无主次。
 
     坐标是模型自己填的，光靠生成端"觉得排好了"没有依据（历史缺陷：五连 KPI 坐标互相压住，
     渲染层避让后成一排斜阶梯，用户截图才发现）。这里把判据算好随结果回传，
     模型可据此在交付前重排——不静默、也不代替重排。
+
+    `squeezed` 只对**带 chart_type 的矩形**判定：前端会按类型把过矮的卡抬到最小高
+    （表格 360 / KPI 128 / 其他 280），抬起来就压下一带；不带类型的矩形（历史数据、
+    非图卡）不猜类型，不据此判失败。
     """
-    clean = [{"title": str(r.get("title") or ""), "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
+    clean = [{"title": str(r.get("title") or ""), "chart_type": r.get("chart_type"),
+              "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
               "w": int(r.get("w") or 0), "h": int(r.get("h") or 0)} for r in rects]
     overlaps = [[a["title"], b["title"]] for i, a in enumerate(clean) for b in clean[i + 1:]
                 if a["x"] < b["x"] + b["w"] and a["x"] + a["w"] > b["x"]
                 and a["y"] < b["y"] + b["h"] and a["y"] + a["h"] > b["y"]]
     outside = [r["title"] for r in clean if r["x"] < 0 or r["y"] < 0
                or r["x"] + r["w"] > _CANVAS_W or r["y"] + r["h"] > _CANVAS_H]
-    bands: dict[tuple, int] = {}
-    for r in clean:
-        key = (r["y"], r["h"])
-        bands[key] = bands.get(key, 0) + r["w"]
-    idle = [{"y": y, "unused_px": _CANVAS_W - used} for (y, _h), used in bands.items() if used < _CANVAS_W]
-    ok = not overlaps and not outside
-    audit = {"ok": ok, "overlaps": overlaps, "out_of_canvas": outside, "idle_rows": idle}
+    squeezed = [r["title"] for r in clean
+                if r["chart_type"] and 0 < r["h"] < _card_min_h(r["chart_type"])]
+    over_tall = [r["title"] for r in clean if r["h"] > _CARD_MAX_H]
+    idle = _idle_rows(clean)
+    # 主次：内容卡（非 KPI 行）全等宽等高 = "一排一样大"，正是用户反馈的没审美
+    content = [r for r in clean if _normalize_chart_type(r.get("chart_type") or "") not in _KPI_TYPES]
+    hierarchy = len(content) < 3 or len({(r["w"], r["h"]) for r in content}) > 1
+    ok = not overlaps and not outside and not squeezed
+    audit = {"ok": ok, "overlaps": overlaps, "out_of_canvas": outside, "idle_rows": idle,
+             "squeezed": squeezed, "over_tall": over_tall, "hierarchy": hierarchy}
     if not ok:
-        audit["hint"] = ("版面自检未通过：先修重叠/越界再交付（可省略 position 让服务端自动布局；"
+        audit["hint"] = ("版面自检未通过：先修重叠/越界/带高不足再交付（可省略 position 让服务端自动布局；"
                          "异构卡不当对比项，见 layout-guide）")
+    elif not hierarchy:
+        audit["hint"] = ("版面所有卡片等宽等高（没有主次）：减少图表、或给 emphasis 指定主图后重排"
+                        "（服务端自动布局已按 hero+辅图分层，手写 position 才会 flatten）")
     return audit
 
 
-def _auto_layout(widgets: list[dict]) -> list[tuple]:
+def _auto_layout(widgets: list[dict], emphasis: dict | None = None) -> list[tuple]:
     """为未指定位置的组件自动布局: 铺满 1920x1080 画布。
 
     两条口径（2026-11-17 直建整改，反馈："多站要放一块板，而且排布很乱"）：
 
     * **多站一屏**（widget 上出现 ≥2 个不同 site）：按**站点列**排 —— 一列一个站，
       列内自上而下 KPI → 趋势 → 其他。同屏横向对比各站，而不是每站各建一块板。
-    * **单站/无站**：KPI 一行（单卡最宽 480，左对齐不拉伸），内容区按趋势/其他分层，
-      两张内容图时趋势占 2/3、另一张占 1/3（驾驶舱主左辅右）。
+    * **单站/无站**：KPI 一行（单卡最宽 480，左对齐不拉伸），内容区按**带**出主次
+      （首带主图 2/3 宽 + 右列辅图，其余带每行 2~4 张；带高拉开），不再一律等分。
 
+    `emphasis`（{hero, detail} 图标题）只影响单站分层；跨站对比本来就该等大，忽略它。
     坐标只保证相对比例（播放页按响应式列格重排，见 layout-guide）。
     """
     enriched = [
@@ -559,7 +780,7 @@ def _auto_layout(widgets: list[dict]) -> list[tuple]:
     sites = [s for s in dict.fromkeys(site for _, _, site in enriched) if s]
     if len(sites) >= 2:
         return _layout_by_site(enriched, sites)
-    return _layout_stacked(enriched)
+    return _layout_stacked(enriched, emphasis)
 
 
 def _layout_by_site(enriched: list, sites: list[str]) -> list[tuple]:
@@ -571,6 +792,9 @@ def _layout_by_site(enriched: list, sites: list[str]) -> list[tuple]:
 
     例外：「other」家族（状态构成/表格等异构卡）不是跨站对比项，缺格只会让整行右侧
     空一大片（反馈：右侧错位空白）。该家族未铺满所有站点时改为整行均分并居中。
+
+    跨站对比保持**等大**（主次由站点列承担，不靠卡片大小），但顶部留白、带高按
+    前端行格/最小高/600px 截顶收敛，避免抬高压破下一带。
     """
     col_w = _CANVAS_W // len(sites)
     grid: dict[tuple, list] = {(fam, site): [] for fam in ("kpi", "trend", "other") for site in sites}
@@ -581,19 +805,28 @@ def _layout_by_site(enriched: list, sites: list[str]) -> list[tuple]:
         else:
             loose.append((w, fam))
 
+    def _cell_need(items: list) -> int:
+        """同站内纵向堆几张，就需要几个最小高 + 间隙（渲染层抬高会顶破下一带）。"""
+        return _ROW_GAP * (len(items) - 1) + sum(_card_min_h(it.get("chart_type") or "") for it in items)
+
     fams = [f for f in ("kpi", "trend", "other") if any(grid[(f, s)] for s in sites)]
-    # KPI 带高：单站多张 KPI 时按 120 保底向上撑开，不压成一条线
-    max_kpi = max((len(grid[("kpi", s)]) for s in sites), default=0)
-    kpi_h = max(_KPI_H, 120 * max_kpi) if "kpi" in fams else 0
-    top = kpi_h + (_ROW_GAP if kpi_h else 0)
+    floors = {f: max([_cell_need(grid[(f, s)]) for s in sites if grid[(f, s)]] or [_MIN_CARD_H])
+              for f in fams}
+    kpi_h = _snap4(min(_CARD_MAX_H, max(_KPI_H, floors.get("kpi", _KPI_H)))) if "kpi" in fams else 0
+    top = _TOP_MARGIN + kpi_h + (_ROW_GAP if kpi_h else 0)
     rest_fams = [f for f in fams if f != "kpi"]
-    band_h = (max(180, (_CANVAS_H - top - _ROW_GAP * (len(rest_fams) - 1)) // len(rest_fams))
-              if rest_fams else 0)
+    avail = _CANVAS_H - top - (_ROW_GAP if loose else 0)
+    # 带太多塞不进最小高时回退均分（版面自检会如实报出挤压，不静默）
+    band_h = (_alloc_band_heights(avail, [floors[f] for f in rest_fams], False)
+              or _tile(avail, len(rest_fams), _ROW_GAP)) if rest_fams else []
 
     laid: list[tuple] = []
     for fam in fams:
-        y = 0 if fam == "kpi" else top + rest_fams.index(fam) * (band_h + _ROW_GAP)
-        h = kpi_h if fam == "kpi" else band_h
+        if fam == "kpi":
+            y, h = _TOP_MARGIN, kpi_h
+        else:
+            idx = rest_fams.index(fam)
+            y, h = top + sum(band_h[:idx]) + _ROW_GAP * idx, band_h[idx]
         covered = [s for s in sites if grid[(fam, s)]]
         if fam == "other" and len(covered) < len(sites):
             items = [w for s in sites for w in grid[(fam, s)]]
@@ -606,13 +839,15 @@ def _layout_by_site(enriched: list, sites: list[str]) -> list[tuple]:
             items = grid[(fam, site)]
             if not items:
                 continue                      # 缺格留空，不把同城图拉伸占位
-            each = h // len(items)
+            each = _tile(h, len(items), _ROW_GAP) if len(items) > 1 else [h]
+            oy = 0
             for j, w in enumerate(items):
-                laid.append((w, {"x": i * col_w, "y": y + j * each, "w": col_w, "h": each}))
+                laid.append((w, {"x": i * col_w, "y": y + oy, "w": col_w, "h": each[j]}))
+                oy += each[j] + _ROW_GAP
 
     # 未写 site 的图（跨站屏里漏标）落到底部整行，不静默丢图
     if loose:
-        row_h = max(180, _CANVAS_H // max(1, len(loose) + 2))
+        row_h = _snap4(max(_MIN_CARD_H, _CANVAS_H // max(1, len(loose) + 2)))
         width = _CANVAS_W // len(loose)
         y = _CANVAS_H - row_h
         for j, (w, _) in enumerate(loose):
@@ -620,45 +855,120 @@ def _layout_by_site(enriched: list, sites: list[str]) -> list[tuple]:
     return laid
 
 
-def _layout_stacked(enriched: list) -> list[tuple]:
-    """单站/无站布局：KPI 行 + 内容区分层。"""
+def _order_for_hierarchy(rest: list[dict], emphasis: dict) -> list[dict]:
+    """内容图读序：指定主图 → 主图优先级（趋势优先、表格垫后）→ 指定整宽明细 → 其余原序。"""
+    hero = str((emphasis or {}).get("hero") or "").strip()
+    detail = str((emphasis or {}).get("detail") or "").strip()
+    titles = [str(w.get("title") or w.get("name") or "").strip() for w in rest]
+    unknown = [(label, want) for label, want in (("emphasis.hero", hero), ("emphasis.detail", detail))
+               if want and want not in titles]
+    if unknown:
+        label, want = unknown[0]
+        raise ScreenIntentError(_error(
+            f"{label} 「{want}」没有匹配到任何图表标题；现有标题：{'、'.join(t for t in titles if t)}。"
+            "请原样使用图表标题，或去掉该指定让服务端按图型自动选主图。"))
+
+    def _key(pair):
+        i, w = pair
+        title = str(w.get("title") or w.get("name") or "").strip()
+        if title and title == hero:
+            return (-2, 0, i)
+        if title and title == detail:
+            return (10, 0, i)
+        return (0, _hero_rank(w.get("chart_type") or ""), i)
+
+    return [w for _, w in sorted(enumerate(rest), key=_key)]
+
+
+def _layout_stacked(enriched: list, emphasis: dict | None = None) -> list[tuple]:
+    """单站/无站布局：顶部留白 → KPI 一行 → 内容区**按带出主次**。
+
+    反馈（2026-11）两条一起修：
+    * "输出的看板图标大小和布局没有审美，全是一样的大小和排布" —— 旧写法只在两张内容图
+      时做 2/3+1/3，三张起一律 cols=2/3 等分等高；现在首带是主图（2/3 宽）+ 右列辅图，
+      带高也拉开，明细/表格落整宽带。
+    * "看板顶部要留一些空隙，不要完全靠上" —— 内容区从 `_TOP_MARGIN` 起排，不再贴画布上沿。
+
+    带高受三条前端事实约束：`h ≤ 600`（截顶）、`h ≥` 类型最小高、`y/h` 取 4 的倍数；
+    放不下时放宽每行张数，仍放不下就**显式拒绝并建议拆板**（不静默挤压）。
+    """
     kpis = [w for w, fam, _ in enriched if fam == "kpi"]
-    rest = [(w, fam) for w, fam, _ in enriched if fam != "kpi"]
+    rest = [w for w, fam, _ in enriched if fam != "kpi"]
 
     laid: list[tuple] = []
-    top_y = 0
+    top = _TOP_MARGIN
     if kpis:
         # 单卡最宽 480：整屏一个 KPI 时拉满会让迷你趋势被拉平、数字悬空
         kw = min(_KPI_MAX_W, max(_KPI_MIN_W, _CANVAS_W // len(kpis)))
         for i, w in enumerate(kpis):
-            laid.append((w, {"x": i * kw, "y": 0, "w": kw, "h": _KPI_H}))
-        top_y = _KPI_H + _ROW_GAP
+            laid.append((w, {"x": i * kw, "y": top, "w": kw, "h": _KPI_H}))
+        top += _KPI_H + _ROW_GAP
+    if not rest:
+        return laid
+    if len(rest) > _MAX_CONTENT_CARDS:
+        raise ScreenIntentError(_error(
+            f"内容图表 {len(rest)} 张超过单屏可分层的上限 {_MAX_CONTENT_CARDS} 张"
+            f"（1920×1080 画布，另可加一行 KPI）；请减少图表或拆成多块大屏——"
+            "硬塞只能等分挤压，会被渲染层抬高压破下一带（斜阶梯），属用户可见的版面缺陷。"))
 
-    n = len(rest)
-    if n == 1:
-        laid.append((rest[0][0], {"x": 0, "y": top_y, "w": _CANVAS_W, "h": _CANVAS_H - top_y}))
-    elif n == 2:
-        # 驾驶舱主左辅右：趋势图占 2/3，另一张占 1/3（两张同族时对半）
-        wide = (_CANVAS_W * 2 // 3) if (rest[0][1] == "trend" and rest[1][1] != "trend") else _CANVAS_W // 2
-        laid.append((rest[0][0], {"x": 0, "y": top_y, "w": wide, "h": _CANVAS_H - top_y}))
-        laid.append((rest[1][0], {"x": wide, "y": top_y, "w": _CANVAS_W - wide, "h": _CANVAS_H - top_y}))
-    elif n:
-        cols = 3 if n >= 5 else 2
-        rows = -(-n // cols)
-        ch = max(160, (_CANVAS_H - top_y - _ROW_GAP * (rows - 1)) // rows)
-        idx = 0
-        for r in range(rows):
-            cnt = min(cols, n - idx)
-            rw = _CANVAS_W // cnt
-            for c in range(cnt):
-                laid.append((rest[idx][0], {
-                    "x": c * rw, "y": top_y + r * (ch + _ROW_GAP), "w": rw, "h": ch,
-                }))
-                idx += 1
+    plan = _plan_content_bands(_order_for_hierarchy(rest, emphasis or {}), _CANVAS_H - top)
+    if plan is None:
+        raise ScreenIntentError(_error(
+            f"内容图表 {len(rest)} 张 + KPI 行在 1920×1080 内排不出「互不重叠且不低于前端最小高」"
+            "的版面（表格带要 360px、其他图 280px）；请减少图表、把表格改到别的屏，"
+            "或删掉 position 让服务端在更少图数下重排。"))
+    bands, heights, hero_mode = plan
+    y = top
+    for bi, band in enumerate(bands):
+        h = heights[bi]
+        stacked = len(band) - 1 if (hero_mode and bi == 0) else 0
+        if stacked > 0:
+            hero_w = _CANVAS_W * 2 // 3
+            laid.append((band[0], {"x": 0, "y": y, "w": hero_w, "h": h}))
+            side_h = _tile(h, stacked, _ROW_GAP)
+            oy = 0
+            for j, w in enumerate(band[1:]):
+                laid.append((w, {"x": hero_w, "y": y + oy,
+                                 "w": _CANVAS_W - hero_w, "h": side_h[j]}))
+                oy += side_h[j] + _ROW_GAP
+        else:
+            widths = _tile(_CANVAS_W, len(band))
+            x = 0
+            for w, cw in zip(band, widths):
+                laid.append((w, {"x": x, "y": y, "w": cw, "h": h}))
+                x += cw
+        y += h + _ROW_GAP
     return laid
 
 
 # ── 工具 handler(SDK 无关) ─────────────────────────────────────────────
+
+def _mount_chart(chart_service, dashboard_id: int, item: dict, position: dict, identity: dict) -> int:
+    """把 `_prepare_widget` 的产物挂成数据集图并预填首屏缓存（建屏与改板加图同一通道）。
+
+    图表行不存口径：SQL 由数据集身份持有（`source_type='dataset'` + `source_id`=数据集 id）。
+    """
+    payload: dict = {
+        "name": item["title"],
+        "chart_type": item["chart_type"],
+        "config": item["config"],
+        "position": position,
+    }
+    if item["dataset"]:
+        payload.update({
+            "source_type": "dataset",
+            "source_id": int(item["dataset"]["id"]),
+            "query_source": "dataset",
+            "semantic_query": None,
+        })
+    cid = chart_service.create_chart(dashboard_id, payload, identity=identity)
+    if item["cache"]:
+        # 预填首屏缓存：走看板同一份序列化（行限/字节兜底/完整性标记同口径）
+        from backend.common.db import execute_write
+
+        execute_write("UPDATE adh_charts SET data_cache=%s WHERE id=%s", (item["cache"], int(cid)))
+    return cid
+
 
 async def create_data_screen(args: dict) -> dict:
     """创建一个可视化数据大屏：逐图落数据集（adh_datasets）并挂成数据集图。
@@ -671,16 +981,7 @@ async def create_data_screen(args: dict) -> dict:
     try:
         name = str(args.get("name") or "").strip()
         widgets = _coerce_struct(args.get("widgets"), "widgets", (list, dict))
-        # theme 既收对象也收 'light'/'dark' 简写：模型只想改明暗时会直接传字符串，
-        # 而 SDK 按 schema 类型先拒（历史反馈 2026-11-17：Input validation error: 'light' is not of type 'object'）。
-        raw_theme = _coerce_struct(args.get("theme"), "theme", (dict, str))
-        if isinstance(raw_theme, str):
-            mode = raw_theme.strip().lower()
-            if mode not in ("light", "dark"):
-                return _error(
-                    f"theme 字符串只接受 'light'/'dark'（要背景/卡片等更多字段请传对象 {{mode, background, ...}}），"
-                    f"收到: {str(raw_theme)[:40]}")
-            raw_theme = {"mode": mode}
+        raw_theme = _coerce_theme(_coerce_struct(args.get("theme"), "theme", (dict, str)))
         style = _coerce_struct(args.get("style"), "style", dict) or {}
     except ScreenIntentError as e:
         return e.response
@@ -737,6 +1038,26 @@ async def create_data_screen(args: dict) -> dict:
         except Exception as e:
             return _safe_exec_error(e, f"create widget {i + 1}")
     
+    # 版面在落库前算：排不出主次/放不下就整单拒掉，不留 0 图空屏（此前布局在 create 之后，
+    # 布局报错会留下半成品并走"清看板"路径，用户看到的是一个莫名消失的请求）。
+    # 布局要按**生效站点**分组：widget 没写 site 时用顶层 site 补齐，
+    # 否则跨站屏会被当成单站排成一块，站点列对不齐（2026-11 反馈：用户要一屏看 5 个站）。
+    top_site = str(args.get("site") or "").strip()
+    layout_widgets = []
+    for item in prepared:
+        w = item["widget"]
+        if not str(w.get("site") or "").strip() and top_site:
+            w = {**w, "site": top_site}
+            item["widget"] = w
+        layout_widgets.append(w)
+    try:
+        emphasis = _coerce_struct(args.get("emphasis"), "emphasis", dict) or {}
+        positions = {id(widget): pos for widget, pos in _auto_layout(layout_widgets, emphasis)}
+    except ScreenIntentError as e:
+        return e.response
+    except Exception as e:  # noqa: BLE001 — 版面是服务端算的，算不出来属系统侧问题
+        return _safe_exec_error(e, "auto layout")
+
     # 创建大屏 + 图表。落库异常必须按错因分类回给模型：裸异常会被工具壳兜成
     # 「权限、资源或执行环境不满足要求」，把 schema 漂移（如 query_source 枚举缺值）
     # 误报成权限问题（no-silent-degradation）。中途失败一并清掉半成品看板,
@@ -753,45 +1074,27 @@ async def create_data_screen(args: dict) -> dict:
         }, identity["user_id"])
     except Exception as e:  # noqa: BLE001 — 原始细节仅进日志, 回分类文案
         return _safe_exec_error(e, "create dashboard")
-    
+
+    try:
+        granted_roles = _grant_dashboard_to_user_roles(
+            identity["user_id"], dashboard_id, identity.get("role") or "")
+    except ScreenIntentError as e:
+        # 授不上权 = 一块谁都看不见的半成品，清掉再回错因（留着它只会变成“建好了但找不到”）
+        try:
+            DashboardService().delete_dashboard(dashboard_id, identity["user_id"])
+        except Exception:  # noqa: BLE001 — 清理失败不得盖住原始错因
+            logger.exception("[screen] 清理未授权看板失败 dashboard=%s", dashboard_id)
+        return e.response
+
     chart_service = ChartService()
     try:
-        # 布局要按**生效站点**分组：widget 没写 site 时用顶层 site 补齐，
-        # 否则跨站屏会被当成单站排成一块，站点列对不齐（同屏多站是本次主诉求）。
-        top_site = str(args.get("site") or "").strip()
-        layout_widgets = []
-        for item in prepared:
-            w = item["widget"]
-            if not str(w.get("site") or "").strip() and top_site:
-                w = {**w, "site": top_site}
-                item["widget"] = w
-            layout_widgets.append(w)
-        positions = {id(widget): pos for widget, pos in _auto_layout(layout_widgets)}
         layout_log = []
         for item in prepared:
             custom_pos = item["widget"].get("position") or {}
             position = custom_pos if all(k in custom_pos for k in ("x", "y", "w", "h")) else positions.get(id(item["widget"]), {"x": 0, "y": 0, "w": 640, "h": 360})
-            layout_log.append({"title": item["title"], **{k: position.get(k) for k in ("x", "y", "w", "h")}})
-            payload: dict = {
-                "name": item["title"],
-                "chart_type": item["chart_type"],
-                "config": item["config"],
-                "position": position,
-            }
-            if item["dataset"]:
-                # 图表只认数据集通道：SQL 由数据集身份持有，图表行不存口径
-                payload.update({
-                    "source_type": "dataset",
-                    "source_id": int(item["dataset"]["id"]),
-                    "query_source": "dataset",
-                    "semantic_query": None,
-                })
-            cid = chart_service.create_chart(dashboard_id, payload, identity=identity)
-            if item["cache"]:
-                # 预填首屏缓存：走看板同一份缓存序列化（行限/字节兜底/完整性标记同口径）
-                from backend.common.db import execute_write
-        
-                execute_write("UPDATE adh_charts SET data_cache=%s WHERE id=%s", (item["cache"], int(cid)))
+            layout_log.append({"title": item["title"], "chart_type": item["chart_type"],
+                               **{k: position.get(k) for k in ("x", "y", "w", "h")}})
+            _mount_chart(chart_service, dashboard_id, item, position, identity)
         _invalidate_dashboard_payload(dashboard_id)
     except Exception as e:  # noqa: BLE001 — 原始细节仅进日志, 回分类文案
         try:
@@ -818,7 +1121,11 @@ async def create_data_screen(args: dict) -> dict:
                     "空图不是成功, 请核对时间窗/过滤条件/口径覆盖, 并向用户逐图说明(不得换近似指标凑数)")
     if not layout_audit["ok"]:
         message += (f"；版面自检未通过(重叠 {len(layout_audit['overlaps'])} 处、"
-                    f"越界 {len(layout_audit['out_of_canvas'])} 张) —— 请按 layout-guide 重排后再交付")
+                    f"越界 {len(layout_audit['out_of_canvas'])} 张、"
+                    f"带高不足 {len(layout_audit['squeezed'])} 张) —— 请按 layout-guide 重排后再交付")
+    elif layout_audit["hierarchy"] is False:
+        message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后重排，"
+                    "不要把“已创建 N 个图表”当版面合格")
     return _text({
         "dashboard_id": dashboard_id,
         "name": name,
@@ -831,6 +1138,11 @@ async def create_data_screen(args: dict) -> dict:
         "style": style or None,
         "layout": layout_log,
         "layout_audit": layout_audit,
+        # 可看性记账：非 admin 建完能不能在自己的「数据看板」页看到，取决于这次补授
+        "visibility": {"granted_roles": len(granted_roles),
+                       "note": ("管理员全可见" if not granted_roles
+                                else f"已把看板授权给当前账号的 {len(granted_roles)} 个角色，"
+                                     "本人在「数据看板」即可看到；其他人需按角色授权")},
         # 会话内的可点入口：chat 前端按这个渲染「预览大屏」按钮（不再只靠模型
         # 把 /screen/<id> 当纯文本讲给用户——那样用户点不了，等于没有预览入口）。
         "actions": [{"type": "open_screen", "label": "预览大屏",
@@ -1058,7 +1370,11 @@ async def update_data_screen_chart(args: dict) -> dict:
                     "并向用户说明(不得换近似指标凑数)")
     if not layout_audit["ok"]:
         message += (f"；版面自检未通过(重叠 {len(layout_audit['overlaps'])} 处、"
-                    f"越界 {len(layout_audit['out_of_canvas'])} 张) —— 请按 layout-guide 重排后再交付")
+                    f"越界 {len(layout_audit['out_of_canvas'])} 张、"
+                    f"带高不足 {len(layout_audit['squeezed'])} 张) —— 请按 layout-guide 重排后再交付")
+    elif layout_audit["hierarchy"] is False:
+        message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后重排，"
+                    "不要把“已创建 N 个图表”当版面合格")
     return _text({
         "dashboard_id": dashboard_id,
         "chart_id": chart_id,
@@ -1069,6 +1385,672 @@ async def update_data_screen_chart(args: dict) -> dict:
         "layout_audit": layout_audit,
         "message": message,
     })
+
+
+# ── 板级工具：找板 / 原地改板 / 删板 ─────────────────────────────────────────
+#
+# 「每次让改板都新建一块」的根因是这一层入口缺失：旧工具面只有 `get_data_screen`
+# （要数字 dashboard_id）和 `update_data_screen_chart`（要数字 chart_id），模型既没有
+# 按业务名找板的通道，也没有板级改法，结构性修改只能退回 create。
+
+_DASHBOARD_STATUSES = ("designing", "enabled", "closed")
+
+
+def _json_dict(value) -> dict:
+    """JSON 字段归一成 dict（库里存的可能是字符串）。无法解析回 {}，由调用方如实判定。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _chart_geom(c: dict) -> dict:
+    """存量图表的版面事实：标题/类型/站点业务名 + 矩形（整板自检与重排都吃这一份）。"""
+    pos = _json_dict(c.get("position"))
+    cfg = _json_dict(c.get("config"))
+    return {
+        "chart_id": int(c["id"]),
+        "title": str(c.get("name") or ""),
+        "chart_type": _normalize_chart_type(str(c.get("chart_type") or "bar")),
+        "site": str(cfg.get("site") or "").strip(),
+        "x": int(pos.get("x") or 0), "y": int(pos.get("y") or 0),
+        "w": int(pos.get("w") or 0), "h": int(pos.get("h") or 0),
+    }
+
+
+def _rect(geom: dict) -> dict:
+    return {k: geom.get(k) for k in ("title", "chart_type", "x", "y", "w", "h")}
+
+
+def _append_band_layout(kept: list[dict], new_geoms: list[dict]) -> list[dict]:
+    """在既有版面**下方**追加新图：不挪存量卡（人的编排照旧），只给新卡找位置。
+
+    排不下即拒并给出路（删空图 / relayout=true 整板重排），不静默压矮、也不叠在旧卡上。
+    返回新卡矩形清单（含 title/chart_type + x/y/w/h）。
+    """
+    occupied = [g for g in kept if int(g.get("h") or 0) > 0]
+    top = max((int(g["y"]) + int(g["h"]) for g in occupied), default=_TOP_MARGIN - _ROW_GAP)
+    top = max(top + (_ROW_GAP if occupied else 0), _TOP_MARGIN)
+    bands = [new_geoms[i:i + _MAX_PER_ROW] for i in range(0, len(new_geoms), _MAX_PER_ROW)]
+    heights = _alloc_band_heights(_CANVAS_H - top, [_band_floor(b, 0) for b in bands], False)
+    if not heights:
+        raise ScreenIntentError(_error(
+            f"画布已排到 y={top}px，剩余高度放不下新增的 {len(new_geoms)} 张图"
+            f"（每类图有前端最小高，压不下也不能叠在旧卡上）。请先用 remove_charts 删掉空图/废图，"
+            "或带 relayout=true 让服务端整板重排（会重排存量卡位置）。"))
+    out: list[dict] = []
+    y = top
+    for band, h in zip(bands, heights):
+        x = 0
+        for geom, cw in zip(band, _tile(_CANVAS_W, len(band))):
+            out.append({**geom, "x": x, "y": y, "w": cw, "h": h})
+            x += cw
+        y += h + _ROW_GAP
+    return out
+
+
+def _relayout_positions(geoms: list[dict], emphasis: dict) -> list[dict]:
+    """整板重排：对存量卡 + 新增卡一起按主次配方重算，返回与入参同序的矩形清单。
+
+    会覆盖人手工排的坐标 —— 只在用户明确要求「重新排版」时由 `relayout=true` 触发。
+    排不出主次（内容卡超上限/高度不够）由 `_auto_layout` 显式拒绝，不落半版。
+    """
+    widgets = [{"_i": i, "title": g.get("title"), "chart_type": g.get("chart_type"),
+                "site": g.get("site") or ""} for i, g in enumerate(geoms)]
+    laid = _auto_layout(widgets, emphasis)
+    pos_by_i = {int(w["_i"]): pos for w, pos in laid}
+    if len(pos_by_i) != len(geoms):
+        raise ScreenIntentError(_error(
+            f"整板重排只覆盖到 {len(pos_by_i)}/{len(geoms)} 张图，版面结果不完整；"
+            "请核对是否有图表行缺少类型/坐标后重试（不静默保留未排定的卡）。"))
+    return [{**g, **pos_by_i[i]} for i, g in enumerate(geoms)]
+
+
+async def list_data_screens(args: dict) -> dict:
+    """按业务名定位看板（改板/删板前的第一步）。
+
+    清单范围 = 角色授权的可看集 ∪ 本人属主的看板（可写面）；admin 为全量。
+    **这里不裁决权限**：能不能改/删仍由 `check_dashboard_editable` 在写链路上判（唯一裁决点），
+    本工具只回 editable 供模型如实告知用户，绝不拿它当第二套判断。
+    """
+    args = args or {}
+    from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+    from backend.modules.viz.services.dashboard_service import (
+        _groups_structure, visible_dashboard_ids)
+    from backend.common.db import execute_query
+
+    ctx = ExecutionContextVar.get()
+    user_id = int((ctx.user_id if ctx else 0) or 0)
+    if not user_id:
+        return _error("当前执行上下文没有可信用户身份，无法列出看板清单（护栏 §2：身份只信服务端）")
+    workspace_id = int((ctx.workspace_id if ctx else 0) or 0)
+    keyword = str(args.get("keyword") or "").strip()
+    try:
+        limit = int(args.get("limit") or 50)
+    except (TypeError, ValueError):
+        return _error(f"limit 需要整数，收到 {str(args.get('limit'))[:20]}")
+    limit = max(1, min(limit, 100))
+
+    visible = visible_dashboard_ids(user_id, str(getattr(ctx, "user_role", "") or ""), workspace_id)
+    note = ""
+    scope_ids: set[int] | None = None
+    if visible is not None:
+        own = {int(r["id"]) for r in (execute_query(
+            "SELECT id FROM adh_dashboards WHERE workspace_id=%s AND owner_id=%s",
+            (workspace_id, user_id)) or [])}
+        scope_ids = set(visible) | own
+        if not scope_ids:
+            # 空授权是 fail-closed 的事实，不是"没有数据"：必须说清来路（建板会自动授权给本人角色）
+            return _text({
+                "count": 0, "dashboards": [],
+                "note": ("当前账号的角色未获授任何看板，也没有本人创建的看板。"
+                         "要改板先建板（create_data_screen 会把新板授权给本人角色）；"
+                         "改别人的板需该板属主或管理员操作，或由管理员在角色权限里授予看板可见权。"),
+            })
+
+    where = ["d.workspace_id=%s"]
+    params: list = [workspace_id]
+    if scope_ids is not None:
+        marks = ",".join(["%s"] * len(scope_ids))
+        where.append(f"d.id IN ({marks})")
+        params.extend(sorted(scope_ids))
+    if keyword:
+        escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(d.name LIKE %s OR d.description LIKE %s)")
+        params.extend([f"%{escaped}%", f"%{escaped}%"])
+    params.append(limit)
+    rows = execute_query(
+        "SELECT d.id, d.name, d.description, d.`status`, d.updated_at, d.owner_id, "
+        "(SELECT COUNT(*) FROM adh_charts c WHERE c.dashboard_id = d.id) AS chart_count "
+        "FROM adh_dashboards d WHERE " + " AND ".join(where) +
+        " ORDER BY d.updated_at DESC, d.id DESC LIMIT %s", params) or []
+
+    structure = _groups_structure()
+    group_names = {int(g["id"]): str(g.get("name") or "") for g in (structure.get("groups") or [])}
+    boards_in: dict[int, list[str]] = {}
+    for gid, dids in (structure.get("items") or {}).items():
+        for did in dids:
+            boards_in.setdefault(int(did), []).append(group_names.get(int(gid), ""))
+
+    items = [{
+        "dashboard_id": int(r["id"]),
+        "name": r.get("name"),
+        "description": r.get("description") or "",
+        "status": r.get("status") or "designing",
+        "chart_count": int(r.get("chart_count") or 0),
+        "updated_at": str(r.get("updated_at") or ""),
+        "editable": bool(visible is None or int(r.get("owner_id") or 0) == user_id),
+        "groups": [n for n in (boards_in.get(int(r["id"])) or []) if n],
+        "url": f"/screen/{int(r['id'])}",
+    } for r in rows]
+    if not items and keyword:
+        note = f"没有名称/说明匹配「{keyword}」的看板；去掉关键词看完整清单，或先与用户确认看板名称"
+    elif not items:
+        note = "当前范围内没有看板"
+    else:
+        note = ("改名/加图/删图/重排用 update_data_screen（按 name 即可，不必先拿 id）；"
+                "editable=false 的板只能看不能改（写链路按属主/管理员裁决）")
+    return _text({"count": len(items), "dashboards": items, "note": note})
+
+
+async def update_data_screen(args: dict) -> dict:
+    """原地修改一块看板：板级元信息/主题/字模 + 加图 + 删图 + 整板重排。
+
+    落库顺序刻意安排成「先算后写、能回滚的先回滚」：意图解析、定源、落数据集、预取数、
+    版面计算全部在写之前（预检不过一笔不写）；新增图中途失败只清掉本次新增，
+    不动存量卡；删除是不可逆步，放在新增成功之后。
+    """
+    args = args or {}
+    try:
+        dashboard_id = int(args.get("dashboard_id") or 0)
+        raw_theme = _coerce_struct(args.get("theme"), "theme", (dict, str))
+        theme = _coerce_theme(raw_theme) if raw_theme is not None else None
+        style = _coerce_struct(args.get("style"), "style", dict)
+        add_charts = _coerce_struct(args.get("add_charts"), "add_charts", (list, dict))
+        remove_charts = _coerce_struct(args.get("remove_charts"), "remove_charts", (list, str))
+        tags_arg = _coerce_struct(args.get("tags"), "tags", (list, str))
+        emphasis = _coerce_struct(args.get("emphasis"), "emphasis", dict) or {}
+    except ScreenIntentError as e:
+        return e.response
+    if isinstance(add_charts, dict):
+        add_charts = [add_charts]
+    if isinstance(remove_charts, str):
+        remove_charts = [remove_charts]
+    if isinstance(tags_arg, str):
+        tags_arg = re.split(r"[,，、]", tags_arg) if tags_arg.strip() else None
+    add_charts = add_charts or []
+    remove_charts = [str(x).strip() for x in (remove_charts or []) if str(x).strip()]
+    relayout = bool(args.get("relayout"))
+    if not dashboard_id:
+        return _error("请提供看板业务名 name（歧义会回候选清单）或 dashboard_id 指明改哪块板；"
+                      "不知道是哪块先用 list_data_screens 查清单")
+
+    meta: dict = {}
+    if args.get("new_name") is not None:
+        nn = str(args["new_name"]).strip()
+        if not nn:
+            return _error("new_name 不能是空串；清空名称不是有效改法")
+        meta["name"] = nn
+    if args.get("description") is not None:
+        meta["description"] = str(args["description"])
+    if args.get("status") is not None:
+        st = str(args["status"]).strip()
+        if st not in _DASHBOARD_STATUSES:
+            return _error(f"status 只接受 {'/'.join(_DASHBOARD_STATUSES)}，收到 {st[:40]}")
+        meta["status"] = st
+    if tags_arg is not None:
+        meta["tags"] = [str(t).strip() for t in tags_arg if str(t).strip()]
+    if not (meta or theme or style or add_charts or remove_charts or relayout):
+        return _error("没有提供任何要修改的内容：new_name/description/status/tags/theme/style/"
+                      "add_charts/remove_charts/relayout 至少给一项")
+
+    from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+    from backend.modules.viz.services.dashboard_service import (
+        ChartService, DashboardService, _invalidate_dashboard_cache, _invalidate_dashboard_payload)
+
+    ctx = ExecutionContextVar.get()
+    try:
+        # 只有新增图需要落数据集 → 才多要一项 dataset:manage；改名/删图/重排不碰数据集
+        require_screen_perms(ctx, need_dataset=bool(add_charts))
+    except PermissionError as e:
+        return _error(str(e))
+    identity = identity_of(ctx)
+    user_id = identity["user_id"]
+
+    dashboard = DashboardService().get_dashboard(dashboard_id, user_id, enforce_visibility=False)
+    if not dashboard:
+        return _error("该看板不存在（可能已被删除），请用 list_data_screens 核对清单")
+    charts = dashboard.get("charts") or []
+
+    # ── filters 读-改-写：主题存 filters.theme、字模存 filters.components，
+    #    而人侧页面编排存 filters.design。整份覆盖会抹掉人的编排（历史缺陷口径）。
+    #    theme/components 内部同样逐键合并：只改 mode 不该丢 background，只改阴影不该丢圆角。
+    filters = _json_dict(dashboard.get("filters"))
+    merged = dict(filters)
+    if theme:
+        base_theme = dict(merged.get("theme") or {}) if isinstance(merged.get("theme"), dict) else {}
+        base_theme.update({k: v for k, v in theme.items() if k in _THEME_KEYS and v not in (None, "")})
+        merged["theme"] = base_theme
+    if style:
+        comps = dict(merged.get("components") or {})
+        for key, val in style.items():
+            if val in (None, ""):
+                continue
+            if isinstance(val, dict) and isinstance(comps.get(key), dict):
+                comps[key] = {**comps[key], **val}
+            else:
+                comps[key] = val
+        merged["components"] = comps
+    theme_mode = merged.get("theme", {}).get("mode") if isinstance(merged.get("theme"), dict) else None
+    theme_mode = theme_mode if theme_mode in ("light", "dark") else None
+    if merged != filters:
+        meta["filters"] = merged
+
+    # ── 删图定位：只认图表业务标题（精确命中唯一），歧义/未命中一律回清单不猜
+    removed_ids: list[int] = []
+    removed_titles: list[str] = []
+    removed_names: dict[int, str] = {}
+    if remove_charts:
+        by_title: dict[str, list[dict]] = {}
+        for c in charts:
+            by_title.setdefault(str(c.get("name") or "").strip(), []).append(c)
+        missing = [t for t in remove_charts if t not in by_title]
+        if missing:
+            return _error(
+                f"remove_charts 未匹配到图表：{'、'.join(missing)}；"
+                f"本板现有标题：{'、'.join(t for t in by_title if t) or '（无图）'}。"
+                "请原样使用图表标题（明细见 get_data_screen）")
+        dup = [t for t in remove_charts if len(by_title[t]) > 1]
+        if dup:
+            return _error(
+                f"图表标题「{'、'.join(dup)}」在本板出现多次，无法确定删哪一张；"
+                "请先用 update_data_screen_chart 把标题改成唯一值（或向用户确认要保留哪一张）")
+        removed_titles = list(remove_charts)
+        removed_ids = [int(c["id"]) for t in remove_charts for c in by_title[t]]
+        removed_names = {int(c["id"]): str(c.get("name") or "") for t in remove_charts
+                         for c in by_title[t]}
+
+    # ── 加图：全部预检（意图/绑定/数据集/取数）在任何写之前完成
+    board_name = str(dashboard.get("name") or "")
+    bad_widget = next((i for i, w in enumerate(add_charts) if not isinstance(w, dict)), None)
+    if bad_widget is not None:
+        return _error(f"add_charts[{bad_widget}] 必须是对象 {{title, chart_type, query, ...}}")
+    prepared_new: list[dict] = []
+    for i, w in enumerate(add_charts):
+        try:
+            prepared_new.append(await _prepare_widget(w, i, args, ctx, identity, board_name, theme_mode))
+        except ScreenIntentError as e:
+            return e.response
+        except Exception as e:  # noqa: BLE001 — 原始细节只进日志, 对外回分类文案
+            return _safe_exec_error(e, f"add chart {i + 1}")
+
+    # ── 版面：重排 = 整板按主次配方重算；否则存量不动、新卡追加到底部带
+    kept_geoms = [_chart_geom(c) for c in charts if int(c["id"]) not in set(removed_ids)]
+    new_geoms = [{"chart_id": None, "title": it["title"], "chart_type": it["chart_type"],
+                  "site": str(_json_dict(it["config"]).get("site") or "")} for it in prepared_new]
+    layout_updates: list[dict] = []
+    try:
+        if relayout:
+            laid = _relayout_positions(kept_geoms + new_geoms, emphasis)
+            kept_geoms, new_geoms = laid[:len(kept_geoms)], laid[len(kept_geoms):]
+            layout_updates = [{"chart_id": g["chart_id"],
+                               "position": {k: g[k] for k in ("x", "y", "w", "h")}}
+                              for g in kept_geoms]
+        elif new_geoms:
+            new_geoms = _append_band_layout(kept_geoms, new_geoms)
+        final_rects = [_rect(g) for g in kept_geoms] + [_rect(g) for g in new_geoms]
+    except ScreenIntentError as e:
+        return e.response
+
+    # ── 写：新增 → 重排 → 删除（删除不可逆，排在新增成功之后）
+    chart_service = ChartService()
+    mounted: list[int] = []
+    apply_errors: list[str] = []
+    try:
+        for item, geom in zip(prepared_new, new_geoms):
+            mounted.append(_mount_chart(chart_service, dashboard_id, item,
+                                        {k: geom[k] for k in ("x", "y", "w", "h")}, identity))
+        if layout_updates:
+            chart_service.update_layout(dashboard_id, layout_updates)
+        for cid in removed_ids:
+            if not chart_service.delete_chart(dashboard_id, cid):
+                apply_errors.append(f"图表「{removed_names.get(cid) or cid}」删除未生效（可能已被其他人删除）")
+    except Exception as e:  # noqa: BLE001 — 半成品图回滚干净再报错，不留半张板
+        for cid in mounted:
+            try:
+                chart_service.delete_chart(dashboard_id, cid)
+            except Exception:  # noqa: BLE001 — 清理失败不得盖住原始错因
+                logger.exception("[screen] 回滚新增图表失败 dashboard=%s chart=%s", dashboard_id, cid)
+        return _safe_exec_error(e, "update data screen")
+    if meta:
+        try:
+            DashboardService().update_dashboard(dashboard_id, meta, user_id)
+        except Exception as e:  # noqa: BLE001 — 图表已改到位，元信息失败如实上报不掩
+            apply_errors.append(f"看板元信息未更新：{type(e).__name__}")
+    _invalidate_dashboard_payload(dashboard_id)
+    _invalidate_dashboard_cache(user_id)
+
+    data_audit = [{
+        "title": item["title"], "chart_type": item["chart_type"],
+        "row_count": (None if item["chart_type"] in _NO_SQL_TYPES else
+                      int(item["result"].get("row_count") if item["result"].get("row_count") is not None
+                          else len(item["result"].get("rows") or []))),
+    } for item in prepared_new]
+    empty_charts = [a["title"] for a in data_audit if a["row_count"] == 0]
+    layout_audit = _layout_audit(final_rects)
+    final_name = meta.get("name") or board_name
+    changed = [k for k in ("name", "description", "status", "tags", "filters") if k in meta]
+    if theme:
+        changed.append("theme")
+    if style:
+        changed.append("style")
+    if add_charts:
+        changed.append("add_charts")
+    if remove_charts:
+        changed.append("remove_charts")
+    if relayout:
+        changed.append("relayout")
+
+    message = f"看板「{final_name}」已原地更新（未新建资产）；访问路径: /screen/{dashboard_id}"
+    if add_charts:
+        message += f"，新增 {len(add_charts)} 张图"
+    if remove_charts:
+        message += f"，删除 {len(remove_charts)} 张图"
+    if relayout:
+        message += "，整板按主次配方重排（存量卡位置已重写）"
+    if not kept_geoms and not prepared_new:
+        message += ("；注意：该看板已无图表 —— 整板不要了请用 delete_data_screen（需用户确认）")
+    if empty_charts:
+        message += (f"；其中 {len(empty_charts)} 个新图取数为空: {'、'.join(empty_charts)} —— "
+                    "空图不是成功, 请核对时间窗/过滤条件/口径覆盖并向用户逐图说明(不得换近似指标凑数)")
+    if apply_errors:
+        message += f"；部分改动未生效: {'；'.join(apply_errors)}（请如实告知用户，不要当作全部完成）"
+    if not layout_audit["ok"]:
+        message += (f"；版面自检未通过(重叠 {len(layout_audit['overlaps'])} 处、"
+                    f"越界 {len(layout_audit['out_of_canvas'])} 张、"
+                    f"带高不足 {len(layout_audit['squeezed'])} 张) —— 请按 layout-guide 重排后再交付")
+    elif layout_audit["hierarchy"] is False:
+        message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后带 relayout=true 重排，"
+                    "不要把“已更新 N 个图表”当版面合格")
+    return _text({
+        "dashboard_id": dashboard_id,
+        "name": final_name,
+        "url": f"/screen/{dashboard_id}",
+        "changed": changed,
+        "added_charts": [item["title"] for item in prepared_new],
+        "removed_charts": removed_titles,
+        "relayout": relayout,
+        "chart_count": len(kept_geoms) + len(prepared_new),
+        "data_audit": data_audit,
+        "empty_charts": empty_charts,
+        "layout": [_rect(g) for g in final_rects],
+        "layout_audit": layout_audit,
+        "apply_errors": apply_errors or None,
+        "actions": [{"type": "open_screen", "label": "预览大屏",
+                     "dashboard_id": dashboard_id, "url": f"/screen/{dashboard_id}"}],
+        "message": message,
+    })
+
+
+async def delete_data_screen(args: dict) -> dict:
+    """删除一块看板（不可逆）：先要用户确认，再按属主/管理员裁决。
+
+    权限口径与人侧 `DELETE /api/dashboard/{id}` 完全一致（`check_dashboard_editable`）：
+    角色授予的可见权**不含删除**；本层不另造判断。
+    """
+    args = args or {}
+    from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+    from backend.modules.viz.services.dashboard_service import DashboardService
+
+    dashboard_id = int(args.get("dashboard_id") or 0)
+    if not dashboard_id:
+        return _error("请提供看板业务名 name 或 dashboard_id 指明删哪块板；"
+                      "不知道是哪块先用 list_data_screens 查清单")
+
+    ctx = ExecutionContextVar.get()
+    if not args.get("confirmed"):
+        # 破坏性动作：先回确认提示，由模型走 ask_user 拿到同意（沿用 publish_ontology_model 的机制）
+        board = DashboardService().get_dashboard(dashboard_id,
+                                                int((ctx.user_id if ctx else 0) or 0),
+                                                enforce_visibility=False) or {}
+        return _text({
+            "needs_user_confirmation": True,
+            "dashboard_id": dashboard_id,
+            "name": board.get("name"),
+            "chart_count": len(board.get("charts") or []),
+            "note": (f"删除看板「{board.get('name') or dashboard_id}」不可逆：整板与其全部图表、"
+                     "角色可见授权、看板组合成员一并清除。请先用 ask_user 向用户确认，"
+                     "拿到同意后再带 confirmed=true 调用本工具"),
+        })
+    try:
+        require_screen_perms(ctx, need_dataset=False)
+    except PermissionError as e:
+        return _error(str(e))
+    identity = identity_of(ctx)
+    # 内容级把关（仅属主或管理员）已由 resource_guard 在同一裁决点判过，此处不重复放水
+    board = DashboardService().get_dashboard(dashboard_id, identity["user_id"],
+                                             enforce_visibility=False) or {}
+    board_name = str(board.get("name") or "").strip()
+    try:
+        deleted = DashboardService().delete_dashboard(dashboard_id, identity["user_id"])
+    except Exception as e:  # noqa: BLE001 — 原始细节仅进日志, 回分类文案
+        return _safe_exec_error(e, "delete dashboard")
+    if not deleted:
+        return _error("该看板不存在或已被删除，未做任何改动")
+    return _text({
+        "deleted": True,
+        "name": board_name or "（名称已随看板清除）",
+        "message": f"看板「{board_name or '未命名'}」已删除（含其图表、角色可见授权与看板组合成员）",
+    })
+
+
+# ── 看板组合（仪表盘组）：编排维度，不是权限维度 ──────────────────────
+
+_GROUP_ACTIONS = ("create", "rename", "delete", "set_charts", "set_roles", "reorder")
+
+
+def _group_note() -> str:
+    return ("看板组合=仪表盘组（adh_dashboard_groups），是**编排**维度：把已有看板分组、排展示/轮播顺序、"
+            "按角色分配给谁；它**不授予可见权** —— 一块板能不能看，只由角色的看板授权裁决。"
+            "「组合」不是把几张图合成一张图（那是在同一块看板里排布，用 create_data_screen/update_data_screen）。")
+
+
+def _resolve_group_id(ref: str) -> int:
+    """按组合业务名定位（模型不猜 id）：精确名唯一命中，否则回候选清单。"""
+    from backend.common.db import execute_query
+    name = str(ref or "").strip()
+    if not name:
+        raise ScreenIntentError(_error("请提供组合名称 group（不知道有哪些组合先用 list_dashboard_groups 查清单）"))
+    escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = execute_query(
+        "SELECT id, name FROM adh_dashboard_groups WHERE name=%s OR name LIKE %s ORDER BY sort, id LIMIT 11",
+        (name, f"%{escaped}%")) or []
+    hits = [r for r in rows if str(r.get("name") or "") == name] or rows
+    if not hits:
+        raise ScreenIntentError(_error(f"没有名为「{name}」的看板组合；用 list_dashboard_groups 查现有组合"))
+    if len(hits) > 1:
+        shown = "、".join(f"「{r.get('name')}」" for r in hits[:10])
+        raise ScreenIntentError(_error(
+            f"组合名称「{name}」命中多个：{shown}；请与用户确认是哪一个（或用更完整的名称）"))
+    return int(hits[0]["id"])
+
+
+def _resolve_dashboard_ids_by_name(names: list) -> list:
+    """组内成员按**看板业务名**解析成 id（ui-resource-display：不让模型猜内部 id）。
+
+    任一名字解析不到即整单拒绝并列候选，绝不"跳过没匹配到的板"静默少登记。
+    """
+    from backend.common.db import execute_query
+    wanted = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not wanted:
+        return []
+    marks = ",".join(["%s"] * len(wanted))
+    rows = execute_query(f"SELECT id, name FROM adh_dashboards WHERE name IN ({marks})", wanted) or []
+    by_name: dict[str, list[int]] = {}
+    for r in rows:
+        by_name.setdefault(str(r.get("name") or ""), []).append(int(r["id"]))
+    ids: list[int] = []
+    missing: list[str] = []
+    ambiguous: list[str] = []
+    for n in wanted:
+        hits = by_name.get(n) or []
+        if not hits:
+            missing.append(n)
+        elif len(hits) > 1:
+            ambiguous.append(n)
+        else:
+            ids.append(hits[0])
+    if missing or ambiguous:
+        parts = []
+        if missing:
+            near = [str(r["name"]) for r in (execute_query(
+                "SELECT name FROM adh_dashboards ORDER BY updated_at DESC LIMIT 20") or [])]
+            parts.append(f"没有名为 {'、'.join(missing)} 的看板（最近看板如：{'、'.join(near) or '（无）'}）")
+        if ambiguous:
+            parts.append(f"{'、'.join(ambiguous)} 同名多块，无法确定是哪一块")
+        raise ScreenIntentError(_error("；".join(parts) + "。请向用户确认看板名称后重试"))
+    return ids
+
+
+def _resolve_role_ids_by_name(names: list) -> list:
+    """角色按业务名解析成 id（组合的角色分配对象是角色，不是用户）。"""
+    from backend.common.db import execute_query
+    wanted = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not wanted:
+        return []
+    marks = ",".join(["%s"] * len(wanted))
+    rows = execute_query(f"SELECT id, name FROM adh_roles WHERE name IN ({marks})", wanted) or []
+    by_name = {str(r.get("name") or ""): int(r["id"]) for r in rows}
+    missing = [n for n in wanted if n not in by_name]
+    if missing:
+        known = [str(r["name"]) for r in (execute_query(
+            "SELECT name FROM adh_roles ORDER BY name") or [])]
+        raise ScreenIntentError(_error(
+            f"没有名为 {'、'.join(missing)} 的角色；系统现有角色：{'、'.join(known) or '（无）'}"))
+    return [by_name[n] for n in wanted]
+
+
+async def list_dashboard_groups(args: dict) -> dict:
+    """当前身份可见的看板组合清单（含组内看板业务名与编排顺序）。"""
+    from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+    from backend.modules.viz.services.dashboard_service import build_visible_groups
+
+    ctx = ExecutionContextVar.get()
+    user_id = int((ctx.user_id if ctx else 0) or 0)
+    if not user_id:
+        return _error("当前执行上下文没有可信用户身份，无法列出看板组合（护栏 §2：身份只信服务端）")
+    groups = build_visible_groups(user_id, str(getattr(ctx, "user_role", "") or "")) or []
+    items = [{
+        "group_id": int(g.get("id") or 0),
+        "name": g.get("name"),
+        "description": g.get("description") or "",
+        "is_ungrouped": int(g.get("id") or 0) == 0,
+        "dashboards": [str(d.get("name") or "") for d in (g.get("dashboards") or [])],
+    } for g in groups]
+    note = _group_note()
+    if not [i for i in items if not i["is_ungrouped"]]:
+        note += "；当前身份没有已分配的组合（「未分组」里的板尚未编组）"
+    return _text({"count": len(items), "groups": items, "note": note})
+
+
+async def manage_dashboard_groups(args: dict) -> dict:
+    """改看板组合（仅管理员）：建组/改名/删组/组内看板/角色分配/整体顺序。
+
+    与人侧 `require_admin` 同口径：组合是跨看板的编排配置，角色授予的看板可见权不含改组合。
+    成员与角色一律按**业务名**解析，解析不到回候选清单（不猜 id、不静默少登记）。
+    """
+    args = args or {}
+    try:
+        action = str(args.get("action") or "").strip().lower()
+        dashboards = _coerce_struct(args.get("dashboards"), "dashboards", (list, str))
+        roles = _coerce_struct(args.get("roles"), "roles", (list, str))
+        order = _coerce_struct(args.get("order"), "order", (list, str))
+    except ScreenIntentError as e:
+        return e.response
+    dashboards = [dashboards] if isinstance(dashboards, str) else (dashboards or [])
+    roles = [roles] if isinstance(roles, str) else (roles or [])
+    order = [order] if isinstance(order, str) else (order or [])
+    if action not in _GROUP_ACTIONS:
+        return _error(f"action 只接受 {'/'.join(_GROUP_ACTIONS)}，收到 {str(args.get('action'))[:40]}")
+
+    from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+    from backend.modules.viz.services.dashboard_service import (
+        DashboardGroupNotFound, create_group, delete_group, reorder_groups, set_group_items,
+        set_group_roles, update_group, _is_admin_user)
+
+    ctx = ExecutionContextVar.get()
+    try:
+        require_screen_perms(ctx, need_dataset=False)
+    except PermissionError as e:
+        return _error(str(e))
+    identity = identity_of(ctx)
+    if not _is_admin_user(identity["user_id"], identity["role"]):
+        return _error("看板组合的编排（分组/顺序/角色分配）是全局配置，仅管理员可改："
+                      "请如实告知用户，并由管理员在「看板组合」管理页操作（角色授予的看板可见权不含改组合）")
+
+    name = str(args.get("name") or "").strip()
+    description = str(args.get("description") or "")
+    try:
+        if action == "create":
+            if not name:
+                return _error("create 需要组合名称 name")
+            group_id = create_group(name, description)
+            outcome = {"action": action, "group_id": group_id, "name": name}
+        elif action == "reorder":
+            # 整体顺序只吃 order 清单，不针对单个组合 → 不走下面的目标组合解析
+            if not order:
+                return _error("reorder 需要完整顺序清单 order（全部组合名，按展示先后排列）")
+            orders = [{"id": _resolve_group_id(g), "sort": (i + 1) * 10}
+                      for i, g in enumerate(order)]
+            reorder_groups(orders)
+            outcome = {"action": action, "count": len(orders), "order": [str(g) for g in order]}
+        else:
+            group_id = _resolve_group_id(args.get("group") or name)
+            if action == "rename":
+                if not name:
+                    return _error("rename 需要新名称 name")
+                update_group(group_id, name, description or None)
+                outcome = {"action": action, "name": name}
+            elif action == "delete":
+                if not args.get("confirmed"):
+                    return _text({
+                        "needs_user_confirmation": True, "group_id": group_id,
+                        "note": (f"删除看板组合「{args.get('group') or name}」会连同其成员编排与角色分配一并清除"
+                                 "（看板本身不删）。请先用 ask_user 向用户确认，再带 confirmed=true 调用本工具"),
+                    })
+                delete_group(group_id)
+                outcome = {"action": action, "deleted": True}
+            elif action == "set_charts":
+                if args.get("dashboards") is None:
+                    return _error("set_charts 需要 dashboards（看板业务名清单，顺序即展示/轮播顺序）；"
+                                  "要清空组内成员请显式传 dashboards=[]")
+                ids = _resolve_dashboard_ids_by_name(dashboards)
+                result = set_group_items(group_id, ids)
+                outcome = {"action": action, "count": result["count"],
+                           "dashboards": [str(d) for d in dashboards], "dropped": result["dropped"]}
+            elif action == "set_roles":
+                if args.get("roles") is None:
+                    return _error("set_roles 需要 roles（角色业务名清单）；"
+                                  "要取消全部角色分配请显式传 roles=[]。注意：组合不授予可见权")
+                rids = _resolve_role_ids_by_name(roles)
+                count = set_group_roles(group_id, rids)
+                outcome = {"action": action, "count": count, "roles": [str(r) for r in roles]}
+    except ScreenIntentError as e:
+        return e.response
+    except DashboardGroupNotFound as e:
+        return _error(f"{e}；用 list_dashboard_groups 查现有组合")
+    except ValueError as e:
+        return _error(str(e))
+    except Exception as e:  # noqa: BLE001 — 原始细节只进日志, 对外回分类文案
+        return _safe_exec_error(e, "manage dashboard groups")
+    outcome["note"] = _group_note()
+    outcome["message"] = "看板组合已更新（顺序即展示/轮播顺序；组合不授予可见权）"
+    return _text(outcome)
 
 
 # ── 字模库取用工具（元数据级，不返回数据行）──
@@ -1308,6 +2290,173 @@ TOOL_SPECS = [
             "required": ["dashboard_id", "chart_id"],
         },
         "handler": update_data_screen_chart,
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "list_data_screens",
+        "description": (
+            "Locate existing dashboards/screens by business name BEFORE modifying one — this is the entry point "
+            "for 'modify / rename / add-chart / remove-chart / relayout / delete my board' requests. "
+            "Returns name, description, status, chart_count, updated_at, the groups each board belongs to, and "
+            "`editable` (owner or admin only). NEVER call create_data_screen because a dashboard_id was not found: "
+            "list first and match by name. Empty result for a non-admin means the role was granted no boards "
+            "(the response says so) — report that honestly instead of creating a duplicate board."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "Optional filter on board name/description (business name, not id)"},
+                "limit": {"type": "integer", "description": "Max rows (1~100, default 50)"},
+            },
+        },
+        "handler": list_data_screens,
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "update_data_screen",
+        "description": (
+            "Modify an EXISTING dashboard in place — the ONLY correct path for 'change that board' requests "
+            "(never create a new board for an edit). Address the board by `name` (business name) or `dashboard_id`. "
+            "Supports board-level metadata (new_name/description/status/tags), theme ('light'/'dark' or object) and "
+            "vis-library style refs — theme/style are merged into filters, the human page layout (filters.design) is "
+            "preserved, never overwritten. `add_charts` mounts new declarative-intent charts (same direct-build "
+            "channel as create_data_screen: raw SQL rejected, one dataset per chart); `remove_charts` deletes charts "
+            "by their business titles; `relayout=true` recomputes the whole board with the server-side "
+            "hero/side/band hierarchy (it rewrites positions, so only use it when the user asks to re-lay out; "
+            "use `emphasis` {hero, detail} to pick the hero chart). Without relayout new charts are appended in a "
+            "bottom band and the call is refused with a hint if the canvas is full. Returns layout_audit, "
+            "data_audit, empty_charts and apply_errors — a partially applied change must be reported as such."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "看板业务名（与 dashboard_id 二选一；歧义会回候选清单，不猜）"},
+                "dashboard_id": {"type": "integer", "description": "看板 id（已知的可直接传；不知道就用 name）"},
+                "new_name": {"type": "string", "description": "改名"},
+                "description": {"type": "string", "description": "改说明"},
+                "status": {"type": "string", "enum": list(_DASHBOARD_STATUSES),
+                           "description": "designing|enabled|closed"},
+                "tags": {"type": ["array", "string"], "items": {"type": "string"},
+                         "description": "标签清单（数组或逗号分隔串；显式覆盖，[] 即清空）"},
+                "theme": {
+                    "type": ["object", "string"],
+                    "description": "看板主题（合并写 filters.theme）；也接受 'light'/'dark' 简写",
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["light", "dark"]},
+                        "background": {"type": "string"},
+                        "backgroundImage": {"type": "string"},
+                        "header": {"type": "object"},
+                        "card": {"type": "object"},
+                    },
+                },
+                "style": {
+                    "type": "object",
+                    "description": "字模引用（合并写 filters.components）",
+                    "properties": {k: {"type": ["integer", "string"], "description": "字模 id 或 code"}
+                                   for k in ("background", "colorTheme", "cardStyle", "layout", "decoration")},
+                },
+                "add_charts": {
+                    "type": "array", "maxItems": _MAX_WIDGETS,
+                    "description": "新增图表（与 create_data_screen.widgets 同形状：{title, chart_type, query, site?, config?, position?, component_ids?}）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "chart_type": {"type": "string"},
+                            "query": {"type": "object", "properties": _INTENT_PROPERTIES,
+                                      "description": "声明式语义意图（必填，iframe 除外）；裸 SQL 会被拒"},
+                            "site": {"type": "string", "description": "本图数据源业务名（不传则用顶层 site）"},
+                            "datasource": {"type": "string", "description": "同 site（site 优先）"},
+                            "component_ids": {"type": "array",
+                                              "items": {"type": ["integer", "string"]}},
+                            "config": {"type": "object"},
+                            "position": _POSITION_SCHEMA,
+                        },
+                        "required": ["title", "chart_type"],
+                    },
+                },
+                "remove_charts": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "按图表业务标题删除（精确命中且唯一才删；未命中/重名会报错并列清单）",
+                },
+                "relayout": {"type": "boolean",
+                             "description": "true=整板按服务端主次配方重排（会重写存量卡坐标，只在用户要求重排时用）"},
+                "emphasis": {
+                    "type": "object",
+                    "description": "重排时的主次指定：{hero: 主图标题, detail: 整宽明细卡标题}",
+                    "properties": {"hero": {"type": "string"}, "detail": {"type": "string"}},
+                },
+                "site": {"type": "string", "description": "add_charts 的默认数据源业务名"},
+                "datasource": {"type": "string", "description": "同 site（site 优先）"},
+            },
+        },
+        "handler": update_data_screen,
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "delete_data_screen",
+        "description": (
+            "Delete a dashboard (IRREVERSIBLE: charts, role visibility grants and board-group membership are "
+            "removed). Address it by `name` or `dashboard_id`. WITHOUT `confirmed=true` this tool does NOT delete — "
+            "it returns needs_user_confirmation, so call ask_user first and only then retry with confirmed=true. "
+            "Only the board owner or an admin may delete (role-granted visibility does not include delete); "
+            "a permission error here must be reported to the user as-is."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "看板业务名（与 dashboard_id 二选一）"},
+                "dashboard_id": {"type": "integer", "description": "看板 id"},
+                "confirmed": {"type": "boolean",
+                              "description": "必须为 true（先用 ask_user 取得用户同意）"},
+            },
+        },
+        "handler": delete_data_screen,
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "list_dashboard_groups",
+        "description": (
+            "List 看板组合 (dashboard groups) as the user can see them. A group is an ARRANGEMENT object — it "
+            "collects existing dashboards, fixes their display/carousel order and assigns the group to roles. "
+            "It is NOT 'a combo of charts' and it grants NO visibility: whether a dashboard can be opened is "
+            "decided only by role dashboard grants. Use this before managing groups. "
+            "管理看板组合：看组合与成员清单，不授予可见权。"
+        ),
+        "schema": {"type": "object", "properties": {}},
+        "handler": list_dashboard_groups,
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "manage_dashboard_groups",
+        "description": (
+            "Edit 看板组合 (dashboard groups): create / rename / delete / set member dashboards / assign roles / "
+            "reorder groups. Admin only (same rule as the human admin page) — a non-admin caller must be told so "
+            "verbatim. Members are addressed by dashboard BUSINESS NAMES and roles by ROLE NAMES (never ids); "
+            "unresolvable or ambiguous names come back as a candidate list. Order of `dashboards` is the "
+            "display/carousel order. Deleting a group needs confirmed=true after ask_user. "
+            "组合只做编排（分组 + 顺序 + 角色分配），不授予看板可见权。"
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(_GROUP_ACTIONS)},
+                "group": {"type": "string", "description": "目标组合业务名（除 create 外必填）"},
+                "name": {"type": "string",
+                         "description": "create=新组合名；rename=新名（此时 group 仍指旧名）"},
+                "description": {"type": "string", "description": "组合说明（rename 不传则保留原说明）"},
+                "dashboards": {"type": "array", "items": {"type": "string"},
+                               "description": "set_charts：看板业务名清单，顺序即展示/轮播顺序；[] = 清空"},
+                "roles": {"type": "array", "items": {"type": "string"},
+                          "description": "set_roles：角色业务名清单；[] = 取消全部角色分配"},
+                "order": {"type": "array", "items": {"type": "string"},
+                          "description": "reorder：全部组合名，按展示先后排列"},
+                "confirmed": {"type": "boolean", "description": "delete 需先经用户确认（ask_user）后传 true"},
+            },
+            "required": ["action"],
+        },
+        "handler": manage_dashboard_groups,
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False},
     },
     {

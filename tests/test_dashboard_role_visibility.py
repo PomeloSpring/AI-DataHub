@@ -34,6 +34,7 @@ class _FakeDB:
     def __init__(self):
         self.admin_cnt = 0       # adh_user_roles ⋈ adh_roles 的 admin 计数
         self.allowed = []        # get_user_allowed_dashboards 的 dashboard_id 集
+        self.role_ids = []       # adh_user_roles 里该账号的角色
         self.dashboards = []     # adh_dashboards 行
         self.charts = []         # adh_charts 行
         self.dashboard_ws = {}   # dashboard_id -> workspace_id
@@ -56,6 +57,10 @@ class _FakeCursor:
         self._sql = " ".join(sql.split())
         self._params = list(params or [])
         self.db.log.append((self._sql, self._params))
+        # AI 建板的同批授权（screen_tools._grant_dashboard_to_user_roles）走这条写口：
+        # 落库即让该角色可见，故直接把新看板并进授权集，让"写完 → 可见"在同一套假库里可对账。
+        if self._sql.startswith("INSERT IGNORE INTO adh_role_dashboard_access"):
+            self.db.allowed.append(int(self._params[1]))
 
     def fetchone(self):
         s = self._sql
@@ -75,6 +80,8 @@ class _FakeCursor:
         s = self._sql
         if "SELECT DISTINCT rda.dashboard_id" in s:
             return [{"dashboard_id": i} for i in self.db.allowed]
+        if "SELECT role_id FROM adh_user_roles" in s:
+            return [{"role_id": r} for r in self.db.role_ids]
         if "FROM adh_charts" in s:
             return [dict(c) for c in self.db.charts]
         if "FROM adh_dashboards" in s:
@@ -171,7 +178,12 @@ def db(monkeypatch):
         cur.execute(sql, params)
         return cur.fetchone() if fetchone else cur.fetchall()
 
+    def _write(sql, params=None):
+        factory().cursor().execute(sql, params)
+        return 1
+
     monkeypatch.setattr(common_db, "execute_query", _exec)
+    monkeypatch.setattr(common_db, "execute_write", _write)
     monkeypatch.setattr(dash_svc, "dashboard_cache", _MemCache())
     return fake
 
@@ -500,3 +512,45 @@ def test_function_tool_list_dashboards_truncation_is_explicit(db, monkeypatch):
     assert "截断" in payload["note"]
 
 
+
+# ── AI 建板的同批授权（screen-builder §1 的落库面）───────────────────────
+
+
+def _screen_tools():
+    return importlib.import_module("backend.modules.mind.execution.sdk_tools.screen_tools")
+
+
+def test_ai_created_board_grants_visibility_to_creator_roles(db):
+    """建屏同批把新板授给创建者所属角色 —— 授完本人可见，未获授的看板仍然不可见。
+
+    属主与 is_public 都不授予可见性（V1），所以这一步不是锦上添花：漏了它，
+    工具回"已建好"而用户在「数据看板」页 404，下一次"改刚才那块板"人和 AI 都拿不到它，只能重建。
+    """
+    st = _screen_tools()
+    db.role_ids = [9, 4]
+    db.dashboards = [_dash(101, owner_id=9), _dash(203, owner_id=9)]
+
+    assert sorted(st._grant_dashboard_to_user_roles(9, 101, "analyst")) == [4, 9]
+    assert dash_svc.visible_dashboard_ids(9, "analyst", 3) == {101}
+    assert dash_svc.check_dashboard_visible(101, 9, "analyst", workspace_id=3) is True
+    assert dash_svc.check_dashboard_visible(203, 9, "analyst", workspace_id=3) is False
+    insert = next(s for s, _ in db.log if s.startswith("INSERT IGNORE INTO adh_role_dashboard_access"))
+    assert "(role_id, dashboard_id)" in insert   # 唯一键幂等（重复建屏不堆授权行）
+
+
+def test_ai_created_board_without_any_role_fails_loud(db):
+    """账号没有角色 → 授权无处可落：显式拒绝建屏，不建出一块谁也看不见的板。"""
+    st = _screen_tools()
+    db.role_ids = []
+    with pytest.raises(st.ScreenIntentError) as e:
+        st._grant_dashboard_to_user_roles(9, 101, "analyst")
+    assert "角色" in json.loads(e.value.response["content"][0]["text"])["error"]
+    assert e.value.response["isError"] is True
+
+
+def test_admin_created_board_needs_no_grant(db):
+    """admin 全可见（visible_dashboard_ids 返回 None）：不补授权行，避免配置噪音。"""
+    st = _screen_tools()
+    db.role_ids = [9]
+    assert st._grant_dashboard_to_user_roles(1, 101, "admin") == []
+    assert not any(s.startswith("INSERT IGNORE INTO adh_role_dashboard_access") for s, _ in db.log)

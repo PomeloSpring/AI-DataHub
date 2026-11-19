@@ -1104,6 +1104,136 @@ def reorder_groups(orders: list) -> bool:
         conn.close()
 
 
+class DashboardGroupNotFound(ValueError):
+    """仪表盘组不存在（人或 AI 触发同一异常，端点回 404、工具回可操作提示）。"""
+
+
+def list_group_rows() -> list:
+    """全部仪表盘组原始行（按编排序）。成员/角色由 `group_members` 单独取，不在这里逐行查。"""
+    return execute_query("SELECT * FROM adh_dashboard_groups ORDER BY sort, id") or []
+
+
+def group_exists(group_id: int) -> bool:
+    return bool(execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s",
+                              (int(group_id),), fetchone=True))
+
+
+def require_group(group_id: int) -> int:
+    gid = int(group_id)
+    if not group_exists(gid):
+        raise DashboardGroupNotFound(f"仪表盘组不存在（id={gid}）")
+    return gid
+
+
+def group_members(group_id: int) -> dict:
+    """组内看板 id（编排序，剔除已删除看板）+ 绑定角色 id。
+
+    只回仍存在的看板：已删除看板不得进管理端组合清单/穿梭框（否则出现"看板已删除"悬空项）。
+    按 adh_dashboards 全局存在性过滤（不按工作空间），以免把"存在但不在当前工作空间清单"
+    的看板误判为已删除。
+    """
+    gid = int(group_id)
+    dashboard_ids = [r["dashboard_id"] for r in (execute_query(
+        "SELECT gi.dashboard_id FROM adh_dashboard_group_items gi "
+        "JOIN adh_dashboards d ON d.id = gi.dashboard_id "
+        "WHERE gi.group_id=%s ORDER BY gi.sort, gi.id", (gid,)) or [])]
+    role_ids = [r["role_id"] for r in (execute_query(
+        "SELECT role_id FROM adh_role_dashboard_groups WHERE group_id=%s", (gid,)) or [])]
+    return {"dashboard_ids": dashboard_ids, "role_ids": role_ids}
+
+
+def create_group(name: str, description: str = "", sort: Optional[int] = None) -> int:
+    """新建仪表盘组，返回组 id。
+
+    新组合默认排末尾(COALESCE(MAX(sort),0)+10): 固定写 0 会把刚建好的顺序顶掉一位，
+    管理员"新建完再排"会变成"新建自动插队到第一"。显式传 sort 时尊重传值。
+    """
+    if sort is None:
+        row = execute_query("SELECT COALESCE(MAX(sort), 0) AS max_sort FROM adh_dashboard_groups",
+                            fetchone=True) or {}
+        sort_value = int(row.get("max_sort") or 0) + 10
+    else:
+        sort_value = int(sort)
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO adh_dashboard_groups (name, description, sort) VALUES (%s, %s, %s)",
+                        (name, description or "", sort_value))
+            group_id = int(cur.lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+    _invalidate_dashboard_payload()
+    return group_id
+
+
+def update_group(group_id: int, name: str, description: Optional[str] = "",
+                 sort: Optional[int] = None) -> None:
+    """更新组名/说明/排序。
+
+    存在性必须用 SELECT 判（与 /items、/roles 同口径）：拿 UPDATE 的影响行数当存在性
+    会把"名称/说明/排序没改动的重复保存"当成 0 行受影响 → 误报「仪表盘组不存在」
+    （MySQL 对值未变的行不计数，历史缺陷：用户在编辑弹窗里原样再点保存必报错）。
+    未传 sort/description 时保留原值（只改名称不得把说明清空、不得把顺序抬回 0 = 首位）。
+    """
+    from backend.common.db import execute_write
+    gid = require_group(group_id)
+    current = execute_query("SELECT sort, description FROM adh_dashboard_groups WHERE id=%s",
+                            (gid,), fetchone=True) or {}
+    sort_value = int(sort) if sort is not None else int(current.get("sort") or 0)
+    description_value = (current.get("description") or "") if description is None else (description or "")
+    execute_write("UPDATE adh_dashboard_groups SET name=%s, description=%s, sort=%s WHERE id=%s",
+                  (name, description_value, sort_value, gid))
+    _invalidate_dashboard_payload()
+
+
+def delete_group(group_id: int) -> None:
+    """删组及其成员/角色绑定（不删看板本身）。"""
+    from backend.common.db import execute_write
+    gid = int(group_id)
+    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (gid,))
+    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (gid,))
+    if not execute_write("DELETE FROM adh_dashboard_groups WHERE id=%s", (gid,)):
+        raise DashboardGroupNotFound(f"仪表盘组不存在（id={gid}）")
+    _invalidate_dashboard_payload()
+
+
+def set_group_items(group_id: int, dashboard_ids: list) -> dict:
+    """全量替换组内看板（顺序即编排序），返回 {count, dropped}。
+
+    只登记仍存在的看板：不存在的 id（已删除）不得写回组内，否则组合重新长出"看板已删除"悬空成员。
+    dropped 由调用方如实上报（no-silent-degradation）：非空说明有陈旧/越权引用被拒登记。
+    """
+    from backend.common.db import execute_write
+    gid = require_group(group_id)
+    ids = [int(x) for x in dict.fromkeys(dashboard_ids or [])]
+    existing: set[int] = set()
+    if ids:
+        marks = ",".join(["%s"] * len(ids))
+        existing = {int(r["id"]) for r in (execute_query(
+            f"SELECT id FROM adh_dashboards WHERE id IN ({marks})", ids) or [])}
+    dropped = [x for x in ids if x not in existing]
+    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (gid,))
+    for i, did in enumerate([x for x in ids if x in existing]):
+        execute_write("INSERT IGNORE INTO adh_dashboard_group_items (group_id, dashboard_id, sort) "
+                      "VALUES (%s,%s,%s)", (gid, int(did), i))
+    _invalidate_dashboard_payload()
+    return {"count": len(existing), "dropped": dropped}
+
+
+def set_group_roles(group_id: int, role_ids: list) -> int:
+    """全量替换组的角色绑定。组按角色分配，**不授予看板可见性**（可见性只由角色看板授权裁决）。"""
+    from backend.common.db import execute_write
+    gid = require_group(group_id)
+    ids = {int(r) for r in (role_ids or [])}
+    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (gid,))
+    for rid in ids:
+        execute_write("INSERT INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
+                      (rid, gid))
+    _invalidate_dashboard_payload()
+    return len(ids)
+
+
 def refresh_designed_chart(chart, user_id):
     """设计图表不复用跨用户 data_cache；每次按查看者身份重新治理。"""
     from backend.common.auth import resolve_execution_owner
@@ -1356,8 +1486,10 @@ class DashboardService:
     def delete_dashboard(self, dashboard_id: int, user_id: int) -> bool:
         """Delete a dashboard and all its charts.
 
-        写权限(仅 admin/属主)由 API 层 check_dashboard_editable 把关,
-        这里只负责删除本身(否则 admin 删不了他人看板, 会静默报 404)。
+        写权限(仅 admin/属主)由调用方按 `check_dashboard_editable` 把关(人侧 API 层 /
+        AI 侧 resource_guard 同一裁决点), 这里只负责删除本身(否则 admin 删不了他人看板, 会静默报 404)。
+        级联清理必须在这一层做完：`adh_dashboard_group_items` 对 `adh_dashboards` 没有外键级联,
+        以前只在 REST 端点补一刀, 走服务层的调用方（AS-BOT 删板）会留下「看板已删除」悬空成员。
         """
         conn = get_metadata_conn()
         try:
@@ -1365,12 +1497,15 @@ class DashboardService:
                 cur.execute("DELETE FROM adh_charts WHERE dashboard_id = %s", (dashboard_id,))
                 # 级联清理角色可见性授权, 避免悬空授权行
                 cur.execute("DELETE FROM adh_role_dashboard_access WHERE dashboard_id = %s", (dashboard_id,))
+                # 级联清理看板组合成员（组合只编排、不授予可见, 但成员行必须随板清除）
+                cur.execute("DELETE FROM adh_dashboard_group_items WHERE dashboard_id = %s", (dashboard_id,))
                 cur.execute(
                     "DELETE FROM adh_dashboards WHERE id = %s",
                     (dashboard_id,),
                 )
             conn.commit()
             _invalidate_dashboard_cache(user_id)
+            _invalidate_dashboard_payload()
             return cur.rowcount > 0
         finally:
             conn.close()

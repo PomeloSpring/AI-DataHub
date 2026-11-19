@@ -38,7 +38,12 @@ def _card(did: int, *, sort_order: int, is_default: bool = False) -> dict:
 
 @pytest.fixture
 def fake_db(monkeypatch):
-    """把 backend.common.db 的读写口换成记录器（api/service 里的函数内 import 调用时取补丁）。"""
+    """把读写口换成记录器（api/service 里的函数内 import 调用时取补丁）。
+
+    `dashboard_service` 是**模块级** `from backend.common.db import execute_query`，
+    只 patch 包属性拦不住它 —— 服务层的 SELECT 会打到真实 MySQL（历史污染：断言里混进线上 id 清单）。
+    故两条路径都换：包属性（函数内 import 的 `execute_write`）+ 模块属性（服务层裸名调用）。
+    """
     log = []
     box = {"rows": lambda sql: []}
 
@@ -51,8 +56,9 @@ def fake_db(monkeypatch):
         log.append((sql, tuple(params or ())))
         return 1
 
-    monkeypatch.setattr(db_pkg, "execute_query", _query)
-    monkeypatch.setattr(db_pkg, "execute_write", _write)
+    for mod in (db_pkg, svc):
+        monkeypatch.setattr(mod, "execute_query", _query, raising=False)
+        monkeypatch.setattr(mod, "execute_write", _write, raising=False)
     return SimpleNamespace(log=log, box=box)
 
 
@@ -253,8 +259,8 @@ def test_update_group_without_sort_keeps_existing_order(fake_db, payload_invalid
     def rows(sql):
         if "SELECT id FROM adh_dashboard_groups" in sql:
             return [{"id": 5}]
-        if "SELECT sort FROM adh_dashboard_groups" in sql:
-            return [{"sort": 30}]
+        if "FROM adh_dashboard_groups WHERE id" in sql:      # 服务层回读 sort + description
+            return [{"sort": 30, "description": "旧说明"}]
         return []
 
     fake_db.box["rows"] = rows
@@ -262,6 +268,25 @@ def test_update_group_without_sort_keeps_existing_order(fake_db, payload_invalid
 
     sql, params = next(w for w in fake_db.log if w[0].startswith("UPDATE adh_dashboard_groups SET name"))
     assert params == ("经营日报", "口径说明", 30, 5)
+
+
+def test_update_group_service_keeps_description_when_none(fake_db, payload_invalidations):
+    """服务层 description=None = 保留原文案（AS-BOT 改名通道只传名称走的就是这一档）。
+
+    REST 端点不适用：管理端表单总是回传 description 字段，空串属用户真清空，不得当"没传"。
+    """
+    def rows(sql):
+        if "SELECT id FROM adh_dashboard_groups" in sql:
+            return [{"id": 5}]
+        if "FROM adh_dashboard_groups WHERE id" in sql:
+            return [{"sort": 30, "description": "原口径说明"}]
+        return []
+
+    fake_db.box["rows"] = rows
+    svc.update_group(5, "经营日报", None)
+
+    _, params = next(w for w in fake_db.log if w[0].startswith("UPDATE adh_dashboard_groups SET name"))
+    assert params == ("经营日报", "原口径说明", 30, 5)
 
 
 def test_update_group_with_explicit_sort_writes_it(fake_db, payload_invalidations):
@@ -275,9 +300,9 @@ def test_update_group_with_explicit_sort_writes_it(fake_db, payload_invalidation
     assert params[2] == 7
 
 
-def test_create_group_appends_to_tail(fake_conn, payload_invalidations):
+def test_create_group_appends_to_tail(fake_db, fake_conn, payload_invalidations):
     """新建组合默认落末尾（MAX(sort)+10）：固定写 0 会把已排好的清单顶乱。"""
-    fake_conn.max_sort = 40
+    fake_db.box["rows"] = lambda sql: [{"max_sort": 40}] if "MAX(sort)" in sql else []
 
     out = api.create_group_endpoint(api.GroupCreate(name="新组合"), admin=ADMIN)
 
@@ -339,17 +364,32 @@ def test_group_payload_hides_deleted_dashboards(fake_db):
     assert out[0]["dashboard_ids"] == [22]
 
 
-def test_delete_dashboard_endpoint_cascades_group_items(fake_db, payload_invalidations, monkeypatch):
-    """删板端点必须级联删组内引用（adh_dashboard_group_items 对 adh_dashboards 无外键级联）。"""
+def test_delete_dashboard_endpoint_cascades_group_items(fake_db, fake_conn, payload_invalidations, monkeypatch):
+    """删板必须级联删组内引用（adh_dashboard_group_items 对 adh_dashboards 没有外键级联）。
+
+    级联住在服务层 `delete_dashboard`：以前在 REST 端点补一刀，走服务层的调用方
+    （AS-BOT 删板）就会留下「看板已删除」悬空成员 —— 故这里不 stub 服务方法，让它真跑。
+    """
     monkeypatch.setattr(api, "_require_editable", lambda *a, **k: None)
-    monkeypatch.setattr(api.dashboard_service, "delete_dashboard", lambda did, uid: True)
 
     out = api.delete_dashboard_endpoint(555, user=ADMIN)
 
     assert out == {"success": True}
-    dels = [p for sql, p in fake_db.log
+    dels = [p for sql, p in fake_conn.log
             if sql.startswith("DELETE FROM adh_dashboard_group_items") and p == (555,)]
     assert dels   # 按 dashboard_id 清组内引用
+
+
+def test_delete_dashboard_service_clears_members_grants_and_payload(fake_conn, payload_invalidations):
+    """服务层一次清完：图表、角色可见授权、组合成员，并让浏览端载荷回源（人/AI 同一链）。
+
+    `delete_dashboard` 是 DashboardService 的方法（不是模块函数），取模块里的单例实例。
+    """
+    assert svc.dashboard_service.delete_dashboard(555, 7) is True
+
+    cleared = {sql.split()[2] for sql, _ in fake_conn.log if sql.startswith("DELETE FROM")}
+    assert {"adh_charts", "adh_role_dashboard_access", "adh_dashboard_group_items", "adh_dashboards"} <= cleared
+    assert fake_conn.committed and payload_invalidations
 
 
 def test_groups_endpoint_returns_arrangement_order(fake_db):

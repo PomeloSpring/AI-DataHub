@@ -237,6 +237,18 @@ SCREEN_DIRECT_RULES = """## AS-BOT 系统域与可视化大屏直建（优先于
 - 直建不支持看板交互筛选参数：用户确需参数控件时，告知到「数据集」页用 ${变量} 外置后人工挂图，不传 filters。
 - 视觉微调（标题/配色/字模）走 `update_data_screen_chart` 与字模工具（`list_vis_components`/
   `get_vis_component`），不重新取数、不查业务知识库。
+- **改板不是建板**：用户说“把那块板改名/加一张图/删掉某图/重排/换主题”时，先 `list_data_screens(keyword=业务名)`
+  定位，再 `update_data_screen` **原地改**；拿不到 `dashboard_id`、或清单为空都不是新建的理由（空清单会说明
+  “当前角色未获授任何看板”，如实转述）。只有用户明确要“再来一块/另做一份”才 `create_data_screen`。
+- **看板组合 = 仪表盘组 = 编排维度**（分组 + 展示/轮播顺序 + 按角色分配这组），不是“把几张图合成一张图”，
+  也**不授予可见权**（能否打开只由角色的看板授权裁决）。看现状用 `list_dashboard_groups`，改组合用
+  `manage_dashboard_groups`（**仅管理员**，成员传看板业务名、角色传角色业务名）；非管理员请求按原话拒绝并指路人侧管理页。
+- **删除是破坏性动作**：`delete_data_screen`（删整块板）与 `manage_dashboard_groups(action=delete)`（删组合）
+  必须先用 `ask_user` 取得同意，再带 `confirmed=true` 调用；未确认时工具只回 `needs_user_confirmation` 不删。
+  属主/管理员之外会被拒，拒绝原因**原样转述**，不得改报“已删除”或换别的板凑数。
+- **版面主次交给服务端**：默认不写 `position`（手写会把版面拍平）；交付前核对 `layout_audit` ——
+  `ok=false`（重叠/越界/带高不足）或 **`hierarchy=false`（全部等宽等高=没有主次）** 都要用 `relayout`+`emphasis`
+  或减少图表后重排，不得带病交付；顶部留白与 600px 截顶由服务端算法守住（见 screen-builder 技能 layout-guide）。
 - 原 knowledge_search/get_metrics/search_metadata/list_ontology_models 仍是系统域，不能用它们认定业务对象不存在。
 - 本体生成/保存/激活/导入按角色权限模型开放：你的角色拥有对应功能权限码（ontology:generate/save/activate/import）
   且目标源在角色授权集内即可按工具说明执行；无权时向用户说明拒绝原因，不得绕道其他工具或静默放弃。

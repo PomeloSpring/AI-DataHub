@@ -404,11 +404,11 @@ class TestScopedMetadataViewsByToolAuth:
                             lambda sql, params=None, fetchone=False: [])
         ctx = self._ctx(system=True)
         ctx.datasource_id = 0
-        out = sm.execute("get_metrics", {}, ctx)
+        out = sm.execute("get_metrics", {"keyword": "订单"}, ctx)
         assert out["total"] == 0
         assert out.get("incomplete_scope") is True
         assert "目录为空≠对象不存在" in out.get("note", "")
-        out2 = sm.execute("get_metrics", {}, self._ctx(system=True))  # 已选源则完整、不标注
+        out2 = sm.execute("get_metrics", {"keyword": "订单"}, self._ctx(system=True))  # 已选源则完整、不标注
         assert "incomplete_scope" not in out2
 
     def test_system_scope_dict_condition_unified(self, monkeypatch):
@@ -418,7 +418,7 @@ class TestScopedMetadataViewsByToolAuth:
             calls = []
             monkeypatch.setattr(sm, "execute_query",
                                 lambda sql, params=None, fetchone=False: calls.append((sql, params)) or [])
-            sm.execute("get_metrics", {}, self._ctx(system=system))
+            sm.execute("get_metrics", {"keyword": "订单"}, self._ctx(system=system))
             dict_calls = [c for c in calls if "adh_metrics" in c[0] or "adh_dimensions" in c[0]]
             assert dict_calls and all("datasource_id = %s OR datasource_id = 0" in c[0]
                                       for c in dict_calls)

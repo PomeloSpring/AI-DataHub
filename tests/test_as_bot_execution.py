@@ -5,6 +5,7 @@
 客户端伪造无效，decided_by 落入审计列。
 """
 import asyncio
+import importlib
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -455,3 +456,74 @@ class TestUnattendedResourceGuard:
                                 {"intent": {"object": "订单"}})
         with pytest.raises(ResourceScopeError, match="指定站点"):
             validate_tool_resources(run.ctx, "mcp__datahub_query__execute_sql", {"sql": "SELECT 1"})
+
+
+# ── 看板板级写工具 fail-closed（无 dashboard:manage 即拒，不改库） ─────────
+
+def _forbidden(name):
+    def _f(*a, **k):
+        raise AssertionError(f"{name} 不该在权限把关前被调用")
+    return _f
+
+
+class TestScreenBoardWriteToolsFailClosed:
+    """改板 / 删板 / 改组合一律按权限码把关（as-bot-system-waker §3、§5）。
+
+    这三个工具是本轮新增的写动作：没有 `dashboard:manage`(ai_access=write) 就必须**在动任何库之前**
+    被拒，且原因可解释；read/none/空配置三档都算无权。
+
+    目标看板用 `dashboard_id` 直传：按**业务名**定位发生在 `resource_guard.validate_tool_resources`
+    （`_resolve_dashboard_target` 把 name 解析成 id 后再交给 handler，歧义/未命中在那里回候选清单）。
+    """
+
+    _CASES = [
+        ("update_data_screen", {"dashboard_id": 9001, "new_name": "经营看板"}),
+        ("delete_data_screen", {"dashboard_id": 9001, "confirmed": True}),
+        ("manage_dashboard_groups", {"action": "create", "name": "经营"}),
+    ]
+
+    @pytest.fixture
+    def screen_ctx(self, monkeypatch):
+        import backend.core.role_service as rs
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+        from backend.modules.mind.execution.sdk_tools import screen_tools
+
+        monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda uid, ws: {})
+        # 无权时不该走到任何库操作：真走到这里就是没把关
+        for name in ("create_group", "update_group", "delete_group", "set_group_items",
+                     "set_group_roles", "reorder_groups"):
+            monkeypatch.setattr(
+                importlib.import_module("backend.modules.viz.services.dashboard_service"),
+                name, _forbidden(name))
+        token = ExecutionContextVar.set(ExecutionContext(
+            user_id=7, username="analyst01", user_role="analyst",
+            workspace_id=1, datasource_id=101, extra={}))
+        try:
+            yield screen_tools
+        finally:
+            ExecutionContextVar.reset(token)
+
+    @pytest.mark.parametrize("tool,args", _CASES)
+    def test_missing_perm_code_rejected_before_any_write(self, screen_ctx, tool, args):
+        res = asyncio.run(getattr(screen_ctx, tool)(args))
+        assert res.get("isError"), res
+        assert "dashboard:manage" in res["content"][0]["text"]
+
+    @pytest.mark.parametrize("level", ["read", "none"])
+    def test_read_or_none_level_cannot_write(self, screen_ctx, monkeypatch, level):
+        import backend.core.role_service as rs
+        monkeypatch.setattr(rs.role_service, "get_user_role_ai_perms", lambda uid, ws: {
+            "dashboard:manage": {"ai_access": level, "ai_note": ""}})
+        res = asyncio.run(screen_ctx.update_data_screen({"dashboard_id": 9001, "new_name": "经营看板"}))
+        assert res.get("isError")
+        text = res["content"][0]["text"]
+        assert "写操作" in text and "创建/修改数据大屏" in text   # 拒绝原因可解释（动作 + 当前级别）
+
+    def test_no_trusted_identity_rejected(self, screen_ctx):
+        from backend.modules.mind.execution.models import ExecutionContext
+        from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
+        ExecutionContextVar.set(ExecutionContext(user_id=0, workspace_id=1, extra={}))
+        res = asyncio.run(screen_ctx.delete_data_screen({"dashboard_id": 9001, "confirmed": True}))
+        assert res.get("isError")
+        assert "身份" in res["content"][0]["text"]

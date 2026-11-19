@@ -6,7 +6,7 @@
  * 每个中间步骤各交付了一个屏。预览是**整块看板**的产物，属于任务终点，不属于某次工具调用。
  *
  * 目标看板从该回合的工具调用里反查（取**最后一个**成功结果）：
- * `create_data_screen` / `update_data_screen_chart` 的返回体带
+ * 建屏/改图/改板工具（见 SCREEN_TOOL_RE）的返回体带
  * `actions:[{type:'open_screen',dashboard_id,url}]`，历史结果可能只有 dashboard_id/url。
  */
 
@@ -23,8 +23,8 @@ export interface ScreenPreviewTarget {
   name?: string;
 }
 
-/** 建屏/改图工具名（mcp__datahub_screen__xxx）。 */
-const SCREEN_TOOL_RE = /datahub_screen__(create_data_screen|update_data_screen_chart)$/;
+/** 建屏/改图/改板工具名（mcp__datahub_screen__xxx）；删板不出预览入口，不在此列。 */
+const SCREEN_TOOL_RE = /datahub_screen__(create_data_screen|update_data_screen_chart|update_data_screen)$/;
 
 function parseScreenTarget(tc: ToolCall): ScreenPreviewTarget | null {
   if (!SCREEN_TOOL_RE.test(tc.tool || '') || tc.error) return null;

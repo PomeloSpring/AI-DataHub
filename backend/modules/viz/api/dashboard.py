@@ -276,25 +276,16 @@ class GroupRolesRequest(BaseModel):
 
 
 def _group_payload(g: dict) -> dict:
-    from backend.common.db import execute_query
-    # 只回仍存在的看板：已删除看板不得进管理端组合清单/穿梭框（否则出现"看板已删除"悬空项）。
-    # 按 adh_dashboards 全局存在性过滤（不按工作空间），以免把“存在但不在当前工作空间清单”的看板误判为已删除。
-    g["dashboard_ids"] = [r["dashboard_id"] for r in (execute_query(
-        "SELECT gi.dashboard_id FROM adh_dashboard_group_items gi "
-        "JOIN adh_dashboards d ON d.id = gi.dashboard_id "
-        "WHERE gi.group_id=%s ORDER BY gi.sort, gi.id",
-        (g["id"],)) or [])]
-    g["role_ids"] = [r["role_id"] for r in (execute_query(
-        "SELECT role_id FROM adh_role_dashboard_groups WHERE group_id=%s", (g["id"],)) or [])]
-    return g
+    """组行 + 组内看板 id/角色 id（谓词在服务层 `group_members`，AI 工具与端点同一份）。"""
+    from backend.modules.viz.services.dashboard_service import group_members
+    return {**g, **group_members(g["id"])}
 
 
 @router.get("/groups")
 def list_groups_endpoint(user: dict = Depends(get_current_user)):
     """全部仪表盘组(管理端组合管理用; 含组内看板与绑定角色)."""
-    from backend.common.db import execute_query
-    groups = execute_query("SELECT * FROM adh_dashboard_groups ORDER BY sort, id") or []
-    return [_group_payload(g) for g in groups]
+    from backend.modules.viz.services.dashboard_service import list_group_rows
+    return [_group_payload(g) for g in list_group_rows()]
 
 
 @router.get("/groups/visible")
@@ -311,40 +302,20 @@ def list_visible_groups_endpoint(user: dict = Depends(get_current_user)):
 
 @router.post("/groups")
 def create_group_endpoint(req: GroupCreate, admin: dict = Depends(require_admin)):
-    """新建仪表盘组(仅 admin)."""
-    with DBConnection() as conn:
-        with conn.cursor() as cur:
-            # 新组合默认排末尾(COALESCE(MAX(sort),0)+10): 固定写 0 会把刚建好的顺序顶掉一位，
-            # 管理员“新建完再排”会变成“新建自动插队到第一”。显式传 sort 时尊重传值。
-            if req.sort is None:
-                cur.execute("SELECT COALESCE(MAX(sort), 0) AS max_sort FROM adh_dashboard_groups")
-                sort = int((cur.fetchone() or {}).get("max_sort") or 0) + 10
-            else:
-                sort = int(req.sort)
-            cur.execute(
-                "INSERT INTO adh_dashboard_groups (name, description, sort) VALUES (%s, %s, %s)",
-                (req.name, req.description or "", sort))
-            group_id = cur.lastrowid
-    _invalidate_dashboard_payload()
+    """新建仪表盘组(仅 admin). SQL 谓词在服务层，AI 工具 `manage_dashboard_groups` 调同一份。"""
+    from backend.modules.viz.services.dashboard_service import create_group
+    group_id = create_group(req.name, req.description or "", req.sort)
     return {"success": True, "id": group_id}
 
 
 @router.put("/groups/{group_id}")
 def update_group_endpoint(group_id: int, req: GroupCreate, admin: dict = Depends(require_admin)):
     """更新仪表盘组(仅 admin)."""
-    from backend.common.db import execute_write, execute_query
-    # 存在性必须用 SELECT 判（与 /items、/roles 同口径）：拿 UPDATE 的影响行数当存在性
-    # 会把“名称/说明/排序没改动的重复保存”当成 0 行受影响 → 误报「仪表盘组不存在」404
-    # （MySQL 对值未变的行不计数，历史缺陷：用户在编辑弹窗里原样再点保存必报错）。
-    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+    from backend.modules.viz.services.dashboard_service import DashboardGroupNotFound, update_group
+    try:
+        update_group(group_id, req.name, req.description or "", req.sort)
+    except DashboardGroupNotFound:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
-    # 未传 sort 时保留原值（只改名称/说明不得把组合顺序抬回 0 = 首位）
-    current = execute_query("SELECT sort FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True) or {}
-    sort = int(req.sort) if req.sort is not None else int(current.get("sort") or 0)
-    execute_write(
-        "UPDATE adh_dashboard_groups SET name=%s, description=%s, sort=%s WHERE id=%s",
-        (req.name, req.description or "", sort, group_id))
-    _invalidate_dashboard_payload()
     return {"success": True}
 
 
@@ -367,13 +338,11 @@ def reorder_groups_endpoint(req: GroupReorderRequest, admin: dict = Depends(requ
 @router.delete("/groups/{group_id}")
 def delete_group_endpoint(group_id: int, admin: dict = Depends(require_admin)):
     """删除仪表盘组及其成员/角色绑定(仅 admin, 不删看板本身)."""
-    from backend.common.db import execute_write
-    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (group_id,))
-    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (group_id,))
-    n = execute_write("DELETE FROM adh_dashboard_groups WHERE id=%s", (group_id,))
-    if not n:
+    from backend.modules.viz.services.dashboard_service import DashboardGroupNotFound, delete_group
+    try:
+        delete_group(group_id)
+    except DashboardGroupNotFound:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
-    _invalidate_dashboard_payload()
     return {"success": True}
 
 
@@ -381,41 +350,27 @@ def delete_group_endpoint(group_id: int, admin: dict = Depends(require_admin)):
 def set_group_items_endpoint(group_id: int, req: GroupItemsRequest,
                              admin: dict = Depends(require_admin)):
     """全量替换组内看板(仅 admin)."""
-    from backend.common.db import execute_write, execute_query
-    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+    from backend.modules.viz.services.dashboard_service import (
+        DashboardGroupNotFound, set_group_items)
+    try:
+        result = set_group_items(group_id, req.dashboard_ids)
+    except DashboardGroupNotFound:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
-    # 只登记仍存在的看板：不存在的 id（已删除）不得写回组内，否则组合重新长出"看板已删除"悬空成员。
-    ids = [int(x) for x in dict.fromkeys(req.dashboard_ids or [])]
-    existing: set[int] = set()
-    if ids:
-        marks = ",".join(["%s"] * len(ids))
-        existing = {int(r["id"]) for r in (execute_query(
-            f"SELECT id FROM adh_dashboards WHERE id IN ({marks})", ids) or [])}
-    dropped = [x for x in ids if x not in existing]
-    execute_write("DELETE FROM adh_dashboard_group_items WHERE group_id=%s", (group_id,))
-    for i, did in enumerate([x for x in ids if x in existing]):
-        execute_write(
-            "INSERT IGNORE INTO adh_dashboard_group_items (group_id, dashboard_id, sort) VALUES (%s,%s,%s)",
-            (group_id, int(did), i))
-    _invalidate_dashboard_payload()
     # dropped 显式回传（no-silent-degradation）：正常流程读口已过滤，非空说明有陈旧/越权引用被拒登记
-    return {"success": True, "count": len(existing), "dropped": dropped}
+    return {"success": True, "count": result["count"], "dropped": result["dropped"]}
 
 
 @router.put("/groups/{group_id}/roles")
 def set_group_roles_endpoint(group_id: int, req: GroupRolesRequest,
                              admin: dict = Depends(require_admin)):
     """全量替换组的角色绑定(仅 admin). 组按角色分配, 不授予看板可见性."""
-    from backend.common.db import execute_write, execute_query
-    if not execute_query("SELECT id FROM adh_dashboard_groups WHERE id=%s", (group_id,), fetchone=True):
+    from backend.modules.viz.services.dashboard_service import (
+        DashboardGroupNotFound, set_group_roles)
+    try:
+        count = set_group_roles(group_id, req.role_ids)
+    except DashboardGroupNotFound:
         raise HTTPException(status_code=404, detail="仪表盘组不存在")
-    execute_write("DELETE FROM adh_role_dashboard_groups WHERE group_id=%s", (group_id,))
-    for rid in set(req.role_ids or []):
-        execute_write(
-            "INSERT INTO adh_role_dashboard_groups (role_id, group_id) VALUES (%s,%s)",
-            (int(rid), group_id))
-    _invalidate_dashboard_payload()
-    return {"success": True, "count": len(set(req.role_ids or []))}
+    return {"success": True, "count": count}
 
 
 @router.get("/{dashboard_id}")
@@ -470,11 +425,7 @@ def delete_dashboard_endpoint(
         deleted = dashboard_service.delete_dashboard(dashboard_id, user["user_id"])
         if not deleted:
             raise HTTPException(status_code=404, detail="Dashboard not found")
-        # 联动清理看板组合成员：adh_dashboard_group_items 对 adh_dashboards 无外键级联，
-        # 删板后必须显式删掉引用行，否则管理端「看板组合」出现"看板已删除"悬空项（幂等 DELETE）。
-        from backend.common.db import execute_write
-        execute_write("DELETE FROM adh_dashboard_group_items WHERE dashboard_id = %s", (dashboard_id,))
-        _invalidate_dashboard_payload()
+        # 组合成员清理与载荷失效都在服务层 delete_dashboard 里做（人/AI 同一条链，不在此补第二刀）
         return {"success": True}
     except HTTPException:
         raise

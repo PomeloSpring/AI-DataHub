@@ -183,6 +183,9 @@ _TOOL_LABELS = {
     "add_ontology_objects": "新增本体对象*", "update_ontology_object": "修改本体对象*",
     "publish_ontology_model": "发布本体草案*",
     "create_data_screen": "创建大屏*", "get_data_screen": "查看大屏", "update_data_screen_chart": "更新图表*",
+    # 板级入口：按名找板 → 原地改板（改名/加图/删图/重排）→ 确认后删板（不可逆）
+    "list_data_screens": "看板清单", "update_data_screen": "修改看板*", "delete_data_screen": "删除看板*",
+    "list_dashboard_groups": "看板组合", "manage_dashboard_groups": "管理看板组合*",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",
     "system_usage": "用量统计", "system_overview": "系统概览",
     "asset_list": "资产清单", "asset_get": "读取资产", "asset_archive": "归档收藏*",

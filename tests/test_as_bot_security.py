@@ -491,7 +491,7 @@ def test_scoped_get_metrics_business_includes_global_dicts_gated_by_model(monkey
 
     monkeypatch.setattr(sm, "execute_query", fake_exec)
     ctx = SimpleNamespace(datasource_id=5, extra={})  # 业务 AS-BOT, 业务域
-    res = sm.execute("get_metrics", {"keyword": ""}, ctx)
+    res = sm.execute("get_metrics", {"keyword": "案例"}, ctx)  # keyword 必填（空关键词已被显式拒）
     assert res["total"] == 1 and res["objects"][0]["object"] == "case"
     dict_sqls = [s for s in sqls if ("adh_metrics" in s or "adh_dimensions" in s)]
     assert dict_sqls and all("datasource_id = 0" in s for s in dict_sqls)   # 含全局字典
@@ -517,18 +517,74 @@ def test_broken_as_bot_is_visible_without_hiding_valid_candidates(monkeypatch):
 
 
 def test_screen_guard_rejects_other_workspace_and_nonowner_write(monkeypatch):
+    """看板类工具的定位 + 内容级把关：工作空间硬边界，写动作只认属主/管理员。
+
+    写链与人侧 REST 共用 `check_dashboard_editable`（唯一裁决点），角色授予的可见权
+    不含改写/删除；`is_public` 也不含写（历史缺陷：公开板谁都能改）。
+    """
+    import importlib
     from backend.modules.mind.execution import resource_guard
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
     policy = policies.compile_policy({"as_bot_key": "test"})
     ctx = ExecutionContext(user_id=1, user_role="admin", workspace_id=3, datasource_id=7,
                            extra={"secure_runtime": SimpleNamespace(policy=policy)})
     monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: None)
-    dashboard = {"owner_id": 2, "workspace_id": 4, "is_public": True}
-    monkeypatch.setattr(resource_guard, "execute_query", lambda *a, **kw: dashboard)
+    board = {"id": 8, "name": "S", "owner_id": 2, "workspace_id": 4, "is_public": 1}
+
+    def fake_query(sql, params=None, fetchone=False):
+        if "FROM adh_charts" in sql:
+            return []
+        return dict(board) if fetchone else [dict(board)]
+
+    monkeypatch.setattr(resource_guard, "execute_query", fake_query)
     with pytest.raises(PermissionError, match="不属于当前"):
         resource_guard.validate_tool_resources(ctx, "mcp__datahub_screen__get_data_screen", {"dashboard_id": 8})
-    dashboard["workspace_id"] = 3
-    with pytest.raises(PermissionError, match="修改"):
-        resource_guard.validate_tool_resources(ctx, "mcp__datahub_screen__update_data_screen_chart", {"dashboard_id": 8})
+    board["workspace_id"] = 3
+    editable: list = [False]
+    calls: list = []
+    monkeypatch.setattr(dash_mod, "check_dashboard_editable",
+                        lambda *a, **k: (calls.append(a), editable[0])[1])
+    with pytest.raises(PermissionError, match="修改或删除"):
+        resource_guard.validate_tool_resources(
+            ctx, "mcp__datahub_screen__update_data_screen_chart", {"dashboard_id": 8})
+    with pytest.raises(PermissionError, match="修改或删除"):
+        resource_guard.validate_tool_resources(
+            ctx, "mcp__datahub_screen__delete_data_screen", {"dashboard_id": 8, "confirmed": True})
+    editable[0] = True
+    # 业务名定位：handler 收到的是服务端解析出的 dashboard_id（模型不猜 id，也不因改名丢板）
+    out = resource_guard.validate_tool_resources(
+        ctx, "mcp__datahub_screen__update_data_screen", {"name": "S", "new_name": "S2"})
+    assert out["dashboard_id"] == 8 and out["new_name"] == "S2"
+
+
+def test_screen_board_tools_pre_resolve_add_chart_sites(monkeypatch):
+    """改板新增图同样逐图预演解析源业务名：越权即拒、授权集内放行，会话未选源不拦。"""
+    import importlib
+    from backend.modules.mind.execution import resource_guard
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+    ctx = _screen_ctx()                      # 多源且会话无单一生效源（datasource_id=0）
+    monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: {7, 8})
+    monkeypatch.setattr(dash_mod, "check_dashboard_editable", lambda *a, **k: True)
+    seen: list = []
+    chart_scope: list = []
+    monkeypatch.setattr(resource_guard, "_resolve_site_arg",
+                        lambda ref, avail, model_id=0: seen.append(ref) or 7)
+
+    def fake_query(sql, params=None, fetchone=False):
+        if "FROM adh_charts" in sql:
+            chart_scope.append(params)
+            return []
+        row = {"id": 8, "name": "S", "owner_id": 1, "workspace_id": 3, "is_public": 0}
+        return row if fetchone else [dict(row)]
+
+    monkeypatch.setattr(resource_guard, "execute_query", fake_query)
+    out = resource_guard.validate_tool_resources(
+        ctx, "mcp__datahub_screen__update_data_screen",
+        {"name": "S", "add_charts": [{"title": "t", "chart_type": "bar",
+                                      "site": "prd-cn", "query": {"object": "case"}}]})
+    assert out["dashboard_id"] == 8 and seen == ["prd-cn"]
+    # 业务名解析出的看板 id 必须喂给板内图表范围校验（否则闸门查的是另一块板）
+    assert chart_scope == [(8,)]
 
 
 def _screen_ctx(datasource_id=0, site_code=""):
@@ -578,25 +634,37 @@ def test_screen_build_fails_closed_on_unauthorized_widget_site(monkeypatch):
 
 def test_screen_visual_update_does_not_require_session_source(monkeypatch):
     """只改标题/样式（不重落数据集）不因“会话未选源”被拒；看板归属仍照样把关。"""
+    import importlib
     from backend.modules.mind.execution import resource_guard
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
     ctx = _screen_ctx()
     monkeypatch.setattr(resource_guard, "bind_resources", lambda *a: {7, 8})
 
+    state = {"owner_id": 1}
+
     def fake_query(sql, params=None, fetchone=False):
+        if "FROM adh_charts" in sql:
+            return []
         if "FROM adh_dashboards" in sql:
-            return {"owner_id": 1, "workspace_id": 3, "is_public": 0}
+            return {"id": 9, "name": "S", "owner_id": state["owner_id"], "workspace_id": 3, "is_public": 0}
         return []
 
     monkeypatch.setattr(resource_guard, "execute_query", fake_query)
+    # 写权按「属主或管理员」判定：桩掉服务层以避开真库，用例只验闸门接线与归属语义
+    writes: list = []
+    monkeypatch.setattr(dash_mod, "check_dashboard_editable",
+                        lambda did, uid, role: writes.append((did, uid, role))
+                        or state["owner_id"] == int(uid or 0))
     out = resource_guard.validate_tool_resources(
         ctx, "mcp__datahub_screen__update_data_screen_chart",
         {"dashboard_id": 9, "chart_id": 5, "title": "新标题"})
     assert out["title"] == "新标题"
+    # 裁决入参必须是服务端解析出的看板 id + 可信身份（不从请求体取 user_id/role）
+    assert writes == [(9, 1, "analyst")]
 
     # 越权改他人看板仍拒绝（归属判定不得因放行取数源而失效）
-    monkeypatch.setattr(resource_guard, "execute_query",
-                        lambda *a, **k: {"owner_id": 2, "workspace_id": 3, "is_public": 1})
-    with pytest.raises(PermissionError, match="修改"):
+    state["owner_id"] = 2
+    with pytest.raises(PermissionError, match="修改或删除"):
         resource_guard.validate_tool_resources(
             ctx, "mcp__datahub_screen__update_data_screen_chart",
             {"dashboard_id": 9, "chart_id": 5, "title": "新标题"})
@@ -1232,7 +1300,7 @@ def test_scoped_metadata_aggregate_global_not_blocked_and_includes_authorized_si
     monkeypatch.setattr(scoped_metadata, "execute_query", query)
     # 聚合态：datasource_id=0、site=global，授权集含两个具体站 7/8
     ctx = ExecutionContext(datasource_id=0, extra={"site_code": "global", "available_datasource_ids": [7, 8]})
-    result = scoped_metadata.execute("get_metrics", {}, ctx)
+    result = scoped_metadata.execute("get_metrics", {"keyword": "事件"}, ctx)  # keyword 必填
     # 不再抛 PermissionError；模型可见域改为 Python 按触达源∩授权集(7/8)判定，SQL 不再带 datasource IN 参
     model_sql, model_params = next(c for c in calls if "adh_ontology_models" in c[0])
     assert model_params == () and "kind = 'source'" not in model_sql
@@ -1249,7 +1317,7 @@ def test_scoped_metadata_multi_source_unselected_still_fail_closed(monkeypatch):
     monkeypatch.setattr(site_service, "is_aggregate_site", lambda ref: False)
     ctx = ExecutionContext(datasource_id=0, extra={"site_code": "", "available_datasource_ids": [7, 8]})
     with pytest.raises(PermissionError, match="数据源"):
-        scoped_metadata.execute("get_metrics", {}, ctx)
+        scoped_metadata.execute("get_metrics", {"keyword": "事件"}, ctx)
 
 
 def test_catalog_strip_physical_ids_keeps_modeling_columns():

@@ -63,7 +63,14 @@ def box(monkeypatch):
 
     box = {"charts": [], "datasets": [], "writes": [], "perm_calls": [],
            "dataset_queries": [], "validated_sources": [], "site_map": {}, "roles": (1,),
-           "empty_titles": ("空图",), "reuse": None, "deleted": []}
+           "empty_titles": ("空图",), "reuse": None, "deleted": [],
+           # 板级工具（list/update/delete_data_screen）的桩数据
+           "board": None, "dash_update": [], "chart_deleted": [], "layout_updates": [],
+           "visible": (9001,), "own_boards": [], "list_rows": [],
+           "groups": {"groups": [], "items": {}},
+           # 看板组合工具：组/成员/角色按业务名解析的数据 + 服务层写入记录
+           "group_rows": [], "role_rows": [], "board_rows": [], "visible_groups": [],
+           "is_admin": False, "group_writes": [], "group_missing": False}
     names: dict = {}
 
     monkeypatch.setattr(auth_mod, "get_user_by_id",
@@ -88,6 +95,18 @@ def box(monkeypatch):
             return None
         if "FROM adh_datasets" in sql:
             return []                    # 复用探测：默认无既有数据集
+        if "FROM adh_dashboards WHERE workspace_id" in sql:
+            return list(box["own_boards"])       # 本人属主看板（list_data_screens 并集）
+        if "FROM adh_dashboards d" in sql:
+            return list(box["list_rows"])        # 看板清单主查询
+        if "FROM adh_dashboard_groups" in sql:
+            return list(box["group_rows"])       # 组合按业务名定位
+        if "FROM adh_dashboards WHERE name IN" in sql:
+            return list(box["board_rows"])       # 组成员：看板业务名 → id
+        if "FROM adh_dashboards ORDER BY updated_at" in sql:
+            return list(box["board_rows"])       # 未命中时回候选清单
+        if "FROM adh_roles WHERE name IN" in sql or "FROM adh_roles ORDER BY name" in sql:
+            return list(box["role_rows"])        # 组角色分配：角色业务名 → id
         return None
 
     monkeypatch.setattr(db_mod, "execute_query", fake_query)
@@ -119,8 +138,14 @@ def box(monkeypatch):
             return True
 
         def get_dashboard(self, dashboard_id, user_id, enforce_visibility=False):
+            if box["board"] is not None:
+                return dict(box["board"])
             return {"id": dashboard_id, "name": "S", "charts": [
                 {"id": 5, "name": "旧图", "chart_type": "bar", "config": {"legend": True}}]}
+
+        def update_dashboard(self, dashboard_id, payload, user_id):
+            box["dash_update"].append((int(dashboard_id), dict(payload), int(user_id)))
+            return True
 
     class _CS:
         def create_chart(self, dashboard_id, payload, identity=None):
@@ -133,10 +158,39 @@ def box(monkeypatch):
             box["update_identity"] = identity
             return True
 
+        def delete_chart(self, dashboard_id, chart_id):
+            box["chart_deleted"].append(int(chart_id))
+            return True
+
+        def update_layout(self, dashboard_id, updates):
+            box["layout_updates"].append((int(dashboard_id), [dict(u) for u in updates]))
+            return True
+
     monkeypatch.setattr(dash_mod, "DashboardService", _DS)
     monkeypatch.setattr(dash_mod, "ChartService", _CS)
     monkeypatch.setattr(dash_mod, "_invalidate_dashboard_payload", lambda *a, **k: None)
     monkeypatch.setattr(dash_mod, "_invalidate_dashboard_cache", lambda *a, **k: None)
+    # 看板可见域/组合结构：清单范围由角色授权裁决，用例只验工具层的呈现与口径文案
+    monkeypatch.setattr(dash_mod, "visible_dashboard_ids",
+                        lambda uid, role, wid=0: box["visible"])
+    monkeypatch.setattr(dash_mod, "_groups_structure", lambda: box["groups"])
+
+    def _group_write(name, ret):
+        def _f(*a, **k):
+            box["group_writes"].append((name, list(a), k))
+            return ret(*a, **k) if callable(ret) else ret
+        return _f
+
+    monkeypatch.setattr(dash_mod, "create_group", _group_write("create_group", 77))
+    monkeypatch.setattr(dash_mod, "update_group", _group_write("update_group", None))
+    monkeypatch.setattr(dash_mod, "delete_group", _group_write("delete_group", None))
+    monkeypatch.setattr(dash_mod, "set_group_items", _group_write(
+        "set_group_items", lambda gid, ids: {"count": len(ids), "dropped": []}))
+    monkeypatch.setattr(dash_mod, "set_group_roles", _group_write(
+        "set_group_roles", lambda gid, rids: len(rids)))
+    monkeypatch.setattr(dash_mod, "reorder_groups", _group_write("reorder_groups", True))
+    monkeypatch.setattr(dash_mod, "build_visible_groups", lambda *a, **k: box["visible_groups"])
+    monkeypatch.setattr(dash_mod, "_is_admin_user", lambda uid, role="": box["is_admin"])
 
     token = ExecutionContextVar.set(_ctx())
     try:
@@ -463,6 +517,344 @@ def test_update_screen_chart_no_longer_redirects_to_design(monkeypatch, box):
     assert box["update"]["source_type"] == "dataset"
 
 
+# ── 板级工具：先找板再原地改板（问题「每次修改都新建」的回归网）───────
+
+_BOARD = {
+    "id": 9001, "name": "经营大屏", "description": "旧说明",
+    "filters": json.dumps({"design": {"page": {"w": 1920, "h": 1080}},
+                           "theme": {"mode": "dark", "backgroundImage": "/img/bg.png"},
+                           "components": {"card": {"radius": 8}}}),
+    "charts": [
+        {"id": 5, "name": "KPI 营收", "chart_type": "big_number_trend", "config": {},
+         "position": {"x": 0, "y": 32, "w": 384, "h": 148}},
+        {"id": 6, "name": "订单趋势", "chart_type": "line",
+         "config": {"site": "中国站点"},
+         "position": {"x": 0, "y": 192, "w": 960, "h": 400}},
+        {"id": 7, "name": "空图", "chart_type": "bar", "config": {},
+         "position": {"x": 990, "y": 192, "w": 900, "h": 400}},
+    ],
+}
+
+
+def test_list_data_screens_scope_and_editable(box):
+    box["visible"] = (9001,)
+    box["own_boards"] = [{"id": 9002}]
+    box["list_rows"] = [
+        {"id": 9001, "name": "经营大屏", "description": "", "status": "enabled",
+         "updated_at": "2026-11-18 10:00:00", "owner_id": 8, "chart_count": 3},
+        {"id": 9002, "name": "我的板", "description": "", "status": "designing",
+         "updated_at": "2026-11-19 09:00:00", "owner_id": 7, "chart_count": 0},
+    ]
+    box["groups"] = {"groups": [{"id": 3, "name": "经营"}], "items": {"3": [9001]}}
+    payload = json.loads(_text_of(asyncio.run(screen_tools.list_data_screens({"keyword": "经营"}))))
+    assert payload["count"] == 2
+    by_id = {d["dashboard_id"]: d for d in payload["dashboards"]}
+    assert by_id[9001]["editable"] is False and by_id[9002]["editable"] is True
+    assert by_id[9001]["groups"] == ["经营"] and by_id[9001]["chart_count"] == 3
+    assert by_id[9001]["url"] == "/screen/9001"
+    assert "update_data_screen" in payload["note"]
+
+
+def test_list_data_screens_admin_sees_all_without_id_filter(box):
+    box["visible"] = None                      # admin：None = 全可见
+    box["list_rows"] = [{"id": 9001, "name": "S", "status": "enabled",
+                         "updated_at": "", "owner_id": 8, "chart_count": 1}]
+    payload = json.loads(_text_of(asyncio.run(screen_tools.list_data_screens({}))))
+    assert payload["dashboards"][0]["editable"] is True     # admin 可写，不必是属主
+
+
+def test_list_data_screens_empty_grant_says_why(box):
+    """空授权是 fail-closed 的事实，不是"没有数据"：必须说清来路与出路，不给空清单了事。"""
+    box["visible"] = ()
+    res = asyncio.run(screen_tools.list_data_screens({}))
+    assert not _is_err(res), _text_of(res)
+    payload = json.loads(_text_of(res))
+    assert payload["count"] == 0 and payload["dashboards"] == []
+    assert "未获授任何看板" in payload["note"] and "create_data_screen" in payload["note"]
+
+
+def test_update_data_screen_keeps_human_page_layout_in_filters(box):
+    """改名 + 换主题只覆盖自己的键：人侧页面编排存 filters.design，整份覆盖会抹掉。"""
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "new_name": "经营看板", "description": "新说明",
+         "status": "enabled", "tags": "经营,月度", "theme": "light",
+         "style": {"card": {"shadow": "none"}}}))
+    assert not _is_err(res), _text_of(res)
+    did, payload, uid = box["dash_update"][0]
+    assert (did, uid) == (9001, 7)
+    assert payload["name"] == "经营看板" and payload["status"] == "enabled"
+    assert payload["tags"] == ["经营", "月度"]
+    assert payload["filters"]["design"] == {"page": {"w": 1920, "h": 1080}}   # 人的编排原样
+    assert payload["filters"]["theme"]["mode"] == "light"
+    assert payload["filters"]["theme"]["backgroundImage"] == "/img/bg.png"   # 只改 mode 不丢底图
+    assert payload["filters"]["components"] == {"card": {"radius": 8, "shadow": "none"}}
+    body = json.loads(_text_of(res))
+    assert "未新建资产" in body["message"]
+    assert set(body["changed"]) >= {"name", "description", "status", "tags", "theme", "style"}
+    assert box["perm_calls"] == ["dashboard:manage"]      # 纯板级改不索要建集权限
+
+
+def test_update_data_screen_rejects_bad_status_and_empty_change(box):
+    box["board"] = _BOARD
+    assert _is_err(asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "status": "published"})))
+    err = json.loads(_text_of(asyncio.run(screen_tools.update_data_screen({"dashboard_id": 9001}))))
+    assert "至少给一项" in err["error"]
+
+
+def test_update_data_screen_add_and_remove_in_place(box):
+    """加一张新图 + 删一张空图：存量卡位置不动，新卡追加在底部带，看板 id 不变。"""
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.update_data_screen({
+        "dashboard_id": 9001,
+        "add_charts": [{"title": "区域占比", "chart_type": "pie",
+                        "query": {"object": "订单", "metrics": ["营收"],
+                                  "dimensions": ["区域"]}}],
+        "remove_charts": ["空图"]}))
+    assert not _is_err(res), _text_of(res)
+    body = json.loads(_text_of(res))
+    assert body["dashboard_id"] == 9001 and "dashboard" not in box   # 没有新建看板
+    assert box["chart_deleted"] == [7]
+    assert body["added_charts"] == ["区域占比"] and body["removed_charts"] == ["空图"]
+    assert body["chart_count"] == 3                                  # 2 存量 + 1 新增
+    new_chart = box["charts"][-1]
+    assert new_chart["source_type"] == "dataset" and new_chart["chart_type"] == "pie"
+    pos = new_chart["position"]
+    assert pos["y"] >= 592 and pos["h"] <= 600 and pos["y"] + pos["h"] <= 1080
+    assert body["layout_audit"]["ok"] is True and not body["layout_audit"]["overlaps"]
+    assert box["layout_updates"] == []          # 未要求 relayout → 不挪存量卡
+    assert box["perm_calls"] == ["dashboard:manage", "dataset:manage"]   # 加图要落数据集
+    assert "新增 1 张图" in body["message"] and "删除 1 张图" in body["message"]
+
+
+def test_update_data_screen_rejects_unknown_chart_title_with_inventory(box):
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "remove_charts": ["不存在的图"]}))
+    assert _is_err(res)
+    err = json.loads(_text_of(res))["error"]
+    assert "不存在的图" in err and "订单趋势" in err       # 回清单让模型自我纠正，不猜
+    assert box["chart_deleted"] == [] and box["charts"] == []
+
+
+def test_update_data_screen_rejects_duplicate_title_instead_of_guessing(box):
+    dup = dict(_BOARD, charts=[
+        {"id": 5, "name": "同名图", "chart_type": "bar", "config": {}, "position": {"x": 0, "y": 32, "w": 900, "h": 400}},
+        {"id": 6, "name": "同名图", "chart_type": "bar", "config": {}, "position": {"x": 930, "y": 32, "w": 900, "h": 400}},
+    ])
+    box["board"] = dup
+    res = asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "remove_charts": ["同名图"]}))
+    assert _is_err(res) and "出现多次" in json.loads(_text_of(res))["error"]
+    assert box["chart_deleted"] == []
+
+
+def test_update_data_screen_relayout_rewrites_positions(box):
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "relayout": True, "emphasis": {"hero": "订单趋势"}}))
+    assert not _is_err(res), _text_of(res)
+    body = json.loads(_text_of(res))
+    assert body["relayout"] is True
+    (did, updates), = box["layout_updates"]
+    assert did == 9001 and {u["chart_id"] for u in updates} == {5, 6, 7}
+    areas = {u["position"]["w"] * u["position"]["h"] for u in updates}
+    assert len(areas) > 1                                   # 重排后必须不再是等宽等高
+    assert all(u["position"]["h"] <= 600 and u["position"]["y"] >= 32 for u in updates)
+    assert body["layout_audit"]["ok"] is True and body["layout_audit"]["hierarchy"] is True
+    assert "整板按主次配方重排" in body["message"]
+
+
+def test_update_data_screen_add_chart_fails_before_any_write(box):
+    """预检不过一笔不写：新增图意图非法时，存量图既不删也不排。"""
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.update_data_screen({
+        "dashboard_id": 9001, "remove_charts": ["空图"],
+        "add_charts": [{"title": "坏图", "chart_type": "bar", "sql": "SELECT 1"}]}))
+    assert _is_err(res)
+    assert box["charts"] == [] and box["chart_deleted"] == [] and box["dash_update"] == []
+
+
+def test_update_data_screen_reports_partial_failure_without_masking(box, monkeypatch):
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+
+    class _FailingDS(dash_mod.DashboardService):
+        def update_dashboard(self, dashboard_id, payload, user_id):
+            raise RuntimeError("db down")
+
+    box["board"] = _BOARD
+    monkeypatch.setattr(dash_mod, "DashboardService", _FailingDS)
+    body = json.loads(_text_of(asyncio.run(screen_tools.update_data_screen(
+        {"dashboard_id": 9001, "new_name": "改名"}))))
+    assert body["apply_errors"] and "看板元信息未更新" in body["apply_errors"][0]
+    assert "不要当作全部完成" in body["message"]
+
+
+def test_delete_data_screen_needs_user_confirmation_first(box):
+    box["board"] = _BOARD
+    res = asyncio.run(screen_tools.delete_data_screen({"dashboard_id": 9001}))
+    body = json.loads(_text_of(res))
+    assert body["needs_user_confirmation"] is True
+    assert body["name"] == "经营大屏" and body["chart_count"] == 3
+    assert "ask_user" in body["note"] and "confirmed=true" in body["note"]
+    assert box["deleted"] == []                       # 未确认绝不落删除
+    assert box["perm_calls"] == []
+
+
+def test_delete_data_screen_confirmed_deletes_and_reports_name(box):
+    box["board"] = _BOARD
+    body = json.loads(_text_of(asyncio.run(screen_tools.delete_data_screen(
+        {"dashboard_id": 9001, "confirmed": True}))))
+    assert body["deleted"] is True and body["name"] == "经营大屏"
+    assert box["deleted"] == [9001]
+    assert box["perm_calls"] == ["dashboard:manage"]  # 删板不落数据集，不多要 dataset:manage
+
+
+def test_delete_data_screen_missing_board_is_reported(box, monkeypatch):
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+
+    class _GoneDS(dash_mod.DashboardService):
+        def get_dashboard(self, *a, **k):
+            return None
+
+        def delete_dashboard(self, dashboard_id, user_id):
+            return False
+
+    monkeypatch.setattr(dash_mod, "DashboardService", _GoneDS)
+    res = asyncio.run(screen_tools.delete_data_screen({"dashboard_id": 9001, "confirmed": True}))
+    assert _is_err(res) and "不存在" in json.loads(_text_of(res))["error"]
+
+
+# ── 看板组合（仪表盘组）：编排维度，不是「图表的组合」 ────────────────
+
+def test_list_dashboard_groups_is_arrangement_not_grant(box):
+    box["visible_groups"] = [
+        {"id": 3, "name": "经营", "description": "月度经营", "sort": 10,
+         "dashboards": [{"id": 9001, "name": "经营大屏"}, {"id": 9002, "name": "回款看板"}]},
+        {"id": 0, "name": "未分组", "description": "", "sort": 9999,
+         "dashboards": [{"id": 9003, "name": "其他"}]},
+    ]
+    body = json.loads(_text_of(asyncio.run(screen_tools.list_dashboard_groups({}))))
+    assert [g["name"] for g in body["groups"]] == ["经营", "未分组"]
+    assert body["groups"][0]["dashboards"] == ["经营大屏", "回款看板"]   # 顺序=编排顺序
+    assert body["groups"][1]["is_ungrouped"] is True
+    assert "不授予可见权" in body["note"] and "仪表盘组" in body["note"]
+
+
+def test_manage_dashboard_groups_requires_admin(box):
+    box["is_admin"] = False
+    res = asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "create", "name": "经营"}))
+    assert _is_err(res)
+    assert "仅管理员" in json.loads(_text_of(res))["error"]
+    assert box["group_writes"] == []
+    assert box["perm_calls"] == ["dashboard:manage"]      # 权限码照样先过（fail-closed 两道）
+
+
+def test_manage_dashboard_groups_unknown_action_lists_valid(box):
+    box["is_admin"] = True
+    res = asyncio.run(screen_tools.manage_dashboard_groups({"action": "merge_charts"}))
+    err = json.loads(_text_of(res))["error"]
+    assert "create/rename/delete/set_charts/set_roles/reorder" in err
+
+
+def test_manage_dashboard_groups_create_then_set_members_by_business_name(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 77, "name": "经营"}]
+    box["board_rows"] = [{"id": 9001, "name": "经营大屏"}, {"id": 9002, "name": "回款看板"}]
+    created = json.loads(_text_of(asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "create", "name": "经营", "description": "月度"}))))
+    assert created["group_id"] == 77
+    assert box["group_writes"][-1] == ("create_group", ["经营", "月度"], {})
+
+    box["group_writes"].clear()
+    body = json.loads(_text_of(asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "set_charts", "group": "经营", "dashboards": ["经营大屏", "回款看板"]}))))
+    assert body["count"] == 2 and body["dropped"] == []
+    # 成员按业务名解析成 id 后交给服务层（模型全程不接触 id，顺序即编排顺序）
+    assert box["group_writes"] == [("set_group_items", [77, [9001, 9002]], {})]
+
+
+def test_manage_dashboard_groups_rejects_unresolvable_member_without_writing(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 77, "name": "经营"}]
+    box["board_rows"] = [{"id": 9001, "name": "经营大屏"}]
+    res = asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "set_charts", "group": "经营", "dashboards": ["经营大屏", "不存在的板"]}))
+    assert _is_err(res)
+    err = json.loads(_text_of(res))["error"]
+    assert "不存在的板" in err and "经营大屏" in err      # 回候选，不"跳过没匹配到的板"
+    assert box["group_writes"] == []
+
+
+def test_manage_dashboard_groups_rejects_ambiguous_group_name(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 1, "name": "经营分析"}, {"id": 2, "name": "经营看板"}]
+    res = asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "rename", "group": "经营", "name": "经营一组"}))
+    assert _is_err(res) and "命中多个" in json.loads(_text_of(res))["error"]
+    assert box["group_writes"] == []
+
+
+def test_manage_dashboard_groups_reorder_uses_full_order(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 1, "name": "经营"}, {"id": 2, "name": "回款"}]
+    body = json.loads(_text_of(asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "reorder", "order": ["回款", "经营"]}))))
+    assert body["order"] == ["回款", "经营"]
+    assert body["note"]                                  # 组合口径说明每次都带上（防理解漂移）
+
+
+def test_manage_dashboard_groups_roles_by_name(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 77, "name": "经营"}]
+    box["role_rows"] = [{"id": 3, "name": "数据分析师"}]
+    body = json.loads(_text_of(asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "set_roles", "group": "经营", "roles": ["数据分析师"]}))))
+    assert body["roles"] == ["数据分析师"] and body["count"] == 1
+    assert box["group_writes"] == [("set_group_roles", [77, [3]], {})]
+
+    box["group_writes"].clear()
+    res = asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "set_roles", "group": "经营", "roles": ["财务角色"]}))
+    assert _is_err(res) and "数据分析师" in json.loads(_text_of(res))["error"]
+    assert box["group_writes"] == []
+
+
+def test_manage_dashboard_groups_delete_needs_confirmation(box):
+    box["is_admin"] = True
+    box["group_rows"] = [{"id": 77, "name": "经营"}]
+    body = json.loads(_text_of(asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "delete", "group": "经营"}))))
+    assert body["needs_user_confirmation"] is True and "ask_user" in body["note"]
+    assert box["group_writes"] == []
+    asyncio.run(screen_tools.manage_dashboard_groups(
+        {"action": "delete", "group": "经营", "confirmed": True}))
+    assert box["group_writes"] == [("delete_group", [77], {})]
+
+
+def test_group_writes_invalidate_shared_payload():
+    """服务层写组合必须失效共享载荷缓存，否则浏览端最长一个 TTL 看不到新编排。"""
+    import inspect
+    dash_mod = importlib.import_module("backend.modules.viz.services.dashboard_service")
+    for fn in (dash_mod.create_group, dash_mod.update_group, dash_mod.delete_group,
+               dash_mod.set_group_items, dash_mod.set_group_roles, dash_mod.reorder_groups):
+        body = inspect.getsource(fn)
+        assert "_invalidate_dashboard_payload()" in body, fn.__name__
+
+
+def test_group_endpoints_delegate_to_service():
+    """REST 端点不再自带 SQL：一套谓词两处消费（人侧与 AI 侧不会口径漂移）。"""
+    import inspect
+    api = importlib.import_module("backend.modules.viz.api.dashboard")
+    for fn in (api.create_group_endpoint, api.update_group_endpoint, api.delete_group_endpoint,
+               api.set_group_items_endpoint, api.set_group_roles_endpoint):
+        body = inspect.getsource(fn)
+        assert "adh_dashboard_group_items" not in body and "execute_write" not in body, fn.__name__
+        assert "dashboard_service import" in body, fn.__name__
+
+
 # ── design 工具组整组退役 ─────────────────────────────────────────────
 
 def test_design_group_retired_from_registry():
@@ -674,7 +1066,13 @@ def test_screen_group_registered():
     srv_name, tools = sdk.TOOL_SERVER_TOOLS["screen"]
     assert srv_name == "datahub_screen"
     assert {"create_data_screen", "get_data_screen", "update_data_screen_chart",
+            "list_data_screens", "update_data_screen", "delete_data_screen",
             "list_vis_components", "get_vis_component", "save_vis_component"} <= set(tools)
+    # 板级三工具必须真挂了 handler（名字登记了却无 handler = 模型看得见却调不动的空承诺）
+    by_name = {s["name"]: s for s in screen_tools.TOOL_SPECS}
+    for name in ("list_data_screens", "update_data_screen", "delete_data_screen"):
+        assert callable(by_name[name]["handler"]), name
+    assert by_name["delete_data_screen"]["annotations"]["destructiveHint"] is True
 
 
 def test_asbot_tool_selection_includes_screen_excludes_query():
@@ -910,6 +1308,56 @@ def test_auto_layout_centers_isolated_other_widget():
     assert pie["x"] + pie["w"] + pie["x"] == screen_tools._CANVAS_W   # 左右留白对称
     assert pie["w"] <= screen_tools._CANVAS_W * 2 // 3                # 不拉满整屏
     assert pie["y"] > pos["中国·KPI"]["y"]                            # 仍在 KPI 带之下
+
+
+def test_auto_layout_leaves_top_margin_and_size_hierarchy():
+    """反馈："输出的看板图标大小和布局没有审美，全是一样的大小和排布" + "顶部要留空隙"。
+
+    判据不靠眼睛：内容不贴上边缘、卡片至少两种面积、带高守前端事实
+    （≤600 截顶、4px 行格、不低于最小高），且互不重叠。
+    """
+    widgets = [
+        {"title": "总营收", "chart_type": "big_number_trend"},
+        {"title": "订单数", "chart_type": "big_number_trend"},
+        {"title": "近30天营收趋势", "chart_type": "timeseries_line"},
+        {"title": "各区域营收占比", "chart_type": "pie"},
+        {"title": "产品结构", "chart_type": "bar"},
+        {"title": "订单明细", "chart_type": "table"},
+    ]
+    pairs = screen_tools._auto_layout(widgets)
+    rects = [{"title": w["title"], "chart_type": w["chart_type"], **p} for w, p in pairs]
+    assert all(r["y"] >= screen_tools._TOP_MARGIN for r in rects)
+    content = [r for r in rects if r["chart_type"] not in screen_tools._KPI_TYPES]
+    assert len({(r["w"], r["h"]) for r in content}) >= 2          # 有主次，不是一律等分
+    assert max(r["w"] for r in content) > min(r["w"] for r in content)
+    for r in content:
+        assert r["h"] <= screen_tools._CARD_MAX_H                 # 超过就是白留高度（前端截顶）
+        assert r["h"] % screen_tools._ROW_UNIT == 0               # 行格对齐，换算不抖
+        assert r["h"] >= screen_tools._card_min_h(r["chart_type"])  # 抬高压破下一带=斜阶梯
+    audit = screen_tools._layout_audit(rects)
+    assert audit["ok"] is True and audit["squeezed"] == [] and audit["over_tall"] == []
+    assert audit["hierarchy"] is True
+
+
+def test_auto_layout_refuses_unhierarchical_card_count():
+    """排不出「不重叠 + 不低于最小高」的版面时显式拒并建议拆板，不做等分挤压。"""
+    widgets = [{"title": f"图{i}", "chart_type": "bar"} for i in range(13)]
+    with pytest.raises(screen_tools.ScreenIntentError) as exc:
+        screen_tools._auto_layout(widgets)
+    assert "拆成多块大屏" in _text_of(exc.value.response)
+
+
+def test_layout_audit_flags_uniform_and_squeezed():
+    """等宽等高网格与矮于最小高的带都要被点名（"好不好看"变成可核验条件）。"""
+    grid = [{"title": f"C{i}", "chart_type": "bar", "x": i * 480, "y": 0, "w": 480, "h": 400}
+            for i in range(4)]
+    audit = screen_tools._layout_audit(grid)
+    assert audit["ok"] is True                       # 铺满且不重叠，不是硬缺陷
+    assert audit["hierarchy"] is False               # 但确实没有主次
+    assert "主次" in audit["hint"]
+    thin = screen_tools._layout_audit(
+        [{"title": "明细", "chart_type": "table", "x": 0, "y": 0, "w": 960, "h": 200}])
+    assert thin["ok"] is False and thin["squeezed"] == ["明细"]
 
 
 def test_create_screen_multi_site_stays_on_one_dashboard(box):
