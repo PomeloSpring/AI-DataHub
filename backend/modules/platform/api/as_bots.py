@@ -80,7 +80,10 @@ class AsBotUpdate(BaseModel):
 
 # ── helpers ────────────────────────────────────────────────────────
 
-_JSON_FIELDS = ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models")
+# 这些 JSON 列 GET 时必须反序列化成对象再下发：前端表单把整行铺进 payload 原样回传，
+# 若这里漏掉某列，它就会以 JSON 字符串 round-trip，保存时被 pydantic(dict)拒收。
+# （历史缺陷：i18n 漏解析 → "Input should be a valid dictionary"）
+_JSON_FIELDS = ("persona", "tools", "mcp_server_ids", "knowledge_base_ids", "skills", "models", "i18n")
 _LIST_FIELDS = ("mcp_server_ids", "knowledge_base_ids", "skills", "models")
 
 
