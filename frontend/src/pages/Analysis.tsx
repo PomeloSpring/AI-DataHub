@@ -99,7 +99,7 @@ export default function Analysis() {
   useCancelChartRefreshOnLeave();
   // 组内切板转场与 /screen 同一份解析：板上挂载 > 个人偏好 > 默认档（默认 transition=none = 硬切如旧）。
   // hook 必须在早退之前，故这里直接取两份数据源（store 条目优先，回退按需加载的详情）。
-  const { motion, cssVars: motionCss, reason: motionReason } = useMotion({ board: boardMotionRef(liveBoard?.filters ?? detail?.filters) });
+  const { motion, cssVars: motionCss, reason: motionReason, origin: motionOrigin } = useMotion({ board: boardMotionRef(liveBoard?.filters ?? detail?.filters) });
   const transition = transitionClass(motion.transition);
   // 刷新失败与首次加载失败分开：前者保留已渲染内容 + 横幅告知，不能把整页换成错误页
   const [refreshError, setRefreshError] = useState('');
@@ -265,8 +265,11 @@ export default function Analysis() {
     {!!refreshError && <p role="alert" className="flex shrink-0 items-center gap-2 px-3 py-1 text-xs text-destructive sm:px-6">{refreshError}
       <Button size="sm" variant="link" className="h-auto p-0 text-xs" onClick={() => void loadDetail(wantedId || board.id)}>{t('common:action.retry')}</Button></p>}
     {library.error && <p role="alert" className="px-4 text-sm">{library.error}<Button variant="link" onClick={library.refresh}>{t('common:action.retry')}</Button></p>}
-    {/* 动效预设失效（下架/禁用/系统减少动效）要说在明处，不能让用户以为“挂了没反应” */}
-    {motionReason && <p role="status" className="shrink-0 px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>}
+    {/* 动效预设失效（下架/禁用等「挂了没反应」）要说在明处；「系统减少动效」不在此列：
+        它是系统级长期设置，每块板重复提示成噪音，说明位只在动效偏好入口给 */}
+    {motionReason && motionOrigin !== 'reduced' && (
+      <p role="status" className="shrink-0 px-4 py-1 text-xs text-muted-foreground">{motionReason}</p>
+    )}
     <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ backgroundImage: 'linear-gradient(180deg, hsl(var(--muted) / 0.45) 0%, hsl(var(--muted) / 0.15) 220px, transparent 100%)' }}>
       <DashboardRuntimeParams dashboard={board} />
       {/* 切板转场与 /screen 同一份 class（默认档 transition=none → 不加 class，硬切如旧）；
