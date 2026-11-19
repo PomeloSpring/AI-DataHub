@@ -56,6 +56,17 @@ function formatSparqlCell(v: any): string {
   return String(v);
 }
 
+// 命名图按 kind 分图（写入侧 graph_target_for_model 同口径）：system→ds:-1、business→ds:0（跨源聚合图）。
+// 源本体已退役并入 business；具体数据源的 ds:N 只留物理血缘（无本体）。
+// 严禁拿模型的 datasource_id 当图哨兵——业务模型 datasource_id 是真实雪花 id，ds:<那个 id> 根本不存在，
+// 查询必然空（历史缺陷：SPARQL 示例按 datasource_id 拼 IRI，全部返回 0 行）。读写分叉就是缺陷本身。
+function graphDsForModel(kind: string | undefined, datasourceId: number | undefined): number {
+  const ds = Number(datasourceId || 0);
+  if (kind === 'system') return -1;
+  if (kind === 'business') return 0;
+  return ds === -1 ? -1 : ds;
+}
+
 export default function OntologyGraphView() {
   const { t } = useTranslation('ui');
   const [models, setModels] = useState<OntologyModelSummary[]>([]);
@@ -139,10 +150,10 @@ export default function OntologyGraphView() {
   useEffect(() => {
     if (!selected) return;
     setSelectedKbId('0');
-    const ds = selected.datasource_id || 0;
+    const G = `<http://ai-datahub.org/ontology/ds:${graphDsForModel(selected.kind, selected.datasource_id)}>`;
     setSparqlQuery(
       `PREFIX adh: <http://ai-datahub.org/ontology/>\n` +
-      `SELECT ?s ?p ?o WHERE { GRAPH <http://ai-datahub.org/ontology/ds:${ds}> { ?s ?p ?o } } LIMIT 50`);
+      `SELECT ?s ?p ?o WHERE { GRAPH ${G} { ?s ?p ?o } } LIMIT 50`);
     setSparqlResult(null);
     setSparqlPreview('');
   }, [selected?.id]);
@@ -242,8 +253,7 @@ export default function OntologyGraphView() {
 
   // SPARQL 示例查询（针对当前模型命名图）—— 与 RDF 投影词汇(ontology_to_rdf)同源
   const sparqlExamples = useMemo(() => {
-    const ds = selected?.datasource_id || 0;
-    const G = `<http://ai-datahub.org/ontology/ds:${ds}>`;
+    const G = `<http://ai-datahub.org/ontology/ds:${graphDsForModel(selected?.kind, selected?.datasource_id)}>`;
     const pre = 'PREFIX adh: <http://ai-datahub.org/ontology/>\n'
       + 'PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n'
       + 'PREFIX owl: <http://www.w3.org/2002/07/owl#>\n'
@@ -264,7 +274,7 @@ export default function OntologyGraphView() {
       { label: t('k_01327272b1'), desc: t('k_f4ff838b4f'),
         query: `${pre}SELECT DISTINCT ?obj ?name WHERE { GRAPH ${G} { { ?obj rdfs:label ?name } UNION { ?obj skos:altLabel ?name } FILTER(REGEX(STR(?name), "订单", "i")) } } LIMIT 50` },
     ];
-  }, [selected?.datasource_id]);
+  }, [selected?.kind, selected?.datasource_id]);
 
   return (
     <div className="space-y-4">
@@ -423,7 +433,7 @@ export default function OntologyGraphView() {
                   <TabsContent value="sparql" className="mt-2 space-y-3">
                     <div className="text-xs text-muted-foreground space-y-1.5">
                       <div>
-                        {t('k_30fd7d23e6', { p0: selected.datasource_id || 0 })}</div>
+                        {t('k_30fd7d23e6', { p0: graphDsForModel(selected.kind, selected.datasource_id) })}</div>
                       <div className="flex flex-wrap gap-1.5">
                         {sparqlExamples.map((ex) => (
                           <button key={ex.label} type="button" title={ex.desc}
