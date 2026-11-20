@@ -205,7 +205,12 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
             # 出站收口：任何工具结果下发 LLM 前过敏感信息守卫。
             # 放在 isError 归一化之后，否则守卫给出的具体命中类别会被通用文案盖掉。
             # 命中即拒发（fail-loud），不静默清空字段（no-silent-degradation §1）。
-            return assert_no_sensitive(result, qualified_name)
+            result = assert_no_sensitive(result, qualified_name)
+            # 技能正文的**工具边界披露**（放在守卫之后：细则是我们自己的静态剧本，不是待收口的
+            # 工具输出；反过来若放在之前，一份含表名的细则会把整条业务结果连带拒发）。
+            # 与"常驻系统提示词"二选一：正文只在真正用到该域动作的回合到达，未用到零开销。
+            from backend.modules.mind.execution.sdk_tools.skill_tools import attach_to_result
+            return attach_to_result(ctx, name, result)
         except ResourceScopeError as exc:
             logger.warning("工具资源范围校验拒绝: %s: %s", qualified_name, exc)
             # 范围拒绝的真因要透传（可诊断），但同样过出站守卫：文案里可能带数据源内部标识。

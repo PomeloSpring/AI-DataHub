@@ -314,6 +314,14 @@ export interface ChatMessage {
   // scenes 必须记：服务端把场景方案注入提示词后，答案看不出“按哪个场景做的”，
   // 不记下来就无法核对“选了没生效”（与 skills/command 同口径）。
   skills?: string[];
+  /** 本轮**实际常驻**进系统提示词的技能正文（服务端装载决议，不是用户勾选）。
+   *  与上面的 `skills`（`/` 显式选中）是两件事：只有用户 `/` 点名、单职责角色、无人值守
+   *  三类场景会常驻，常规多技能回合这里是空数组。 */
+  skills_loaded?: string[];
+  /** 本轮**随工具结果附带**过正文的技能名（工具边界披露：首次用到该域动作时细则自动到达） */
+  skills_attached?: string[];
+  /** 本轮由模型自己调 `load_skill_guide` 取回正文的技能名（主动取回那一层） */
+  skills_fetched?: string[];
   scenes?: string[];
   command?: string;
   // 失败分类（服务端归类，前端不猜错误文案）：繁忙/限流/超时/中止/失败
@@ -331,6 +339,11 @@ interface Conversation {
   workspace_id?: number;
   /** 会话查询站点(adh_sites.site_code)；空=未选定 */
   site_code?: string;
+  /** 本会话加载过的技能正文 → 回合数（resident=随提示词常驻，attached=随工具结果附带，
+   *  fetched=模型主动取回）。常规回合走 attached：正文只在真正用到该域动作时才下发。
+   *  服务端整页一次聚合（`GET /chat/conversations`）。缺键 = 该字段上线前的历史会话，
+   *  侧栏显示"未记录"，不得当成"没加载技能"（两件事不能混说）。 */
+  skill_usage?: Record<string, { resident: number; attached: number; fetched: number }>;
   created_at: string;
   updated_at: string;
 }
@@ -1692,6 +1705,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         analysis: doneData.analysis,
         workflow_info: doneData.workflow_info,
         tool_calls: finalToolCalls,
+        // 本轮技能正文加载事实（服务端决议）：消息落库后聚合进会话侧栏徽标
+        skills_loaded: doneData.skills_loaded,
+        skills_attached: doneData.skills_attached,
+        skills_fetched: doneData.skills_fetched,
         // 可观测关联键:赞踩反馈据此写入 adh_message_feedback 并能在 Trace 详情回显
         trace_id: doneData.trace_id,
         message_uuid: doneData.message_uuid,

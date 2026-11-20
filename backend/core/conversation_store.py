@@ -501,6 +501,61 @@ def count_messages(conversation_id: int) -> int:
     return int((row or {}).get("c") or 0)
 
 
+#: 回合 meta 里的技能加载事实（写入方：secure_sdk ——
+#: loaded=本轮常驻正文，attached=随工具结果附带（工具边界披露），fetched=模型主动取回）
+_SKILL_META_KEYS = (("skills_loaded", "resident"),
+                    ("skills_attached", "attached"),
+                    ("skills_fetched", "fetched"))
+
+
+def skill_usage_by_conversation(conversation_ids: Iterable[int]) -> dict[int, dict[str, dict[str, int]]]:
+    """会话 → {技能名: {resident/attached/fetched: 各自加载过它的回合数}}。
+
+    会话侧栏「这块会话到底读了哪份细则」的事实源。展开与计数全在 SQL 侧（JSON_TABLE）做：
+    一次要算 50 块会话，把整片 meta（含工具返回体）拉进 Python 是白付几十 MB。
+    没有这些键的历史消息自然不出现在结果里 —— 侧栏据此显示"未记录"，不补默认值。
+    """
+    ids = [int(x) for x in (conversation_ids or []) if int(x or 0) > 0]
+    if not ids:
+        return {}
+    from backend.common.db import execute_query
+
+    flags = [flag for _key, flag in _SKILL_META_KEYS]
+    marks = ",".join(["%s"] * len(ids))
+    branches = []
+    for meta_key, own in _SKILL_META_KEYS:
+        # UNION ALL 按**位置**对齐列，各分支的列序必须完全一致（只换值，不换列名顺序）
+        cols = ", ".join(f"{1 if f == own else 0} AS {f}" for f in flags)
+        branches.append(
+            f"""SELECT m.conversation_id AS cid, jt.skill AS skill, m.id AS mid,
+                       {cols}
+                FROM {TABLE} m
+                JOIN JSON_TABLE(JSON_EXTRACT(m.meta, '$.{meta_key}'), '$[*]'
+                     COLUMNS (skill VARCHAR(64) PATH '$')) AS jt
+                WHERE m.conversation_id IN ({marks})
+                  AND JSON_VALID(m.meta)
+                  AND JSON_TYPE(JSON_EXTRACT(m.meta, '$.{meta_key}')) = 'ARRAY'""")
+    # 中间那层 GROUP BY (cid, skill, mid) 将计数口径钉死为"回合数"：先压到每消息每技能一行，
+    # 外层 SUM 得到的就是"有几个回合加载了它"，而不是数组里的条目数（一条消息内重复写同一个
+    # 技能名只算一次）。技能名的去重责任在执行层（skill_state.loaded / _record_attached /
+    # _record_fetched 各自唯一），这里不依赖那个前提 —— 否则侧栏数字会随上游写法漂移。
+    inner = ", ".join(f"MAX({f}) AS {f}" for f in flags)
+    outer = ", ".join(f"SUM({f}) AS {f}" for f in flags)
+    rows = execute_query(
+        f"SELECT cid, skill, {outer} FROM ("
+        f"  SELECT cid, skill, mid, {inner} FROM ("
+        + " UNION ALL ".join(branches) + ") raw GROUP BY cid, skill, mid"
+        ") t GROUP BY cid, skill",
+        tuple(ids) * len(branches)) or []
+    out: dict = {}
+    for r in rows:
+        skill = str(r.get("skill") or "").strip()
+        if not skill:
+            continue
+        out.setdefault(int(r["cid"]), {})[skill] = {f: int(r.get(f) or 0) for f in flags}
+    return out
+
+
 # ── 级联删除（会话/工作空间删除必须带上，不得留孤儿行）────────────────
 
 def delete_by_conversation(cur, conversation_id: int) -> int:

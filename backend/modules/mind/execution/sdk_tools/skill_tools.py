@@ -19,8 +19,20 @@ metadata（name+description，常驻）→ instructions（正文，模型判断�
   **可加载清单**（业务名），不猜名字（与报告模板同一口径）。
 - **正文已在上下文里就不重复下发**：pinned 指定、单职责角色、无人值守链路仍走常驻展开，
   那些回合调本工具只会拿到"已在上下文"的说明，省掉整份正文的 token。
-- **记账**：每次加载写 `skill_guide` span（加载了哪个、是否已在上下文、正文字数），
-  这是复盘"模型到底有没有读细则"的唯一依据 —— 没有它，A2 就是不可观测的赌博。
+- **记账**：每次加载写 `skill_guide` span（加载了哪个、是否已在上下文、正文字数），并把
+  实际取回的技能名落进回合上下文（`FETCHED_KEY` → `meta.skills_fetched`，与 compose 落下的
+  `meta.skills_loaded`=常驻正文、`guide_block_for_tool` 落下的 `meta.skills_attached`=工具边界
+  附带一道供会话侧栏显示）。span 只在观测开启时有，回合 meta 恒有：
+  复盘"模型到底有没有读细则"两处都能看，不再依赖观测开关。
+
+正文到达模型的三条通道（同一份细则，一个回合只走第一条命中的）：
+1. **常驻**（`prompt_composer`）：只给用户 `/` 点名的技能、只绑 1 个技能的单职责角色、无人值守
+   `force_all` —— 这些场景不能拿产出口径冒险换字数；
+2. **工具边界附带**（`guide_block_for_tool`，由 `compat.guarded` 在首次调用该域工具时挂进结果）：
+   多技能角色的常规通道。**实测**（会话 1783069459335/336/337 与 340 的纠正轮）只给一句话契约、
+   指望模型自己调 `load_skill_guide`，它一次都没调过 → 口径整轮丢失。工具边界是确定性的：
+   用到该域动作就必到，用不到一个字节都不占，且不动系统提示词（提示词缓存也不破）；
+3. **模型主动取回**（本工具）：还没动手、但需要先读口径时用（如规划阶段）。
 """
 
 from __future__ import annotations
@@ -41,11 +53,31 @@ SKILL_GUIDE_MAX_CHARS = 24000
 # 与 prompt_composer 的回合决议对接的键（compose 把“本轮已常驻展开的技能名”写回这里）。
 # 放在 ctx.extra 而不是 runtime 属性上：ExecutionContext 每回合新建，天然回合级、无跳回合泄漏。
 RESIDENT_KEY = "resident_skill_bodies"
+# 本回合**模型主动取回**过正文的技能名（与"常驻"是两件事，会话侧栏要分开显示）。
+# 为什么另存一份而不是只记 span：观测未开启时 record_span 全链路 no-op（护栏 §9），
+# 侧栏与排障就没有事实源；ctx.extra 这份由执行层写进回合 meta，与观测开关无关。
+FETCHED_KEY = "fetched_skill_bodies"
+# 本回合**随工具结果自动附带**过正文的技能名（工具边界披露：首次调用该域工具时把细则挂在结果里）。
+# 这是"正文不常驻提示词"的配套通道：口径在用到那个域的那一刻到达模型，既没调用就不付费。
+ATTACHED_KEY = "attached_skill_bodies"
+# 本回合已通过工具边界送达的**互斥组**（一份组内细则就够，同组第二份不再附带）。
+# 只在进程内使用，不进回合 meta（侧栏要的是"哪份细则到过模型"，组名是实现细节）。
+ATTACHED_GROUP_KEY = "attached_skill_groups"
 
 
 def _ctx():
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
     return get_execution_context()
+
+
+def _record_fetched(ctx, name: str) -> None:
+    """把"本回合真取回过这份正文"记进回合上下文（供 secure_sdk 落 meta.skills_fetched）。"""
+    extra = getattr(ctx, "extra", None)
+    if not isinstance(extra, dict) or not name:
+        return
+    fetched = extra.setdefault(FETCHED_KEY, [])
+    if isinstance(fetched, list) and name not in fetched:
+        fetched.append(name)
 
 
 def _runtime(ctx):
@@ -66,16 +98,18 @@ def _bound_skill_names(ctx) -> list[str]:
     return [str(n) for n in as_bots.collect_skill_names([as_bot]) if str(n).strip()]
 
 
-def _resident_skill_names(ctx) -> list[str]:
-    """本轮系统提示词里已常驻展开正文的技能名（由 compose_system_prompt 经 skill_state 回写 ctx.extra）。
-
-    读不到（旧链路/未传 skill_state）就当全部未常驻：宁可多发一份正文，也不能把“已展开”误判
-    成“未展开”而拒给细则 —— 后者会让模型拿不到作业口径，前者只是多占字数。
-    """
-    state = (getattr(ctx, "extra", None) or {}).get(RESIDENT_KEY)
-    if isinstance(state, dict):
-        return [str(n) for n in (state.get("loaded") or []) if str(n).strip()]
-    return [str(n) for n in (state or []) if str(n).strip()]
+def _delivered_skill_names(ctx) -> list[str]:
+    """本轮正文已经到达模型的技能（常驻 ∪ 模型取回 ∪ 工具边界附带）—— 同一份不重复下发。"""
+    extra = getattr(ctx, "extra", None) or {}
+    out: list[str] = []
+    for key in (RESIDENT_KEY, FETCHED_KEY, ATTACHED_KEY):
+        val = extra.get(key)
+        names = val.get("loaded") if isinstance(val, dict) else val
+        for n in (names or []):
+            text = str(n).strip()
+            if text and text not in out:
+                out.append(text)
+    return out
 
 
 def _match_bound(name: str, bound: list[str]) -> str:
@@ -141,14 +175,15 @@ async def load_skill_guide(args):
                      f"可加载：{'、'.join(bound)}",
         }, is_error=True)
 
-    if hit in _resident_skill_names(ctx):
-        # 正文本轮已在系统提示词里：再下发一份纯属重复占位，直接告诉模型不必调
+    if hit in _delivered_skill_names(ctx):
+        # 正文本轮已到达模型（提示词常驻，或已随某个工具结果附带，或此前已取回）：
+        # 再下发一份纯属重复占位，直接告诉模型不必调
         _record_guide(ctx, skill=hit, status="success", started_at=started,
                       already_in_prompt=True)
         return _text({
             "name": hit,
             "already_in_prompt": True,
-            "note": "该技能本轮的作业细则已随系统提示词下发，无需重复加载；"
+            "note": "该技能本轮的作业细则已随系统提示词或工具结果下发，无需重复加载；"
                     "直接按已注入的口径执行即可。",
         })
 
@@ -175,6 +210,7 @@ async def load_skill_guide(args):
 
     _record_guide(ctx, skill=hit, status="success", started_at=started,
                   guide_chars=len(body), truncated=truncated, missing_requires=missing)
+    _record_fetched(ctx, hit)
     payload = {
         "name": hit,
         "display_name": skill.get("display_name") or hit,
@@ -195,15 +231,110 @@ async def load_skill_guide(args):
     return _text(payload)
 
 
+def _record_attached(ctx, name: str, group: str = "") -> None:
+    """把"本回合已随工具结果附带过这份正文"记进回合上下文（供 secure_sdk 落 meta.skills_attached）。"""
+    extra = getattr(ctx, "extra", None)
+    if not isinstance(extra, dict) or not name:
+        return
+    attached = extra.setdefault(ATTACHED_KEY, [])
+    if isinstance(attached, list) and name not in attached:
+        attached.append(name)
+    if group:
+        groups = extra.setdefault(ATTACHED_GROUP_KEY, [])
+        if isinstance(groups, list) and group not in groups:
+            groups.append(group)
+
+
+def _delivered_groups(ctx) -> list[str]:
+    """本回合已附带过细则的互斥组名（同组第二份不再下发，理由见 guide_block_for_tool）。"""
+    groups = (getattr(ctx, "extra", None) or {}).get(ATTACHED_GROUP_KEY)
+    return [str(g) for g in (groups or []) if str(g).strip()]
+
+
+def guide_block_for_tool(ctx, tool_suffix: str) -> str:
+    """工具边界披露：本回合**首次**用到某域的工具时，返回该域技能的作业细则块（无匹配回空串）。
+
+    为什么在这里给而不是写进系统提示词：提示词常驻是"每回合都为可能不发生的任务付费"，
+    而实测（会话 1783069459335/336/337 与 340 的纠正轮）证明反过来——只给一句话契约、
+    让模型自己调 `load_skill_guide`，它一次都没调过，口径整轮丢失。工具边界是**确定性**的
+    第三方：用到该域的动作就必到，用不到就一个字节都不占，且不动系统提示词（提示词缓存也不破）。
+
+    域→技能的绑定沿用 frontmatter `requires_any`（与 `_select_skill_bodies` 的能力门控、
+    `load_skill_guide` 的缺工具提醒同一份口径），不另造第二套映射。
+    """
+    if not tool_suffix:
+        return ""
+    bound = _bound_skill_names(ctx)
+    if not bound:
+        return ""
+    delivered = set(_delivered_skill_names(ctx))
+    delivered_groups = set(_delivered_groups(ctx))
+    from backend.modules.mind.execution import as_bots
+    for name in bound:
+        if name in delivered:
+            continue
+        skill = (as_bots.load_skills([name]) or [{}])[0]
+        group = str(skill.get("exclusive_group") or "").strip()
+        if group and group in delivered_groups:
+            # 同域互斥剧本（如「知识问答」与「数据分析」）只发一份：两份口径同时进上下文
+            # 就是让答案取决于模型先读到哪条（与 prompt_composer 规则 5 同一理由）。
+            continue
+        needs = {str(x).strip() for x in (skill.get("requires_any") or []) if str(x).strip()}
+        if tool_suffix not in needs:
+            continue
+        body = str(skill.get("system_prompt") or "").strip()
+        if not body:
+            # 细则读不到 = 该技能配置有问题，模型有权知道（不静默当"没有这一域"）
+            return (f"⚠ 技能「{name}」的作业细则未能随本次结果下发（SKILL.md 正文为空或读取失败）。"
+                    "请让管理员核对该技能文件，本轮只能按概述执行。")
+        truncated = len(body) > SKILL_GUIDE_MAX_CHARS
+        if truncated:
+            body = body[:SKILL_GUIDE_MAX_CHARS]
+        _record_attached(ctx, name, group=group)
+        _record_guide(ctx, skill=name, status="success", started_at=time.time(),
+                      attached_via_tool=tool_suffix, guide_chars=len(body), truncated=truncated)
+        title = str(skill.get("display_name") or name)
+        note = ("以上是该域的作业细则（方法文字，**不是查询结果**，不得当数据引用）。"
+                "本轮首次用到该域工具时自动附带，无需再调 load_skill_guide；"
+                "请按细则核对刚才这一步的口径，不符合就先修正再答复用户。")
+        if truncated:
+            note += f"（正文超过 {SKILL_GUIDE_MAX_CHARS} 字符已截断，截断部分未下发）"
+        return f"## 技能作业细则 · {title}\n{note}\n\n{body}"
+    return ""
+
+
+def attach_to_result(ctx, tool_suffix: str, result):
+    """工具边界披露的**接线点**：`compat.guarded` 在工具成功返回后调用，把该域细则挂到结果尾部。
+
+    读细则失败**不掩藏**（no-silent-degradation §1）：不因此把成功的工具调用判成失败（那是拿
+    口径问题掩盖业务结果），但在同一个结果里显式写明"细则没送达"，模型与复盘都能看到。
+    """
+    try:
+        block = guide_block_for_tool(ctx, tool_suffix)
+    except Exception:  # noqa: BLE001 — 附件失败不得改写字典外的业务结果
+        logger.exception("[skill_tools] 作业细则附带失败: %s", tool_suffix)
+        block = (f"⚠ 技能「{tool_suffix}」所属域的作业细则未能随本次结果下发（服务端读取异常，"
+                 "已记录日志）。本轮只能按系统提示词里的一句话契约执行；"
+                 "需要完整口径时调 `load_skill_guide` 取回，并在答复里如实说明细则不可用。")
+    if not block or not isinstance(result, dict):
+        return result
+    content = result.get("content")
+    if not isinstance(content, list):
+        content = []
+        result["content"] = content
+    content.append({"type": "text", "text": block})
+    return result
+
+
 TOOL_SPECS = [
     {"name": "load_skill_guide",
      "description": (
-         "按需加载**技能作业细则**（渐进披露）。系统提示词的「已绑定技能」清单每项都给一句话契约；"
-         "需要该域的完整口径（入口分诊顺序、指标/维度速览、分析剧本、自我校验清单）时调本工具取回正文。"
-         "参数 name 用清单里的业务名（不是 id）。"
+         "按需加载**技能作业细则**。系统提示词的「已绑定技能」清单每项只给一句话契约（正文不常驻）；"
+         "本回合首次调用某域的工具时，该域细则会**自动附在工具结果里**，通常你不需要调本工具。"
+         "只有在动手之前就想读完整口径（规划剧本、校验清单）时才调，参数 name 用清单里的业务名（不是 id）。"
          "边界：返回的是方法细则文本，**不是数据**，不得当作查询结果引用；"
          "只回当前助手已绑定的技能，未绑定会被拒并回可加载清单（不猜名字）；"
-         "清单已注明「正文本轮已常驻」的技能不必再调（重复下发只是占位）。"),
+         "本轮已送达过（常驻、随工具结果附带、或此前取回）的技能不必再调（重复下发只是占位）。"),
      "schema": {"name": Annotated[str, "技能业务名（「已绑定技能」清单里的那个名字，不是 id）"]},
      "handler": load_skill_guide},
 ]

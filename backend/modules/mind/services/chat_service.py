@@ -641,6 +641,12 @@ class ChatService:
                 # 上下文占用（本轮客户端还活着时采集的权威值）。采不到就不塞假值：
                 # 前端转去读 /context-usage，由它区分“未测量”与“测量失败”，不显示 0%
                 "context_usage": result.meta.get("context_usage") or None,
+                # 本回合加载了哪几份技能正文（常驻 / 工具边界附带 / 主动取回）：前端落进消息，
+                # 会话侧栏据此显示。执行层恒写这三个键（空列表 = 本轮没有正文常驻），
+                # 这里原样透传，不猜不补默认值。
+                "skills_loaded": list(result.meta.get("skills_loaded") or []),
+                "skills_attached": list(result.meta.get("skills_attached") or []),
+                "skills_fetched": list(result.meta.get("skills_fetched") or []),
             }
             # 回带落盘后的附件清单(工作区相对路径),前端据此持久化消息历史引用
             if result.meta.get("attachments"):

@@ -611,6 +611,10 @@ def _fallback_turn_record(task, texts, tracker, result, message_uuid: str) -> di
         "elapsed_ms": int(meta.get("elapsed_ms") or _from or 0),
         "tool_calls": (tracker.calls if tracker else []) or [],
         "warnings": list(meta.get("warnings") or []),
+        # 与 done 事件同源：断连回合的技能加载事实也要落库，否则侧栏只在"前端活着"时才有数据
+        "skills_loaded": list(meta.get("skills_loaded") or []),
+        "skills_attached": list(meta.get("skills_attached") or []),
+        "skills_fetched": list(meta.get("skills_fetched") or []),
     }
     if error.strip():
         message["error"] = error.strip()
@@ -1059,6 +1063,22 @@ async def _execute_stream(adapter, task, backend):
             _warn = _round_limit_warning(rounds)
             if _warn:
                 meta["warnings"] = [_warn]
+        # 本回合的技能正文加载事实（常驻 / 工具边界附带 / 模型主动取回）：会话侧栏显示
+        # "这轮到底读了哪份细则"的唯一依据。决议只取自 prompt_composer 写回的 skill_state、
+        # guide_block_for_tool 与 load_skill_guide 的记账，本层不重算装载口径（重算必然与
+        # 提示词漂移）；三个键恒写（空列表 = 本轮确实没正文常驻，那是要让用户看得见的事实，
+        # 不是缺字段）。
+        from backend.modules.mind.execution.sdk_tools.skill_tools import (
+            ATTACHED_KEY, FETCHED_KEY, RESIDENT_KEY)
+        _resident = (task.context.extra or {}).get(RESIDENT_KEY)
+        # skill_state 现行形态是 dict（{"loaded": [...], "progressive": bool}），旧链路曾直接回列表，
+        # 两种都读一次即可，不为此加第二套判定
+        _resident_names = _resident.get("loaded") if isinstance(_resident, dict) else _resident
+        meta["skills_loaded"] = [str(x).strip() for x in (_resident_names or []) if str(x).strip()]
+        meta["skills_attached"] = [str(x).strip() for x in
+                                   ((task.context.extra or {}).get(ATTACHED_KEY) or []) if str(x).strip()]
+        meta["skills_fetched"] = [str(x).strip() for x in
+                                  ((task.context.extra or {}).get(FETCHED_KEY) or []) if str(x).strip()]
         # 上下文占用采集（进度条唯一数据源）：本轮客户端还活着、尚未 disconnect ——
         # 这是唯一“零额外建连”的采集点（执行层客户端每轮新建，轮间没得可问）。
         # 拿到值后进 done payload，前端不必额外请求就能更新进度条；拿不到时不塞

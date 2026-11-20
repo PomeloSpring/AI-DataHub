@@ -49,6 +49,24 @@ _MIN_KPI_H = 128          # 前端最小高：KPI 数字卡
 _MAX_CONTENT_CARDS = 12   # 还能排出主次的上限：超了显式拒并建议拆板，不做等分挤压
 _MAX_PER_ROW = 4          # 常规每行张数（放不下时才放宽到 6/8）
 
+# 渲染端**列制**事实（镜像 frontend/src/lib/dashboardPageLayout.ts 的 PAGE_COLUMNS /
+# PAGE_WIDTHS / DEFAULT_PAGE_GAP / PAGE_GAP_MIN|MAX，由 tests/test_page_layout_constants_sync.py
+# 锁常量，改一侧必改另一侧）：
+# · 播放页 CSS 是 `grid-template-columns: repeat(64, 1fr)` + `columnGap: gap`、`rowGap: 0`
+#   （纵向空白只来自 `gapRows(gap) = ceil(gap/4)` 行避让，手写 position 的纵向像素差全部被忽略）；
+# · 一步（含它右侧那格 gap）= (画布宽 + gap) / 列数，跨 k 列的卡宽 = k×一步 − gap；
+#   于是**相邻卡的列区间首尾相接时视觉间距恰好 = gap**，留 1 列空洞就变成 `一步 + gap`（≈46px）。
+#   这就是"手写像素做不到等距"的数学根据（事故板 380px 节距 @1920 = 12.67 列，取整出空洞）。
+_BP_COLUMNS = {"screen": 64, "desktop": 48, "tablet": 24, "mobile": 1}
+_BP_WIDTHS = {"screen": 1920, "desktop": 1440, "tablet": 768, "mobile": 390}
+_DEFAULT_PAGE_GAP = {"screen": 16, "desktop": 16, "tablet": 16, "mobile": 12}
+_GAP_MIN = 0
+_GAP_MAX = 64
+
+# 「大小」语义词（full/two_thirds/half/third/quarter/fifth）→ 分数定义在 `_SIZE_FRACTIONS`，
+# 列数由 round(64 × 分子/分母) 现算（见 `_size_to_cols`），不在这里存第二份表（两份必然漂移）。
+_SIZE_COLS_MIN, _SIZE_COLS_MAX = 8, 64       # cols:N 逐列直给的合法区间（8 = 一行八张的下限）
+
 # 布局分层：KPI 数字卡一行，趋势族一行，其余（占比/明细/地图）一行
 _KPI_TYPES = {"text_display", "big_number_trend", "gauge"}
 _TREND_TYPES = {"line", "area", "timeseries_line", "timeseries_bar", "timeseries_area"}
@@ -450,7 +468,7 @@ async def _prepare_widget(w, index: int, args: dict, ctx, identity: dict,
             f"widgets[{index}]({title}) 是参数控件（{chart_type}）：直建通道不产控件——每图口径"
             "已固化为数据集意图，控件绑定的变量没有消费方（填了不出数）。需要筛选交互时如实告知"
             "用户：数据集正文改 ${变量} 外置 + 声明入参，再到看板编辑器挂 widget_* 绑定，"
-            "或改用相对时间窗 time_window（口径见 screen-builder 技能 B2.5）。"))
+            "或改用相对时间窗 time_window（口径见「看板设计」技能 B2.5）。"))
     if chart_type not in _CHART_TYPES:
         raise ScreenIntentError(_error(
             f"widgets[{index}] 不支持的图表类型: {w.get('chart_type')}, 可选: {', '.join(sorted(_CHART_TYPES))}"))
@@ -599,6 +617,15 @@ def _snap4(value: int) -> int:
     return max(_ROW_UNIT, int(value) // _ROW_UNIT * _ROW_UNIT)
 
 
+def _vertical_step_px(gap_screen: int) -> int:
+    """渲染端纵向间隙恒等式：`gapRows(gap) × PAGE_ROW` = ceil(gap/4)×4（CSS rowGap 恒为 0）。
+
+    含义：纵向间距**不是**可自由填写的维度 —— 写 position 时手留的 20px 会被忽略，
+    卡与卡的实际纵向空白只有本函数这一个值（除非卡片本来就互不重叠地上下排开）。
+    """
+    return ((int(gap_screen) + _ROW_UNIT - 1) // _ROW_UNIT) * _ROW_UNIT
+
+
 def _tile(total: int, parts: int, gap: int = 0) -> list[int]:
     """把 total 切成 parts 份（含 (parts-1)*gap 间隙），每份 4px 倍数，余量给末份。"""
     if parts <= 0:
@@ -620,24 +647,27 @@ def _card_min_h(chart_type: str) -> int:
     return _MIN_CARD_H
 
 
-def _band_floor(band: list[dict], stacked: int) -> int:
+def _band_floor(band: list[dict], stacked: int, gap: int = _ROW_GAP) -> int:
     """一带所需最小高：主图与右列辅图**并行**。辅图多于一张时纵向堆叠，需要堆叠总高。"""
     hero_min = _card_min_h(band[0].get("chart_type") or "")
     sides = [_card_min_h(w.get("chart_type") or "") for w in band[1:]]
     flat = max([hero_min] + sides)
     if stacked > 1 and sides:
-        return max(flat, _ROW_GAP * len(sides) + sum(sides))
+        return max(flat, gap * len(sides) + sum(sides))
     return flat
 
 
-def _alloc_band_heights(avail: int, floors: list[int], hero_first: bool) -> list[int] | None:
+def _alloc_band_heights(avail: int, floors: list[int], hero_first: bool,
+                        gap: int = _ROW_GAP) -> list[int] | None:
     """带高分配：首带明显高（主次来自高度差 + 宽度差），其余均分。
 
     任何一带低于自身最小高即回 None 由调用方换配方——**不得**压破最小高后交给渲染层抬高
     （抬高会顶到下一带，就是"卡片一张比一张靠下、右侧一大片空白"的斜阶梯）。
+    `gap` 是带间纵向间隙：语义版面传渲染端恒等式 `ceil(gap/4)*4`（`_vertical_step_px`），
+    既有自动版面沿用 `_ROW_GAP`，两套账不并存。
     """
     n = len(floors)
-    usable = avail - _ROW_GAP * (n - 1)
+    usable = avail - gap * (n - 1)
     if usable < sum(floors):
         return None
     if n == 1:
@@ -688,6 +718,129 @@ def _plan_content_bands(rest: list[dict], avail: int) -> tuple[list[list[dict]],
     return None
 
 
+def _canvas_width_of(filters, rects=None) -> int:
+    """渲染端画布宽（镜像 getCanvas）：`max(320, design.canvas.width or 1920, max(x+w))`。
+
+    列投影的比例基准就是它 —— 用错画布宽，等距判据会整条算偏。
+    """
+    flt = _json_dict(filters)
+    design = flt.get("design") if isinstance(flt.get("design"), dict) else {}
+    canvas = design.get("canvas") if isinstance(design, dict) and isinstance(design.get("canvas"), dict) else {}
+    try:
+        declared = int(canvas.get("width") or _CANVAS_W)
+    except (TypeError, ValueError):
+        declared = _CANVAS_W
+    widest = 0
+    for r in (rects or []):
+        try:
+            widest = max(widest, int(r.get("x") or 0) + int(r.get("w") or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(320, declared, widest)
+
+
+def _project_columns(rects, canvas_w: int, bp: str = "screen") -> list[dict]:
+    """像素矩形 → 该断点的列区间（**只出横向**，纵向等距由 gapRows 恒等式直接推）。
+
+    与前端 resolvePageLayout 同式的部分：ratio = 列数/画布宽，左右边缘**各自** round；
+    差别在于这里把 w 算成「右缘列 − 左缘列」（前端注释里 2026-11-17 的斜阶梯修复同一口径）。
+    正因边缘各自取整，手写的像素节距（如 380px = 12.67 列）会在列区间之间留下 1 列空洞
+    —— 这个函数就是用来把"看不见的空洞"算出来的。
+    """
+    columns = _BP_COLUMNS[bp]
+    width = max(1, int(canvas_w or _CANVAS_W))
+    ratio = columns / width
+    out: list[dict] = []
+    for r in rects:
+        try:
+            x = int(r.get("x") or 0)
+            w = int(r.get("w") or 0)
+        except (TypeError, ValueError):
+            continue
+        # left/col_end 是**同一基准**（0 基、右开）：空洞 = 后卡 left − 前卡 col_end。
+        # 曾经混用 1 基的 col 与 0 基的 col_end，无缝平铺也被算成 1 列空洞（等距误报）。
+        left = max(0, min(int(round(x * ratio)), columns - 1))
+        span = min(max(1, int(round((x + w) * ratio)) - left), columns - left)
+        out.append({
+            "title": str(r.get("title") or ""),
+            "col": left + 1, "cols": span, "left": left, "col_end": left + span,
+            "y": int(r.get("y") or 0), "h": int(r.get("h") or 0), "px_w": w,
+        })
+    return out
+
+
+def _bands_of(rects) -> list[list[dict]]:
+    """纵向有重叠的卡归成一带（与 `_idle_rows` 同一聚类口径），带内按 x 排序返回。"""
+    groups: list[dict] = []
+    for r in sorted(rects, key=lambda it: (int(it.get("y") or 0), int(it.get("x") or 0))):
+        y0, y1 = int(r.get("y") or 0), int(r.get("y") or 0) + int(r.get("h") or 0)
+        hit = [g for g in groups if y0 < g["y1"] and y1 > g["y0"]]
+        if hit:
+            g = hit[0]
+            for extra in hit[1:]:                       # 跨带的卡把两组并起来
+                g["items"] += extra["items"]
+                groups.remove(extra)
+            g["items"].append(r)
+            g["y0"], g["y1"] = min(g["y0"], y0), max(g["y1"], y1)
+        else:
+            groups.append({"y0": y0, "y1": y1, "items": [r]})
+    return [sorted(g["items"], key=lambda it: (int(it.get("x") or 0), int(it.get("y") or 0)))
+            for g in sorted(groups, key=lambda g: g["y0"])]
+
+
+def _spacing_report(rects, gap=None, filters=None) -> dict:
+    """等距判据：把像素投影到 64 列，报出每带相邻卡的**实际视觉间距**。
+
+    间距的唯一来源是板级 `gap`；卡片之间只要列区间留了空洞，那一段就变成
+    `一步 + gap`（≈46px @1920/64 列/gap=16），这就是历史上"声称横向 20px 等距、
+    实际 16/46 交替"的成因。mobile（1 列）无横向并列，不判定。
+
+    `gap` 可传 int 或四档字典；不给则读板级 `filters.design.page.gap`。
+    返回 `{equal, gaps, uneven_gaps, row_fill, gap, column_px, canvas_width, note}`，
+    `gaps` 每项 = [标题A, 标题B, 列间隔, 实际px]（列间隔 0 = 首尾相接）。
+    """
+    flt = _json_dict(filters)
+    board = _board_gap_of(flt)
+    if gap is not None:
+        clamped, err, _note = _clamp_gap_map(gap)
+        if err:
+            raise ScreenIntentError(err)
+        board = clamped or board
+    column_px = (_BP_WIDTHS["screen"] + board["screen"]) / _BP_COLUMNS["screen"]
+    step_px = _vertical_step_px(board["screen"])
+    report = {
+        "equal": True, "gaps": [], "uneven_gaps": [], "row_fill": [],
+        "gap": board, "gap_vertical_px": step_px,
+        "column_px": round(column_px, 2), "canvas_width": _canvas_width_of(flt, rects),
+        "breakpoint": "screen",
+        "note": (f"横向间距由板级 gap 决定（当前 {board['screen']}px），纵向固定 {step_px}px"
+                 f"（渲染端 ceil(gap/{_ROW_UNIT}) 行，手写像素间隙不生效）"),
+    }
+    projected = {id(r): p for r, p in zip(rects, _project_columns(
+        rects, report["canvas_width"], "screen"))}
+    for band in _bands_of(rects):
+        cols = [projected[id(r)] for r in band if id(r) in projected]
+        cols.sort(key=lambda p: (p["col"], p["title"]))
+        if cols:
+            report["row_fill"].append({
+                "y": cols[0]["y"], "cards": len(cols),
+                "used_cols": sum(p["cols"] for p in cols),
+                "spare_cols": max(0, _BP_COLUMNS["screen"] - cols[-1]["col_end"]),
+            })
+        for a, b in zip(cols, cols[1:]):
+            hole = max(0, b["left"] - a["col_end"])
+            px = int(round(hole * column_px + board["screen"]))
+            pair = [a["title"] or "(无标题)", b["title"] or "(无标题)", hole, px]
+            report["gaps"].append(pair)
+            if hole:
+                report["uneven_gaps"].append(pair)
+                report["equal"] = False
+    if not report["equal"]:
+        report["note"] += (f"；列空洞致 {'、'.join(f'{a}↔{b} 实际 {px}px' for a, b, _h, px in report['uneven_gaps'])}"
+                           "，与 gap 不等 —— 手写像素做不到等距，改用 layout/gap 让服务端出首尾相接的列区间")
+    return report
+
+
 def _idle_rows(clean: list[dict]) -> list[dict]:
     """整行留白：把纵向有重叠的卡归成一带，按横向**并集**算实际占用宽度。
 
@@ -721,8 +874,8 @@ def _idle_rows(clean: list[dict]) -> list[dict]:
     return idle
 
 
-def _layout_audit(rects: list[dict]) -> dict:
-    """版面自检：重叠 / 超出画布 / 整行留白 / 挤破前端最小高 / 被截顶 / 有无主次。
+def _layout_audit(rects: list[dict], *, gap=None, filters=None) -> dict:
+    """版面自检：重叠 / 超出画布 / 整行留白 / 挤破前端最小高 / 被截顶 / 有无主次 / **等距**。
 
     坐标是模型自己填的，光靠生成端"觉得排好了"没有依据（历史缺陷：五连 KPI 坐标互相压住，
     渲染层避让后成一排斜阶梯，用户截图才发现）。这里把判据算好随结果回传，
@@ -731,6 +884,11 @@ def _layout_audit(rects: list[dict]) -> dict:
     `squeezed` 只对**带 chart_type 的矩形**判定：前端会按类型把过矮的卡抬到最小高
     （表格 360 / KPI 128 / 其他 280），抬起来就压下一带；不带类型的矩形（历史数据、
     非图卡）不猜类型，不据此判失败。
+
+    `spacing`（列空洞/实际间距）只有拿到 gap 或 filters 时才算得出：像素重叠判不出"间距
+    不均"，那是列制下的空洞问题（事故板 16/46px 交替）。`ok` **不因** `even_spacing=false`
+    而翻红 —— 存量板大量如此，判 fail 会刷屏把真缺陷（重叠/越界）淹掉；但 hint 会点名，
+    模型据此不得宣称"间距一致"。
     """
     clean = [{"title": str(r.get("title") or ""), "chart_type": r.get("chart_type"),
               "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
@@ -750,13 +908,44 @@ def _layout_audit(rects: list[dict]) -> dict:
     ok = not overlaps and not outside and not squeezed
     audit = {"ok": ok, "overlaps": overlaps, "out_of_canvas": outside, "idle_rows": idle,
              "squeezed": squeezed, "over_tall": over_tall, "hierarchy": hierarchy}
+    spacing = _spacing_report(clean, gap=gap, filters=filters)
+    audit["gap"] = spacing.get("gap")
+    audit["spacing"] = spacing
+    audit["even_spacing"] = spacing.get("equal")
     if not ok:
         audit["hint"] = ("版面自检未通过：先修重叠/越界/带高不足再交付（可省略 position 让服务端自动布局；"
                          "异构卡不当对比项，见 layout-guide）")
+    elif spacing.get("equal") is False:
+        audit["hint"] = (f"卡片之间列区间有空洞，横向实际间距不是统一的 gap：" +
+                         "、".join(f"{a}↔{b} 实际 {px}px" for a, b, _h, px in spacing["uneven_gaps"]) +
+                         f"（gap={spacing['gap']['screen']}px）。**不得**据此宣称间距一致；"
+                         "改用 layout/layout_rows（服务端出首尾相接的列区间）+ 板级 gap，别再手写 position 像素。")
+        if not hierarchy:
+            audit["hint"] += "；另外所有卡片等宽等高（没有主次），可减少图表或给 emphasis 指定主图"
     elif not hierarchy:
         audit["hint"] = ("版面所有卡片等宽等高（没有主次）：减少图表、或给 emphasis 指定主图后重排"
                         "（服务端自动布局已按 hero+辅图分层，手写 position 才会 flatten）")
     return audit
+
+
+def _spacing_notice(audit: dict) -> str:
+    """把等距判据翻成交付话术 —— 「间距一致」这句承诺**只能**由 `even_spacing` 支撑。
+
+    历史缺陷：模型看像素差（400−(20+360)=20）就宣称"横向 20px 等距"，而渲染端按 64 列取整
+    后实际是 16/46px 交替，用户当场反驳。这里把判据与结论一起写进 message，
+    不一致时指名卡对，一致时也如实说明凭据来自列投影。
+    """
+    sp = audit.get("spacing") or {}
+    gap = sp.get("gap") or {}
+    if sp.get("equal") is False:
+        return ("；横向间距**不一致**：" +
+                "、".join(f"{a}↔{b} 实际 {px}px" for a, b, _hole, px in sp["uneven_gaps"]) +
+                f"（板级 gap={gap.get('screen')}px）—— 不得向用户宣称间距相同；"
+                "用 layout/layout_rows 让服务端出首尾相接的列区间，间距只由 gap 决定")
+    if sp.get("equal") is True and sp.get("gaps"):
+        return (f"；间距已按列投影核验：卡间空隙均为板级 gap={gap.get('screen')}px"
+                f"（纵向固定 {sp.get('gap_vertical_px')}px，由渲染端 ceil(gap/4) 决定）")
+    return ""
 
 
 def _auto_layout(widgets: list[dict], emphasis: dict | None = None) -> list[tuple]:
@@ -941,8 +1130,528 @@ def _layout_stacked(enriched: list, emphasis: dict | None = None) -> list[tuple]
     return laid
 
 
-# ── 工具 handler(SDK 无关) ─────────────────────────────────────────────
+# ── 版面语义编译（大小 / 位置 / 间距 → 首尾相接的像素矩形 + 板级 gap） ──────────
+#
+# 为什么要有这一段：像素 `position` 是**人侧编辑器的产物**（它保存 config.pageLayout 把版面
+# 钉死），模型手写像素永远做不到等距 —— 渲染端把 px 投影到 64 列时左右边缘各自取整，
+# 380px 这种"看起来等距"的节距会留下 1 列空洞，视觉间距在 16/46px 之间交替（事故板实测）。
+# 语义通道只产两样东西：① 列区间首尾相接的矩形（写进既有 position，走 automatic 渲染路径）；
+# ② 板级 `design.page.gap`。**不写 config.pageLayout**（那是人的私有物，越界即整板白屏）。
 
+_SIZE_FRACTIONS = {"full": (1, 1), "two_thirds": (2, 3), "half": (1, 2),
+                   "third": (1, 3), "quarter": (1, 4), "fifth": (1, 5)}
+
+
+def _card_label(card) -> str:
+    """给报错/汇报用的卡片可读标识：图表**必须有业务名**（裸 id 对用户无意义）。"""
+    text = str((card or {}).get("title") or (card or {}).get("name") or "").strip()
+    return text or "（未命名卡片）"
+
+
+def _size_to_cols(size) -> tuple[int, str]:
+    """「大小」语义词 → 列数（满宽 64 列）+ 归一词（同行等分判定用）。未知词**显式拒**并列词表。
+
+    不做包含式模糊（"halve" 当 "half"、"大半屏" 当 two_thirds 都会改错版面）；
+    区间下限 `_SIZE_COLS_MIN` 挡住"一行十几张"这种必然糊成一团的诉求。
+    """
+    columns = _BP_COLUMNS["screen"]
+    if isinstance(size, bool):
+        raise ScreenIntentError(_error(
+            "size（图表大小）不接受布尔值；用语义词 full/two_thirds/half/third/quarter/fifth，"
+            f"或 cols:{_SIZE_COLS_MIN}~{_SIZE_COLS_MAX} 逐列直给"))
+    word = ""
+    if isinstance(size, (int, float)):
+        cols = int(size)
+        word = f"cols:{cols}"
+    else:
+        text = str(size or "").strip().lower().replace(" ", "_").replace("-", "_")
+        if text in _SIZE_FRACTIONS:
+            num, den = _SIZE_FRACTIONS[text]
+            cols = int(round(columns * num / den))
+            word = text
+        elif text.startswith("cols:"):
+            try:
+                cols = int(text.split(":", 1)[1])
+            except ValueError:
+                raise ScreenIntentError(_error(f"size「{size}」的列数无法解析为整数")) from None
+            word = f"cols:{cols}"
+        else:
+            raise ScreenIntentError(_error(
+                f"不认识的大小（size）词「{size}」；可选：{'、'.join(_SIZE_FRACTIONS)}，"
+                f"或 cols:{_SIZE_COLS_MIN}~{_SIZE_COLS_MAX}（64 列满屏；同行合计不得超过 64）"))
+    if not _SIZE_COLS_MIN <= cols <= _SIZE_COLS_MAX:
+        raise ScreenIntentError(_error(
+            f"大小 cols:{cols} 超出可接受区间 {_SIZE_COLS_MIN}~{_SIZE_COLS_MAX} 列"
+            f"（满宽 64 列；少于 {_SIZE_COLS_MIN} 列 = 一行超过 {columns // _SIZE_COLS_MIN} 张，必然挤到读不清）"))
+    return cols, word
+
+
+def _col_bounds(canvas_w: int, columns: int = None) -> list[int]:
+    """列边界 → 像素（0..64 共 65 个点）。相邻卡**共用同一个边界值**是等距的充要条件。
+
+    反过来（先定宽度再累加 x）会把取整误差堆进节距里，正是历史缺陷的成因。
+    """
+    columns = columns or _BP_COLUMNS["screen"]
+    width = max(1, int(canvas_w or _CANVAS_W))
+    return [int(round(k * width / columns)) for k in range(columns + 1)]
+
+
+def _even_cols(count: int, columns: int = None) -> list[int]:
+    """n 等分：每份 floor(64/n)，余数列从左往右各加 1（合计恒 = 64，首尾必相接）。"""
+    columns = columns or _BP_COLUMNS["screen"]
+    if count <= 0:
+        return []
+    base, extra = divmod(columns, count)
+    if base < 1:
+        raise ScreenIntentError(_error(
+            f"一行放 {count} 张超过 {columns} 列上限，每张不足 1 列画不出来；请增加带数（分行）"))
+    return [base + (1 if i < extra else 0) for i in range(count)]
+
+
+def _scale_cols(weights, total: int) -> list[int]:
+    """把 total 列按现有宽窄比例分给若干张卡（最大余数法，合计恒 = total）。
+
+    只用于「用户只点名的那一张变大，同带未点名的卡等比让位」——保住品格原有的相对宽窄，
+    比一律压成等分更贴近"以现有布局为基础"。调用方保证 total ≥ 张数 × 最小列宽。
+    """
+    n = len(weights)
+    if n <= 0:
+        return []
+    ws = [max(1, int(w or 1)) for w in weights]
+    floor = max(1, min(_SIZE_COLS_MIN, total // n))
+    out = [max(floor, int(round(total * w / sum(ws)))) for w in ws]
+    order = sorted(range(n), key=lambda i: -out[i])
+    diff, i = total - sum(out), 0
+    while diff:
+        step = 1 if diff > 0 else -1
+        k = order[i % n]
+        if 1 <= out[k] + step <= total:
+            out[k] += step
+            diff -= step
+        i += 1
+    return out
+
+
+def _normalize_rows(items, *, cols_key="cols", band_key="band", order_key="in_row",
+                    after_key="after", title_of=None) -> tuple[list[list[dict]], list[str]]:
+    """把「带 × 带内序号 × 大小」的散装规格归一成 rows（带内有序的卡片列表）。
+
+    `items` 是 dict 列表（create 的 widgets 或改板的卡清单）：
+    · band 缺省 1，按首次出现顺序连续化（用户写 band:5 也不会留出 4 个空带）；
+    · in_row 缺省沿用给出顺序；同带同格 = 两个意图抢一个位置 → **拒**（不猜谁让位）；
+    · after=「某张图的标题」→ 插到该卡右侧（标题未命中或重名 → 回候选清单，与 remove_charts 同口径）。
+    """
+    title_of = title_of or (lambda it: str(it.get("title") or ""))
+    notes: list[str] = []
+    order: list[int] = []            # 带号首现顺序
+    buckets: dict[int, list[dict]] = {}
+    for idx, item in enumerate(items):
+        band = item.get(band_key)
+        band = 1 if band is None else band
+        if isinstance(band, bool) or not isinstance(band, (int, float, str)) or not str(band).strip().lstrip("-").isdigit():
+            raise ScreenIntentError(_error(f"「{title_of(item)}」的 band（第几带/第几行）需要整数，收到 {item.get(band_key)!r}"))
+        band = int(band)
+        if band < 1:
+            raise ScreenIntentError(_error(
+                f"「{title_of(item)}」的 band={band} 无效：带号从 1 开始（第一行=1）"))
+        if band not in buckets:
+            buckets[band] = []
+            order.append(band)
+        seq = item.get(order_key)
+        if seq is not None and (isinstance(seq, bool) or not str(seq).strip().lstrip("-").isdigit()):
+            raise ScreenIntentError(_error(
+                f"「{title_of(item)}」的 in_row（带内第几格）需要整数，收到 {seq!r}"))
+        buckets[band].append({**item, "_idx": idx, "_seq": None if seq is None else int(seq)})
+    # 带号连续化（1..k），并把 band 换成归一后的序号
+    remap = {band: pos + 1 for pos, band in enumerate(sorted(order))}
+    rows: list[list[dict]] = [[] for _ in order]
+    for band, cards in buckets.items():
+        target = rows[remap[band] - 1]
+        keyed = [c for c in cards if c["_seq"] is not None]
+        if len({c["_seq"] for c in keyed}) != len(keyed):
+            dup = sorted({c["_seq"] for c in keyed if [x["_seq"] for x in keyed].count(c["_seq"]) > 1})
+            raise ScreenIntentError(_error(
+                f"第 {remap[band]} 带里第 {'、'.join(str(d) for d in dup)} 格被多张卡同时占用"
+                f"（{'、'.join(title_of(c) for c in keyed)}）；位置互斥，请给出不同的 in_row 或删掉序号按顺序排"))
+        free = [c for c in cards if c["_seq"] is None]
+        for c in sorted(keyed, key=lambda c: c["_seq"]):
+            target.append(c)
+        for c in free:
+            target.append(c)          # 未给序号的先挂尾部，after 解析时再挪
+    # after：按标题命中，插到该卡右侧（同一带内）
+    for band, cards in list(buckets.items()):
+        for c in cards:
+            want = str(c.get(after_key) or "").strip()
+            if not want:
+                continue
+            target = rows[remap[band] - 1]
+            hits = [x for x in target if title_of(x).strip() == want]
+            if len(hits) != 1:
+                raise ScreenIntentError(_error(
+                    f"「{title_of(c)}」要放到「{want}」右边，但"
+                    + ("这一带没有这张卡" if not hits else "有重名卡片无法唯一确定")
+                    + f"；现有卡片：{'、'.join(title_of(x) for x in target) or '（空）'}"
+                    + "。指代不明时请先向用户确认，不要猜"))
+            target.remove(c)
+            target.insert(target.index(hits[0]) + 1, c)
+    for pos, band in enumerate(sorted(order)):
+        if remap[band] != band:
+            notes.append(f"band 从 {band} 连续化到第 {remap[band]} 带（前面没有实卡）")
+    for row_no, row in enumerate(rows, 1):
+        for c in row:
+            for key in (after_key, order_key, band_key, "_seq"):
+                c.pop(key, None)
+            c["_band"] = row_no
+    return [r for r in rows if r], notes
+
+
+def _compile_rows(rows, *, gap=None, filters=None, top=_TOP_MARGIN, canvas_w=None
+                  ) -> tuple[list[dict], dict]:
+    """唯一版面编译口：带规格 → 首尾相接的像素矩形 + 纵向按渲染恒等式排布。
+
+    入参 rows 已由 `_normalize_rows` 排好序，每卡可有 `cols`（None=等分补齐）、`h`（存量高度）。
+    规则（都在返回的 notes 里如实说明，不静默改用户的意图）：
+    · 同行合计 > 64 列：若全卡同词（"五个 fifth" 这类**等分意图**被四舍五入顶爆）→ 按 64 等分；
+      否则显式拒（half + two_thirds 是真冲突，模型得问用户或改口径）；
+    · 同行合计 < 64：未定宽的卡先等分补齐，全都定宽了才把余量归**最右**卡（不动用户点名的宽度）；
+    · 带高：整板都带存量高度 → 沿用（只按类型抬到前端最小高），本次就没改大小；
+      否则在剩余画布高度内按带分配，排不下即拒（不压破最小高让渲染层顶出斜阶梯）；
+    · 纵向间隙 = `_vertical_step_px(gap)`，与渲染端一致（手写像素间隙不生效，记两套账必错）。
+    返回 (矩形清单, {"gap":四档, "vertical_px":N, "column_px":N, "canvas_width":N, "notes":[...]})。
+    """
+    flt = _json_dict(filters)
+    board = _board_gap_of(flt)
+    note = ""
+    if gap is not None:
+        clamped, err, note = _clamp_gap_map(gap)
+        if err:
+            raise ScreenIntentError(err)
+        board = clamped or board
+    notes = [note] if note else []
+    width = int(canvas_w or _canvas_width_of(flt, [c for row in rows for c in row]))
+    bounds = _col_bounds(width)
+    vstep = _vertical_step_px(board["screen"])
+    columns = _BP_COLUMNS["screen"]
+
+    resolved: list[list[dict]] = []
+    for band_no, row in enumerate(rows, 1):
+        cards = [dict(c) for c in row]
+        auto = [c for c in cards if c.get("cols") is None]
+        if auto:
+            left = columns - sum(int(c["cols"]) for c in cards if c.get("cols") is not None)
+            if left < len(auto) * _SIZE_COLS_MIN:
+                raise ScreenIntentError(_error(
+                    f"第 {band_no} 带剩余 {left} 列放不下 {len(auto)} 张未定大小的卡"
+                    f"（每张至少 {_SIZE_COLS_MIN} 列才看得清）；请给这些卡指定 size 或分行"))
+            share = _even_cols(len(auto), left)
+            for c, cols in zip(auto, share):
+                c["cols"] = cols
+                c.setdefault("_size_word", "")
+            notes.append(f"第 {band_no} 带 {len(auto)} 张未指定大小的卡按剩余 {left} 列等分")
+        total = sum(int(c["cols"]) for c in cards)
+        if total > columns:
+            words = {c.get("_size_word") or f"cols:{c['cols']}" for c in cards}
+            if len(words) == 1:      # 同一个等分词的舍入溢出 → 归一到精确等分
+                for c, cols in zip(cards, _even_cols(len(cards))):
+                    c["cols"] = cols
+                notes.append(f"第 {band_no} 带 {len(cards)} 张同为「{words.pop()}」，"
+                             f"合计超 {columns} 列已按 {columns} 列精确等分")
+            else:
+                detail = "、".join(f"{_card_label(c)}={c['cols']}列" for c in cards)
+                raise ScreenIntentError(_error(
+                    f"第 {band_no} 带列宽合计 {total} 列，超过满宽 {columns} 列（{detail}）；"
+                    "同一行放不下就是版面缺陷 —— 请减少该带卡数、改小 size，"
+                    "或向用户确认哪张让位（不要自行挑一张压窄）"))
+        elif total < columns:
+            slack = columns - total
+            cards[-1]["cols"] = int(cards[-1]["cols"]) + slack
+            if len(cards) == 1:
+                notes.append(f"第 {band_no} 带只有 1 张卡，铺满 {columns} 列"
+                             "（size 表达的是同一行内的相对宽窄，单卡不带余量概念）")
+            else:
+                notes.append(f"第 {band_no} 带余量 {slack} 列归最右卡（「{_card_label(cards[-1])}」"
+                             f"→{cards[-1]['cols']} 列），{columns} 列满铺后卡间才没有空洞")
+        resolved.append(cards)
+
+    band_floors = [max(_card_min_h(c.get("chart_type") or "") for c in cards) for cards in resolved]
+    stored_h = [[int(c.get("h") or 0) for c in cards] for cards in resolved]
+    kept_all = all(h > 0 for row in stored_h for h in row)
+    if kept_all:
+        # 整板都带存量高度 = 用户只动了大小/位置/间距，**没让改高度** → 逐字沿用（只在
+        # 低于前端最小高或被截顶时调整，并在 notes 里说明，不静默改）。
+        heights = []
+        for cards, hs in zip(resolved, stored_h):
+            floor = max(_card_min_h(c.get("chart_type") or "") for c in cards)
+            want = max(hs)
+            got = min(_CARD_MAX_H, _snap4(max(want, floor)))
+            if got != want:
+                notes.append(f"「{_card_label(cards[0])}」所在带高度 {want}px 按渲染事实调整为 {got}px"
+                             f"（前端最小高 {floor}px / 截顶 {_CARD_MAX_H}px）")
+            heights.append(got)
+    else:
+        # KPI 数字卡带按 `_KPI_H` 定高（跟自动版面同一口径）：让它参与均分会把一行指标卡拉成
+        # 三分之一屏，正是"排布没审美"的形态之一。其余带在剩余高度内分配。
+        kpi_band = [all(_widget_family(_normalize_chart_type(c.get("chart_type") or "")) == "kpi"
+                        for c in cards) for cards in resolved]
+        rest = [i for i, is_kpi in enumerate(kpi_band) if not is_kpi]
+        heights = [_KPI_H if is_kpi else 0 for is_kpi in kpi_band]
+        if rest:
+            avail = _CANVAS_H - top - _KPI_H * (len(resolved) - len(rest)) \
+                - vstep * (len(resolved) - len(rest))
+            alloc = _alloc_band_heights(avail, [band_floors[i] for i in rest], False, gap=vstep)
+            if not alloc:
+                raise ScreenIntentError(_error(
+                    f"{len(resolved)} 带卡片在 {_CANVAS_W}×{_CANVAS_H} 内（顶部留白 {top}px、带间距 {vstep}px、"
+                    f"KPI 行定高 {_KPI_H}px）排不出「互不重叠且不低于前端最小高」的版面"
+                    "（表格带 360px、其他图 280px）；请减少卡片或合并同带 —— "
+                    "压破最小高会被渲染层抬高压破下一带（斜阶梯）。"))
+            for i, h in zip(rest, alloc):
+                heights[i] = h
+    rects: list[dict] = []
+    y = top
+    for band_no, (cards, h) in enumerate(zip(resolved, heights), 1):
+        start = 0
+        for c in cards:
+            cols = int(c["cols"])
+            x0, x1 = bounds[start], bounds[start + cols]
+            rects.append({**{k: v for k, v in c.items() if not k.startswith("_")},
+                          "x": x0, "y": y, "w": x1 - x0, "h": h,
+                          "band": band_no, "col": start + 1, "cols": cols})
+            start += cols
+        y += h + vstep
+    meta = {"gap": board, "vertical_px": vstep, "canvas_width": width,
+            "columns": columns, "column_px": round(width / columns, 3), "notes": notes,
+            "heights_kept": kept_all}
+    return rects, meta
+
+
+_LAYOUT_CARD_KEYS = ("band", "in_row", "size", "after")
+
+
+def _layout_specs(items) -> tuple[list[list[dict]], list[str]]:
+    """create 通道：每项 `{title, chart_type, layout}` → 带规格（喂 `_compile_rows`）。
+
+    `layout` = `{band 第几带, in_row 带内第几格, size 大小, after 某张图标题}`；
+    未给 layout 的卡进同一带等分补齐（不猜大小，只等分并注明）。未知键**显式拒**：
+    把 `row`/`width` 当 band/size 静默忽略，用户看到的版面就和说的不是一回事。
+    """
+    specs: list[dict] = []
+    for it in items:
+        card = {"title": it.get("title"), "chart_type": it.get("chart_type")}
+        raw = it.get("layout")
+        if raw is None or raw == "":
+            card.update({"cols": None, "_size_word": ""})
+            specs.append(card)
+            continue
+        lay = _coerce_struct(raw, f"「{_card_label(it)}」的 layout", dict) or {}
+        unknown = [k for k in lay if k not in _LAYOUT_CARD_KEYS]
+        if unknown:
+            raise ScreenIntentError(_error(
+                f"「{_card_label(it)}」的 layout 不认识这些键：{'、'.join(map(str, unknown))}；"
+                f"只接受 {'、'.join(_LAYOUT_CARD_KEYS)}（band=第几带、in_row=带内第几格、"
+                "size=大小语义词、after=放到哪张图右边）"))
+        cols, word = (None, "") if lay.get("size") in (None, "") else _size_to_cols(lay.get("size"))
+        card.update({"cols": cols, "_size_word": word, "band": lay.get("band"),
+                     "in_row": lay.get("in_row"), "after": lay.get("after")})
+        specs.append(card)
+    return _normalize_rows(specs)
+
+
+def _layout_rows_specs(rows_arg, geoms) -> tuple[list[list[dict]], list[dict], list[str]]:
+    """改板通道：`layout_rows` → 带规格；返回 (带规格, 未被覆盖的存量卡, notes)。
+
+    一带一组：`[[{"title","size"}, ...], ...]`，也接受 `{"cards": [...]}`。按**图表标题**命中
+    存量卡（与 remove_charts 同一口径）：未命中或重名 → 回候选清单让模型问用户，绝不猜。
+    未被覆盖的卡由调用方追加到末带并在汇报里点名 —— 静默丢卡等于删了用户的图。
+    """
+    by_title: dict[str, list[dict]] = {}
+    for g in geoms:
+        by_title.setdefault(str(g.get("title") or "").strip(), []).append(g)
+    used: set[int] = set()
+    rows: list[list[dict]] = []
+    notes: list[str] = []
+    raw_rows = rows_arg if isinstance(rows_arg, list) else [rows_arg]
+    for r_no, raw in enumerate(raw_rows, 1):
+        cards_arg = raw.get("cards") if isinstance(raw, dict) else raw
+        if isinstance(cards_arg, dict):
+            cards_arg = [cards_arg]
+        if not isinstance(cards_arg, list) or not cards_arg:
+            raise ScreenIntentError(_error(
+                f"layout_rows 第 {r_no} 项要是卡片数组 [{{title,size}}, ...]（或 {{cards:[...]}}），"
+                f"收到 {type(raw).__name__}"))
+        row: list[dict] = []
+        for c in cards_arg:
+            if not isinstance(c, dict):
+                raise ScreenIntentError(_error(f"layout_rows 第 {r_no} 带的卡片必须是对象，收到 {c!r}"))
+            unknown = [k for k in c if k not in ("title", "name", "size")]
+            if unknown:
+                raise ScreenIntentError(_error(
+                    f"layout_rows 第 {r_no} 带的卡片不认识键 {'、'.join(map(str, unknown))}；"
+                    "整板重排只接受 title（命中存量卡）与 size（大小语义词），"
+                    "带号/格号由数组顺序给出"))
+            title = str(c.get("title") or c.get("name") or "").strip()
+            hits = by_title.get(title) or []
+            if not hits:
+                raise ScreenIntentError(_error(
+                    f"layout_rows 里的「{title}」在这块看板上找不到；现有卡片："
+                    f"{'、'.join(str(g.get('title') or '') for g in geoms) or '（无）'}。"
+                    "请先 get_data_screen 核对标题或向用户确认，不要凭猜重排"))
+            if len(hits) > 1:
+                raise ScreenIntentError(_error(
+                    f"看板上有 {len(hits)} 张同名卡片「{title}」，无法确定要挪哪张；"
+                    "请先向用户确认（或先重命名其中一张）再重排"))
+            g = hits[0]
+            if int(g.get("chart_id") or 0) in used:
+                raise ScreenIntentError(_error(
+                    f"「{title}」在 layout_rows 里出现了多次；一张卡只能占一格"))
+            used.add(int(g.get("chart_id") or 0))
+            cols, word = (None, "") if c.get("size") in (None, "") else _size_to_cols(c.get("size"))
+            row.append({**g, "title": _card_label(g), "cols": cols, "_size_word": word})
+        rows.append(row)
+    leftovers = [g for g in geoms if int(g.get("chart_id") or 0) not in used]
+    if leftovers:
+        notes.append("layout_rows 未覆盖 " + "、".join(_card_label(g) for g in leftovers)
+                     + "，已追加到末带（服务端不静默丢卡）")
+    return rows, leftovers, notes
+
+
+def _layout_rows_positions(layout_rows, kept_geoms, new_geoms, *, filters
+                           ) -> tuple[list[dict], list[dict], dict]:
+    """`layout_rows` 整板语义重排：按标题重排**全部**卡片（存量 + 本次新增），走同一编译口。
+
+    未被 `layout_rows` 点名的卡**绝不静默丢**（那等于删了用户的图）：末带卡宽已全部定死且剩余列
+    够放（每张 ≥ `_SIZE_COLS_MIN` 列）就并进末带，否则另起一带排在最下方，两种都在 notes 点名。
+    返回 (存量卡的 layout_updates, 写好矩形的新卡清单, `_compile_rows` 的 meta)。
+    """
+    rows, leftovers, notes = _layout_rows_specs(layout_rows, list(kept_geoms) + list(new_geoms))
+    if not rows:
+        raise ScreenIntentError(_error(
+            "layout_rows 至少要给一带卡片，形如 [[{title,size}, ...], ...]；"
+            "只想改间距请单独用 gap，不必给 layout_rows"))
+    columns = _BP_COLUMNS["screen"]
+    if leftovers:
+        last = rows[-1]
+        all_fixed = all(c.get("cols") is not None for c in last)
+        spare = columns - sum(int(c["cols"]) for c in last) if all_fixed else 0
+        unplaced = [{**g, "cols": None, "_size_word": ""} for g in leftovers]
+        if all_fixed and spare >= len(unplaced) * _SIZE_COLS_MIN:
+            last.extend(unplaced)
+            notes.append(f"layout_rows 未点名 {'、'.join(_card_label(g) for g in leftovers)}"
+                         f"，已并入第 {len(rows)} 带剩余的 {spare} 列（未静默丢卡）")
+        else:
+            rows.append(unplaced)
+            notes.append(f"layout_rows 未点名 {'、'.join(_card_label(g) for g in leftovers)}，"
+                         f"第 {len(rows) - 1} 带剩余列放不下（每张至少 {_SIZE_COLS_MIN} 列才看得清），"
+                         f"已另起第 {len(rows)} 带排在最下方（未静默丢卡）")
+    flat = [c for row in rows for c in row]
+    rects, meta = _compile_rows(rows, filters=filters, top=_TOP_MARGIN)
+    meta["notes"] = notes + meta["notes"]
+    by_id = {int(c["chart_id"]): r for c, r in zip(flat, rects) if c.get("chart_id")}
+    by_title = {str(c.get("title") or ""): r for c, r in zip(flat, rects) if not c.get("chart_id")}
+    for g in kept_geoms:
+        rect = by_id.get(int(g["chart_id"]))
+        if rect is not None:
+            g.update({k: rect[k] for k in ("x", "y", "w", "h")})
+    layout_updates = [{"chart_id": g["chart_id"],
+                       "position": {k: g[k] for k in ("x", "y", "w", "h")}}
+                      for g in kept_geoms if g["chart_id"] in by_id]
+    for g in new_geoms:
+        rect = by_title.get(str(g.get("title") or ""))
+        if rect is not None:
+            g.update({k: rect[k] for k in ("x", "y", "w", "h")})
+    return layout_updates, new_geoms, meta
+
+
+def _reflow_card_band(dashboard, chart_id: int, *, size=None, after="") -> tuple[list[dict], dict]:
+    """单卡的「大小 / 位置」语义改动 = 只重排它**所在的那一带**，其他带矩形逐字不动。
+
+    宽度沿用该带现有列分布（改一张不该连累同带其他卡的相对宽窄，除非合计越界），
+    边界走 `_col_bounds` 共享 → 同带卡间空白恰好等于板级 gap，不需要动任何人的坐标去"拉间距"。
+    跨带挪位属整板重排，走 `update_data_screen(layout_rows=...)`；这里拒绝并指路，
+    免得模型以为 `after` 能把图从第三行挪到第一行。
+    返回 (该带全部卡的新矩形 [{chart_id,title,position,band}], meta)。
+    """
+    charts = dashboard.get("charts") or []
+    geoms = [_chart_geom(c) for c in charts]
+    by_geom_id = {g["chart_id"]: (g, c) for g, c in zip(geoms, charts)}
+    if chart_id not in by_geom_id:
+        raise ScreenIntentError(_error("图表不属于这块看板"))
+    target_geom, target_chart = by_geom_id[chart_id]
+    pinned = {str(c.get("name") or c["id"]): _has_stored_page_layout(_json_dict(c.get("config")))
+              for c in charts if _has_stored_page_layout(_json_dict(c.get("config")))}
+    if pinned:
+        names = "、".join(list(pinned)[:8])
+        raise ScreenIntentError(_error(
+            f"这块板上有 {len(pinned)} 张卡在人侧编辑器里被钉死了断点版面"
+            f"（config.pageLayout：{names}），渲染端优先用编辑器存的列格，"
+            "size/after 写进去不会生效 —— 请让用户在编辑器里调整或先解除钉死"))
+
+    filters = _json_dict(dashboard.get("filters"))
+    canvas_w = _canvas_width_of(filters, geoms)
+    bands = _bands_of(geoms)
+    band_no = next((i for i, band in enumerate(bands)
+                    if any(g["chart_id"] == chart_id for g in band)), 0)
+    band = bands[band_no]
+    projected = {id(g): p for g, p in zip(band, _project_columns(band, canvas_w))}
+    cards = [{**g, "cols": projected[id(g)]["cols"], "_size_word": f"cols:{projected[id(g)]['cols']}",
+              "_band": band_no + 1} for g in band]
+    notes: list[str] = []
+
+    named = None
+    if size not in (None, ""):
+        cols, word = _size_to_cols(size)
+        hit = next((c for c in cards if c["chart_id"] == chart_id), None)
+        hit["cols"], hit["_size_word"] = cols, word
+        named = hit
+        notes.append(f"「{_card_label(target_chart)}」大小 = {word}（{cols}/{_BP_COLUMNS['screen']} 列）")
+    if str(after or "").strip():
+        want = str(after).strip()
+        ref = [c for c in cards if str(c.get("title") or "").strip() == want]
+        if len(ref) != 1:
+            raise ScreenIntentError(_error(
+                f"要把「{_card_label(target_chart)}」放到「{want}」右边，但"
+                + ("这一带没有这张卡（跨带挪位请用 update_data_screen 的 layout_rows 整板重排）"
+                   if not ref else "这一带有重名卡片，无法确定参照哪一张")
+                + f"；本带现有卡片：{'、'.join(str(c.get('title') or '') for c in cards) or '（空）'}。"
+                "指代不明时请先向用户确认，不要猜"))
+        me = next(c for c in cards if c["chart_id"] == chart_id)
+        cards.remove(me)
+        cards.insert(cards.index(ref[0]) + 1, me)
+        notes.append(f"「{_card_label(target_chart)}」已排到「{want}」右侧（第 {band_no + 1} 带内）")
+
+    if named is not None:
+        # 用户只点名了一张的大小 → 让位的是**同带未点名**的卡（等比压缩，保住彼此相对宽窄）。
+        # 这与 `_compile_rows` 拒绝的"多张点名互相冲突"不是同一件事：这里没有歧义可问。
+        columns = _BP_COLUMNS["screen"]
+        others = [c for c in cards if c is not named]
+        over = sum(int(c["cols"]) for c in cards) - columns
+        if others and over > 0:
+            left = columns - int(named["cols"])
+            if left < len(others) * _SIZE_COLS_MIN:
+                raise ScreenIntentError(_error(
+                    f"「{_card_label(target_chart)}」放到 {named['cols']} 列后，本带只剩 {left} 列给"
+                    f"另外 {len(others)} 张卡（每张至少 {_SIZE_COLS_MIN} 列才看得清）；"
+                    f"现有卡片：{'、'.join(str(c.get('title') or '') for c in cards)}。"
+                    "请向用户确认是把其中一张挪到别的带（update_data_screen 的 layout_rows 整板重排），"
+                    "还是换更小的档位 —— 不要自行把某张压到看不清"))
+            before = [int(c["cols"]) for c in others]
+            for c, cols in zip(others, _scale_cols(before, left)):
+                c["cols"] = cols
+            detail = "、".join("{}→{}列".format(_card_label(c), c["cols"]) for c in others)
+            notes.append(
+                f"「{_card_label(target_chart)}」占 {named['cols']} 列后，同带未点名的 {len(others)} 张"
+                f"按现有宽窄等比让位（{detail}）合计铺满 {columns} 列")
+
+    rects, meta = _compile_rows([cards], filters=filters, top=min(int(c["y"]) for c in cards))
+    meta["notes"] = notes + meta["notes"]
+    meta["band"] = band_no + 1
+    placed = [{"chart_id": c["chart_id"], "title": c["title"],
+               "position": {k: r[k] for k in ("x", "y", "w", "h")}}
+              for c, r in zip(cards, rects)]
+    return placed, meta
+
+
+# ── 工具 handler(SDK 无关) ─────────────────────────────────────────────
 def _mount_chart(chart_service, dashboard_id: int, item: dict, position: dict, identity: dict) -> int:
     """把 `_prepare_widget` 的产物挂成数据集图并预填首屏缓存（建屏与改板加图同一通道）。
 
@@ -1005,7 +1714,7 @@ async def create_data_screen(args: dict) -> dict:
             "直建大屏不支持交互筛选参数：每张图的口径存放在数据集里（已固定为本次意图），"
             "看板参数没有消费方，生成了就是“能填不出数”的死控件。确实需要参数控件（日期区间/"
             "下拉/搜索按钮等）时，请告知用户：到「数据集」页把正文改成 ${参数} 外置并声明入参，"
-            "再在看板编辑器挂 widget_* 控件绑定该参数（口径见 screen-builder 技能 B2.5）；"
+            "再在看板编辑器挂 widget_* 控件绑定该参数（口径见「看板设计」技能 B2.5）；"
             "控件没有取数语义，不要把它当图表提交。")
     
     from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
@@ -1027,6 +1736,46 @@ async def create_data_screen(args: dict) -> dict:
         filters["theme"] = theme
     if style:
         filters["components"] = style
+
+    # 版面基线来源（需求①「先参考现有的其他图表的布局和样式作为基础」）：`base_from` 只拷
+    # 版面与视觉（间距/主题/字模/画布宽/组件快照），**不拷**卡片、口径、站点、pageLayout。
+    baseline_source = None
+    if str(args.get("base_from") or "").strip():
+        try:
+            baseline, baseline_source = await _board_visual_baseline(args.get("base_from"), ctx, identity)
+        except ScreenIntentError as e:
+            return e.response
+        except Exception as e:  # noqa: BLE001 — 原始细节仅进日志，回分类文案
+            return _safe_exec_error(e, "read baseline board")
+        design = dict(filters.get("design") or {}) if isinstance(filters.get("design"), dict) else {}
+        if baseline.get("gap") is not None and args.get("gap") in (None, ""):
+            page = dict(design.get("page") or {}) if isinstance(design.get("page"), dict) else {}
+            page["gap"] = baseline["gap"]
+            design["page"] = page
+        for key in ("canvas", "componentSnapshots"):
+            if baseline.get(key) is not None:
+                design[key] = baseline[key]
+        if baseline.get("themePack"):
+            design["themePack"] = baseline["themePack"]
+        if design:
+            filters["design"] = design
+        if not theme and baseline.get("theme"):
+            theme = baseline["theme"]
+            filters["theme"] = theme
+            theme_mode = theme.get("mode") if theme.get("mode") in ("light", "dark") else theme_mode
+        if not style and baseline.get("components"):
+            style = baseline["components"]
+            filters["components"] = style
+
+    # 「图表间距」= 板级 design.page.gap（渲染端唯一的间距事实源）。这个维度过去在 AI 通道里
+    # 根本不存在，模型只能改卡片宽度冒充间距（用户当场反驳"我要的是间隔，不是大小"）。
+    gap_arg, gap_note = None, None
+    if args.get("gap") not in (None, ""):
+        gap_clamped, gap_err, gap_note = _clamp_gap_map(args.get("gap"))
+        if gap_err:
+            return gap_err
+        filters, _merge_notes = _merge_page_gap(filters, gap_clamped)
+        gap_arg = filters["design"]["page"]["gap"]
     
     # 逐图: 校验意图 + 定源 + 落数据集 + 预取数（失败即整单不落库）
     prepared = []
@@ -1050,13 +1799,40 @@ async def create_data_screen(args: dict) -> dict:
             w = {**w, "site": top_site}
             item["widget"] = w
         layout_widgets.append(w)
-    try:
-        emphasis = _coerce_struct(args.get("emphasis"), "emphasis", dict) or {}
-        positions = {id(widget): pos for widget, pos in _auto_layout(layout_widgets, emphasis)}
-    except ScreenIntentError as e:
-        return e.response
-    except Exception as e:  # noqa: BLE001 — 版面是服务端算的，算不出来属系统侧问题
-        return _safe_exec_error(e, "auto layout")
+    # 语义版面通道：任一 widget 给了 layout（band/in_row/size/after）就走**唯一编译口**，
+    # 与手写 position 互斥 —— 两者并存时"谁赢"取决于渲染端取整，用户看不出也没法复现。
+    use_layout = any(item["widget"].get("layout") not in (None, "", {}, []) for item in prepared)
+    pos_by_index: dict[int, dict] = {}
+    layout_meta: dict | None = None
+    if use_layout:
+        clashed = [str(item["title"]) for item in prepared if item["widget"].get("position")]
+        if clashed:
+            return _error(
+                f"这些卡片同时给了 layout 与 position：{'、'.join(clashed)}。"
+                "手写像素做不到等距（渲染端按 64 列取整，节距不是整列数就会留出空洞，"
+                "视觉间距在 gap 与 一步+gap 之间交替）；等大小/等间距请只给 layout + 板级 gap。"
+                "确实需要逐像素摆位就删掉 layout 只留 position，并在汇报里说明间距由列取整决定、"
+                "不保证一致")
+        try:
+            specs, spec_notes = _layout_specs([
+                {"title": item["title"], "chart_type": item["chart_type"],
+                 "layout": item["widget"].get("layout")} for item in prepared])
+            rects, layout_meta = _compile_rows(specs, gap=None, filters=filters, top=_TOP_MARGIN)
+        except ScreenIntentError as e:
+            return e.response
+        layout_meta["notes"] = spec_notes + layout_meta["notes"]
+        if args.get("emphasis"):
+            layout_meta["notes"].append("同时给了 emphasis 与 layout：以 layout 为准，emphasis 本次不生效")
+        order = [c["_idx"] for row in specs for c in row]
+        pos_by_index = {idx: {k: r[k] for k in ("x", "y", "w", "h")} for idx, r in zip(order, rects)}
+    else:
+        try:
+            emphasis = _coerce_struct(args.get("emphasis"), "emphasis", dict) or {}
+            positions = {id(widget): pos for widget, pos in _auto_layout(layout_widgets, emphasis)}
+        except ScreenIntentError as e:
+            return e.response
+        except Exception as e:  # noqa: BLE001 — 版面是服务端算的，算不出来属系统侧问题
+            return _safe_exec_error(e, "auto layout")
 
     # 创建大屏 + 图表。落库异常必须按错因分类回给模型：裸异常会被工具壳兜成
     # 「权限、资源或执行环境不满足要求」，把 schema 漂移（如 query_source 枚举缺值）
@@ -1089,9 +1865,14 @@ async def create_data_screen(args: dict) -> dict:
     chart_service = ChartService()
     try:
         layout_log = []
-        for item in prepared:
+        for i, item in enumerate(prepared):
             custom_pos = item["widget"].get("position") or {}
-            position = custom_pos if all(k in custom_pos for k in ("x", "y", "w", "h")) else positions.get(id(item["widget"]), {"x": 0, "y": 0, "w": 640, "h": 360})
+            if use_layout:
+                position = pos_by_index.get(i) or {"x": 0, "y": 0, "w": 640, "h": 360}
+            elif all(k in custom_pos for k in ("x", "y", "w", "h")):
+                position = custom_pos
+            else:
+                position = positions.get(id(item["widget"]), {"x": 0, "y": 0, "w": 640, "h": 360})
             layout_log.append({"title": item["title"], "chart_type": item["chart_type"],
                                **{k: position.get(k) for k in ("x", "y", "w", "h")}})
             _mount_chart(chart_service, dashboard_id, item, position, identity)
@@ -1114,7 +1895,7 @@ async def create_data_screen(args: dict) -> dict:
                           else len(item["result"].get("rows") or []))),
     } for item in prepared]
     empty_charts = [a["title"] for a in data_audit if a["row_count"] == 0]
-    layout_audit = _layout_audit(layout_log)
+    layout_audit = _layout_audit(layout_log, filters=filters)
     message = f"数据大屏「{name}」已创建({len(prepared)} 个图表), 访问路径: {url}"
     if empty_charts:
         message += (f"；其中 {len(empty_charts)} 个图表取数为空: {'、'.join(empty_charts)} —— "
@@ -1126,6 +1907,16 @@ async def create_data_screen(args: dict) -> dict:
     elif layout_audit["hierarchy"] is False:
         message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后重排，"
                     "不要把“已创建 N 个图表”当版面合格")
+    if gap_arg:
+        message += (f"；间距已写至板级 design.page.gap（大屏档 {gap_arg['screen']}px，"
+                    f"纵向渲染 {_vertical_step_px(gap_arg['screen'])}px）—— "
+                    "间距只由这个字段决定，本次没有为了“拉开间隔”而改任何卡片宽度")
+    elif baseline_source:
+        message += (f"；间距/主题/字模沿用基线看板「{baseline_source}」"
+                    f"（大屏档 {(_board_gap_of(filters))['screen']}px）")
+    if layout_meta and layout_meta.get("notes"):
+        message += "；版面说明：" + "；".join(layout_meta["notes"])
+    message += _spacing_notice(layout_audit)
     return _text({
         "dashboard_id": dashboard_id,
         "name": name,
@@ -1136,7 +1927,13 @@ async def create_data_screen(args: dict) -> dict:
         "datasets": [{"title": it["title"],
                       "dataset": (it["dataset"] or {}).get("name")} for it in prepared],
         "style": style or None,
+        # 间距的**唯一事实源**（四档生效值）：回显给模型，否则它只能凭像素差宣称间距
+        "gap": _board_gap_of(filters),
+        "gap_note": gap_note,
+        "baseline_source": baseline_source,
+        "layout_mode": "semantic" if use_layout else "auto",
         "layout": layout_log,
+        "layout_meta": layout_meta,
         "layout_audit": layout_audit,
         # 可看性记账：非 admin 建完能不能在自己的「数据看板」页看到，取决于这次补授
         "visibility": {"granted_roles": len(granted_roles),
@@ -1177,6 +1974,9 @@ def _chart_summary(c: dict) -> dict:
         "dataset_name": (cfg or {}).get("dataset_name") if isinstance(cfg, dict) else None,
         "config": _sanitize_config(cfg),
         "position": c.get("position"),
+        # 被编辑器钉死的断点：这些档位的版面由存的列格说了算，服务端写 position 对它无效
+        # —— 不标出来，模型会"改成功"而用户看到原样（no-silent-degradation）。
+        "page_layout_pinned": _has_stored_page_layout(cfg if isinstance(cfg, dict) else {}) or None,
     }
 
 
@@ -1207,6 +2007,9 @@ async def get_data_screen(args: dict) -> dict:
         "filters": dashboard.get("filters"),
         "charts": charts_summary,
         "chart_count": len(charts_summary),
+        # 版面基线（间距/列格/带分布/字模槽/钉死断点）：需求①「以现有图表的布局和样式为基础」
+        # 的事实源。缺了它，模型只能拿像素 position 反推列格，必然算错等距。
+        "layout_baseline": _layout_baseline(dashboard),
     })
 
 
@@ -1253,6 +2056,22 @@ async def update_data_screen_chart(args: dict) -> dict:
     except ScreenIntentError as e:
         return e.response
 
+    # 语义版面（大小 / 带内位置）与手写像素互斥：像素既不能保证等距，也没有"相对谁"的语义。
+    size_arg = args.get("size")
+    after_arg = str(args.get("after") or "").strip()
+    reflow: list[dict] | None = None
+    reflow_meta: dict | None = None
+    if size_arg not in (None, "") or after_arg:
+        if pos_arg:
+            return _error("size/after 与 position 互斥：手写像素做不到等距（列取整会留空洞），"
+                          "等大小/等间距请只给 size（+ 板级 gap）。确需逐像素摆位就删掉 size/after")
+        try:
+            # 预检放在写之前：大小/参照不合法一笔不写（与整条通道「先算后写」同一纪律）
+            reflow, reflow_meta = _reflow_card_band(dashboard, chart_id, size=size_arg,
+                                                    after=after_arg)
+        except ScreenIntentError as e:
+            return e.response
+
     update_data: dict = {}
     if args.get("title"):
         update_data["name"] = str(args["title"]).strip()
@@ -1262,7 +2081,7 @@ async def update_data_screen_chart(args: dict) -> dict:
             return _error(
                 f"{ct} 是参数控件：直建/改图通道不产控件（控件绑定的变量没有消费方，填了不出数）。"
                 "需要筛选交互请告知用户：数据集正文改 ${变量} 外置 + 声明入参，再到看板编辑器挂 widget_* 绑定；"
-                "口径见 screen-builder 技能 B2.5")
+                "口径见「看板设计」技能 B2.5")
         if ct not in _CHART_TYPES:
             return _error(f"不支持的图表类型: {args['chart_type']}, 可选: {', '.join(sorted(_CHART_TYPES))}")
         update_data["chart_type"] = ct
@@ -1313,15 +2132,15 @@ async def update_data_screen_chart(args: dict) -> dict:
                 "semantic_query": None,
                 "sql_query": None,
             })
-    elif update_data:
-        # 纯视觉/标题编辑：不碰数据集，只要看板写权限
+    elif update_data or reflow is not None:
+        # 纯视觉/标题/版面编辑：不碰数据集，只要看板写权限
         try:
             require_screen_perms(ctx, need_dataset=False)
         except PermissionError as e:
             return _error(str(e))
 
-    if not update_data:
-        return _error("没有提供任何要更新的字段(title/chart_type/query/config/position)")
+    if not update_data and reflow is None:
+        return _error("没有提供任何要更新的字段(title/chart_type/query/config/position/size/after)")
 
     # 纯视觉编辑保留原图其余 config: 先读原图再浅合并（换意图时 config 由直建通道重建）
     if "config" in update_data and not intent and isinstance(existing.get("config"), dict):
@@ -1338,6 +2157,10 @@ async def update_data_screen_chart(args: dict) -> dict:
             from backend.common.db import execute_write
 
             execute_write("UPDATE adh_charts SET data_cache=%s WHERE id=%s", (cache, int(chart_id)))
+        if reflow:
+            # 同带其他卡跟着让位/靠拢（只动这一带，其余带的矩形逐字不动）
+            ChartService().update_layout(dashboard_id, [
+                {"chart_id": it["chart_id"], "position": it["position"]} for it in reflow])
         _invalidate_dashboard_payload(dashboard_id)
     except Exception as e:  # noqa: BLE001 — 原始细节仅进日志, 回分类文案
         return _safe_exec_error(e, "update chart persist")
@@ -1354,17 +2177,29 @@ async def update_data_screen_chart(args: dict) -> dict:
             except Exception:  # noqa: BLE001 — 脏数据不得盖住主流程, 仅跳过该图几何
                 pos = {}
         rects.append({"id": c.get("id"), "title": c.get("name"), **pos})
-    if pos_arg or update_data.get("name"):
+    if pos_arg or update_data.get("name") or reflow:
+        placed = {int(it["chart_id"]): it for it in (reflow or [])}
         for r in rects:
+            hit = placed.get(int(r.get("id") or 0))
+            if hit:
+                r.update(hit["position"])
             if r.get("id") != chart_id:
                 continue
             r.update({k: pos_arg[k] for k in ("x", "y", "w", "h") if k in (pos_arg or {})})
             # 名字也同步成本次改后的：自检报告里指旧名会让人找错图
             if update_data.get("name"):
                 r["title"] = update_data["name"]
-    layout_audit = _layout_audit(rects)
+                for it in (reflow or []):
+                    if it["chart_id"] == chart_id:
+                        it["title"] = update_data["name"]
+    layout_audit = _layout_audit(rects, filters=dashboard.get("filters"))
 
     message = f"图表已更新, 访问路径: /screen/{dashboard_id}"
+    updated_fields = list(update_data.keys())
+    if size_arg not in (None, ""):
+        updated_fields.append("size")
+    if after_arg:
+        updated_fields.append("after")
     if row_count == 0:
         message += ("；本次取数为空 —— 空图不是成功, 请核对时间窗/过滤条件/口径覆盖"
                     "并向用户说明(不得换近似指标凑数)")
@@ -1375,13 +2210,23 @@ async def update_data_screen_chart(args: dict) -> dict:
     elif layout_audit["hierarchy"] is False:
         message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后重排，"
                     "不要把“已创建 N 个图表”当版面合格")
+    if reflow:
+        message += (f"；大小/位置按语义改板：只重排第 {reflow_meta['band']} 带"
+                    f"（该带 {len(reflow)} 张卡列格首尾相接，纵向行距 = gapRows(板级 gap)；"
+                    "其余带位置逐字未动，本次没为改间距而动宽度）")
+        if reflow_meta.get("notes"):
+            message += "；版面说明：" + "；".join(reflow_meta["notes"])
+    message += _spacing_notice(layout_audit)
     return _text({
         "dashboard_id": dashboard_id,
         "chart_id": chart_id,
         "url": f"/screen/{dashboard_id}",
-        "updated_fields": list(update_data.keys()),
+        "updated_fields": updated_fields,
         "dataset_name": dataset_name,
         "row_count": row_count,
+        "layout": reflow,
+        "layout_meta": reflow_meta,
+        "gap": _board_gap_of(dashboard.get("filters")),
         "layout_audit": layout_audit,
         "message": message,
     })
@@ -1409,6 +2254,87 @@ def _json_dict(value) -> dict:
     return {}
 
 
+def _clamp_gap_map(raw):
+    """把「间距」入参归一成四档：int/数字 → 四档同值；dict → 逐档取整夹到 0~64。
+
+    返回 (gaps, error, note)：error 非空 = **拒收**（未知设备档、类型不支持，不猜）；
+    note 非空 = 已接受但被夹到合法范围，调用方必须把它转达给用户（不静默改数值）。
+    """
+    if raw is None or raw == "":
+        return None, None, None
+    if isinstance(raw, bool):
+        return None, _error("图表间距（gap）只接受整数像素或按设备的四档字典，不接受布尔值。"), None
+    if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.strip().lstrip("-").isdigit()):
+        try:
+            value = int(round(float(str(raw).strip())))
+        except (TypeError, ValueError):
+            return None, _error(f"图表间距（gap）无法解析为整数：{raw!r}。"), None
+        clamped = max(_GAP_MIN, min(_GAP_MAX, value))
+        note = None if clamped == value else (
+            f"图表间距只能在 {_GAP_MIN}~{_GAP_MAX}px 之间，请求的 {value}px 已按 {clamped}px 写入")
+        return {bp: clamped for bp in _BP_COLUMNS}, None, note
+    if isinstance(raw, dict):
+        unknown = [str(k) for k in raw if str(k) not in _BP_COLUMNS]
+        if unknown:
+            return None, _error(
+                f"图表间距（gap）不认识的设备档 {'、'.join(unknown)}；"
+                f"只有 {'、'.join(_BP_COLUMNS)} 四档（想四档同值直接传整数）。"), None
+        out: dict = {}
+        cut: list[str] = []
+        for bp in _BP_COLUMNS:
+            if bp not in raw or raw[bp] is None or raw[bp] == "":
+                out[bp] = _DEFAULT_PAGE_GAP[bp]
+                continue
+            val = raw[bp]
+            if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+                return None, _error(f"gap.{bp} 需要整数像素，收到 {val!r}。"), None
+            try:
+                num = int(round(float(val)))
+            except (TypeError, ValueError):
+                return None, _error(f"gap.{bp} 无法解析为整数：{val!r}。"), None
+            clamped = max(_GAP_MIN, min(_GAP_MAX, num))
+            if clamped != num:
+                cut.append(f"{bp} {num}→{clamped}")
+            out[bp] = clamped
+        note = (f"图表间距只能在 {_GAP_MIN}~{_GAP_MAX}px 之间，已夹取：{'、'.join(cut)}"
+                if cut else None)
+        return out, None, note
+    return None, _error(f"图表间距（gap）类型不支持：{type(raw).__name__}。"
+                        "传整数（四档同值）或按设备的字典。"), None
+
+
+def _board_gap_of(filters) -> dict:
+    """读板级间距唯一事实源 `filters.design.page.gap`，缺档回落渲染端默认（输出恒为四档全值）。"""
+    flt = _json_dict(filters)
+    raw = (flt.get("design") or {}).get("page") if isinstance(flt.get("design"), dict) else None
+    gap = _json_dict(raw).get("gap") if isinstance(raw, dict) else None
+    out = dict(_DEFAULT_PAGE_GAP)
+    if isinstance(gap, dict):
+        for bp, val in gap.items():
+            if str(bp) in _BP_COLUMNS and isinstance(val, (int, float)) and not isinstance(val, bool):
+                out[str(bp)] = max(_GAP_MIN, min(_GAP_MAX, int(round(val))))
+    return out
+
+
+def _merge_page_gap(filters, gap: dict) -> tuple[dict, list]:
+    """深合并：只替换 `design.page.gap`，其余键（canvas / componentSnapshots / themePack /
+    motionOverride / 已有 page.version）逐字保留，**不伪造 version**（渲染端容忍缺失）。
+
+    副作用必须如实告知模型：`design.page` 这个键**一旦存在**，看板缩略图就改走页面布局视图
+    （frontend/src/lib/dashboardThumbnail.ts: `filters?.design?.page !== undefined`），
+    缩略图观感会随 gap 变化 —— 只在它首次出现时提这一点（本来就在 page 模式的板不新增变化）。
+    """
+    flt = dict(_json_dict(filters))
+    design = dict(flt.get("design") or {}) if isinstance(flt.get("design"), dict) else {}
+    page = dict(design.get("page") or {}) if isinstance(design.get("page"), dict) else {}
+    page_appeared = "page" not in design
+    page["gap"] = {bp: int(gap[bp]) for bp in _BP_COLUMNS}
+    design["page"] = page
+    flt["design"] = design
+    notes = ["已写入 design.page.gap：该键存在后看板缩略图按页面布局档渲染（预期副作用）"] if page_appeared else []
+    return flt, notes
+
+
 def _chart_geom(c: dict) -> dict:
     """存量图表的版面事实：标题/类型/站点业务名 + 矩形（整板自检与重排都吃这一份）。"""
     pos = _json_dict(c.get("position"))
@@ -1427,30 +2353,189 @@ def _rect(geom: dict) -> dict:
     return {k: geom.get(k) for k in ("title", "chart_type", "x", "y", "w", "h")}
 
 
-def _append_band_layout(kept: list[dict], new_geoms: list[dict]) -> list[dict]:
+def _has_stored_page_layout(cfg) -> list[str]:
+    """该图被**人侧编辑器钉死**的断点清单（`config.pageLayout.<bp>` 存在 = 该档由存的列格说了算）。
+
+    为什么模型必须看见这件事：钉死的卡会无视服务端写进去的 `position`（渲染端优先用存的矩形），
+    也可能因存的列越界让整板渲染报错。此时 AI 通道**不能假装改版面成功**，要指路编辑器。
+    """
+    lay = (cfg or {}).get("pageLayout") if isinstance(cfg, dict) else None
+    if not isinstance(lay, dict):
+        return []
+    return [bp for bp in _BP_COLUMNS if isinstance(lay.get(bp), dict)]
+
+
+def _match_baseline_cols(kept_geoms, n: int, canvas_w: int = None) -> list[int]:
+    """沿用品格自身的版面：取存量卡投影列宽的**众数**铺 n 张（边界仍首尾相接），无众数则 64 列等分。
+
+    这就是需求①「先参考现有其他图表的布局和样式作为基础布局」在改板加图时的落点 ——
+    新增卡与存量卡同宽，用户看到的是一开始就排好的，而不是新来的挤成一条细条。
+    """
+    columns = _BP_COLUMNS["screen"]
+    if n <= 0:
+        return []
+    counts: dict[int, int] = {}
+    for p in _project_columns(kept_geoms, canvas_w or _CANVAS_W):
+        counts[p["cols"]] = counts.get(p["cols"], 0) + 1
+    modal = max(counts, key=lambda k: (counts[k], -k)) if counts else 0
+    if counts.get(modal, 0) >= 2 and modal * n <= columns:
+        widths = [modal] * n
+        widths[-1] += columns - modal * n      # 余量归最右卡：满铺才没有空洞，宽度仍跟品格
+        return widths
+    return _even_cols(n)
+
+
+def _layout_baseline(dashboard) -> dict:
+    """版面基线：把"这块板子格是什么"一次算给模型（大小/位置/间距三维度的事实源）。
+
+    此前 `get_data_screen` 只回原始 filters + 像素 position，模型既看不到板级 gap，也看不到
+    列分布 —— 于是"参考现有布局"无从谈起，只能拿像素猜（这正是"不太能理解用户意图"的一半根因）。
+    """
+    charts = dashboard.get("charts") or []
+    geoms = [_chart_geom(c) for c in charts]
+    flt = _json_dict(dashboard.get("filters"))
+    canvas_w = _canvas_width_of(flt, geoms)
+    board_gap = _board_gap_of(flt)
+    page = (_json_dict((flt.get("design") or {}).get("page")) if isinstance(flt.get("design"), dict) else {})
+    pinned = {_card_label(g): _has_stored_page_layout(_json_dict(c.get("config")))
+              for g, c in zip(geoms, charts) if _has_stored_page_layout(_json_dict(c.get("config")))}
+    projected = list(zip(geoms, _project_columns(geoms, canvas_w)))
+    col_of = {id(g): p for g, p in projected}
+    column_px = canvas_w / _BP_COLUMNS["screen"]
+    rows: list[dict] = []
+    for band in _bands_of(geoms):
+        cols = [col_of[id(g)] for g in band if id(g) in col_of]
+        cols.sort(key=lambda p: p["left"])
+        rows.append({
+            "band": len(rows) + 1, "y": cols[0]["y"] if cols else 0,
+            "cards": [{"title": p["title"], "col": p["col"], "cols": p["cols"], "px_w": p["px_w"]}
+                      for p in cols],
+            "spare_cols": max(0, _BP_COLUMNS["screen"] - (cols[-1]["col_end"] if cols else 0)),
+            "gaps_px": [int(round(max(0, b["left"] - a["col_end"]) * column_px + board_gap["screen"]))
+                        for a, b in zip(cols, cols[1:])],
+        })
+    design = flt.get("design") if isinstance(flt.get("design"), dict) else {}
+    return {
+        "columns": _BP_COLUMNS["screen"], "canvas_width": canvas_w,
+        "column_px": round(column_px, 3),
+        "gap": board_gap,
+        "gap_source": "design.page.gap（该板已设）" if isinstance(page.get("gap"), dict)
+                      else "渲染端默认（该板未设 design.page.gap，改间距即写这个键）",
+        "gap_vertical_px": _vertical_step_px(board_gap["screen"]),
+        "rows": rows,
+        "modal_card_cols": _modal_cols(projected),
+        "pinned_charts": pinned or None,
+        "slots": {
+            "theme": sorted((flt.get("theme") or {}).keys()) if isinstance(flt.get("theme"), dict) else [],
+            "components": flt.get("components") if isinstance(flt.get("components"), dict) else {},
+            "themePack": design.get("themePack"),
+            "canvas_width_declared": (design.get("canvas") or {}).get("width")
+            if isinstance(design.get("canvas"), dict) else None,
+        },
+        "note": ("间距只由 gap 决定（横向 = gap，纵向恒为 gap_vertical_px）；大小只由列数决定"
+                 f"（满宽 {_BP_COLUMNS['screen']} 列）；position 像素是列格的投影，不要用它表达间距。"),
+    }
+
+
+def _modal_cols(projected) -> int | None:
+    """品格**众数列宽**（= 这张板子格上"一张正常卡"的宽度）；没有重复值时回 None（无品格可沿用）。"""
+    counts: dict[int, int] = {}
+    for _g, p in projected:
+        counts[p["cols"]] = counts.get(p["cols"], 0) + 1
+    if not counts:
+        return None
+    modal = max(counts, key=lambda k: (counts[k], -k))
+    return modal if counts[modal] >= 2 else None
+
+
+async def _board_visual_baseline(ref, ctx, identity) -> tuple[dict, str]:
+    """`base_from` 解析口：从另一块板**只拷版面与视觉**，不拷内容（需求①的落点）。
+
+    拷：`design.page.gap`（间距）、`theme`（仅 `_THEME_KEYS`）、`components`（字模槽）、
+    `design.canvas.width`、`design.componentSnapshots`、`design.themePack`。
+    绝不拷：卡片与数据集（口径）、`params`、图 config 里的 `site`/`pageLayout`、板名 ——
+    「参考现有图表的布局和样式作为基础」要的是版面与视觉口径，不是把别板的数据搬过来
+    （口径归属与站点归属必须重新解析，钉死的 pageLayout 更是人侧编辑器私有物）。
+
+    可见性按「能不能读到这块板」裁决（主题/字模同属内容可见面，fail-closed）：不可见即拒，
+    不静默跳过基线（否则用户以为拷了品格、实际拷了个空）。
+    """
+    from backend.modules.mind.execution import resource_guard
+    from backend.modules.viz.services.dashboard_service import DashboardService, visible_dashboard_ids
+
+    try:
+        row = resource_guard._resolve_dashboard_target(ctx, {"name": str(ref or "").strip()})
+    except ScreenIntentError as e:
+        raise e
+    except (ValueError, PermissionError, RuntimeError) as e:
+        # ResourceScopeError 系「不存在/歧义」，文案自带候选清单，原样回给模型即可
+        raise ScreenIntentError(_error(str(e) or "基线看板定位失败"))
+    dashboard_id = int(row["id"])
+    allowed = visible_dashboard_ids(identity["user_id"], identity.get("role") or "",
+                                   identity["workspace_id"])
+    if allowed is not None and dashboard_id not in allowed:
+        raise ScreenIntentError(_error(
+            f"看板「{row.get('name') or dashboard_id}」不在当前账号的可见清单里，不能作为版面基线；"
+            "请与用户确认要参考哪块板（先用 list_data_screens 查可看清单）"))
+
+    dashboard = DashboardService().get_dashboard(dashboard_id, identity["user_id"],
+                                                 enforce_visibility=False)
+    if not dashboard:
+        raise ScreenIntentError(_error(
+            f"基线看板「{row.get('name') or dashboard_id}」已不存在（可能刚被删除），"
+            "请用 list_data_screens 重新核对清单"))
+
+    flt = _json_dict(dashboard.get("filters"))
+    design = flt.get("design") if isinstance(flt.get("design"), dict) else {}
+    page = design.get("page") if isinstance(design.get("page"), dict) else {}
+    gap = page.get("gap")
+    theme = {k: v for k, v in (flt.get("theme") or {}).items()
+             if k in _THEME_KEYS} if isinstance(flt.get("theme"), dict) else {}
+    canvas = design.get("canvas") if isinstance(design.get("canvas"), dict) else None
+    return {
+        "gap": _public_vis_value(gap) if isinstance(gap, dict) else None,
+        "theme": theme or None,
+        "components": _public_vis_value(flt.get("components"))
+        if isinstance(flt.get("components"), dict) else None,
+        "canvas": {"width": canvas.get("width")} if canvas and canvas.get("width") else None,
+        "componentSnapshots": _public_vis_value(design.get("componentSnapshots")),
+        "themePack": _public_vis_value(design.get("themePack")),
+    }, str(row.get("name") or dashboard_id)
+
+
+def _append_band_layout(kept: list[dict], new_geoms: list[dict], *, gap=None, filters=None) -> list[dict]:
     """在既有版面**下方**追加新图：不挪存量卡（人的编排照旧），只给新卡找位置。
 
+    宽度沿用品格自身的众数列宽（`_match_baseline_cols`），纵向间隙跟板级 gap 一致 ——
+    这两条一起保证"新加的图看起来本来就在那儿"。
     排不下即拒并给出路（删空图 / relayout=true 整板重排），不静默压矮、也不叠在旧卡上。
     返回新卡矩形清单（含 title/chart_type + x/y/w/h）。
     """
+    flt = _json_dict(filters)
+    canvas_w = _canvas_width_of(flt, kept)
+    board_gap = _board_gap_of(flt) if gap is None else (_clamp_gap_map(gap)[0] or _board_gap_of(flt))
+    vstep = _vertical_step_px(board_gap["screen"])
     occupied = [g for g in kept if int(g.get("h") or 0) > 0]
-    top = max((int(g["y"]) + int(g["h"]) for g in occupied), default=_TOP_MARGIN - _ROW_GAP)
-    top = max(top + (_ROW_GAP if occupied else 0), _TOP_MARGIN)
+    top = max((int(g["y"]) + int(g["h"]) for g in occupied), default=_TOP_MARGIN - vstep)
+    top = max(top + (vstep if occupied else 0), _TOP_MARGIN)
     bands = [new_geoms[i:i + _MAX_PER_ROW] for i in range(0, len(new_geoms), _MAX_PER_ROW)]
-    heights = _alloc_band_heights(_CANVAS_H - top, [_band_floor(b, 0) for b in bands], False)
+    heights = _alloc_band_heights(_CANVAS_H - top, [_band_floor(b, 0) for b in bands], False, gap=vstep)
     if not heights:
         raise ScreenIntentError(_error(
             f"画布已排到 y={top}px，剩余高度放不下新增的 {len(new_geoms)} 张图"
             f"（每类图有前端最小高，压不下也不能叠在旧卡上）。请先用 remove_charts 删掉空图/废图，"
             "或带 relayout=true 让服务端整板重排（会重排存量卡位置）。"))
+    bounds = _col_bounds(canvas_w)
     out: list[dict] = []
     y = top
     for band, h in zip(bands, heights):
-        x = 0
-        for geom, cw in zip(band, _tile(_CANVAS_W, len(band))):
-            out.append({**geom, "x": x, "y": y, "w": cw, "h": h})
-            x += cw
-        y += h + _ROW_GAP
+        start = 0
+        for geom, cols in zip(band, _match_baseline_cols(kept, len(band), canvas_w)):
+            out.append({**geom, "x": bounds[start], "y": y,
+                        "w": bounds[start + cols] - bounds[start], "h": h,
+                        "col": start + 1, "cols": cols})
+            start += cols
+        y += h + vstep
     return out
 
 
@@ -1548,22 +2633,33 @@ async def list_data_screens(args: dict) -> dict:
         "groups": [n for n in (boards_in.get(int(r["id"])) or []) if n],
         "url": f"/screen/{int(r['id'])}",
     } for r in rows]
+    if keyword and len(items) == 1:
+        # 命中单块板才补读一次 filters（清单载荷保持瘦），把间距四档如实报出来：
+        # 「这块板现在间距多少」不必再翻一次 get_data_screen 才能回答。
+        solo = execute_query("SELECT filters FROM adh_dashboards WHERE id=%s",
+                             (items[0]["dashboard_id"],), fetchone=True) or {}
+        items[0]["gap"] = _board_gap_of(solo.get("filters"))
     if not items and keyword:
         note = f"没有名称/说明匹配「{keyword}」的看板；去掉关键词看完整清单，或先与用户确认看板名称"
     elif not items:
         note = "当前范围内没有看板"
     else:
-        note = ("改名/加图/删图/重排用 update_data_screen（按 name 即可，不必先拿 id）；"
+        note = ("改名/加图/删图/整板重排用 update_data_screen（按 name 即可，不必先拿 id；"
+                "间距用 gap、大小与位置用 layout_rows）；"
                 "editable=false 的板只能看不能改（写链路按属主/管理员裁决）")
     return _text({"count": len(items), "dashboards": items, "note": note})
 
 
 async def update_data_screen(args: dict) -> dict:
-    """原地修改一块看板：板级元信息/主题/字模 + 加图 + 删图 + 整板重排。
+    """原地修改一块看板：板级元信息/主题/字模/**间距(gap)** + 加图 + 删图 + 整板重排。
 
     落库顺序刻意安排成「先算后写、能回滚的先回滚」：意图解析、定源、落数据集、预取数、
     版面计算全部在写之前（预检不过一笔不写）；新增图中途失败只清掉本次新增，
     不动存量卡；删除是不可逆步，放在新增成功之后。
+
+    版面三维度在这里各有唯一入口，互不冒充：间距=`gap`（板级 design.page.gap）、
+    大小与位置=`layout_rows`（按标题整板语义重排，走 `_compile_rows` 同一编译口）、
+    逐像素摆位=人侧编辑器。整板重排优先序 `layout_rows > relayout > 追加`。
     """
     args = args or {}
     try:
@@ -1575,6 +2671,7 @@ async def update_data_screen(args: dict) -> dict:
         remove_charts = _coerce_struct(args.get("remove_charts"), "remove_charts", (list, str))
         tags_arg = _coerce_struct(args.get("tags"), "tags", (list, str))
         emphasis = _coerce_struct(args.get("emphasis"), "emphasis", dict) or {}
+        layout_rows = _coerce_struct(args.get("layout_rows"), "layout_rows", (list, dict))
     except ScreenIntentError as e:
         return e.response
     if isinstance(add_charts, dict):
@@ -1586,6 +2683,9 @@ async def update_data_screen(args: dict) -> dict:
     add_charts = add_charts or []
     remove_charts = [str(x).strip() for x in (remove_charts or []) if str(x).strip()]
     relayout = bool(args.get("relayout"))
+    gap_clamped, gap_err, gap_note = _clamp_gap_map(args.get("gap"))
+    if gap_err:
+        return gap_err
     if not dashboard_id:
         return _error("请提供看板业务名 name（歧义会回候选清单）或 dashboard_id 指明改哪块板；"
                       "不知道是哪块先用 list_data_screens 查清单")
@@ -1605,9 +2705,10 @@ async def update_data_screen(args: dict) -> dict:
         meta["status"] = st
     if tags_arg is not None:
         meta["tags"] = [str(t).strip() for t in tags_arg if str(t).strip()]
-    if not (meta or theme or style or add_charts or remove_charts or relayout):
-        return _error("没有提供任何要修改的内容：new_name/description/status/tags/theme/style/"
-                      "add_charts/remove_charts/relayout 至少给一项")
+    if not (meta or theme or style or add_charts or remove_charts or relayout
+            or gap_clamped is not None or layout_rows):
+        return _error("没有提供任何要修改的内容：new_name/description/status/tags/theme/style/gap/"
+                      "layout_rows/add_charts/remove_charts/relayout 至少给一项")
 
     from backend.modules.mind.execution.sdk_tools import ExecutionContextVar
     from backend.modules.viz.services.dashboard_service import (
@@ -1648,6 +2749,12 @@ async def update_data_screen(args: dict) -> dict:
         merged["components"] = comps
     theme_mode = merged.get("theme", {}).get("mode") if isinstance(merged.get("theme"), dict) else None
     theme_mode = theme_mode if theme_mode in ("light", "dark") else None
+    # 间距 = 板级 design.page.gap（渲染端唯一的间距事实源，四档）。深合并只动 gap 键，
+    # 不碰人的 design.canvas/componentSnapshots/themePack，也不伪造 page.version。
+    gap_written = None
+    if gap_clamped is not None:
+        merged, gap_side_notes = _merge_page_gap(merged, gap_clamped)
+        gap_written = (_json_dict(merged.get("design")).get("page") or {}).get("gap")
     if merged != filters:
         meta["filters"] = merged
 
@@ -1694,15 +2801,36 @@ async def update_data_screen(args: dict) -> dict:
     new_geoms = [{"chart_id": None, "title": it["title"], "chart_type": it["chart_type"],
                   "site": str(_json_dict(it["config"]).get("site") or "")} for it in prepared_new]
     layout_updates: list[dict] = []
+    layout_meta: dict | None = None
+    # ── 钉死闸门（先于任何版面写）：存了 config.pageLayout.<断点> 的卡由人侧编辑器的列格说了算，
+    #    渲染端**不会**用服务端写的 position，gap 改动也会被它盖掉。此时不假装改版成功。
+    pinned = {str(c.get("name") or c["id"]): _has_stored_page_layout(_json_dict(c.get("config")))
+              for c in charts if int(c["id"]) not in set(removed_ids)
+              and _has_stored_page_layout(_json_dict(c.get("config")))}
+    if pinned and (layout_rows or relayout or gap_clamped is not None):
+        bps = "、".join(sorted({bp for v in pinned.values() for bp in v}))
+        names = "、".join(list(pinned)[:8])
+        return _error(
+            f"这块板上有 {len(pinned)} 张卡在**人侧编辑器**里被钉死了断点版面"
+            f"（config.pageLayout，断点 {bps}）：{names}。"
+            "渲染端优先用编辑器存的列格，本次 gap/layout_rows 写进去"
+            "也不会生效，所以不当作改版成功。出路（请先向用户说明并确认）："
+            "① 在该看板的编辑器里调整（间距在页面属性、版面在拖拽）；"
+            "② 由用户在编辑器里保存一次以解除钉死后，再来这里改；"
+            "③ 只改与版面无关的项（标题/图型/主题/加图删图）。",
+            pinned_charts=pinned)
     try:
-        if relayout:
+        if layout_rows:
+            layout_updates, new_geoms, layout_meta = _layout_rows_positions(
+                layout_rows, kept_geoms, new_geoms, filters=merged)
+        elif relayout:
             laid = _relayout_positions(kept_geoms + new_geoms, emphasis)
             kept_geoms, new_geoms = laid[:len(kept_geoms)], laid[len(kept_geoms):]
             layout_updates = [{"chart_id": g["chart_id"],
                                "position": {k: g[k] for k in ("x", "y", "w", "h")}}
                               for g in kept_geoms]
         elif new_geoms:
-            new_geoms = _append_band_layout(kept_geoms, new_geoms)
+            new_geoms = _append_band_layout(kept_geoms, new_geoms, filters=merged)
         final_rects = [_rect(g) for g in kept_geoms] + [_rect(g) for g in new_geoms]
     except ScreenIntentError as e:
         return e.response
@@ -1742,8 +2870,9 @@ async def update_data_screen(args: dict) -> dict:
                           else len(item["result"].get("rows") or []))),
     } for item in prepared_new]
     empty_charts = [a["title"] for a in data_audit if a["row_count"] == 0]
-    layout_audit = _layout_audit(final_rects)
+    layout_audit = _layout_audit(final_rects, filters=merged)
     final_name = meta.get("name") or board_name
+    gap_of_update = _board_gap_of(merged)
     changed = [k for k in ("name", "description", "status", "tags", "filters") if k in meta]
     if theme:
         changed.append("theme")
@@ -1755,14 +2884,34 @@ async def update_data_screen(args: dict) -> dict:
         changed.append("remove_charts")
     if relayout:
         changed.append("relayout")
+    if layout_rows:
+        changed.append("layout_rows")
+    if gap_written is not None:
+        changed.append("gap")
 
     message = f"看板「{final_name}」已原地更新（未新建资产）；访问路径: /screen/{dashboard_id}"
     if add_charts:
         message += f"，新增 {len(add_charts)} 张图"
     if remove_charts:
         message += f"，删除 {len(remove_charts)} 张图"
-    if relayout:
+    if layout_rows:
+        message += ("，整板按 layout_rows 重排（卡片列格首尾相接，卡间空白全部交给板级 gap；"
+                    "「大小」由列数决定，「间距」由 gap 决定，两者不再混在像素里）")
+    elif relayout:
         message += "，整板按主次配方重排（存量卡位置已重写）"
+    if gap_written is not None:
+        message += (f"；间距已写至 design.page.gap（大屏档 {gap_written['screen']}px、"
+                    f"纵向渲染 {_vertical_step_px(gap_written['screen'])}px）—— "
+                    "本次**没有**为了改间距而动任何卡片的宽高")
+        if gap_side_notes:
+            message += f"；{'；'.join(gap_side_notes)}"
+    elif layout_rows or relayout:
+        message += (f"；本次未改间距，当前大屏档 {gap_of_update['screen']}px"
+                    f"（纵向 {_vertical_step_px(gap_of_update['screen'])}px）")
+    if gap_note:
+        message += f"；{gap_note}"
+    if layout_meta and layout_meta.get("notes"):
+        message += "；版面说明：" + "；".join(layout_meta["notes"])
     if not kept_geoms and not prepared_new:
         message += ("；注意：该看板已无图表 —— 整板不要了请用 delete_data_screen（需用户确认）")
     if empty_charts:
@@ -1777,6 +2926,7 @@ async def update_data_screen(args: dict) -> dict:
     elif layout_audit["hierarchy"] is False:
         message += ("；版面所有卡片等宽等高（没有主次）—— 减少图数或用 emphasis 指定主图后带 relayout=true 重排，"
                     "不要把“已更新 N 个图表”当版面合格")
+    message += _spacing_notice(layout_audit)
     return _text({
         "dashboard_id": dashboard_id,
         "name": final_name,
@@ -1785,6 +2935,12 @@ async def update_data_screen(args: dict) -> dict:
         "added_charts": [item["title"] for item in prepared_new],
         "removed_charts": removed_titles,
         "relayout": relayout,
+        "layout_rows": bool(layout_rows) or None,
+        # 间距四档生效值（改没改都回，模型据此如实汇报，不拿像素差当间距）
+        "gap": gap_of_update,
+        "gap_changed": gap_written is not None,
+        "gap_note": gap_note,
+        "layout_meta": layout_meta,
         "chart_count": len(kept_geoms) + len(prepared_new),
         "data_audit": data_audit,
         "empty_charts": empty_charts,
@@ -2173,8 +3329,40 @@ _INTENT_PROPERTIES = {
 
 _POSITION_SCHEMA = {
     "type": "object",
-    "description": "画布位置 {x,y,w,h}（1920x1080 基准；不传则自动排布）",
+    "description": ("手写像素位置 {x,y,w,h}（1920x1080 基准；不传则自动排布）。"
+                    "**手写像素不能保证等距**：渲染端把像素按 64 列各自取整，像素节距不是整列数时"
+                    "卡间会留下 1 列空洞（视觉间距在 gap 与 一步+gap 之间交替）。"
+                    "等大小/等间距请用 layout（大小+位置）+ 板级 gap（间距），不要拿像素表达间距"),
     "properties": {k: {"type": "integer"} for k in ("x", "y", "w", "h")},
+}
+
+_SIZE_ENUM_DOC = (f"大小语义词：full/two_thirds/half/third/quarter/fifth，"
+                  f"或 cols:{_SIZE_COLS_MIN}~{_SIZE_COLS_MAX} 逐列直给（满宽 "
+                  f"{_BP_COLUMNS['screen']} 列；同一带合计不得超过 {_BP_COLUMNS['screen']} 列）")
+
+_LAYOUT_SCHEMA = {
+    "type": "object",
+    "description": ("语义版面（与 position 互斥，两者同给会被拒收）：{band?, in_row?, size?, after?}。"
+                    f"一带内卡片列格首尾相接，卡之间的空白完全由板级 gap 决定；{_SIZE_ENUM_DOC}。"
+                    "「放大一点」没参照、「那张图」指代不明 → 先 ask_user，不要猜"),
+    "properties": {
+        "band": {"type": "integer",
+                 "description": "第几带（第几行，从 1 起）；缺省按给出顺序连续编号，不留空带"},
+        "in_row": {"type": "integer",
+                   "description": "带内第几格（从 1 起）；同带同格被多张卡抢占会报错（不猜谁让位）"},
+        "size": {"type": ["string", "integer"], "description": _SIZE_ENUM_DOC},
+        "after": {"type": "string",
+                  "description": "参照卡片的图表标题（排到它右边）；标题未命中或重名会回候选清单"},
+    },
+}
+
+_GAP_SCHEMA = {
+    "type": ["integer", "object"],
+    "description": (f"图表间距 = 卡片之间的空白宽度（与卡片大小无关，两者不要混）。"
+                    f"整数 = 四档同值；或按设备 {{screen,desktop,tablet,mobile}} 逐档给。"
+                    f"范围 0~{_GAP_MAX}px，渲染端默认 16/16/16/12；建议取 4 的倍数"
+                    "（纵向行距恒为 ceil(gap/4)×4，非 4 的倍数会被抬高，横纵就不等了）。"
+                    "落库位置 filters.design.page.gap，间距判据看 layout_audit.spacing"),
 }
 
 TOOL_SPECS = [
@@ -2192,8 +3380,15 @@ TOOL_SPECS = [
             "Optional per-widget `component_ids`/`style_ref` and top-level `style` reference vis-library "
             "blocks (background / card / chart style / layout / color theme) — list them via list_vis_components. "
             "Interactive filter params are NOT supported on this channel (pass them and the call is rejected). "
-            "Returns `url`, `datasets`, `data_audit` (per-chart row_count) and `empty_charts`: a created chart "
-            "with 0 rows is NOT a success — tell the user which charts are empty and why instead of reporting 'created'."
+            "Layout has THREE independent dimensions with three different fields — never substitute one for another: "
+            "spacing = top-level `gap` (board-level design.page.gap, the ONLY source of inter-card whitespace), "
+            "size / position = per-widget `layout` {band,in_row,size,after} (compiled into seamless column "
+            "boundaries), pixel authoring = `position` (mutually exclusive with `layout`; it CANNOT guarantee "
+            "equal spacing). Use `base_from` to inherit another board's layout & style baseline. "
+            "Returns `url`, `datasets`, `data_audit` (per-chart row_count), `gap` and `empty_charts`: a created chart "
+            "with 0 rows is NOT a success — tell the user which charts are empty and why instead of reporting 'created'. "
+            "Claim equal spacing ONLY IF `layout_audit.even_spacing` is true; when `spacing.uneven_gaps` is non-empty "
+            "name the card pairs and say the spacing is NOT uniform."
         ),
         "schema": {
             "type": "object",
@@ -2220,12 +3415,21 @@ TOOL_SPECS = [
                             "style_ref": {"type": ["integer", "string"],
                                           "description": "单个字模 id 或 code"},
                             "config": {"type": "object", "description": "视觉配置（颜色/标签/坐标轴等）"},
+                            "layout": _LAYOUT_SCHEMA,
                             "position": _POSITION_SCHEMA,
                         },
                         "required": ["title", "chart_type"],
                     },
                 },
                 "description": {"type": "string", "description": "Optional screen description"},
+                "gap": _GAP_SCHEMA,
+                "base_from": {
+                    "type": "string",
+                    "description": ("参考看板业务名（需求「先参考现有图表的布局和样式作为基础」的入口）："
+                                    "只拷那块板的版面与视觉 —— 间距 gap、主题、字模引用、画布宽度、组件快照；"
+                                    "**不会**拷它的图表、数据集、口径、站点或编辑器钉死的 pageLayout。"
+                                    "命中多块/找不到会回候选清单，不可见的板会被拒（不静默跳过）"),
+                },
                 "site": {"type": "string",
                          "description": "默认数据源业务名，应用于未单独指定 site 的 widget"},
                 "datasource": {"type": "string", "description": "同 site（site 优先）"},
@@ -2256,7 +3460,12 @@ TOOL_SPECS = [
     },
     {
         "name": "get_data_screen",
-        "description": "Get a data screen's detail with each chart's declarative intent + visual config (no raw SQL / datasource / rows).",
+        "description": ("Get a data screen's detail with each chart's declarative intent + visual config "
+                        "(no raw SQL / datasource / rows). Returns `layout_baseline`: the board's layout identity — "
+                        "effective `gap` (four breakpoints) + how many columns each band's cards occupy + each "
+                        "card pair's ACTUAL visual spacing + modal card columns + editor-pinned pageLayout cards + "
+                        "theme/style slots. Read it before '参考现有布局' / '保持一致' requests: pixel positions "
+                        "alone cannot tell spacing (column rounding hides holes)."),
         "schema": {
             "type": "object",
             "properties": {"dashboard_id": {"type": "integer", "description": "Screen id (required)"}},
@@ -2271,6 +3480,11 @@ TOOL_SPECS = [
             "Update one chart in a data screen (title/chart_type/config/position). "
             "To change data, pass a new declarative `query` intent: the tool re-materializes (or reuses) "
             "a dataset and remounts the chart on it — raw SQL is rejected and no design panel is opened. "
+            "`size` / `after` change 大小 / 带内位置 semantically: ONLY that card's band is re-flowed "
+            "(seamless columns, so the whitespace between cards stays exactly the board `gap`; other bands' "
+            "rectangles are untouched). `size`/`after` and `position` are mutually exclusive. Cross-band moves "
+            "belong to update_data_screen(layout_rows=...). Spacing itself is a BOARD field — to change "
+            "whitespace between cards use update_data_screen(gap=N), never size. "
             "Returns `dataset_name` and `row_count` of the re-executed intent (0 = empty chart, must be surfaced)."
         ),
         "schema": {
@@ -2285,6 +3499,11 @@ TOOL_SPECS = [
                 "site": {"type": "string", "description": "New intent 的数据源业务名（不传数字 id）"},
                 "datasource": {"type": "string", "description": "同 site（site 优先）"},
                 "config": {"type": "object", "description": "Visual config merge (optional)"},
+                "size": {"type": ["string", "integer"],
+                         "description": ("该卡在本带内的大小：" + _SIZE_ENUM_DOC +
+                                         "；只重排它所在带，其他带不动")},
+                "after": {"type": "string",
+                          "description": "排到哪个图表标题的右边（同带内挪位）；跨带挪位用 layout_rows"},
                 "position": _POSITION_SCHEMA,
             },
             "required": ["dashboard_id", "chart_id"],
@@ -2298,7 +3517,8 @@ TOOL_SPECS = [
             "Locate existing dashboards/screens by business name BEFORE modifying one — this is the entry point "
             "for 'modify / rename / add-chart / remove-chart / relayout / delete my board' requests. "
             "Returns name, description, status, chart_count, updated_at, the groups each board belongs to, and "
-            "`editable` (owner or admin only). NEVER call create_data_screen because a dashboard_id was not found: "
+            "`editable` (owner or admin only); a keyword hitting exactly one board also reports its effective `gap`. "
+            "NEVER call create_data_screen because a dashboard_id was not found: "
             "list first and match by name. Empty result for a non-admin means the role was granted no boards "
             "(the response says so) — report that honestly instead of creating a duplicate board."
         ),
@@ -2324,8 +3544,16 @@ TOOL_SPECS = [
             "by their business titles; `relayout=true` recomputes the whole board with the server-side "
             "hero/side/band hierarchy (it rewrites positions, so only use it when the user asks to re-lay out; "
             "use `emphasis` {hero, detail} to pick the hero chart). Without relayout new charts are appended in a "
-            "bottom band and the call is refused with a hint if the canvas is full. Returns layout_audit, "
-            "data_audit, empty_charts and apply_errors — a partially applied change must be reported as such."
+            "bottom band and the call is refused with a hint if the canvas is full. "
+            "LAYOUT HAS THREE INDEPENDENT DIMENSIONS — do not substitute one for another: `gap` is the ONLY way to "
+            "change whitespace between cards (writing it never touches card sizes, and the response says so); "
+            "`layout_rows` [[{title,size},...],...] re-flows the whole board by business titles (columns become "
+            "seamless, whitespace is exactly gap); `relayout` recomputes with the server-side hierarchy. "
+            "If any chart carries an editor-pinned config.pageLayout the call REFUSES gap/layout_rows/relayout "
+            "instead of pretending the layout changed — point the user to the board editor. "
+            "Returns layout_audit (incl. `spacing` / `even_spacing`: claim equal spacing ONLY when even_spacing is "
+            "true, otherwise name the uneven card pairs), `gap` (four breakpoints in effect), data_audit, "
+            "empty_charts and apply_errors — a partially applied change must be reported as such."
         ),
         "schema": {
             "type": "object",
@@ -2358,7 +3586,7 @@ TOOL_SPECS = [
                 },
                 "add_charts": {
                     "type": "array", "maxItems": _MAX_WIDGETS,
-                    "description": "新增图表（与 create_data_screen.widgets 同形状：{title, chart_type, query, site?, config?, position?, component_ids?}）",
+                    "description": "新增图表（与 create_data_screen.widgets 同形状：{title, chart_type, query, site?, config?, layout?, position?, component_ids?}）",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -2371,9 +3599,24 @@ TOOL_SPECS = [
                             "component_ids": {"type": "array",
                                               "items": {"type": ["integer", "string"]}},
                             "config": {"type": "object"},
+                            "layout": _LAYOUT_SCHEMA,
                             "position": _POSITION_SCHEMA,
                         },
                         "required": ["title", "chart_type"],
+                    },
+                },
+                "gap": _GAP_SCHEMA,
+                "layout_rows": {
+                    "type": ["array", "object"],
+                    "description": ("整板语义重排：一带一组 [[{title,size?}, ...], ...]（也接受 "
+                                    "{cards:[...]}）。按**图表业务标题**命中存量卡，列格首尾相接重算坐标 —— "
+                                    "「大小」用 size 表达，「间距」不在这儿（用 gap）。"
+                                    "标题未命中/重名会回候选清单（先向用户确认，不猜）；"
+                                    "未被点名的卡不静默丢，会追加到末带或另起一带并在汇报里点名。"
+                                    "优先序 layout_rows > relayout > 追加"),
+                    "items": {
+                        "type": ["array", "object"],
+                        "description": "该带的卡片清单（数组），或 {cards:[{title,size}]}",
                     },
                 },
                 "remove_charts": {

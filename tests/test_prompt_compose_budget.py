@@ -92,18 +92,23 @@ def test_single_skill_role_always_expands_body():
     assert "本轮未展开作业细则" not in prompt
 
 
-def test_multi_skill_expands_only_matched_bodies():
+def test_multi_skill_prompt_never_residents_bodies():
+    """多技能角色的常规回合：**没有一份正文进提示词**（正文改由工具边界附带）。
+
+    名称 + description 仍常驻可见，命中信息留在原因里当相关性提示。
+    """
     skills = [
         _skill("data-analysis", display="数据分析（语义层）", body="语义层剧本AAA", triggers=["趋势", "环比"]),
         _skill("screen-builder", display="可视化大屏生成", body="大屏剧本BBB", triggers=["大屏"]),
     ]
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=_caps(), question="看下环比趋势")
-    assert "语义层剧本AAA" in prompt
-    assert "大屏剧本BBB" not in prompt
-    # 未展开的技能不静默消失：仍在清单里（名称+描述），并带可读原因
+    assert "语义层剧本AAA" not in prompt and "大屏剧本BBB" not in prompt, "正文常驻 = 每回合白付费"
+    # 不静默消失：两份都在清单里（名称+描述），并带可读原因
     assert "可视化大屏生成" in prompt and "本轮未展开作业细则" in prompt
+    assert "命中 2 个触发词" in prompt, "命中信息要留着（相关性提示，也防误诊成没绑技能）"
     assert "未命中该技能的触发词" in prompt
+    assert "随结果自动附带" in prompt, "必须告诉模型口径从哪来，否则它会以为只能凭契约作答"
 
 
 def test_no_trigger_hit_expands_no_body_but_lists_skills():
@@ -117,9 +122,16 @@ def test_no_trigger_hit_expands_no_body_but_lists_skills():
 
 
 def test_body_count_is_capped():
+    """`MAX_SKILL_BODIES` 现在只约束用户 `/` 点名的那份；常规回合上限是 0。"""
     skills = [_skill(f"s{i}", body=f"剧本正文{i}", triggers=["命中"]) for i in range(4)]
     loaded, _reasons, _missing = _select_skill_bodies(skills, _caps(), "命中一下")
-    assert len(loaded) == MAX_SKILL_BODIES
+    assert loaded == [], "多技能未点名 = 一份都不常驻"
+    pinned, _r, _m = _select_skill_bodies(skills, _caps(), "命中一下", pinned=["s0"])
+    # 点名的那份先占位，剩余名额仍按命中补位（既有设计：不拿"多选一个"换掉用户点名的那个）
+    assert [s["name"] for s in pinned] == ["s0", "s1"]
+    many, _r, _m = _select_skill_bodies(skills, _caps(), "命中一下",
+                                        pinned=["s0", "s1", "s2", "s3"])
+    assert len(many) == MAX_SKILL_BODIES, "点名超额仍受上限约束（不拿「多选」堆爆提示词）"
 
 
 def test_capability_gate_blocks_body_for_unauthorized_tools():
@@ -132,11 +144,10 @@ def test_capability_gate_blocks_body_for_unauthorized_tools():
     caps = _caps("mcp__datahub_semantic__run_semantic_query")
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=caps, question="SQL剧本 分析")
-    assert "语义层剧本AAA" in prompt
-    assert "SQL剧本CCC" not in prompt
-    assert "本会话未授权 execute_sql 工具" in prompt
-    # 同一对互斥剧本不会同时展开（否则是矛盾指令）
-    assert not ("语义层剧本AAA" in prompt and "SQL剧本CCC" in prompt)
+    assert "语义层剧本AAA" not in prompt and "SQL剧本CCC" not in prompt, "正文一律不常驻"
+    assert "本会话未授权 execute_sql 工具" in prompt, \
+        "未授权域的原因不得写成「随结果附带」（那是在广告一个永远不会到的通道）"
+    assert "随结果自动附带" in prompt, "已授权域要写明附带通道"
 
 
 def test_capability_gate_passes_when_tool_authorized():
@@ -207,8 +218,10 @@ def test_prompt_size_guardrail_multi_skill_role():
 
     analysis = compose_system_prompt(None, [], username="u", user_role="admin",
                                      skills=skills, capabilities=caps, question="看下趋势")
-    assert "剧本剧本" in analysis and "SQL剧本" not in analysis
-    assert len(analysis) < 26_000, f"分析回合 system_prompt 回涨到 {len(analysis)} 字符"
+    assert "剧本剧本" not in analysis and "SQL剧本" not in analysis, "正文常驻 = 护栏白做"
+    # 正文退出提示词后的实测基线 15,146 字符（旧形态同载荷 25,973）；上限取 1.5 倍留余量，
+    # 再涨说明往常驻指令里堆料，必须显式拍板。
+    assert len(analysis) < 23_000, f"分析回合 system_prompt 回涨到 {len(analysis)} 字符"
 
 
 def test_safety_sections_never_dropped_by_slimming():
@@ -259,9 +272,11 @@ def test_real_skill_triggers_cover_traffic_and_url_questions():
         "这个页面的访问量和上周比怎么样",
         "direct-ip 落地页 EDM 投放带来多少访问",
     ):
-        bodies, _reasons, _missing = _select_skill_bodies(loaded, caps, q)
-        names = {b["name"] for b in bodies}
-        assert names & {"data-analysis", "arms-observability"}, f"流量/URL 类问句未展开任何分析剧本: {q}"
+        _bodies, reasons, _missing = _select_skill_bodies(loaded, caps, q)
+        # 正文不再常驻，命中信息只留在原因里当相关性提示 —— 但它仍然是"该问句被认领"的凭据：
+        # 谁都不命中就等于触发词表失效（本用例锁的就是当初答错那批问句的覆盖面）。
+        hit = {k for k, v in reasons.items() if v.startswith("命中 ")}
+        assert hit & {"data-analysis", "arms-observability"}, f"流量/URL 类问句没有任何分析剧本命中: {q}"
 
     # 零结果裁决纪律与 URL 拆解剧本必须在正文里（本次答错就错在这两条缺席）
     bodies = {s["name"]: (s.get("system_prompt") or "") for s in loaded}
@@ -303,9 +318,12 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
     question = "这个页面的访问量和上周比怎么样"
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=caps, question=question)
-    loaded, _, _ = _select_skill_bodies(skills, caps, question)
-    assert {s["name"] for s in loaded} == {"data-analysis", "arms-observability"}
-    assert len(prompt) < 27_000, f"两个分析剧本同现时 system_prompt 回涨到 {len(prompt)} 字符"
+    loaded, reasons, _ = _select_skill_bodies(skills, caps, question)
+    assert loaded == [], "正文常驻回来了（本用例的护栏前提被破坏）"
+    assert {k for k, v in reasons.items() if v.startswith("命中 ")} == {"data-analysis", "arms-observability"}
+    # 实测基线 12,415 字符（两个分析剧本常驻的旧形态是 25,000+）：正文退出提示词后，
+    # 护栏锁的是"常驻指令"这一份，不能再拿正文体积当余量。
+    assert len(prompt) < 18_000, f"两个分析剧本命中的 system_prompt 回涨到 {len(prompt)} 字符"
 
     # 生产同形：加上知识库段与站点拓扑段（聚合态的逐站规则 ③ 是最长的一条注入项），护栏必须跟着抬
     rich_caps = _caps(*[f"mcp__datahub_semantic__{n}" for n in (
@@ -320,7 +338,7 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
                                        skills=skills, capabilities=rich_caps, quick_paths=[],
                                        site_code="global", authorized_sites=sites, question=question)
     assert "## 数据源拓扑" in prod_shape and "运营知识库" in prod_shape, "生产同形载荷未注入拓扑/知识库段"
-    assert len(prod_shape) < 26_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
+    assert len(prod_shape) < 20_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
 
     # 多源知识检索注入段必须真的在载荷里（写了但被条件分支吞掉 = 白付字数也白拍板）
     assert "（平台同步语料）" in prod_shape, "知识库归属标注未按 provider 派生（措辞回潮或注入被吞）"

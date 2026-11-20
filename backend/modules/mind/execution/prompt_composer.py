@@ -248,9 +248,14 @@ SCREEN_DIRECT_RULES = """## AS-BOT 系统域与可视化大屏直建（优先于
 - **删除是破坏性动作**：`delete_data_screen`（删整块板）与 `manage_dashboard_groups(action=delete)`（删组合）
   必须先用 `ask_user` 取得同意，再带 `confirmed=true` 调用；未确认时工具只回 `needs_user_confirmation` 不删。
   属主/管理员之外会被拒，拒绝原因**原样转述**，不得改报“已删除”或换别的板凑数。
-- **版面主次交给服务端**：默认不写 `position`（手写会把版面拍平）；交付前核对 `layout_audit` ——
-  `ok=false`（重叠/越界/带高不足）或 **`hierarchy=false`（全部等宽等高=没有主次）** 都要用 `relayout`+`emphasis`
-  或减少图表后重排，不得带病交付；顶部留白与 600px 截顶由服务端算法守住（见 screen-builder 技能 layout-guide）。
+- **版面三维度各归各的字段**（细节见「看板设计」技能 layout-guide）：
+  **间距 = 板级 `gap`**（`create/update_data_screen(gap=N)`，四档，0~64；纵向渲染恒为 `ceil(gap/4)` 个 4px 行格，
+  手写的纵向像素间隙不生效）；**大小/位置 = 语义 `layout`/`layout_rows`/`size`/`after`**（64 列满宽，同带卡由服务端
+  铺满共享边界）。**默认不写 `position`**：像素节距经列取整会留 1 列空洞，间距就会 16px/46px 交替，且会把版面拍平。
+- 交付前核对 `layout_audit` —— `ok=false`（重叠/越界/带高不足）或 **`hierarchy=false`（全部等宽等高=没有主次）**
+  都要用 `layout_rows`/`relayout`+`emphasis` 或减少图表后重排，不得带病交付；顶部留白与 600px 截顶由服务端算法守住。
+  **说“间距已一致”当且仅当 `layout_audit.even_spacing == true`**；false 时按 `spacing.uneven_gaps` 指名的卡对继续修，
+  不得靠改卡片宽度或复述像素差来宣称等距。
 - 原 knowledge_search/get_metrics/search_metadata/list_ontology_models 仍是系统域，不能用它们认定业务对象不存在。
 - 本体生成/保存/激活/导入按角色权限模型开放：你的角色拥有对应功能权限码（ontology:generate/save/activate/import）
   且目标源在角色授权集内即可按工具说明执行；无权时向用户说明拒绝原因，不得绕道其他工具或静默放弃。
@@ -284,8 +289,9 @@ def _persona_lines(persona: dict) -> list[str]:
     return lines
 
 
-#: 单轮最多展开几个技能正文。多技能角色(实测 admin 绑 7 个)一句问话通常只用 1~2 个剧本,
-#: 全量展开会把"常驻指令"堆得比真实数据还重(7 个正文 = 25,531 字符)。
+#: `pinned`（用户 `/` 点名）单轮最多展开几个技能正文。多技能角色(实测 admin 绑 7 个)一句问话
+#: 通常只用 1~2 个剧本, 全量展开会把"常驻指令"堆得比真实数据还重(7 个正文 = 25,531 字符)。
+#: 常规回合不受本常量约束 —— 那份正文走工具边界附带（规则 6），一份都不常驻。
 MAX_SKILL_BODIES = 2
 
 
@@ -358,11 +364,11 @@ def _take_by_score(pool: list, q_norm: str, quota: int, chosen: list,
 
 
 def _progressive_disclosure(capabilities: dict | None) -> bool:
-    """本会话是否具备“技能细则按需加载”能力（唯一口径：工具清单里有 load_skill_guide）。
+    """本会话是否具备“技能细则**主动**取回”能力（唯一口径：工具清单里有 load_skill_guide）。
 
-    只读工具事实，不另写一套开关：管理员在 AS-BOT 面板关掉 skills 组、或执行层 ceiling 把它筛掉时，
-    这里返回 False → 装载策略整体回到改动前的行为（按触发词自动展开），不会出现
-    “细则既不在上下文也拉不到”的能力倒退。
+    只读工具事实，不另写一套开关。注意它**不再决定正文常驻与否**（规则 6：正文一律不常驻，
+    首次用到该域工具时随工具结果自动附带，与有没有本工具无关）；现在它只影响清单里的
+    提示措辞 —— 没有该工具时不向模型广告一个它调不动的入口。
     """
     return "load_skill_guide" in _session_tool_suffixes(capabilities)
 
@@ -379,11 +385,10 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
        两者同时展开就是给模型的矛盾指令。
     2. **只绑一个技能时始终展开**: analyst/viewer 这类单职责角色与改造前完全一致,
        不拿主力角色的回答质量换字数。
-    3. **多技能按命中展开**: 绑了多个时只展开与本轮问题命中触发词的前 MAX_SKILL_BODIES
-       个; 未命中就不展开(技能的 description 本身就是浓缩契约, 硬约束仍常驻可见)。
-       `force_all=True` 跳过规则 3（仍走能力门控）: 无人值守链路（定时分析/评测）没有
+    3. **多技能按命中展开**（已被规则 6 取代为"一份都不展开"）：`description` 本身就是浓缩契约，
+       硬约束仍常驻可见；`MAX_SKILL_BODIES` 现在只对规则 4 的 `pinned` 生效。
+       `force_all=True` 跳过规则 3/6（仍走能力门控）: 无人值守链路（定时分析/评测）没有
        人在现场纠偏, 不因省字数拿产出口径冒险。
-       注: 接入渐进披露（规则 6）时本条的展开份数收敛到 1 份。
     4. **用户显式指定优先**: `pinned` = 聊天输入框 `/` 选中的技能名或快速入口对应的剧本,
        命中已绑定且能力可用的技能时强制展开(不再看触发词), 仍受 MAX_SKILL_BODIES 约束。
        指定但**未绑定**当前 AS-BOT 的技能不静默丢弃: 第三个返回值原样回传, 由调用方在提示词里
@@ -394,12 +399,17 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
 
     未展开的技能**不静默消失**: 仍进「已绑定技能」清单并带上原因, 模型与排查都能看到。
 
-    6. **渐进披露（`progressive`）**：本会话能调 `load_skill_guide` 时，触发词命中的那批正文里
-       **只常驻得分最高的一份**，其余降级为按需取回（清单里给出取回入口，命中信息当相关性提示留着）。
+    6. **正文不常驻，工具边界送达**（多技能角色且用户未点名时的现行口径）：系统提示词只留
+       name + description，**没有一份正文常驻**。口径在"用到"的那一刻到达：本回合首次调用某技能
+       `requires_any` 声明的工具时，`sdk_tools/skill_tools.guide_block_for_tool`（由 `compat.guarded`
+       接线）把该域正文附在工具结果尾部，一个回合同一份只发一次。
+       为什么不回到"命中即常驻"：那是每回合都为可能不发生的任务付费（7 份正文 ≈25K 字符），
+       还把系统提示词撑到被 `tests/test_prompt_compose_budget.py` 判超限。
+       为什么不止靠"提示模型自己调 `load_skill_guide`"（`progressive` 的原始形态）：会话
+       1783069459335/336/337 三轮重问与 1783069459340 的纠正轮实测**一次都没调用**，
+       把口径寄托在模型自觉上等于没有口径。主动取回仍保留，作为"还没动手但要先读口径"的补充通道。
        三条强制展开不变：用户 `/` 点名的 pinned、只绑 1 个技能的单职责角色、无人值守
-       `force_all` —— 它们是“不能拿产出口径冒险换字数”的场景，与规则 2/4 的既有理由一致。
-       为什么不是“全部按需”：三轮重问实测模型从不调 `load_skill_guide`，把口径寄托在模型自觉上
-       等于没有口径（见下方分支注释）；“命中即整份常驻”又回到 25K 字符的老形态，两头都不取。
+       `force_all` —— 它们是"不能拿产出口径冒险换字数"的场景，与规则 2/4 的既有理由一致。
     """
     skills = [s for s in (skills or []) if isinstance(s, dict)]
     pinned_names = [str(x).strip() for x in (pinned or []) if str(x).strip()]
@@ -465,35 +475,27 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
                 groups.add(group)
         return keep, reasons, missing
     q_norm = (question or "").strip().lower()
+    # 多技能角色且用户未点名：**正文一份都不常驻**，提示词只留 name + description（浓缩契约）。
+    # 为什么不能退回"命中即整份注入"：7 个正文 ≈25K 字符压在每回合的系统提示词里，为的是
+    # 一个可能根本不发生的任务（还会打爆提示词缓存）；为什么不能退回"只给一句话、让模型自己
+    # 调 load_skill_guide"：会话 1783069459335/336/337 同一问题重问三轮，1783069459340 的纠正轮
+    # （「我要的是图表间隔不是大小」）—— 该工具**一次都没被调用过**，口径整轮丢失，模型只能
+    # 凭通用理解作答。确定性通道是**工具边界**：首次调用该域工具时细则随工具结果附带
+    # （sdk_tools/skill_tools.guide_block_for_tool，由 compat.guarded 接线），用到才付费。
     if progressive is None:
         progressive = _progressive_disclosure(capabilities)
-    loaded = _take_by_score(capable, q_norm, MAX_SKILL_BODIES, [], reasons)
-    loaded_ids = {id(s) for s in loaded}
     for s in capable:
         key = _skill_key(s)
-        if id(s) not in loaded_ids and key not in reasons:
-            # 原因要可诊断：零命中与“命中了但被名额挤掉”是两件不同的事，写成同一句会把人
-            # 引去改触发词（历史误诊点）。渐进披露分支也先跑完这段再改写，否则落选技能
-            # 会回落到清单里的默认措辞“本轮未命中”，把误诊又带回来。
-            hits = len(_skill_trigger_hits(s, q_norm))
-            if hits:
-                winners = "、".join(_skill_key(x) for x in loaded)
-                reasons[key] = (f"命中 {hits} 个触发词，但本轮展开名额已满（已展开：{winners}）")
-            else:
-                reasons[key] = "本轮问题未命中该技能的触发词"
-    if progressive and loaded:
-        # 渐进披露的实测失败形态（会话 1783069459335/336/337，同一问题重问三轮）：命中提示写着
-        # “需要时先调 load_skill_guide 取回”，三轮里该工具**一次都没被调用** —— 于是整轮没有作业
-        # 口径，答案比常驻时明显回退（模型自述“没加载 skills”是对的）。把口径交给模型自觉不可靠，
-        # 这里改成确定性展开**得分最高的那一份**：其余命中项仍按需取回（提示保留）。
-        # 代价是有界的：改造前常驻 2 份（≈14K 字符），现在最多 1 份，且省掉的正是相关度更低的那份。
-        primary = _skill_key(loaded[0])
-        for s in loaded[1:]:
-            key = _skill_key(s)
-            reasons[key] = (f"本轮问题命中触发词，但作业细则未常驻（渐进披露，常驻「{primary}」）："
-                            f"需要该域完整口径时先调 `load_skill_guide(\"{key}\")` 取回再作答")
-        return [loaded[0]], reasons, missing
-    return loaded, reasons, missing
+        if key in reasons:
+            continue
+        # 命中与否仍要分开写：零命中与"命中了但按设计不常驻"是两件不同的事，
+        # 混成一句会把人引去改触发词（历史误诊点）。
+        hits = len(_skill_trigger_hits(s, q_norm))
+        head = f"命中 {hits} 个触发词" if hits else "本轮问题未命中该技能的触发词"
+        fetch = (f"；也可以先调 `load_skill_guide(\"{key}\")` 主动取回" if progressive else "")
+        reasons[key] = (f"{head}；作业细则按设计不常驻提示词，本回合**首次调用该域工具时随结果自动附带**"
+                        f"{fetch}")
+    return [], reasons, missing
 
 
 def _skill_lines(skills: list, loaded: list, reasons: dict) -> list[str]:

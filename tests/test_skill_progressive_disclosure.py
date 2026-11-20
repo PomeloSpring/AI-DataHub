@@ -1,14 +1,17 @@
-"""技能作业细则的按需加载（渐进披露 A2）回归。
+"""技能作业细则的加载通道回归（工具边界披露）。
 
 锁定口径：
-- **三层披露**：metadata（name+description）常驻；触发词命中里**得分最高的一份正文常驻**，
-  其余降级为按需取回（`load_skill_guide`）—— 不是“全部交给模型自己取”，三轮重问实测它一次都没调；
+- **正文不常驻提示词**：多技能角色的常规回合，系统提示词只有 metadata（name+description）+
+  一句话契约，**一份正文都不注入**（7 份 = 25,531 字符压在每回合是白付费，还打爆提示词缓存）；
+- **口径在"用到"时到达**：本回合首次调用某技能 `requires_any` 声明的工具，细则随该次工具结果
+  附带（`guide_block_for_tool` + `compat.guarded` 接线），一个回合同一份只发一次；
+  这条通道与有没有 `load_skill_guide` 无关 —— 实测（会话 335/336/337 与 340 的纠正轮）
+  只给一句话契约、指望模型自己取回，它一次都没调，所以确定性通道不能是"模型自觉"；
+- **主动取回仍在**（`load_skill_guide`）：动手前就想读口径时的补充通道；
 - **授权按事实自动接入**：助手绑了技能就接入壳工具（与平台功能惰性壳同一口径），
   管理员显式配置过 `mcp.skills` 时尊重配置，执行层 ceiling 同样管得住它；
-- **未接入 = 回到老行为，不是能力倒退**：清单里没有该工具时，装载策略整体退回
-  "按触发词自动展开正文"，且提示词里**不得**出现该工具名（不承诺调不到的入口）；
 - **三条强制展开不变**：pinned / 单职责角色 / 无人值守 force_all 仍常驻正文；
-- **原因可诊断**：零命中与"命中了但被名额挤掉"必须写成两句话（历史误诊点）；
+- **原因可诊断**：零命中与"命中了但按设计不常驻"必须写成两句话（历史误诊点）；
 - **只回已绑定技能**：未绑定的剧本属别的助手，拒收并回可加载清单（不猜名字）。
 
 离线运行：不连库（技能正文走文件加载器），观测 span 用替身捕获。
@@ -38,6 +41,17 @@ def _skill(name, *, display=None, desc="只做演示用", body=None, triggers=No
 
 def _caps(names):
     return {"tools": [{"name": n, "description": ""} for n in names], "unavailable_tools": []}
+
+
+def _attach_ctx(skill_names, allowed_suffixes=()):
+    """构造一个带 secure_runtime 的回合上下文（工具边界附带与 handler 用例共用）。"""
+    from backend.modules.mind.execution.models import ExecutionContext as EC
+    from backend.modules.mind.execution.sdk_tools.context import set_execution_context
+    allowed = {f"mcp__datahub_x__{s}" for s in allowed_suffixes}
+    runtime = type("R", (), {"policy": type("P", (), {
+        "as_bot": {"skills": list(skill_names)}, "allowed": allowed})()})()
+    return EC(user_id=7, workspace_id=3, user_role="analyst",
+              extra={"conversation_id": 42, "secure_runtime": runtime})
 
 
 SEM = "mcp__datahub_semantic__run_semantic_query"
@@ -136,21 +150,20 @@ def test_progressive_flag_follows_tool_availability():
     assert pc._progressive_disclosure(None) is False
 
 
-def test_progressive_mode_expands_only_the_top_scoring_body():
-    """渐进披露只降级“命中但非最优”的那批；最高分那份必须常驻。
+def test_multi_skill_turn_residents_no_body_at_all():
+    """常规回合（多技能、用户未点名）：一份正文都不常驻，命中与否只影响原因措辞。
 
-    刻意把得分高的技能放在清单末尾：常驻的必须是它，而不是绑定顺序里的第一个。
+    刻意把得分高的技能放在清单末尾：无论得分高低，常驻份数都是 0 —— 口径改由工具边界送达。
     """
     skills = [_skill("arms-observability", triggers=["渠道"], body="剧本BBB"),
               _skill("data-analysis", triggers=["转化", "趋势"], body="剧本AAA")]
     loaded, reasons, _missing = pc._select_skill_bodies(
-        skills, _caps([SEM, GUIDE]), "各渠道转化趋势怎么样", progressive=True)
-    assert [_skill_key(x) for x in loaded] == ["data-analysis"], \
-        "把口径寄托在模型自觉上等于没有口径（会话 335/336/337：load_skill_guide 零调用）"
-    assert "load_skill_guide(\"arms-observability\")" in reasons["arms-observability"], \
-        "降级的那份必须写明按需取回入口"
-    assert "data-analysis" in reasons["arms-observability"], "要写明常驻的是谁"
-    assert "data-analysis" not in reasons, "已常驻的技能不得再挂“未常驻”原因"
+        skills, _caps([SEM, GUIDE]), "转化趋势怎么样", progressive=True)
+    assert loaded == [], "正文常驻提示词 = 每回合为可能不发生的任务付费"
+    assert "首次调用该域工具时随结果自动附带" in reasons["data-analysis"]
+    assert "命中 2 个触发词" in reasons["data-analysis"], "命中信息要留着当相关性提示"
+    assert "未命中" in reasons["arms-observability"], "零命中与命中了必须写成两句话（历史误诊点）"
+    assert 'load_skill_guide("data-analysis")' in reasons["data-analysis"], "主动取回入口要写明"
 
 
 def test_pinned_single_skill_and_force_all_still_expand():
@@ -167,26 +180,62 @@ def test_pinned_single_skill_and_force_all_still_expand():
     assert len(unattended) == 2, "无人值守没有人在现场纠偏，正文照常常驻"
 
 
-def test_quota_loser_reason_is_distinguishable_from_zero_hit():
-    """历史误诊点：被名额挤掉与零命中写成同一句，排查时会误去改触发词。"""
-    skills = [_skill("data-analysis", triggers=["转化", "趋势"], body="剧本AAA"),
-              _skill("arms-observability", triggers=["渠道"], body="剧本BBB"),
-              _skill("report-delivery", triggers=["报告"], body="剧本CCC"),
-              _skill("screen-builder", triggers=["大屏"], body="剧本DDD")]
-    loaded, reasons, _m = pc._select_skill_bodies(
-        skills, _caps([SEM]), "转化趋势渠道报告", progressive=False)
-    assert [_skill_key(x) for x in loaded] == ["data-analysis", "arms-observability"]
-    assert "名额已满" in reasons["report-delivery"], "命中了却被挤掉 ≠ 未命中"
-    assert "data-analysis" in reasons["report-delivery"], "要写明输给了谁"
-    assert reasons["screen-builder"] == "本轮问题未命中该技能的触发词"
-
-
-def test_progressive_off_keeps_the_old_behaviour_byte_for_byte():
-    """没接入壳（老角色/被 ceiling 筛掉）时行为零变化：只回落旧开销，不丢细则。"""
+def test_boundary_delivery_does_not_depend_on_the_guide_shell():
+    """没接壳（老角色/被 ceiling 筛掉）同样不常驻：附带通道在 compat 里，与壳无关；
+    但提示词**不得**点名一个模型调不到的工具。"""
     skills = [_skill("data-analysis", triggers=["转化"], body="剧本AAA"),
               _skill("arms-observability", triggers=["渠道"], body="剧本BBB")]
-    loaded, _reasons, _m = pc._select_skill_bodies(skills, _caps([SEM]), "各渠道转化怎么样")
-    assert [_skill_key(x) for x in loaded] == ["data-analysis", "arms-observability"]
+    loaded, reasons, _m = pc._select_skill_bodies(skills, _caps([SEM]), "各渠道转化怎么样")
+    assert loaded == [], "附带通道不靠 load_skill_guide，缺壳也不能回到整份常驻"
+    assert "首次调用该域工具时随结果自动附带" in reasons["data-analysis"]
+    assert "load_skill_guide" not in reasons["data-analysis"], "不承诺调不到的入口"
+
+
+def test_correction_turn_without_trigger_hit_still_gets_the_body(monkeypatch):
+    """事故口径（会话 1783069459340 seq4）：纠正短句零命中，旧策略整轮丢口径。
+
+    新策略下命中与否都不常驻，因此"零命中"不再等于"没细则"——模型一动该域工具就拿到。
+    """
+    monkeypatch.setattr("backend.modules.mind.execution.as_bots.load_skills",
+                        lambda names: [{"name": names[0], "display_name": "看板设计",
+                                        "description": "契约", "system_prompt": "版面细则",
+                                        "requires_any": ["create_data_screen", "update_data_screen"]}])
+    skills = [_skill("screen-builder", triggers=["大屏"], body="版面细则"),
+              _skill("data-analysis", triggers=["转化"], body="分析细则")]
+    loaded, _reasons, _m = pc._select_skill_bodies(
+        skills, _caps(["mcp__datahub_screen__update_data_screen"]),
+        "我要的是图表和图表间的间隔，不是改图表的大小")
+    assert loaded == []
+    ctx = _attach_ctx(["screen-builder"], {"update_data_screen"})
+    block = skt.guide_block_for_tool(ctx, "update_data_screen")
+    assert "版面细则" in block, "纠正轮一动该域工具就该拿到口径（与触发词无关）"
+    assert skt.guide_block_for_tool(ctx, "update_data_screen") == "", "同一回合不得重发"
+    assert skt.guide_block_for_tool(ctx, "run_semantic_query") == "", "别的域不受牵连"
+    assert ctx.extra[skt.ATTACHED_KEY] == ["screen-builder"], "附带事实要落进回合 meta（侧栏数据源）"
+
+
+def test_attach_lands_in_the_tool_result_and_survives_failure(monkeypatch):
+    """接线：结果尾部多一块细则；读取异常不得改写业务结果，但必须**显式**说明细则没送达。"""
+    monkeypatch.setattr("backend.modules.mind.execution.as_bots.load_skills",
+                        lambda names: [{"name": names[0], "display_name": "看板设计",
+                                        "description": "", "system_prompt": "版面细则",
+                                        "requires_any": ["update_data_screen"]}])
+    ctx = _attach_ctx(["screen-builder"], {"update_data_screen"})
+    result = skt.attach_to_result(ctx, "update_data_screen",
+                                  {"content": [{"type": "text", "text": '{"ok":true}'}]})
+    assert len(result["content"]) == 2 and "版面细则" in result["content"][1]["text"]
+    twice = skt.attach_to_result(ctx, "update_data_screen",
+                                 {"content": [{"type": "text", "text": "第二次"}]})
+    assert twice["content"] == [{"type": "text", "text": "第二次"}], "同一回合同一份细则只附一次"
+
+    def boom(names):
+        raise RuntimeError("读不到技能文件")
+    monkeypatch.setattr("backend.modules.mind.execution.as_bots.load_skills", boom)
+    ctx2 = _attach_ctx(["screen-builder"], {"update_data_screen"})
+    out = skt.attach_to_result(ctx2, "update_data_screen",
+                               {"content": [{"type": "text", "text": '{"ok":true}'}]})
+    assert out["content"][0]["text"] == '{"ok":true}', "附件失败不得损坏业务结果"
+    assert "未能随本次结果下发" in out["content"][1]["text"], "失败要看得见，不得静默当没事"
 
 
 # ── 4. 提示词：省了字数，且不承诺调不到的入口 ──────────────────────────────────
@@ -198,18 +247,15 @@ def _compose(caps, skills, question):
     return text, state
 
 
-def test_progressive_prompt_residents_one_body_and_offers_the_rest():
+def test_prompt_carries_no_body_and_points_at_the_boundary():
     skills = [_skill("data-analysis", display="数据分析", triggers=["转化"], body="剧本AAA" * 1200),
               _skill("arms-observability", display="可观测分析", triggers=["渠道"], body="剧本BBB" * 1200)]
-    old, old_state = _compose(_caps([SEM]), skills, "各渠道转化怎么样")
-    new, new_state = _compose(_caps([SEM, GUIDE]), skills, "各渠道转化怎么样")
-    assert "剧本AAA" in old and "剧本BBB" in old, "不接壳=命中几份展几份（上限 2）"
-    assert "剧本AAA" in new and "技能详细指引" in new, "最高分那份必须常驻"
-    assert "剧本BBB" not in new, "次优那份仍按需取回（不然渐进披露没省任何字数）"
-    assert "load_skill_guide(\"arms-observability\")" in new, "降级项必须给出取回入口，否则细则无从获得"
-    assert len(old) - len(new) > 5000, "改了却没省下第二份正文 = 渐进披露没生效"
-    assert old_state == {"loaded": ["data-analysis", "arms-observability"], "progressive": False}
-    assert new_state == {"loaded": ["data-analysis"], "progressive": True}
+    text, state = _compose(_caps([SEM, GUIDE]), skills, "各渠道转化怎么样")
+    assert "剧本AAA" not in text and "剧本BBB" not in text, "两份正文一份都不许进提示词"
+    assert "技能详细指引" not in text, "没有常驻正文就没有该小节"
+    assert "随结果自动附带" in text, "模型要能在动手前知道细则会从哪来"
+    assert "数据分析" in text and "可观测分析" in text, "名称+契约仍常驻可见"
+    assert state["loaded"] == [] and state["progressive"] is True
 
 
 def test_prompt_never_names_the_guide_tool_when_it_is_not_granted():
@@ -219,12 +265,10 @@ def test_prompt_never_names_the_guide_tool_when_it_is_not_granted():
     assert "load_skill_guide" not in text
 
 
-def test_production_shape_residents_at_most_one_body():
-    """生产同形（绑定技能 → 壳工具自动接入）：常驻正文从“命中即展（上限 2 份）”降到最多 1 份。
+def test_production_shape_residents_zero_bodies():
+    """生产同形（绑定技能 → 壳工具自动接入）：常驻正文从"命中即展（上限 2 份）"降到 0 份。
 
-    护栏口径从绝对字数改成**相对量**是有意的：阈值 26,000 是“0 份常驻”下的产物，而 0 份常驻
-    已被实测证伪（会话 335/336/337 里模型从不调 `load_skill_guide`，整轮没有作业口径）。
-    现在锁的是可核查的不变式：**常驻份数 ≤1**，且比不接壳严格省下一份正文。
+    省下的字数必须**可核查**：与"命中即整份常驻"的旧形态相比，两个 6,600 字符级正文都不在提示词里。
     """
     skills = [_skill("data-analysis", display="数据分析", triggers=["访问", "页面"],
                      body="剧本AAA" * 2200, requires=["run_semantic_query"]),
@@ -236,13 +280,10 @@ def test_production_shape_residents_at_most_one_body():
              "mcp__datahub_skills__load_skill_guide"]
     question = "这个页面的访问量和上周比怎么样"
     text, state = _compose(_caps(names), skills, question)
-    assert len(state["loaded"]) <= 1, "接入壳后仍全量展开 = 渐进披露没真生效"
-    assert state["loaded"] == ["data-analysis"] and state["progressive"] is True
-
-    off_text, off_state = _compose(_caps(names[:-1]), skills, question)
-    assert off_state["loaded"] == ["data-analysis", "arms-observability"]
-    assert len(off_text) - len(text) > 8000, "没省下第二份正文 = 机制没接线"
-    assert "load_skill_guide(\"arms-observability\")" in text
+    assert state["loaded"] == [] and state["progressive"] is True
+    assert "剧本AAA" not in text and "剧本BBB" not in text
+    assert len(text) < len("剧本AAA" * 2200) + len("剧本BBB" * 2200), \
+        "两份正文的量还留在提示词里 = 没真省下来"
 
 
 # ── 5. handler：只回已绑定技能，四种档位都可诊断 ───────────────────────────────
@@ -329,3 +370,49 @@ def test_each_load_is_recorded_for_review(guide_ctx, monkeypatch):
 
 def _skill_key(skill):
     return pc._skill_key(skill)
+
+
+# ── 出厂正文（screen-builder）：尺寸线 + 版面语义送达 ─────────────────
+def _shipped_screen_skill():
+    from backend.modules.mind.config import skill_loader
+    skill_loader.clear_skill_cache()
+    return skill_loader.load_skill("screen-builder")
+
+
+def test_shipped_screen_body_fits_the_guide_truncation_line():
+    """正文超过 `SKILL_GUIDE_MAX_CHARS` 会被附带/取回通道**截掉尾部** —— 截掉的正是版面细则与禁止项，
+    等于口径没送达却看不出来。出厂尺寸必须由测试守住，而不是靠人肉数。"""
+    body = _shipped_screen_skill()["system_prompt"]
+    assert len(body) <= skt.SKILL_GUIDE_MAX_CHARS, f"正文 {len(body)} 字符超截断线"
+
+
+def test_shipped_screen_skill_renamed_but_keeps_technical_name():
+    """显示名改「看板设计」，技术名仍是 `screen-builder`：`adh_as_bots.skills` 存的是技术名，
+    改名会把已绑定关系写成悬空名（迁移风险与本次目标无关）。"""
+    skill = _shipped_screen_skill()
+    assert skill["display_name"] == "看板设计"
+    assert skill["name"] == "screen-builder"
+    assert skill["skill_config"]["requires_any"] == ["create_data_screen", "update_data_screen"]
+
+
+def test_shipped_screen_body_teaches_the_three_layout_dimensions():
+    """正文必须能回答「我要的是间隔不是大小」：间距/大小/位置三维度各有字段，且等距有可核验判据。
+    只有触发词命中才送达的细则，写少了维度就等于没有（历史 seq4 复现的根因）。
+
+    字段名是**契约**（不是措辞）：正文写一个工具没有的参数，模型照抄就被拒，白烧一轮。
+    """
+    from backend.modules.mind.execution.sdk_tools.screen_tools import TOOL_SPECS
+
+    specs = {s["name"]: set(((s.get("schema") or {}).get("properties") or {}).keys()) for s in TOOL_SPECS}
+    body = _shipped_screen_skill()["system_prompt"]
+    for token in ("gap", "layout_rows", "even_spacing", "base_from", "pageLayout"):
+        assert token in body, f"正文缺版面语义通道 {token}"
+    assert "间距 ⟂ 大小" in body, "未写明间距与大小互不代偿"
+    assert {"gap", "layout_rows"} <= specs["update_data_screen"], specs["update_data_screen"]
+    assert {"size", "after"} <= specs["update_data_screen_chart"]
+    assert {"gap", "base_from"} <= specs["create_data_screen"]
+    widget_props = next(s for s in TOOL_SPECS if s["name"] == "create_data_screen")
+    widget_props = set(widget_props["schema"]["properties"]["widgets"]["items"]["properties"])
+    assert {"layout", "position"} <= widget_props, widget_props
+    triggers = _shipped_screen_skill()["skill_config"]["triggers"]
+    assert {"间距", "间隔", "图表大小"} <= set(triggers), "纠正轮措辞要能命中清单"

@@ -654,6 +654,13 @@ def list_conversations(
                 for k in ("created_at", "updated_at"):
                     if hasattr(r.get(k), "isoformat"):
                         r[k] = r[k].isoformat()
+            # 本清单加载了哪些技能正文（常驻 / 模型主动取回的回合数）：会话侧栏徽标的来源。
+            # 一次聚合查询覆盖整页，不按会话逐块查（50 块 = 50 次往返）。缺键的历史会话
+            # 回 {}，前端据此显示"未记录"而不是"没加载"——两件事不能混为一谈。
+            from backend.core import conversation_store
+            usage = conversation_store.skill_usage_by_conversation([r.get("id") for r in rows])
+            for r in rows:
+                r["skill_usage"] = usage.get(int(r.get("id") or 0), {})
             conversation_cache.set(cache_key, rows)
             return rows
     finally:

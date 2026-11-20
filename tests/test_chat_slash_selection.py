@@ -163,21 +163,51 @@ PLAYBOOK = (
 )
 
 
-def test_exclusive_group_loads_only_one_body_on_trigger_path():
-    """定义题命中知识问答：同组的数据分析即使也命中触发词，不再展开第二份正文。"""
+def test_exclusive_group_loads_only_one_body_on_pinned_path():
+    """定义题 + 用户点名知识问答：同组的数据分析不得展开第二份正文。
+
+    触发词路径已不常驻任何正文（规则 6），互斥裁决因此挪到两处：pinned 分支（本用例）
+    与工具边界附带（见 test_exclusive_group_attaches_only_one_body_at_boundary）。
+    """
     skills = list(PLAYBOOK) + [_skill("report-delivery", triggers=["报表"])]
     loaded, reasons, _ = _select_skill_bodies(skills, _caps(KNOWLEDGE, SEMANTIC),
-                                              "活跃客户是什么口径")
+                                              "活跃客户是什么口径", pinned=["knowledge-qa"])
     assert [s["name"] for s in loaded] == ["knowledge-qa"]
     assert "互斥组" in reasons["data-analysis"]      # 落选原因说得出真相
 
 
-def test_exclusive_group_keeps_analysis_for_data_question():
+def test_exclusive_group_trigger_path_residents_nothing():
+    """数据题：正文一份都不常驻，但"谁命中"仍要说得清（互斥挤掉 ≠ 没命中）。"""
     skills = list(PLAYBOOK)
     loaded, reasons, _ = _select_skill_bodies(skills, _caps(KNOWLEDGE, SEMANTIC),
                                               "近7天新增用户趋势")
-    assert [s["name"] for s in loaded] == ["data-analysis"]
-    assert "互斥组" not in reasons.get("knowledge-qa", "")   # 这条是没命中，不是被互斥挤掉
+    assert loaded == []
+    assert "命中" in reasons["data-analysis"]
+    assert "未命中" in reasons["knowledge-qa"] or "互斥组" in reasons["knowledge-qa"]
+
+
+def test_exclusive_group_attaches_only_one_body_at_boundary(monkeypatch):
+    """互斥在工具边界同样成立：一对互斥剧本共用同一批工具时，只附一份细则。
+
+    否则同组两份口径会同时进上下文，答案取决于模型先读到哪条（与常驻形态同一缺陷）。
+    """
+    def _load(names):
+        return [{"name": n, "display_name": n, "description": "", "system_prompt": f"{n} 细则",
+                 "requires_any": ["run_semantic_query"],
+                 "exclusive_group": "analysis" if n in ("knowledge-qa", "data-analysis") else ""}
+                for n in names]
+    monkeypatch.setattr("backend.modules.mind.execution.as_bots.load_skills", _load)
+    from backend.modules.mind.execution.sdk_tools import skill_tools as skt
+    from backend.modules.mind.execution.models import ExecutionContext
+    runtime = type("R", (), {"policy": type("P", (), {
+        "as_bot": {"skills": ["knowledge-qa", "data-analysis"]},
+        "allowed": {"mcp__datahub_semantic__run_semantic_query"}})()})()
+    ctx = ExecutionContext(user_id=7, workspace_id=3, user_role="analyst",
+                           extra={"conversation_id": 1, "secure_runtime": runtime})
+    first = skt.guide_block_for_tool(ctx, "run_semantic_query")
+    second = skt.guide_block_for_tool(ctx, "run_semantic_query")
+    assert "knowledge-qa 细则" in first, "按绑定顺序取第一份"
+    assert second == "", "同互斥组的第二份不得再附带（两份矛盾指令比一份都没有更糟）"
 
 
 def test_pinned_two_conflicting_skills_still_expand_one():
