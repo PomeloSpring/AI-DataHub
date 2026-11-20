@@ -49,6 +49,7 @@ import ModelHealthTab from './ModelHealthTab';
 import AssetPoolWorkbench from './AssetPoolWorkbench';
 import { normalizeDocObjects, showsM234, showsSiteScope, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import ModelDraftReview from './ModelDraftReview';
+import GraphRebuildButton from './GraphRebuildButton';
 import Glossary from './Glossary';
 import { ModelActionsTab, ModelGraphTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
@@ -222,6 +223,8 @@ export default function OntologyModeling() {
   // 内联新建对象行：点「＋ 新建对象」在画布顶部就地展开（不再弹居中对话框）
   const [creatingObject, setCreatingObject] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  /** 图谱重建计数：重建后据此重挂图面板并重取状态徽章（否则「需重建」还挂着，图仍是旧的） */
+  const [graphTick, setGraphTick] = useState(0);
   const draftPending = !!draftStatus?.has_draft;
 
   const loadDraftStatus = useCallback(async (id: number) => {
@@ -821,8 +824,8 @@ export default function OntologyModeling() {
   ) : activeTab === 'graph' ? (
     // 图谱就在画布里：按当前模型（kind/domain/model_id）取图，不跳外层菜单
     <div className="h-full min-h-0">
-      <ModelGraphTab datasourceId={model.datasource_id ?? 0} kind={model.kind} domain={model.domain}
-        modelId={model.id} fill />
+      <ModelGraphTab key={`graph-${graphTick}`} datasourceId={model.datasource_id ?? 0} kind={model.kind}
+        domain={model.domain} modelId={model.id} fill />
     </div>
   ) : activeTab === 'changes' ? (
     <div className="h-full overflow-auto p-2">
@@ -956,8 +959,13 @@ export default function OntologyModeling() {
             )}
             {model && (
               <span title={t('k_4af21def1e')}>
-                <SyncBadges modelId={model.id} kind={model.kind} />
+                <SyncBadges modelId={model.id} kind={model.kind} refreshKey={graphTick} />
               </span>
+            )}
+            {/* 图谱重建入口就放在「图谱 未生成 · 需重建」旁边：徽章说缺，按钮给处置（同看同建一处） */}
+            {model && (
+              <GraphRebuildButton kind={model.kind} datasourceId={model.datasource_id ?? undefined}
+                className="h-8" onRebuilt={() => setGraphTick((v) => v + 1)} />
             )}
           </>
         )}

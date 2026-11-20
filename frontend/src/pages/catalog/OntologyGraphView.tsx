@@ -14,7 +14,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import client from '@/api/client';
 import { ontologyApi, type OntologyModelSummary } from '@/api/ontology';
-import { hasPerm } from '@/stores/permissionStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,6 +28,7 @@ import { json } from '@codemirror/lang-json';
 import { yaml } from '@codemirror/lang-yaml';
 import { markdown } from '@codemirror/lang-markdown';
 import { ModelGraphTab, SyncBadges } from './ModelAssetTabs';
+import GraphRebuildButton from './GraphRebuildButton';
 import { useTranslation } from 'react-i18next';
 import { t as i18nTr } from '@/i18n/runtime';
 
@@ -89,7 +89,6 @@ export default function OntologyGraphView() {
 
   // 派生重建动作（图谱生成 / 同步知识库）与状态徽章刷新
   const [graphTick, setGraphTick] = useState(0);
-  const [building, setBuilding] = useState(false);
   const [syncingKb, setSyncingKb] = useState(false);
   const [syncTick, setSyncTick] = useState(0);
 
@@ -185,44 +184,8 @@ export default function OntologyGraphView() {
     }
   };
 
-  // ── 图谱生成：重建作用域与看图口径一致（系统本体→系统图、业务本体→聚合大图、源本体→本源图）──
-  // kind 必须随请求上送：ds=0 且 kind 为空时服务端会退化成“把全部 active 模型塑进 ds:0”，
-  // 把源/系统对象混进业务聚合图（污染徽章）。无 kind 的存量模型才交给服务端自己推断。
-  const graphScope = useMemo(() => {
-    if (!selected) return null;
-    const kind = selected.kind || '';
-    if (kind === 'system') return { datasource_id: 0, system_scope: true, kind };
-    if (kind === 'business') return { datasource_id: 0, system_scope: false, kind };
-    if (kind === 'source') return { datasource_id: selected.datasource_id || 0, system_scope: false, kind };
-    return { datasource_id: selected.datasource_id || 0, system_scope: false, kind: '' };
-  }, [selected]);
-
-  const graphScopeLabel = useMemo(() => {
-    if (!selected) return '';
-    if (selected.kind === 'system') return t('k_d1eb9b5b59');
-    if (selected.kind === 'business') return t('k_bbee149234');
-    if (selected.kind === 'source') return t('k_6721362c7e', { p0: selected.datasource_id || 0 });
-    return t('k_d912de7356', { p0: selected.datasource_id || 0 });
-  }, [selected]);
-
-  const handleBuildGraph = async () => {
-    if (!graphScope) return;
-    setBuilding(true);
-    try {
-      const { data } = await client.post('/graph/sync', null, { params: graphScope });
-      if (data?.success === false) throw new Error(data?.message || t('k_46c6521935'));
-      toast.success(data?.message || t('k_a00040e6ac'));
-      // 图、结构化投影、同步状态徽章全部重取（重建后滞后值会变）
-      setGraphTick((t) => t + 1);
-      setViewTick((t) => t + 1);
-      setSyncTick((t) => t + 1);
-    } catch (e: any) {
-      // 409=同图正在生成、503=互斥锁不可用：服务端原文案透传，不当成功也不静默重试
-      toast.error(e?.response?.data?.detail || e?.message || t('k_75c414fe36'));
-    } finally {
-      setBuilding(false);
-    }
-  };
+  // ── 图谱生成：作用域与看图口径同源（系统本体→系统图、业务本体→聚合大图、源本体→本源图）——
+  // 实现统一在 GraphRebuildButton.graphScopeForModel，本页不另写一份（分叉就会重建错图）。
 
   // ── 同步知识库：把生效模型的脱敏文档推送到目标知识库（仅 active，否则服务端会 skip）。
   //    targets 回的是**库名**，成败都要把它说给用户（不然只看到“同步了 1 个”不知道去哪了）。
@@ -322,15 +285,13 @@ export default function OntologyGraphView() {
               <div className="flex items-center gap-2 flex-wrap">
                 <SyncBadges modelId={selected.id} refreshKey={syncTick} kind={selected.kind} />
                 {/* 重建命名图是治理动作，按 graph:manage 裁决（无权限不给必 403 的按钮） */}
-                {hasPerm('graph:manage') && (
-                  <Button size="sm" variant="outline" onClick={handleBuildGraph} disabled={building}
-                          title={t('k_6633708f34', { p0: graphScopeLabel })}>
-                    {building
-                      ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
-                    {t('k_800021e226')}
-                  </Button>
-                )}
+                <GraphRebuildButton kind={selected.kind} datasourceId={selected.datasource_id}
+                  onRebuilt={() => {
+                    // 图、结构化投影、同步状态徽章全部重取（重建后滞后值会变）
+                    setGraphTick((v) => v + 1);
+                    setViewTick((v) => v + 1);
+                    setSyncTick((v) => v + 1);
+                  }} />
                 {/* 同步目标库选择：默认按模型 kind 路由（业务/系统→全局库、源本体不同步）；
                     选具体库=一次性定向推送到该库（含源本体，用户主动的手动例外） */}
                 <Select value={selectedKbId} onValueChange={(v) => setSelectedKbId(v)}
