@@ -177,7 +177,13 @@ def test_allow_full_regenerate_是关键字参数且默认关闭():
 
 def test_只有派生生产者传_allow_full_regenerate():
     """全仓调用点清单化：AI/工具通道一旦出现转发，破坏性覆盖护栏就被人开了后门。"""
-    allowed = {"backend/modules/catalog/services/business_asset_ontology.py"}
+    allowed = {
+        # 数据资产路由图：整份 doc 由资产清单全量重算，对象随资产消失是正确行为
+        "backend/modules/catalog/services/business_asset_ontology.py",
+        # 系统能力本体：整份 doc 由声明式目录全量重算（已退役 waker/审批等概念本应消失）；
+        # 维护脚本服务端执行、不对外暴露，AI 工具通道无权设置该参数
+        "backend/scripts/refresh_system_ontology.py",
+    }
     hits: set[str] = set()
     for py in (ROOT / "backend").rglob("*.py"):
         rel = str(py.relative_to(ROOT))

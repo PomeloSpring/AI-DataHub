@@ -107,6 +107,16 @@ class TestFindUnregisteredTables:
             self._doc("t_case_records", "t_new_table"))
         assert missing == ["test-alb.t_new_table"]
 
+    def test_system_kind_不参与数据产品门禁(self, monkeypatch):
+        """系统本体描述平台自身元数据表（adh_*），不应被要求登记为数据产品。
+
+        否则系统本体永远激活不了（激活硬门禁），而它的对象本就不面向业务取数。
+        """
+        _patch_products(monkeypatch, [])
+        doc = {"kind": "system", "datasource_name": "",
+               "objects": [{"key": "role", "primary_table": "adh_roles"}]}
+        assert ontology_service.find_unregistered_tables(doc) == []
+
     def test_datasource_name_is_part_of_identity(self, monkeypatch):
         """同名表跨数据源：另一数据源的登记不算数。"""
         from backend.modules.catalog.services import data_product_service as dps

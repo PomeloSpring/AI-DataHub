@@ -31,7 +31,8 @@ import {
 } from '@/lib/dictLabels';
 import { useTranslation } from 'react-i18next';
 
-interface DictDimension {
+/** adh_dimensions 行（列表/编辑共用；导出供本体对象「引用」页签复用同一张表单） */
+export interface DictDimension {
   id: number;
   name: string;
   name_en: string;
@@ -407,17 +408,21 @@ export default function DimensionsDictTab({
 // ── 新建弹窗 ─────────────────────────────────────────────────────────
 // 字典行是跨数据源口径：**不提供“目标源/数据源”字段**（服务层恒为 0），
 // 物理归属由「归属对象」+「目标列」决定（见 ui-resource-display §2：选不手填）。
-function CreateDimensionDialog({
-  categories = [], objectNames = {}, onClose, onSaved,
+// 导出：本体对象检查器的「引用」页签复用同一张表单（同一必填校验、同一写接口），
+// 不得在别处另写一份“建维度”表单。
+export function CreateDimensionDialog({
+  categories = [], objectNames = {}, defaultObjectKey = '', onClose, onSaved,
 }: {
   categories?: string[];
   objectNames?: Record<string, string>;
+  /** 新建时预填的归属对象（对象检查器里新建 = 给这个对象挂维度） */
+  defaultObjectKey?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { t } = useTranslation('ui');
   const [form, setForm] = useState({
-    display_name: '', name_en: '', category: '属性', bound_object_key: '',
+    display_name: '', name_en: '', category: '属性', bound_object_key: defaultObjectKey,
     target_table: '', target_column: '', aliases: '', value_labels: '', description: '',
   });
   const [saving, setSaving] = useState(false);
@@ -539,7 +544,9 @@ function CreateDimensionDialog({
 
 // ── 编辑弹窗 ─────────────────────────────────────────────────────────
 
-function EditDimensionDialog({
+// 导出：本体对象检查器的「引用」页签复用同一张表单（同一白名单列、同一校验），
+// 不得在别处另写一份“改别名/枚举”的表单。
+export function EditDimensionDialog({
   dimension, categories, onClose, onSaved,
 }: {
   dimension: DictDimension;

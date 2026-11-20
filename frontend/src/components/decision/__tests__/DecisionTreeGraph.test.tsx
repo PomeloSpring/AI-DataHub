@@ -92,7 +92,7 @@ describe('决策树图面视图（复用图可视化基准）', () => {
     expect(root).toHaveClass('rounded-full');
     expect(leaf).toHaveClass('rounded-full');
     expect(root.style.background).toBe('rgb(245, 158, 11)');    // NODE_CONFIG.Rule
-    expect(leaf.style.background).toBe('rgb(16, 185, 129)');    // NODE_CONFIG.Action
+    expect(leaf.style.background).toBe('rgb(225, 29, 72)');     // NODE_CONFIG.Action
     // 图例与节点同源（不另写一套色表）
     expect(screen.getByText('规则')).toBeTruthy();
     expect(screen.getByText('行为')).toBeTruthy();

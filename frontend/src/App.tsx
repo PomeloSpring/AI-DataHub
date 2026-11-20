@@ -55,7 +55,6 @@ import QualityOverview from './pages/quality/QualityOverview';
 import QualityRules from './pages/quality/QualityRules';
 import LineageGraph from './pages/lineage/LineageGraph';
 import OntologyModeling from './pages/catalog/OntologyModeling';
-import AssetPoolWorkbench from './pages/catalog/AssetPoolWorkbench';
 import OntologyGraphView from './pages/catalog/OntologyGraphView';
 import MetricsCenter from './pages/catalog/MetricsCenter';
 import TagsManager from './pages/catalog/TagsManager';
@@ -175,8 +174,9 @@ export default function App() {
           <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
           <Route path="tables" element={<Admin embeddedTab="metadata" />} />
           <Route path="ontology" element={<OntologyModeling />} />
-          {/* 建模待办：未归属资产 + 解析回流候选的分诊台（跨模型缺口，不属于任何单个模型，故独立成页） */}
-          <Route path="asset-pool" element={<AssetPoolWorkbench />} />
+          {/* 建模待办不再是独立页：它作为「本体建模」页左侧「跨模型」分区的页内页签渲染
+              （用户 2026-11-19：建模待办不要跳转了，直接在建模页里实现），
+              路由与侧栏菜单、菜单/权限点登记同批退出。 */}
           {/* 指标与维度: 语义模型层全局权威主页(唯一编辑源); 本体页仅保留结构编辑 */}
           <Route path="metrics" element={<MetricsCenter />} />
           <Route path="datasets" element={<Datasets />} />

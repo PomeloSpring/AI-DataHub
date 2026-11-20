@@ -351,7 +351,6 @@
     "knowledgeEmpty": "本轮会话还没有可摘取的知识。助手检索口径、查目录或查知识库后，这里会列出用到的对象/指标/维度与出处。",
     "scopes": "本次口径",
     "citations": "知识引用出处",
-    "unparsed": "有 {{count}} 段工具返回过长被截断，未能整理成卡片；完整内容在该轮的执行过程里查看。",
     "windowMeta": "窗口 {{value}}",
     "siteMeta": "站点 {{value}}",
     "unregisteredObject": "未登记对象",

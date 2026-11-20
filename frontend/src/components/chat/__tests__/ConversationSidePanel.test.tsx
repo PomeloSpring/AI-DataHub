@@ -1,5 +1,6 @@
 // 会话右侧栏契约：默认收起（不渲染）；产物区分「未归档草稿」与「已归档报告」两种事实，
-// 已归档不再给重复归档入口；关键知识只显示业务名；结果截断必须显式提示而不是显示空小节。
+// 已归档不再给重复归档入口；关键知识只显示业务名；侧栏只列引用，
+// 不展示「工具返回被截断」这类过程提示（完整内容在该轮执行过程里看）。
 import userEvent from '@testing-library/user-event';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -103,10 +104,12 @@ describe('ConversationSidePanel', () => {
     expect(screen.queryByText(/prod/)).toBeNull();
   });
 
-  it('结果被截断时显式提示条数，不静默当成没有知识', () => {
+  it('工具返回被截断时侧栏不出提示（只列引用，详情看该轮执行过程）', () => {
     renderPanel();
-    const warn = screen.getByRole('alert');
-    expect(warn.textContent).toContain('1 段工具返回过长被截断');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/工具返回过长被截断/)).toBeNull();
+    // 引用与口径照常呈现
+    expect(screen.getByText('rum_event')).toBeInTheDocument();
   });
 
   it('点条目上的定位按钮 → 交给页面同一个跳转口径（不自己滚）', async () => {

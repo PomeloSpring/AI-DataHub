@@ -25,7 +25,7 @@ vi.mock('@/api/metrics', () => ({
 }));
 
 /**
- * 建模待办工作台（/data/asset-pool，从「本体建模」内嵌子视图抽为独立页）。
+ * 建模待办面板（现为「本体建模」页左栏「跨模型」分区的页内页签，/data/asset-pool 独立页已下线）。
  *
  * 用户报的两件事都在这里锁：
  * 1.「操作收编、驳回都不会自动刷新」→ 每个出口成功后必须重新拉取清单，处理掉的行消失；
@@ -103,7 +103,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 const renderPage = () => render(
-  <MemoryRouter initialEntries={['/data/asset-pool']}>
+  <MemoryRouter initialEntries={['/data/ontology']}>
     <AssetPoolWorkbench />
   </MemoryRouter>,
 );
@@ -133,7 +133,10 @@ describe('建模待办工作台', () => {
     expect(screen.getByText(/指向的对象已失效（gone_obj）/)).toBeTruthy();
     expect(screen.getByText('流水')).toBeTruthy();
     expect(screen.getByText(/近似目标 订单金额/)).toBeTruthy();
-    expect(screen.getByText('命中 5 次')).toBeTruthy();
+    // 行内证据按「标签：值」两段渲染（label 与值分属两个节点，不拼成一个字符串）；两条候选都带命中次数
+    expect(screen.getAllByText('命中：').length).toBe(2);
+    expect(screen.getByText('5 次')).toBeTruthy();
+    expect(screen.getByText('3 次')).toBeTruthy();
     // 数据源显示业务名（prd-sls-cn），不显示 datasource_id（标签与值分属两个节点）
     expect(screen.getByText('数据源：')).toBeTruthy();
     expect(screen.getByText('prd-sls-cn')).toBeTruthy();
@@ -287,7 +290,7 @@ describe('建模待办工作台', () => {
   });
 
   it('缺 metrics:manage 权限 → 归属出口禁用并点名权限，而不是按下去报 403', async () => {
-    usePermissionStore.setState({ perms: ['metrics:read', 'asset-pool:read'], unrestricted: false, loaded: true });
+    usePermissionStore.setState({ perms: ['metrics:read', 'ontology:read'], unrestricted: false, loaded: true });
     renderPage();
     await screen.findByText('近30天成交金额');
 

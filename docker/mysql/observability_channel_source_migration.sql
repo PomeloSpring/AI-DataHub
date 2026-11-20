@@ -7,7 +7,7 @@
 --
 -- 值域：
 --   runtime    执行层在 build_options 时登记的事实（唯一权威来源）
---   backfilled 由 backend/scripts/backfill_trace_channel.py 按判据推断
+--   backfilled 事后按判据回填（一次性回填脚本已下线，值域不变）
 --   NULL       未记录（判据不足，不猜）
 --
 -- 幂等：ADD COLUMN 先查 information_schema。

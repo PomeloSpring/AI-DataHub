@@ -1153,16 +1153,18 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "handler": _save_report,
     },
     # ── 内容中心（资讯栏目）：生成内容与管理内容 ──────────────────────────────
-    # object_key 一律留空：系统本体里还没有「内容条目」对象（现有清单见
-    # adh_ontology_objects kind='system'），写一个悬空 key 会让 AS-BOT 的语义
-    # grounding 找不到对象。等本体侧补登记后再回填，不在这里假造。
+    # object_key 必须与系统本体（kind='system'，目录见
+    # `backend/modules/catalog/services/system_ontology_catalog.py`）里登记的对象一致：
+    # 悬空 key 会让 AS-BOT 的语义 grounding 找不到对象。内容类动作对应
+    # content_article / content_category，决策类对应 decision_advice；
+    # 本体侧改名/下线时同批回填这里（tests/test_system_ontology_catalog.py 把门）。
     "content_article.list": {
         "tool_name": "list_content_articles",
         "label": "查看内容清单",
         "description": "列出内容中心（资讯栏目）的条目：slug/标题/摘要/栏目/状态/标签/阅读数/"
                        "是否在线/语料同步状态。可按状态、栏目 key、标签、形态与关键词过滤。"
                        "不返回条目内部 id；正文请用 get_content_article。",
-        "perm_code": "article:manage", "object_key": "", "read_only": True,
+        "perm_code": "article:manage", "object_key": "content_article", "read_only": True,
         "schema": {"type": "object", "properties": {
             "status": {"type": "string", "enum": ["all", "draft", "in_review", "approved",
                                                   "published", "archived"],
@@ -1182,7 +1184,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "description": "按 slug 取一篇内容的正文与元信息，并带回门禁预检结果（gate_hard / "
                        "gate_warnings）。revision=head 取工作稿（未发布改动），live 取线上版。"
                        "改稿前必须先调本工具取 version，供 update_content_draft 做乐观锁。",
-        "perm_code": "article:manage", "object_key": "", "read_only": True,
+        "perm_code": "article:manage", "object_key": "content_article", "read_only": True,
         "schema": {"type": "object", "properties": {
             "slug": {"type": "string", "description": "条目业务标识（不是内部 id）"},
             "revision": {"type": "string", "enum": ["head", "live"],
@@ -1196,7 +1198,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "description": "列出可用栏目（key/label/说明/在用状态/已发布篇数）与标签（名称/命中篇数）。"
                        "写作前必须先调本工具：category 只能取返回的 key，tags 只能取返回的名称，"
                        "不得编造。栏目与标签的增删改属编排配置，由人在页面做。",
-        "perm_code": "article:manage", "object_key": "", "read_only": True,
+        "perm_code": "article:manage", "object_key": "content_category", "read_only": True,
         "schema": {"type": "object", "properties": {
             "include_inactive": {"type": "boolean", "description": "是否带出已停用项，默认 false"}},
             "required": []},
@@ -1210,7 +1212,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
                        "登记出处（标题/链接），没有出处就写定性描述，不得编造数据。"
                        "正文含内部标识（连接串/生成 SQL/主机/报错栈）会被当场拒写。"
                        "发布与审核不开放给 AI：写完请提示用户去「内容中心」走审核发布。",
-        "perm_code": "article:manage", "object_key": "", "read_only": False,
+        "perm_code": "article:manage", "object_key": "content_article", "read_only": False,
         "schema": {"type": "object", "properties": {
             "title": {"type": "string", "description": "标题（必填，业务可读）"},
             "body": {"type": "string", "description": "正文 Markdown（站内正文形态必填）"},
@@ -1235,7 +1237,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
                        "（先 get_content_article 取 version），否则拒绝写入 —— 防覆盖他人编辑。"
                        "改动只落工作稿：已发布内容改完线上仍是旧版，需重新走审核与发布才生效。"
                        "不接受 status/published/approved 等发布态字段（发布不开放 AI）。",
-        "perm_code": "article:manage", "object_key": "", "read_only": False,
+        "perm_code": "article:manage", "object_key": "content_article", "read_only": False,
         "schema": {"type": "object", "properties": {
             "slug": {"type": "string", "description": "条目业务标识"},
             "expected_version": {"type": "integer",
@@ -1254,7 +1256,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "description": "按 slug 把稿件提交到待审队列（**不是发布**）。门禁硬阻断项会逐条回传原因"
                        "（占位未填、没选栏目、正文为空、外链缺地址等），修完才能提交成功。"
                        "审核通过与发布/下架都由人操作（article:review / article:publish 未开放 AI）。",
-        "perm_code": "article:manage", "object_key": "", "read_only": False,
+        "perm_code": "article:manage", "object_key": "content_article", "read_only": False,
         "schema": {"type": "object", "properties": {
             "slug": {"type": "string", "description": "条目业务标识"}},
             "required": ["slug"]},
@@ -1266,7 +1268,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
         "description": "列出当前已**发布生效**的决策建议树（名称/说明/严重级/适用站点/最近一次评估结果）。"
                        "只回业务摘要，不回条件阈值与判定结构（那是口径资产，由人在决策中心看）；"
                        "草案状态的树不出现（草案未生效，拿它回答用户等于报未上线的判断标准）。",
-        "perm_code": "decision:read", "object_key": "", "read_only": True,
+        "perm_code": "decision:read", "object_key": "decision_advice", "read_only": True,
         "schema": {"type": "object", "properties": {
             "limit": {"type": "integer", "description": "返回条数上限，默认 50，最大 200"}},
             "required": []},
@@ -1279,7 +1281,7 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
                        "（只给指标业务名、阈值与实测值，不给物理表列、SQL 与数据源标识）。"
                        "用于用户问「现在该怎么办」且本轮分析结果不够支撑判定时；"
                        "未命中/未评估都会带原因回来，不得把「没有建议」说成「数据正常」。",
-        "perm_code": "decision:read", "object_key": "", "read_only": True,
+        "perm_code": "decision:read", "object_key": "decision_advice", "read_only": True,
         "schema": {"type": "object", "properties": {
             "tree": {"type": "string", "description": "决策树业务名或标识（先调 list_decision_trees 取名字）"},
             "site": {"type": "string", "description": "可选站点业务名/代码；不传用会话生效站点"},

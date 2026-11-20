@@ -92,5 +92,7 @@ describe('数据中台侧栏按菜单码显隐', () => {
     renderLayout();
     expect(screen.getByText('决策建议')).toBeInTheDocument();
     expect(screen.getByText('关系图谱')).toBeInTheDocument();
+    // 「建模待办」已并入「本体建模」页内页签（用户 2026-11-19），侧栏不得再出现这个入口
+    expect(screen.queryByText('建模待办')).not.toBeInTheDocument();
   });
 });

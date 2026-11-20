@@ -49,7 +49,9 @@ export const NODE_CONFIG: Record<string, { color: string; label: string }> = {
   Dimension: { color: '#14b8a6', label: '维度' },
   DataSource: { color: '#06b6d4', label: '数据源' },
   ETLTask: { color: '#f59e0b', label: '同步任务' },
-  Action: { color: '#10b981', label: '行为' },
+  // 行为用玫红：原 emerald(#10b981) 与属性/字段的 green(#22c55e)、维度的 teal(#14b8a6)
+  // 挤在同一色域，图例里几乎分不开（2026-11-20 反馈「颜色太像」）；玫红与其余色系都拉得开。
+  Action: { color: '#e11d48', label: '行为' },
   Property: { color: '#22c55e', label: '属性' },
   Rule: { color: '#f59e0b', label: '规则' },
   Scenario: { color: '#8b5cf6', label: '场景' },

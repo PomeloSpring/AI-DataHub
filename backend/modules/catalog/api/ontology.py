@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..services import ontology_service
+from ..services import view_cache
 from backend.common.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -829,6 +830,93 @@ def _deployment_summary() -> dict:
     return out
 
 
+def _platform_contract_objects(doc: dict) -> list:
+    """系统本体的对象契约清单（按 doc 合成，不读部署绑定层）。
+
+    系统本体描述平台自身能力，对象随项目版本发布；`adh_ontology_bindings` 里的历史行
+    既不随 doc 维护（曾出现 waker / as_bot_approval 已退役仍留 active 行，被血缘巡检
+    误报成「对象未绑定数据产品」），也不代表可取数。故系统本体的「已绑定/未绑定」判定
+    不适用：统一标注 `binding_source='platform'`，前端渲染「平台内置」而非业务绑定徽标。
+
+    纯概念对象（如 skill 无物理表）同样列入，避免被误报成「未绑定物理表」。
+    """
+    rows: list = []
+    for o in doc.get("objects") or []:
+        if not isinstance(o, dict):
+            continue
+        key = str(o.get("key") or o.get("object_key") or "").strip()
+        if not key:
+            continue
+        props = [p for p in (o.get("properties") or [])
+                 if isinstance(p, dict) and str(p.get("column") or "").strip()]
+        rows.append({
+            "object_key": key,
+            "object_name": str(o.get("display_name") or key),
+            "datasource": "",
+            "physical_table": str(o.get("primary_table") or ""),
+            "bind_kind": "platform",
+            "column_count": len(props),
+            "sync_state": "",
+            "product_ref": "",
+            "allowed_sites": [],
+            "binding_source": "platform",
+        })
+    return rows
+
+
+def _system_property_drift(doc: dict) -> dict:
+    """系统本体的属性列漂移：对着元数据库 information_schema 的实存列判，不走 catalog。
+
+    为什么不走 catalog：系统对象绑的是平台自身元数据表（adh_*），它们不在任何业务数据源
+    下，`adh_table_info` / `adh_column_metadata` 永远不会收录，而系统模型的
+    `datasource_id=0` 也没有可同步的源——此时 catalog 口径会给每个对象挂一条永远消不掉的
+    「列待同步 N」，文案还让人「去【表 & 字段】同步这张表」（点不到，属死引导）。
+    真实库的实存列是更强且可即时满足的依据：代码改了表而目录没跟着改（真漂移）照样标红。
+
+    返回与 `ontology_yaml_import.property_column_drift` 同形状的清单
+    （verdict 只会是 bad：列不在实存列里，含整张表不存在的形态）。
+    """
+    from backend.common.db import get_metadata_conn
+
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DATABASE() AS db")
+            db = str((cur.fetchone() or {}).get("db") or "")
+            cur.execute(
+                "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s", (db,))
+            cols: dict = {}
+            for r in cur.fetchall() or []:
+                cols.setdefault(str(r["TABLE_NAME"]).lower(), set()).add(
+                    str(r["COLUMN_NAME"]).lower())
+
+    drift_map: dict = {}
+    for o in doc.get("objects") or []:
+        if not isinstance(o, dict):
+            continue
+        key = str(o.get("key") or o.get("object_key") or "").strip()
+        table = str(o.get("primary_table") or "").strip()
+        if not key or not table:
+            continue  # 纯概念对象没有物理表，谈不上列漂移
+        known = cols.get(table.lower())
+        drift = []
+        for p in o.get("properties") or []:
+            if not isinstance(p, dict):
+                continue
+            col = str(p.get("column") or "")
+            pname = str(p.get("name") or "")
+            if not col or not pname:
+                continue
+            bare = col.split(".", 1)[1] if "." in col else col
+            if known is not None and bare.lower() in known:
+                continue
+            drift.append({"property": pname, "column": col, "table": table,
+                          "verdict": "bad"})
+        if drift:
+            drift_map[key] = drift
+    return drift_map
+
+
 @router.get("/models/{model_id}/sites")
 def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
     """业务本体适用站点 + 对象契约清单（前端「适用站点」页）。
@@ -909,12 +997,20 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
     # 属性列漂移：实时对着列元数据判（不落库快照——同步会改实存列，快照会把已修好的
     # 对象继续标成漂移）。建模页必须看得见"表还在但列改名"这类换库缺陷：以前漂移只进
     # 服务端日志，页面上属性行照旧显示一个不存在的列名，直到取数失败才暴露。
+    # 系统本体（kind='system'）分域：契约清单按 doc 合成、漂移按真实库实存列核验
+    # （见 _platform_contract_objects / _system_property_drift 的成因说明）。
     drift_map: dict = {}
+    model_kind = str(model.get("kind") or "")
     try:
         doc = json.loads(model.get("json_content") or "{}")
     except ValueError:
         doc = {}
-    if isinstance(doc, dict):
+    if not isinstance(doc, dict):
+        doc = {}
+    if model_kind == "system":
+        objects = _platform_contract_objects(doc)
+        drift_map = _system_property_drift(doc)
+    elif doc:
         from backend.modules.catalog.services import ontology_yaml_import as _yimp
         bound_table = {str(o["object_key"]).lower(): str(o.get("physical_table") or "")
                        for o in objects}
@@ -930,7 +1026,7 @@ def get_model_sites(model_id: int, user: dict = Depends(get_current_user)):
                 o, int(model.get("datasource_id") or 0), table, col_cache)
             if drift:
                 drift_map[key] = drift
-    return {"kind": str(model.get("kind") or ""), "sites": sites,
+    return {"kind": model_kind, "sites": sites,
             "selected": [{"site_code": k, "datasource": v} for k, v in selected.items()],
             "contract_objects": objects, "property_drift": drift_map}
 
@@ -1174,19 +1270,38 @@ def view_model(
     读当前模型 json_content → hydrate_doc（按 bound_object_key 注入字典口径/维度）
     → 按 format 选 canonical/to_palantir → 按 as 选 json/yaml/md。只读，
     不改 save_draft/activate 路径，存储的 canonical json_content 保持不变。
+
+    性能：同模型同档只读投影是纯函数（正文 + 字典不变 → 逐字节相同），走进程内缓存
+    （`view_cache`）。签名 = 模型 `updated_at`（正文内容版本）+ 字典 (COUNT, MAX(updated_at))
+    指纹，任一变动即重算；命中路径只取小字段，不拉百 KB 正文。TTL 兜底。
+    `cached` 标记如实回传（前端/排查能分辨命中与重算，不静默）。
     """
-    model = ontology_service.get_model(model_id)
+    model = ontology_service.get_model_meta(model_id)
     if not model or not ontology_service.can_view_model(model, _allowed_source_ids(user)):
         raise HTTPException(status_code=404, detail="模型不存在")
     if fmt not in ("internal", "palantir"):
         raise HTTPException(status_code=400, detail="format 仅支持 internal|palantir")
     if as_ not in ("json", "yaml", "md"):
         raise HTTPException(status_code=400, detail="as 仅支持 json|yaml|md")
+    # 签名取不到（如字典表不可读）就跳过缓存：宁可这次慢，也不给可能过期的视图
+    sig = None
     try:
-        doc = json.loads(model.get("json_content") or "{}")
+        sig = view_cache.signature(str(model.get("updated_at") or ""), view_cache.dict_fingerprint())
+    except Exception as e:  # noqa: BLE001 - 缓存是性能层，不得让它的失败阻断只读视图
+        logger.warning("[ontology] view cache 签名失败，本次不走缓存: %s", e)
+    if sig:
+        cached = view_cache.get((int(model_id), fmt, as_), sig)
+        if cached is not None:
+            return {"format": fmt, "as": as_, "text": cached, "cached": True}
+    # 未命中才拉整份正文（get_model_meta 拿不到 json_content）
+    full = ontology_service.get_model(model_id)
+    if not full:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    try:
+        doc = json.loads(full.get("json_content") or "{}")
     except (json.JSONDecodeError, TypeError) as e:
         raise HTTPException(status_code=400, detail="模型内容损坏，无法生成视图") from e
-    hydrated = ontology_service.hydrate_doc(doc, int(model.get("datasource_id") or 0))
+    hydrated = ontology_service.hydrate_doc(doc, int(full.get("datasource_id") or 0))
     if fmt == "palantir":
         pal = ontology_service.to_palantir(hydrated)
         if as_ == "yaml":
@@ -1202,7 +1317,9 @@ def view_model(
             text = ontology_service.to_md(hydrated)
         else:
             text = json.dumps(hydrated, ensure_ascii=False, indent=2)
-    return {"format": fmt, "as": as_, "text": text}
+    if sig:
+        view_cache.put((int(model_id), fmt, as_), sig, text)
+    return {"format": fmt, "as": as_, "text": text, "cached": False}
 
 
 @router.get("/models/{model_id}/sync-doc")

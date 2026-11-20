@@ -318,7 +318,7 @@ export function ModelSitesTab({ modelId, readonly }: { modelId: number; readonly
 
 
 
-export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId }: {
+export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId, fill = false }: {
   datasourceId: number;
   /** 本体类型：source/business/system。图谱归属与标题按 kind，**不按 datasource_id**——
    *  业务本体跨源 datasource_id=0，旧的 `!datasource_id` 判系统域会把业务本体误标为 AS-BOT。 */
@@ -329,6 +329,8 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
   singleView?: string;
   /** 当前选中的本体模型 id：business 域默认按此聚焦（只看本模型对象），留空则看全业务图。 */
   modelId?: number;
+  /** 内嵌在工作台画布时用 h-full 填满父容器（默认保留 68vh 视口高 + 外框，供独立页/弹窗使用） */
+  fill?: boolean;
 }) {
   const { t } = useTranslation('ui');
   // 系统域仅当 kind=system（不是 datasource_id=0）
@@ -411,7 +413,8 @@ export function ModelGraphTab({ datasourceId, kind, domain, singleView, modelId 
   return (
     <div className={fullscreen
       ? 'fixed inset-0 z-50 bg-background p-4 flex flex-col'
-      : 'h-[68vh] flex flex-col border rounded-lg overflow-hidden'}>
+      : fill ? 'h-full min-h-0 flex flex-col overflow-hidden'
+        : 'h-[68vh] flex flex-col border rounded-lg overflow-hidden'}>
       <div className="flex items-center gap-1 px-2 py-1.5 border-b bg-muted/30 shrink-0">
         {unified ? (
           <span className="text-xs font-medium text-muted-foreground px-1">{t("k_bcbd70917c")}</span>
@@ -690,7 +693,8 @@ export function SyncBadges({ modelId, refreshKey, kind }: {
         {gNeedRebuild && <span className="text-amber-600">{t("k_10faa62c5c")}</span>}
       </span>
       <span className="flex items-center gap-1" title={kTip}>
-        {t('k_a2e0483367', { p0: dot(kOk, kWarn), p1: kLabel })}
+        {/* 状态点必须是 JSX 节点，不能当 i18n 插值：模板字符串化后会渲染成 [object Object] */}
+        {dot(kOk, kWarn)}{t('k_a2e0483367', { p0: '', p1: kLabel })}
       </span>
     </span>
   );
@@ -1656,21 +1660,25 @@ function PropertyColumnEditor({ modelId, objectKey, table, rows, drift, onRowsCh
   );
 }
 
-/** 手动新建对象按钮 + 对象表单（业务本体支持手工新增对象，不只 LLM 生成/编辑器改 JSON）。
- *  业务本体对象的形状描述可选：路由（route 指向源本体）和/或 primary_table；
- *  两者都不填也合法——v0.5 B6b 起物理绑定唯一在部署绑定层（adh_ontology_bindings），
- *  新对象可先建概念再在「编辑对象」里补物理表；**发布级联**才把绑定行登记上
- *  （对象清单在发布前会显式标「未绑定物理表」）。
- *  旧文案把登记动作指向「同构站点部署」页，而那页只配站点不写绑定行——假引导，已改。 */
-export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
+/** 内联新建对象行（对标设计稿 `docs/demo/ontology-modeling-redesign.html` 的 `.inline-new`）。
+ *  2026-11-19 拍板：不再弹居中对话框——点「＋ 新建对象」在对象画布顶部就地展开一行，
+ *  key / 显示名 / 形状填完即建，回车也能保存（设计稿里已是这个交互）。
+ *  业务本体对象的形状描述可选：不绑表（先建概念）/ 绑主表 / 路由到源本体对象；
+ *  v0.5 B6b 起物理绑定唯一在部署绑定层（adh_ontology_bindings），**发布级联**才登记绑定行
+ *  （对象清单在发布前会显式标「未绑定物理表」）。 */
+export function ObjectNewRow({ jsonContent, onSave, onDone, onCancel, modelKind }: {
   jsonContent: string;
-  onSave: (next: string) => void;
+  /** opts.stay：建完不跳「变更对比」，留在对象画布继续补属性/路由（设计稿的建完自动选中） */
+  onSave: (next: string, opts?: { stay?: boolean }) => void;
+  /** 建好后把新对象 key 交回外层（选中它、收起内联行） */
+  onDone?: (key: string) => void;
+  onCancel: () => void;
   /** 模型行的 kind（真值源）；存量 doc 顶层可能没写 kind */
   modelKind?: string;
 }) {
   const { t } = useTranslation('ui');
-  const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ key: '', display_name: '', description: '', primary_table: '' });
+  const [shape, setShape] = useState<'none' | 'table' | 'route'>('none');
   const [route, setRoute] = useState<RouteValue>({
     mode: 'object_filter', source_ontology: '', filter_hints: [],
   });
@@ -1682,8 +1690,6 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
   const submit = () => {
     const key = form.key.trim();
     if (!key) return;
-    const srcName = route.source_ontology.trim();
-    const table = form.primary_table.trim();
     let doc: any;
     try {
       doc = JSON.parse(jsonContent || '{}');
@@ -1697,12 +1703,14 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
       window.alert(t('k_afdc4db8f4', { p0: key }));
       return;
     }
+    const srcName = route.source_ontology.trim();
+    const table = form.primary_table.trim();
     const hints = (route.filter_hints || []).filter((h) => h.dimension.trim());
     doc.objects.push({
       key,
       display_name: form.display_name.trim() || key,
       description: form.description.trim(),
-      ...(isBusiness && srcName
+      ...(shape === 'route' && isBusiness && srcName
         ? {
             route: {
               mode: route.mode,
@@ -1714,64 +1722,76 @@ export function ObjectCreateButton({ jsonContent, onSave, modelKind }: {
             },
           }
         : {}),
-      ...(table ? { primary_table: table } : {}),
+      ...(shape === 'table' && table ? { primary_table: table } : {}),
       properties: [], links: [],
     });
-    onSave(JSON.stringify(doc, null, 2));
+    onSave(JSON.stringify(doc, null, 2), { stay: true });
     setForm({ key: '', display_name: '', description: '', primary_table: '' });
     setRoute({ mode: 'object_filter', source_ontology: '', filter_hints: [] });
-    setOpen(false);
+    onDone?.(key);
   };
 
   return (
-    <>
-      <Button size="sm" onClick={() => setOpen(true)}>
-        <Plus className="h-4 w-4 mr-1" />{t('k_fab82bea2e')}
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className={isBusiness ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden' : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
-          <DialogHeader>
-            <DialogTitle>{t("k_4897a8af7d")}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <Field label={t('k_c82e0b6ba6')}>
-              <Input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} />
-            </Field>
-            <Field label={t("k_c35a132911")}>
-              <Input value={form.display_name} placeholder={t("k_992c065229")}
-                onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-            </Field>
-            <Field label={t("k_581778ce60")}>
-              <Textarea rows={2} value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })} />
-            </Field>
-            {isBusiness ? (
-              <RouteEditor value={route} onChange={setRoute} />
-            ) : null}
-            <Field label={isBusiness
-              ? t('k_df45ea2b1f')
-              : t('k_d87c90f8b0')}>
-              <Input value={form.primary_table} placeholder={t('k_45fd0871f6')}
-                onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={submit} disabled={!form.key.trim()}>{t("k_fcbd093292")}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <div className="rounded-lg border border-primary/30 bg-primary/5 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input autoFocus value={form.key} className="h-7 w-52 text-xs"
+          placeholder={t('k_90675ca431')}
+          onChange={(e) => setForm({ ...form, key: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        <Input value={form.display_name} className="h-7 w-44 text-xs"
+          placeholder={t('k_992c065229')}
+          onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} />
+        <Select value={shape} onValueChange={(v) => setShape(v as 'none' | 'table' | 'route')}>
+          <SelectTrigger className="h-7 w-48 text-xs" aria-label={t('k_f99ecd29c4')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none" className="text-xs">{t('k_edb62a49ac')}</SelectItem>
+            <SelectItem value="table" className="text-xs">{t('k_a37b8e6c69')}</SelectItem>
+            {isBusiness && (
+              <SelectItem value="route" className="text-xs">{t('k_2683f8829a')}</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+        <Button size="sm" className="h-7 text-xs" onClick={submit} disabled={!form.key.trim()}>
+          {t('k_7cacf6d9ea')}
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCancel}>
+          {t('k_4d0b4688c7')}
+        </Button>
+        <span className="text-[11px] text-muted-foreground">{t('k_1b116e9be5')}</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <Field label={t('k_581778ce60')}>
+          <Input value={form.description} className="h-7 w-72 text-xs"
+            onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        </Field>
+        {shape === 'table' && (
+          <Field label={isBusiness ? t('k_df45ea2b1f') : t('k_d87c90f8b0')}>
+            <Input value={form.primary_table} className="h-7 w-64 text-xs"
+              placeholder={t('k_45fd0871f6')}
+              onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
+          </Field>
+        )}
+      </div>
+      {shape === 'route' && isBusiness && (
+        // 形状选「路由到源本体对象」时才就地展开路由编辑器（不选就不占版面）
+        <div className="mt-2"><RouteEditor value={route} onChange={setRoute} /></div>
+      )}
+    </div>
   );
 }
 
 /** 编辑已有对象（标量字段 + 别名 + 路由/主表 + 属性列映射）。
  *  2026-10-27 拍板：废除「修改仅 AS-BOT」硬禁令，用户侧开放页面内编辑。
+ *  2026-11-19 拍板：改为**右侧检查器就地编辑**，不再弹居中对话框
+ *  （弹窗盖住对象上下文，改一处字段要来回关开；检查器本来就常驻在对象右侧）。
  *  与新建同一落库路径：改 canonical doc → saveDraft（存草案，两段式第一段），
  *  发布才级联生效；关系不在本表单（保留原值，量大且由 AS-BOT/JSON 维护）。
  *  属性列映射在本表单（不开放就只能改草案 JSON，而草案 JSON 视图只读 →「列待修」无修入口）。
  *  对象形状：已声明 route 的业务对象编路由，其余（含存量直绑物理表的业务对象）编 primary_table。 */
-export function ObjectEditButton({ jsonContent, onSave, target, modelKind, modelId, boundTable, drift }: {
+export function ObjectEditPanel({ jsonContent, onSave, target, modelKind, modelId, boundTable, drift, onCancel }: {
   jsonContent: string;
   onSave: (next: string) => void;
   /** 模型行的 kind（真值源）；存量 doc 顶层可能没写 kind，缺它时会把业务本体当源本体表单 */
@@ -1789,9 +1809,10 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     route?: { mode?: string; source_ontology?: string; datasource_name?: string;
       object_key?: string; filter_hints?: { dimension?: string; examples?: string[] }[] };
   };
+  /** 退出就地编辑（取消，或保存后由调用方把检查器切回展示态） */
+  onCancel: () => void;
 }) {
   const { t } = useTranslation('ui');
-  const [open, setOpen] = useState(false);
   const [form, setForm] = useState(() => ({
     display_name: target.display_name || '',
     description: target.description || '',
@@ -1823,7 +1844,8 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
   // 结果是新对象永远补不进属性）；路由对象物理列在源本体上。需 modelId 才能拉列候选
   const showColumnMap = !!modelId && !editRoute;
 
-  // 切换对象（详情面板选中变了）/部署绑定加载完成时重置表单为当前对象值
+  // 进入另一个对象的编辑时重置表单。不把 boundTable 列入依赖：检查器就地编辑期间
+  // 部署绑定若晚到，重置会把用户刚敲的内容抹掉（弹窗时代该风险被“打开即加载完”掩盖）。
   useEffect(() => {
     setForm({
       display_name: target.display_name || '',
@@ -1833,7 +1855,7 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     });
     setRoute(initRoute());
     setPropRows(toPropRows(target.properties || []));
-  }, [target.key, boundTable]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target.key]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = () => {
     const key = target.key.trim();
@@ -1905,59 +1927,53 @@ export function ObjectEditButton({ jsonContent, onSave, target, modelKind, model
     // 保留原声明不静默抹掉，也不阻止用户改显示名/描述（否则脏数据会让对象彻底改不动）
     doc.objects[idx] = next;
     onSave(JSON.stringify(doc, null, 2));
-    setOpen(false);
   };
 
   return (
-    <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        <Pencil className="h-3.5 w-3.5 mr-1" />{t('k_b7eb43c06d')}
-      </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className={(editRoute || showColumnMap)
-          ? 'max-w-lg max-h-[88vh] overflow-y-auto overflow-x-hidden'
-          : 'max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden'}>
-          <DialogHeader>
-            <DialogTitle>{t('k_49030f2381', { p0: target.display_name || target.key })}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <Field label={t("k_90675ca431")}>
-              <Input value={target.key} readOnly disabled />
-            </Field>
-            <Field label={t("k_c35a132911")}>
-              <Input value={form.display_name} placeholder={t("k_992c065229")}
-                onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-            </Field>
-            <Field label={t("k_e1ddcc8f96")}>
-              <Input value={form.aliases} placeholder={t('k_72ce31f7e4')}
-                onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
-            </Field>
-            <Field label={t("k_581778ce60")}>
-              <Textarea rows={2} value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })} />
-            </Field>
-            {editRoute ? (
-              <RouteEditor value={route} onChange={setRoute} />
-            ) : (
-              <Field label={t('k_f8b7cb9d18')}>
-                <Input value={form.primary_table} placeholder={t('k_45fd0871f6')}
-                  onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
-              </Field>
-            )}
-            {showColumnMap && (
-              <PropertyColumnEditor modelId={Number(modelId)} objectKey={target.key}
-                // 候选永远跟着弹窗里看到的表名走（所见即所校）；留空则服务端按部署绑定行 → doc 解析
-                table={form.primary_table.trim()}
-                rows={propRows} drift={drift || []}
-                onRowsChange={setPropRows} />
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={submit}>{t("k_7cacf6d9ea")}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <div className="rounded-lg border bg-background">
+      {/* 检查器就地编辑：头部即操作区，取消/保存在视线内，无需滚到弹窗底部 */}
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <Pencil className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-sm font-medium truncate">
+          {t('k_49030f2381', { p0: target.display_name || target.key })}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="outline" onClick={onCancel}>{t("k_4d0b4688c7")}</Button>
+          <Button size="sm" onClick={submit}>{t("k_7cacf6d9ea")}</Button>
+        </span>
+      </div>
+      <div className="space-y-3 p-3">
+        <Field label={t("k_90675ca431")}>
+          <Input value={target.key} readOnly disabled />
+        </Field>
+        <Field label={t("k_c35a132911")}>
+          <Input value={form.display_name} placeholder={t("k_992c065229")}
+            onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+        </Field>
+        <Field label={t("k_e1ddcc8f96")}>
+          <Input value={form.aliases} placeholder={t('k_72ce31f7e4')}
+            onChange={(e) => setForm({ ...form, aliases: e.target.value })} />
+        </Field>
+        <Field label={t("k_581778ce60")}>
+          <Textarea rows={2} value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        </Field>
+        {editRoute ? (
+          <RouteEditor value={route} onChange={setRoute} />
+        ) : (
+          <Field label={t('k_f8b7cb9d18')}>
+            <Input value={form.primary_table} placeholder={t('k_45fd0871f6')}
+              onChange={(e) => setForm({ ...form, primary_table: e.target.value })} />
+          </Field>
+        )}
+        {showColumnMap && (
+          <PropertyColumnEditor modelId={Number(modelId)} objectKey={target.key}
+            // 候选永远跟着表单里看到的表名走（所见即所校）；留空则服务端按部署绑定行 → doc 解析
+            table={form.primary_table.trim()}
+            rows={propRows} drift={drift || []}
+            onRowsChange={setPropRows} />
+        )}
+      </div>
+    </div>
   );
 }

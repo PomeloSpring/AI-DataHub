@@ -13,7 +13,7 @@ AI 只能退到裸 SQL 猜列名（把宿主产品 appCode 当"应用"，而 app
 3. **命名分域不漂移**：ARMS 侧业务名收窄到「Web 端 RUM（官网/H5 · 平台网页）」，app 域的业务名里
    不出现 "RUM"，两域指标名互不重叠（否则 get_metrics 目录与解析串味）；
 4. **渗透率不得登记成伪指标**：分子分母来自不同过滤集，无法编译成单表聚合 → 只登记两个
-   计数指标 + 口径文字（`retire_derived_pseudo_metrics` 的教训：目录挂着、编译用不了）。
+   计数指标 + 口径文字（伪指标退役时的教训：目录挂着、编译用不了）。
 
 建模型脚本：`backend/scripts/build_app_usage_ontology.py`（幂等，可重跑收敛）。
 """

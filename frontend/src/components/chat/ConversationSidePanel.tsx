@@ -156,8 +156,8 @@ export default function ConversationSidePanel({
   if (!open) return null;
   const hasDocs = artifacts.docs.length > 0;
   const hasReports = artifacts.reports.length > 0;
-  const hasKnowledge = knowledge.scopes.length > 0
-    || knowledge.citations.length > 0 || knowledge.unparsed > 0;
+  // 侧栏只列引用，不展示「工具返回被截断」这类过程提示（完整内容在该轮执行过程里看）
+  const hasKnowledge = knowledge.scopes.length > 0 || knowledge.citations.length > 0;
 
   return (
     <aside
@@ -308,12 +308,6 @@ export default function ConversationSidePanel({
                     ))}
                   </ul>
                 </div>
-              )}
-              {/* 截断不是“没有知识”：结果过长时结构化失败必须说出来（no-silent-degradation） */}
-              {knowledge.unparsed > 0 && (
-                <p role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px] text-amber-700">
-                  {t('sidePanel.unparsed', { count: knowledge.unparsed })}
-                </p>
               )}
             </>
           )}

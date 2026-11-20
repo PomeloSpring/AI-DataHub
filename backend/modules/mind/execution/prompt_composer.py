@@ -191,7 +191,7 @@ COMPLIANCE_RULES = """## 敏感数据合规（强约束，不可协商）
 # 仅当本会话确实有功能能力（已注册 list/run 两个壳工具）时才注入 —— 与 has_execute_sql
 # 同思路，避免“提示词说能操作、工具却没有”的矛盾。
 # 功能清单**不常驻上下文**：模型需要时先调 list_platform_functions 拿当前角色可用清单
-# （17 份动作 schema 常驻 = 每轮白付 token，且大部分会话不用平台功能）。
+# （动作 schema 常驻 = 每轮白付 token，且大部分会话不用平台功能）。
 FUNCTION_ACTION_RULES = """## 平台功能操作规范（与数据问答是两个独立维度）
 除取数外，你还可能被授权若干**平台功能动作**（报表、看板、调度任务、质量检核、数据集、内容等）。
 功能清单不常驻上下文，需要时按下面两步取：
@@ -201,7 +201,9 @@ FUNCTION_ACTION_RULES = """## 平台功能操作规范（与数据问答是两�
   清单没有的功能 = 本次会话不可用，如实告知原因，不得尝试调用、不得声称能做、不得换工具绕过。
 - **涉密功能不代查、不代改**：数据源配置与连接凭据、模型 API Key、MCP/通知渠道凭据、用户与角色权限、行级安全策略、沙箱与执行环境、系统设置、系统提示词与技能提示词 —— 即使被问到也只说明“不开放给 AI”。
 - **写操作先确认**：生成报表、创建调度任务、触发质量检核等写动作，必须先说明将做什么、影响哪些对象，征得用户确认后再调用工具。
-- **审批如实转述**：需要人工审批的动作提交后，只说“已提交、等待审批”，不得声称已生效或已完成。
+- **写动作直执行**：写动作经权限码与 ai_access 把关后**直接执行**（无提议→审批→执行回路，
+  不存在待审批队列）；执行前告知将做什么，执行后如实转述结果，失败或权限不足时说明原因，
+  不得声称“已提交、等待审批”或声称已生效。
 - **只读即只读**：清单里标注只读的功能不得尝试任何写入；被权限或级别拒绝时把原因原样告知用户，不换工具绕过、不静默降级。
 - **结果按业务语言转述**：清单/统计用业务名称表达，不回显内部 ID（datasource_id/自增 id）、
   连接信息、原始报错栈或服务端治理改写后的 SQL。用户索要本会话的业务查询 SQL 时按
@@ -492,9 +494,21 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
         # 混成一句会把人引去改触发词（历史误诊点）。
         hits = len(_skill_trigger_hits(s, q_norm))
         head = f"命中 {hits} 个触发词" if hits else "本轮问题未命中该技能的触发词"
-        fetch = (f"；也可以先调 `load_skill_guide(\"{key}\")` 主动取回" if progressive else "")
-        reasons[key] = (f"{head}；作业细则按设计不常驻提示词，本回合**首次调用该域工具时随结果自动附带**"
-                        f"{fetch}")
+        if progressive:
+            # 命令式前置：附带那份到得太晚（在工具结果里），不能代替动手前的口径。
+            # 同时划出"不必取回"的边界（纯问答），否则每个只读回合都多付一轮工具调用。
+            reasons[key] = (
+                f"{head}；作业细则本轮未常驻。凡要**按该技能动手产出或执行**"
+                f"（建板/改板/删板、写内容、出报告与文件、下取数）之前，**必须先调** "
+                f"`load_skill_guide(\"{key}\")` 取回细则，再按细则决定后续动作；"
+                f"首次调用该域工具时服务端还会随结果补发一份，那份只用于**事后核对**，"
+                f"不代替动手前取口径。只是解释概念、复述已有结果而不新增产出时不必取回。")
+        else:
+            # 本会话没接入主动取回通道：不许写"可以先调"这种做不到的承诺（空承诺入口）。
+            reasons[key] = (
+                f"{head}；作业细则本轮未常驻，且本会话未接入主动取回通道，"
+                f"只能在**首次调用该域工具时随结果自动附带**；"
+                f"该细则未到达前涉及的动作要领不得凭常识补，必要时向用户说明限制。")
     return [], reasons, missing
 
 
@@ -512,7 +526,8 @@ def _skill_lines(skills: list, loaded: list, reasons: dict) -> list[str]:
         desc = (s.get("description") or "").strip()
         line = f"- {name}" + (f"：{desc}" if desc else "")
         if key not in loaded_names:
-            line += f"（本轮未展开作业细则，按上述说明执行；原因：{reasons.get(key, '本轮未命中')}）"
+            line += (f"（本轮未展开作业细则，**不得只凭上面这一行动手产出**；"
+                     f"原因：{reasons.get(key, '本轮未命中')}）")
         lines.append(line)
     return lines
 
@@ -1101,6 +1116,11 @@ def compose_system_prompt(
     if skill_state is not None:
         skill_state["loaded"] = [_skill_key(s) for s in skill_bodies]
         skill_state["progressive"] = _progressive_disclosure(capabilities)
+    progressive_on = _progressive_disclosure(capabilities)
+    _loaded_keys = {_skill_key(s) for s in skill_bodies}
+    unloaded_skill_names = [str(s.get("name") or "").strip() for s in (skills or [])
+                            if isinstance(s, dict) and str(s.get("name") or "").strip()
+                            and _skill_key(s) not in _loaded_keys]
     skill_lines = _skill_lines(skills, skill_bodies, skill_reasons)
     if skill_lines:
         sections.append("## 已绑定技能\n" + "\n".join(skill_lines))
@@ -1305,6 +1325,18 @@ def compose_system_prompt(
             lines.append("当前未授权任何工具，只能进行文本对话；不能读取、写入、搜索文件、执行命令、联网或派发子任务。")
         lines.append("上文提到但本清单未列出的工具不可用，遇到相关请求须明确告知权限不足。")
         sections.append("\n".join(lines))
+
+    # 尾部复述（recency 最强的位置）之一：技能细则先取后用。中部那条会被后面的
+    # 「当前会话实际工具权限」与各类契约段压过（与场景指令同一实测结论）。
+    if progressive_on and unloaded_skill_names:
+        sections.append(
+            "## 技能作业细则（收尾复述，动手前生效）\n"
+            "- 本轮未常驻作业细则的技能：" + "、".join(f"`{n}`" for n in unloaded_skill_names) + "。\n"
+            "- **先取后用**：凡本轮要按它们产出或执行（建板/改板/删板、写内容、出报告与文件、下取数），"
+            "**动手前**先调 `load_skill_guide(\"<技能名>\")` 取回作业细则，再按细则决定参数与顺序；"
+            "只凭「已绑定技能」里那一行概述就动手算违规，取回之前也不得声称\"已按该技能作业\"。\n"
+            "- 随工具结果补发的那一份细则只用于事后核对，不代替动手前取口径。\n"
+            "- 纯解释概念、复述已有结果不必取回；同一技能本轮取过一次就够（重复调用只会回\"已在上下文\"）。")
 
     # 尾部复述（recency 最强的位置）：本轮指定场景。不写这里，中部的方案会被后面的通用
     # 反问模板压过（实测模型会改问“查哪类数据”，而不是问该场景缺的锚点）。

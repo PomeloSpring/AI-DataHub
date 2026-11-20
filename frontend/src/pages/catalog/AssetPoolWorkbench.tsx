@@ -1,10 +1,13 @@
 /**
  * AssetPoolWorkbench — 建模待办工作台（未归属资产 + 进化候选的分诊台）。
  *
- * 为什么单独成页（2026-10-28 用户拍板）：这些待办**不属于任何一个模型**——
- * 指标缺归属、术语没映射、解析失败的词，都是跨模型的语义层缺口。原先塞在
- * 「本体建模」左栏里当子视图，既打不开独立菜单（刷新/分享/权限都做不到），
- * 也让建模页承担了两件事。现抽为 /data/asset-pool 独立页并登记菜单。
+ * 形态（2026-11-19 用户拍板，「建模待办就不要跳转了，直接在里面实现，外部的建模待办菜单去掉」）：
+ * 作为「本体建模」页左侧「跨模型」分区的一个**页内页签**渲染（key='todo'），
+ * 不再有 /data/asset-pool 独立路由与侧栏菜单——这些待办是建模缺口，
+ * 处理它们本来就要回建模页，跳来跳去只会丢上下文。
+ *
+ * 为什么待办不属于任何一个模型：指标缺归属、术语没映射、解析失败的词，
+ * 都是跨模型的语义层缺口，故单列成页签而不挂到某个模型下。
  *
  * 产品形态参考商业化工具的 triage 台（Linear Triage / GitHub Inbox /
  * Foundry proposals）：一条待办一行，左边说清"是什么、为什么在待办里、证据是什么"，
@@ -12,7 +15,7 @@
  * 点完像没反应，用户只能反复点或手动刷新）。
  *
  * 与「进化中心」(/system/evolution) 的分工：进化中心是全量候选的历史与归纳大盘
- * （各状态、分布、归纳作业）；本页只做**待办分诊**——pending 候选 + 字典缺归属，
+ * （各状态、分布、归纳作业）；本组件只做**待办分诊**——pending 候选 + 字典缺归属，
  * 目标就是把列表清空。
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -256,7 +259,12 @@ type DialogState =
   | { kind: 'to-term'; task: Task }
   | null;
 
-export default function AssetPoolWorkbench() {
+export default function AssetPoolWorkbench({ onChanged, onOpenModel }: {
+  /** 处理完一条待办后通知外层刷新「建模待办」入口计数（页签挂在建模页里，计数在左侧分区） */
+  onChanged?: () => void;
+  /** 「去本体建模」出口：内嵌时由外层切到对象页签，独立使用时退回路由跳转 */
+  onOpenModel?: () => void;
+} = {}) {
   const { t } = useTranslation('ui');
   const navigate = useNavigate();
   const [pool, setPool] = useState<PoolData | null>(null);
@@ -355,6 +363,7 @@ export default function AssetPoolWorkbench() {
       setHandled((n) => n + 1);
       toast.success(okMsg);
       await load();          // 处理完必须自更新：历史缺陷是收编/驳回后列表不动
+      onChanged?.();
       return true;
     } catch (e: any) {
       toast.error(String(e?.response?.data?.detail || e?.message || t('k_5fa802bef5')));
@@ -362,7 +371,7 @@ export default function AssetPoolWorkbench() {
     } finally {
       setBusyId('');
     }
-  }, [load]);
+  }, [load, onChanged]);
 
   // ── 出口动作 ──
   const doAssign = async (task: Task, objectKey: string) => {
@@ -392,6 +401,7 @@ export default function AssetPoolWorkbench() {
     }
     if (failed.length) toast.error(tr('k_8e21c089ab', { p0: failed.length, p1: failed.slice(0, 2).join(tr('k_c4530db333')) }));
     await load();
+    onChanged?.();
     // 批量一律收口：失败项在刷新后的清单里原样保留、失败原因 toast 显式报出，
     // 弹窗里重试只会把已成功的行再写一遍（返回 false 让弹窗挂着反而挡住视图）
     return true;
@@ -413,6 +423,7 @@ export default function AssetPoolWorkbench() {
           ? tr('k_5a196cf82f', { p0: task.title })
           : tr('k_0adf4773dc', { p0: task.title }));
         await load();
+        onChanged?.();
         return true;
       }
       // 目标缺行不是失败，是"该走另一个出口"：服务端回 next_action 指路
@@ -704,7 +715,7 @@ export default function AssetPoolWorkbench() {
                           {(t.queue === 'c-new_metric' || t.queue === 'c-new_dimension'
                             || t.queue === 'c-binding_gap') && (
                             <Button size="sm" variant="ghost" className="h-7 text-xs"
-                              onClick={() => navigate('/data/ontology')}>
+                              onClick={() => (onOpenModel ? onOpenModel() : navigate('/data/ontology'))}>
                               <Unlink className="h-3 w-3 mr-1" />{tr('k_e0730d5ac1')}
                             </Button>
                           )}

@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Database, FileText, Settings, LogOut, Menu, Palette, UserCircle, X, ChevronLeft, ChevronRight,
   GitBranch, RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Boxes, Terminal, Layers,
-  FunctionSquare, Network, BarChart3, Inbox, Compass, Workflow, Signpost
+  FunctionSquare, Network, BarChart3, Compass, Workflow, Signpost
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -47,7 +47,8 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasets', icon: Layers, labelKey: 'data.datasets' },
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
   { key: '/data/ontology', icon: Boxes, labelKey: 'data.ontology' },
-  { key: '/data/asset-pool', icon: Inbox, labelKey: 'data.assetPool' },
+  /* 建模待办已并入「本体建模」的左侧「跨模型」分区（页内页签），不再占侧栏菜单位；
+     菜单/权限点登记同批退出，见 docker/mysql/asset_pool_retire_migration.sql */
   /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：
      见 docker/mysql/sql_pairs_retire_migration.sql 与 App.tsx 的路由注释 */
   /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语义层语料, 归数据中台 */

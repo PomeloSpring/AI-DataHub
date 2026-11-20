@@ -700,9 +700,88 @@ def _sync_turn_files(runtime, user_id: int) -> None:
                          getattr(runtime, "key", "?"))
 
 
+# ── 终止进行中的任务（停止/关闭会话不再等工具自己跑完）──────────────────
+# 边界（用户拍板 2026-11-20）：终止会话必须同时终止本回合**仍在执行**的工具任务。
+# 历史实现收尾用无超时的 `gather(*runtime.tool_tasks)`，用户点停止后执行权要绑到工具
+# 自然返回（实测一次 8s，取数/建屏工具卡住时 40s+），前端只能轮询 /send/status 干等。
+# 分工：interrupt 停“本轮模型循环”（协议不回执时不得拖住收尾）；工具任务 cancel 后按
+# 宽限等待；宽限到点仍未停（同步 handler 跑在线程池里，取消只能在返回点生效）必须
+# 显式记账，不得静默丢弃。
+_INTERRUPT_TIMEOUT_S = 5.0
+_TOOL_CANCEL_GRACE_S = 8.0
+
+
+def _task_label(task) -> str:
+    """工具任务的诊断名（登记时写入 mcp-tool:<qualified_name>，见 sdk_tools.compat）。"""
+    try:
+        return str(task.get_name() or "") or "tool-task"
+    except Exception:  # noqa: BLE001 — 只用于日志/span，取名失败不得影响收尾
+        return "tool-task"
+
+
+async def _interrupt_turn(client) -> None:
+    """让执行层中止当前回合（模型循环 + 正在跑的工具调用）。
+
+    与 disconnect 的分工：interrupt 是协议级“停下这一轮”，子进程还在；disconnect 是
+    拆连接（CLI 在等工具结果时可能不响应，故仍有 15s 上限 + 强杀兜底）。已断连/未连接
+    时 interrupt 会抛 CLIConnectionError —— 那是正常的“已经不需要中断了”，不是失败。
+    """
+    interrupt = getattr(client, "interrupt", None)
+    if not callable(interrupt):
+        return
+    try:
+        with anyio.move_on_after(_INTERRUPT_TIMEOUT_S) as scope:
+            await interrupt()
+        if scope.cancelled_caught:
+            logger.warning("执行层 interrupt 超时(%.0fs)：转由取消工具任务 + disconnect/强杀终止本回合",
+                           _INTERRUPT_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — 已断连/未连接即“无需再中断”
+        logger.warning("执行层 interrupt 不可用（%s）：仍按取消工具任务 + disconnect 终止本回合", exc)
+
+
+def _obs_tool_abandoned(labels: list, grace_s: float) -> None:
+    """把“宽限内没停下来的工具任务”落成 trace span（管理端可分辨“取消成功”与“放弃等待”）。
+
+    观测旁路，异常一律吞（护栏 §9）。
+    """
+    try:
+        from backend import observability
+        observability.record_span(kind="phase", name=f"tool_abandoned:{','.join(labels)[:120]}",
+                                  status="error", duration_ms=int(grace_s * 1000))
+    except Exception as exc:  # noqa: BLE001 — 观测不得影响收尾
+        logger.debug("tool_abandoned span 记录失败: %s", exc)
+
+
+async def _cancel_inflight_tools(runtime) -> None:
+    """取消本回合仍在执行的工具任务，并按宽限等待其退出。
+
+    取消是安全的：沙箱工具在自身 finally（shield）里 killpg / 停容器，`confirm_stopped`
+    仍按 pid/容器可见性核验；文本/取数类工具会在 await 点抛 CancelledError，不再回写结果。
+    宽限到点仍在跑的（同步 handler 跑在线程池，取消只能在其返回点生效）**放弃等待**
+    并显式记账：日志 + trace span —— 不静默，也不让一个卡死工具把执行权占死。
+    """
+    pending = [t for t in list(getattr(runtime, "tool_tasks", ()) or ())
+               if t is not None and not t.done()]
+    if not pending:
+        return
+    labels = sorted({_task_label(t) for t in pending})
+    for task in pending:
+        task.cancel()
+    logger.info("终止回合：已取消 %d 个在途工具任务（%s）", len(pending), ", ".join(labels))
+    _done, still = await asyncio.wait(pending, timeout=_TOOL_CANCEL_GRACE_S)
+    if not still:
+        return
+    still_labels = sorted({_task_label(t) for t in still})
+    logger.error("终止回合：%d 个在途工具任务在 %.0fs 宽限内未结束，已放弃等待并继续释放执行权"
+                 "（%s）——同步 handler 跑在线程池，取消在其返回点才生效；其后的写操作会被"
+                 "runtime.verify() 拦，已在途的那次无法回滚，本条日志即归因依据",
+                 len(still), _TOOL_CANCEL_GRACE_S, ", ".join(still_labels))
+    _obs_tool_abandoned(still_labels, _TOOL_CANCEL_GRACE_S)
+
+
 async def _teardown_client(client, runtime, final, result, query_started, fallback=None,
                            user_id: int = 0) -> None:
-    """done 发出后的后台收尾：兜底落库、断连、等在跑工具、核验子进程已停、释放执行权。
+    """done 发出后的后台收尾：兜底落库、**终止在途任务**、断连、核验子进程已停、释放执行权。
 
     领取线程不可被取消；本函数运行在独立后台任务里，不受请求生命周期（断连/取消）影响
     —— 正因如此，服务端兜底落库必须放在这里（前端 PUT 可能永不到达）。
@@ -717,6 +796,14 @@ async def _teardown_client(client, runtime, final, result, query_started, fallba
                 process = getattr(getattr(client, "_transport", None), "_process", None)
                 if process is not None and runtime is not None and not runtime.sdk_pid:
                     await run_owned_sync(runtime.record_client, client)
+                # 终止进行中的任务（顺序有讲究）：先 interrupt 停掉本回合 → 再取消在途工具
+                # 任务（带宽限）→ 最后拆连接。反过来的话，CLI 会在等工具结果时死扛满 15s
+                # 强杀窗口，用户体感就是“停止很慢”。正常完成的回合（result.success）不发
+                # interrupt：那一轮已经收口，不该给执行层补一个中止指令。
+                if not (result is not None and result.success):
+                    await _interrupt_turn(client)
+                if runtime is not None:
+                    await _cancel_inflight_tools(runtime)
                 # disconnect 必须限时: CLI 子进程卡死(如协议不匹配不退)时无限挂起,
                 # 收尾永无宁日;超时后强制 kill 并走 confirm_stopped 核验。
                 with anyio.move_on_after(15) as dc:
@@ -731,12 +818,13 @@ async def _teardown_client(client, runtime, final, result, query_started, fallba
                 stopped = True
             except BaseException:
                 logger.exception("无法确认 SDK 已停止，会话保持阻断")
+        if runtime is not None:
+            # 客户端已不在 / 断连失败时，在途工具任务同样必须终止：它们不随连接结束。
+            # （正常路径上面已取消过，这里通常是空集 no-op。）
+            await _cancel_inflight_tools(runtime)
         if runtime is not None and stopped:
             try:
-                pending = list(runtime.tool_tasks)
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                # 工具全部收尾后镜像产物（写文件的工具已跑完，此刻是本轮文件的稳定点）
+                # 工具任务已在上面取消并带宽限收尾；镜像产物放在其后（写文件的工具已停）
                 await run_owned_sync(_sync_turn_files, runtime, int(user_id or 0))
                 await run_owned_sync(runtime.confirm_stopped)
                 await run_owned_sync(runtime.finish, getattr(final, "session_id", "") if final else "",

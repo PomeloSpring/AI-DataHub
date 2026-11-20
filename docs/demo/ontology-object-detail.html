@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对象详情 · 本体建模工作台</title>
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#fff; --hover:#f1f4f7;
+    --fg:hsl(222 47% 11%); --muted:hsl(215 16% 47%); --faint:#94a3b8;
+    --border:hsl(214 32% 91%);
+    --primary:hsl(221 83% 53%); --primary-weak:#eef2ff;
+    --amber:hsl(32 95% 44%); --amber-weak:hsl(43 96% 96%);
+    --green:hsl(142 71% 35%); --green-weak:hsl(138 76% 96%);
+    --red:hsl(0 72% 51%); --red-weak:hsl(0 86% 97%);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);
+    font:13px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  h1,h2,h3,h4,p{margin:0}
+  button{font:inherit;color:inherit;cursor:pointer}
+  a{color:inherit;text-decoration:none}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .muted{color:var(--muted)} .faint{color:var(--faint)} .xs{font-size:11px}
+  .row{display:flex;align-items:center;gap:8px} .wrap{flex-wrap:wrap}
+  .grow{flex:1}
+
+  /* 控件 */
+  .btn{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 10px;border:1px solid var(--border);
+    border-radius:7px;background:#fff;font-size:12.5px;white-space:nowrap}
+  .btn:hover{background:var(--hover)}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{filter:brightness(1.06)}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+  .btn.ghost:hover{background:var(--hover);color:var(--fg)}
+  .btn.danger{color:var(--red);border-color:hsl(0 72% 51% / .35)}
+  .btn.danger:hover{background:var(--red-weak)}
+  .btn.sm{height:26px;padding:0 8px;font-size:11.5px;border-radius:6px}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .input{height:30px;padding:0 9px;font-size:12.5px;border:1px solid var(--border);border-radius:7px;
+    background:#fff;outline:none}
+  .input:focus{border-color:var(--primary);box-shadow:0 0 0 3px hsl(221 83% 53% / .12)}
+  .chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:999px;
+    border:1px solid var(--border);background:#fff;font-size:10.5px;color:var(--muted);white-space:nowrap}
+  .chip.green{color:var(--green);border-color:hsl(142 71% 35% / .4);background:var(--green-weak)}
+  .chip.amber{color:var(--amber);border-color:hsl(32 95% 44% / .4);background:var(--amber-weak)}
+  .chip.red{color:var(--red);border-color:hsl(0 72% 51% / .35);background:var(--red-weak)}
+  .chip.blue{color:var(--primary);border-color:hsl(221 83% 53% / .35);background:var(--primary-weak)}
+  .chip.violet{color:hsl(262 60% 52%);border-color:hsl(262 60% 52% / .35);background:hsl(262 60% 52% / .08)}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+
+  /* 顶栏 */
+  .top{position:sticky;top:0;z-index:20;height:50px;display:flex;align-items:center;gap:9px;
+    padding:0 14px;background:#fff;border-bottom:1px solid var(--border)}
+  .crumb{display:flex;align-items:center;gap:6px;font-size:12.5px}
+  .crumb i{font-style:normal;color:var(--faint)}
+  .crumb b{font-weight:650}
+  .seg{display:inline-flex;padding:2px;border:1px solid var(--border);border-radius:8px;background:#f1f4f7}
+  .seg button{height:24px;padding:0 9px;border:0;border-radius:6px;background:transparent;font-size:11.5px;color:var(--muted)}
+  .seg button.on{background:#fff;color:var(--fg);font-weight:650;box-shadow:0 1px 2px hsl(222 47% 11% / .1)}
+  .seg button.on.draft{background:hsl(32 95% 44% / .14);color:var(--amber)}
+  .sel{height:30px;font-size:12.5px;padding:0 8px;border:1px solid var(--border);border-radius:7px;background:#fff}
+
+  /* 页面骨架 */
+  .page{max-width:1340px;margin:0 auto;padding:16px 18px 48px}
+  .hero{background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;
+    display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+  .hero-main{flex:1;min-width:280px}
+  .hero h1{font-size:19px;font-weight:700;letter-spacing:.2px}
+  .hero-key{font-size:11.5px;color:var(--faint);margin-top:3px}
+  .hero-desc{font-size:12.5px;color:var(--muted);margin-top:9px;max-width:62ch}
+  .alias{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .hero-ops{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:330px}
+
+  .stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-top:12px}
+  .stat{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+  .stat .k{font-size:11px;color:var(--muted)}
+  .stat .v{font-size:18px;font-weight:700;line-height:1.35}
+  .stat .v small{font-size:11px;font-weight:500;color:var(--muted)}
+
+  .tabs{display:flex;gap:2px;margin-top:14px;border-bottom:1px solid var(--border);overflow:auto}
+  .tabs button{height:35px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;
+    font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .tabs button:hover{color:var(--fg)}
+  .tabs button.on{color:var(--fg);font-weight:650;border-bottom-color:var(--primary)}
+  .tabs .n{font-size:10.5px;color:var(--faint);margin-left:4px}
+
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 318px;gap:14px;margin-top:14px;align-items:start}
+  @media(max-width:1120px){.layout{grid-template-columns:minmax(0,1fr)} .stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
+  .card{background:#fff;border:1px solid var(--border);border-radius:11px;overflow:hidden}
+  .card + .card{margin-top:12px}
+  .card-head{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#fcfcfd;
+    border-bottom:1px solid var(--border);font-size:12px;font-weight:650}
+  .card-head .ops{margin-left:auto;display:flex;gap:5px;align-items:center}
+  .card-body{padding:12px}
+  .card-body.tight{padding:0}
+
+  .kv{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px 10px;font-size:12px;align-items:start}
+  .kv dt{color:var(--muted);font-size:11.5px}
+  .kv dd{margin:0;min-width:0;word-break:break-word}
+
+  table.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.tbl th{text-align:left;font-size:10.5px;font-weight:500;letter-spacing:.3px;color:var(--muted);
+    padding:7px 10px;background:#fcfcfd;border-bottom:1px solid var(--border);white-space:nowrap}
+  table.tbl td{padding:7px 10px;border-bottom:1px solid hsl(214 32% 91% / .55);vertical-align:middle}
+  table.tbl tr:last-child td{border-bottom:0}
+  table.tbl tbody tr:hover td{background:#fbfcfd}
+  table.tbl td.r{text-align:right}
+  .rowops{display:flex;gap:2px;justify-content:flex-end;opacity:0}
+  tr:hover .rowops{opacity:1}
+  .mini{border:0;background:transparent;border-radius:5px;padding:2px 6px;font-size:11px;color:var(--muted)}
+  .mini:hover{background:#e8edf2;color:var(--fg)}
+  .mini.danger:hover{background:var(--red-weak);color:var(--red)}
+  tr.added td{background:hsl(138 76% 96% / .7)}
+  tr.changed td{background:hsl(43 96% 96% / .7)}
+
+  .tag{display:inline-block;padding:0 5px;border-radius:4px;font-size:10px;line-height:16px;
+    border:1px solid var(--border);color:var(--muted);background:#fff}
+  .tag.pk{color:var(--primary);border-color:hsl(221 83% 53% / .35);background:var(--primary-weak)}
+  .tag.fk{color:hsl(262 60% 52%);border-color:hsl(262 60% 52% / .3);background:hsl(262 60% 52% / .07)}
+  .tag.drift{color:var(--red);border-color:hsl(0 72% 51% / .35);background:var(--red-weak)}
+  .tag.new{color:var(--green);border-color:hsl(142 71% 35% / .4);background:var(--green-weak)}
+
+  .src{border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;
+    padding:9px 11px;font-size:12px;background:#fbfcfe;color:var(--muted)}
+  .src.warn{border-left-color:var(--amber);background:var(--amber-weak);color:hsl(26 80% 30%)}
+  .src.danger{border-left-color:var(--red);background:var(--red-weak);color:hsl(0 60% 32%)}
+  .src.ok{border-left-color:var(--green);background:var(--green-weak);color:hsl(142 60% 24%)}
+  .src b{color:var(--fg)}
+
+  .health{display:grid;gap:0}
+  .health .it{display:flex;gap:8px;padding:8px 12px;border-bottom:1px solid hsl(214 32% 91% / .6)}
+  .health .it:last-child{border-bottom:0}
+  .health .it .bar{width:3px;border-radius:2px;background:var(--green);align-self:stretch}
+  .health .it.warn .bar{background:var(--amber)}
+  .health .it.high .bar{background:var(--red)}
+  .health .it h4{font-size:12px;font-weight:650}
+  .health .it p{font-size:11px;color:var(--muted);margin-top:2px}
+
+  .empty{color:var(--muted);font-size:12px;text-align:center;padding:26px 10px}
+  .list{display:grid;gap:8px}
+  .list .it{border:1px solid var(--border);border-radius:9px;padding:8px 10px}
+  .list .it h4{font-size:12.5px;font-weight:650;display:flex;align-items:center;gap:6px}
+
+  .diffleg{display:flex;gap:10px;font-size:11px;color:var(--muted);padding:0 12px 9px}
+
+  /* 弹窗 / toast */
+  .overlay{position:fixed;inset:0;background:hsl(222 47% 11% / .45);display:none;place-items:center;
+    z-index:60;padding:20px}
+  .overlay.show{display:grid}
+  .modal{background:#fff;border-radius:12px;width:min(520px,96vw);padding:16px 18px;
+    box-shadow:0 24px 60px hsl(222 47% 11% / .3)}
+  .modal h3{font-size:14px;font-weight:700}
+  .modal .body{margin-top:10px;display:grid;gap:8px}
+  .modal .ops{display:flex;justify-content:flex-end;gap:7px;margin-top:14px}
+  #toastBox{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:grid;gap:6px;
+    z-index:90;pointer-events:none}
+  #toastBox div{background:hsl(222 47% 11% / .94);color:#fff;padding:8px 13px;border-radius:9px;
+    font-size:12px;box-shadow:0 10px 26px hsl(222 47% 11% / .28);max-width:70vw}
+  #toastBox div.ok{background:hsl(142 60% 26% / .96)}
+  #toastBox div.bad{background:hsl(0 60% 38% / .96)}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <a class="btn sm ghost" href="ontology-modeling-redesign.html" title="回到建模工作台">← 工作台</a>
+  <span class="crumb">
+    <span class="muted" id="crumbModel">客户经营域</span><i>/</i>
+    <span class="muted">对象</span><i>/</i><b id="crumbName">订单</b>
+  </span>
+  <span class="grow"></span>
+  <select class="sel" id="objSwitch" onchange="go(this.value)" title="切换对象"></select>
+  <div class="seg">
+    <button id="segLive" onclick="setMode('live')">生效版</button>
+    <button id="segDraft" class="on draft" onclick="setMode('draft')">草案</button>
+  </div>
+  <span class="chip amber" id="draftChip">草案 2 项改动</span>
+  <span class="chip" title="角色权限码驱动：ontology:save / ontology:publish / ontology:delete">角色：建模 · 发布</span>
+</header>
+
+<div class="page">
+  <section class="hero" id="hero"></section>
+  <div class="stats" id="stats"></div>
+  <div class="tabs" id="tabs"></div>
+  <div class="layout">
+    <main id="main"></main>
+    <aside id="side"></aside>
+  </div>
+</div>
+
+<div class="overlay" id="mDel">
+  <div class="modal">
+    <h3 id="mDelTitle">删除对象</h3>
+    <div class="body" id="mDelBody"></div>
+    <div class="ops">
+      <button class="btn ghost" onclick="closeModal('mDel')">取消</button>
+      <button class="btn danger" onclick="confirmDel()">标记为草案删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="mPub">
+  <div class="modal">
+    <h3>发布草案并级联</h3>
+    <div class="body" id="mPubBody"></div>
+    <div class="ops">
+      <button class="btn ghost" onclick="closeModal('mPub')">再想想</button>
+      <button class="btn primary" id="mPubOk" onclick="confirmPublish()">确认发布</button>
+    </div>
+  </div>
+</div>
+
+<div id="toastBox"></div>
+
+<script>
+/* ═════════ 演示数据（对齐 canonical doc 形状） ═════════ */
+const DB = {
+  order: {
+    name:'订单', key:'order', model:'客户经营域', shape:'对象', state:'changed',
+    bind:'bound', table:'dws_order', source:'数仓主库 · 中国站（cn）',
+    desc:'一笔成交的完整记录，覆盖下单、支付、履约三段状态，是营收类指标的基准对象。',
+    aliases:['销售订单','交易单'],
+    sites:['中国站','新加坡站'], siteRule:'未单独收紧，沿用模型级 deploy_sites',
+    propsTotal:24,
+    props:[
+      {n:'订单编号',c:'order_id',t:'string',pk:true,d:'主键；全站唯一'},
+      {n:'客户编号',c:'customer_id',t:'string',fk:true,d:'关联「客户」'},
+      {n:'订单状态',c:'order_status',t:'string',dict:'订单状态码',d:'枚举走维度字典 value_labels'},
+      {n:'支付金额',c:'pay_amount',t:'decimal(18,2)',d:'营收类指标口径基准'},
+      {n:'下单时间',c:'created_at',t:'datetime',d:'时间维度来源'},
+      {n:'支付时间',c:'paid_at',t:'datetime',d:''},
+      {n:'渠道',c:'channel_code',t:'string',dict:'渠道',d:''},
+      {n:'区域',c:'region_code',t:'string',dict:'区域',d:''},
+      {n:'商品件数',c:'item_cnt',t:'int',d:''},
+      {n:'促销活动编号',c:'promo_id',t:'string',d:''},
+      {n:'优惠券编码',c:'coupon_code',t:'string',d:'草案新增，物理列待确认',added:true}
+    ],
+    links:{
+      out:[
+        {t:'belongs_to',tg:'客户',c:'N:1',j:'order.customer_id = customer.customer_id'},
+        {t:'contains',tg:'商品',c:'N:N',j:'经 order_item 明细表'},
+        {t:'promoted_by',tg:'促销活动',c:'N:1',j:'order.promo_id = promotion.promo_id',added:true}
+      ],
+      in:[
+        {t:'has_orders',tg:'客户',c:'1:N'},
+        {t:'applies_to',tg:'促销活动',c:'1:N'}
+      ]
+    },
+    metrics:[
+      {n:'成交金额',f:'SUM(pay_amount)',d:'口径仅服务端可见'},
+      {n:'订单量',f:'COUNT(order_id)',d:''},
+      {n:'客单价',f:'成交金额 / 去重客户数',d:''},
+      {n:'支付成功率',f:'已支付订单数 / 订单量',d:''}
+    ],
+    dims:[
+      {n:'订单状态',col:'order_status',dict:'订单状态码'},
+      {n:'渠道',col:'channel_code',dict:'渠道'},
+      {n:'区域',col:'region_code',dict:'区域'},
+      {n:'下单日期',col:'DATE(created_at)',dict:''},
+      {n:'支付方式',col:'pay_method',dict:'支付方式'},
+      {n:'客户等级',col:'customer.level',dict:'客户等级'}
+    ],
+    actions:[
+      {n:'查询订单',k:'order.query',perm:'—'},
+      {n:'更新订单状态',k:'order.update_status',perm:'order:write'},
+      {n:'归档历史订单',k:'order.archive',perm:'order:write'}
+    ],
+    rules:[
+      {n:'已支付订单不可删除',k:'rule.paid_locked',t:'约束'},
+      {n:'订单状态机：待支付 → 已支付 → 已完成',k:'rule.status_fsm',t:'口径'}
+    ],
+    diff:[
+      {loc:'properties',t:'新增',a:'—',b:'优惠券编码 · coupon_code'},
+      {loc:'properties[订单状态]',t:'改动',a:'自由文本 3 值',b:'枚举改挂字典「订单状态码」'},
+      {loc:'links',t:'新增',a:'—',b:'promoted_by → 促销活动'}
+    ],
+    health:[
+      {sev:'ok',t:'绑定完整',d:'主表 dws_order 与 24 个属性全部映射到物理列'},
+      {sev:'warn',t:'枚举与字典 1 处待同步',d:'「订单状态」草案改挂字典，发布后单向联动到字典'},
+      {sev:'ok',t:'无孤儿关系',d:'3 条出边目标对象均存在'},
+      {sev:'ok',t:'字典引用完整',d:'4 个指标 / 6 个维度均指向本对象'}
+    ],
+    history:[
+      {v:'v18（生效）',t:'2026-11-12 · 发布',d:'新增「支付成功率」指标引用'},
+      {v:'v19（草案）',t:'3 项改动待发布',d:'属性 2 · 关系 1'}
+    ],
+    related:['customer','product','promotion']
+  },
+  customer_case: {
+    name:'客户案例', key:'customer_case', model:'客户经营域', shape:'对象', state:'added',
+    bind:'none', table:'', source:'—',
+    desc:'客户成功案例库，用于沉淀行业标杆与复购话术；当前尚未绑定物理表，发布后不可取数。',
+    aliases:['案例','成功案例'],
+    sites:['中国站','新加坡站'], siteRule:'未单独收紧，沿用模型级 deploy_sites',
+    propsTotal:5,
+    props:[
+      {n:'案例编号',c:'case_id',t:'string',pk:true,d:'主键'},
+      {n:'客户编号',c:'customer_id',t:'string',fk:true,d:'关联「客户」'},
+      {n:'案例标题',c:'title',t:'string',d:''},
+      {n:'案例状态',c:'case_status',t:'string',dict:'案例状态',d:''},
+      {n:'归档时间',c:'archived_at',t:'datetime',d:''}
+    ],
+    links:{
+      out:[
+        {t:'belongs_to',tg:'客户',c:'N:1',j:'customer_case.customer_id = customer.customer_id'},
+        {t:'points_to',tg:'历史订单',c:'N:1',j:'customer_case.order_id = order_history.order_id',orphan:true}
+      ],
+      in:[]
+    },
+    metrics:[{n:'客户案例数',f:'COUNT(case_id)',d:''}],
+    dims:[],
+    actions:[{n:'发布案例',k:'case.publish',perm:'case:write'}],
+    rules:[{n:'案例必须关联客户',k:'rule.case_owner',t:'约束'}],
+    diff:[
+      {loc:'对象',t:'新增',a:'—',b:'客户案例（未绑表）'},
+      {loc:'links',t:'新增',a:'—',b:'points_to → 历史订单（目标已被删除）'}
+    ],
+    health:[
+      {sev:'high',t:'未绑定物理表',d:'对象能发布，但发布后不可取数；需补 primary_table 与 column_map'},
+      {sev:'high',t:'孤儿关系 1 条',d:'指向的「历史订单」已被草案删除，发布会被硬阻断'},
+      {sev:'warn',t:'无维度引用',d:'仅 1 个指标引用，无法按维度下钻'}
+    ],
+    history:[
+      {v:'v19（草案）',t:'2 项改动待发布',d:'新增对象 + 1 条关系'}
+    ],
+    related:['customer','order']
+  },
+  product: {
+    name:'商品', key:'product', model:'客户经营域', shape:'对象', state:'',
+    bind:'drift', table:'dim_product', source:'数仓主库 · 中国站（cn）',
+    desc:'SKU 级商品主数据，含类目、品牌与价格带；当前列映射与物理表有 2 处漂移。',
+    aliases:['SKU','货品'],
+    sites:['中国站'], siteRule:'已收紧：仅中国站（object_site_rules）',
+    propsTotal:19,
+    props:[
+      {n:'商品编号',c:'sku_id',t:'string',pk:true,d:'主键'},
+      {n:'商品名称',c:'sku_name',t:'string',d:''},
+      {n:'一级类目',c:'category_l1',t:'string',dict:'类目',d:''},
+      {n:'品牌',c:'brand_name',t:'string',drift:true,d:'物理列缺失，待修'},
+      {n:'价格带',c:'price_band',t:'string',drift:true,d:'物理列缺失，待修'}
+    ],
+    links:{
+      out:[{t:'sold_in',tg:'订单',c:'1:N',j:'经 order_item.sku_id'}],
+      in:[{t:'categorized_as',tg:'类目',c:'N:1'}]
+    },
+    metrics:[{n:'在售商品数',f:'COUNT(DISTINCT sku_id)',d:''},{n:'动销率',f:'有成交 SKU / 在售 SKU',d:''}],
+    dims:[
+      {n:'一级类目',col:'category_l1',dict:'类目'},
+      {n:'品牌',col:'brand_name',dict:'品牌'},
+      {n:'价格带',col:'price_band',dict:''},
+      {n:'上架日期',col:'DATE(on_shelf_at)',dict:''},
+      {n:'商品状态',col:'sku_status',dict:'商品状态'}
+    ],
+    actions:[{n:'下架商品',k:'sku.offline',perm:'product:write'}],
+    rules:[{n:'下架后不可再参与促销',k:'rule.offline_locked',t:'约束'}],
+    diff:[],
+    health:[
+      {sev:'high',t:'列漂移 2 处',d:'「品牌」「价格带」在物理表中不存在，取数会失败'},
+      {sev:'warn',t:'站点范围已收紧',d:'仅中国站可查，新加坡站无该对象'}
+    ],
+    history:[{v:'v18（生效）',t:'2026-10-28 · 发布',d:'站点收紧为仅中国站'}],
+    related:['order','promotion']
+  }
+};
+
+const S = { key:'order', tab:'over', mode:'draft' };
+const TABS = [['over','概览'],['props','属性'],['links','关系'],['refs','引用'],
+  ['actions','行为'],['rules','规则'],['diff','变更']];
+const o = () => DB[S.key] || DB.order;
+
+/* ═════════ 渲染 ═════════ */
+function render(){
+  const d = o();
+  document.getElementById('crumbModel').textContent = d.model;
+  document.getElementById('crumbName').textContent = d.name;
+  document.title = `对象详情 · ${d.name} | 本体建模工作台`;
+  document.getElementById('objSwitch').innerHTML = Object.keys(DB)
+    .map(k => `<option value="${k}" ${k===S.key?'selected':''}>${DB[k].name}（${DB[k].key}）</option>`).join('');
+  document.getElementById('draftChip').textContent =
+    Object.keys(DB).reduce((n,k)=> n + (DB[k].diff || []).length, 0) + ' 项草案改动';
+  renderHero(d); renderStats(d); renderTabs(d); renderMain(d); renderSide(d); applyGate();
+}
+
+function renderHero(d){
+  const bind = d.bind === 'bound' ? ['green','已绑表']
+    : d.bind === 'drift' ? ['red','2 列待修'] : ['amber','未绑表'];
+  const state = d.state === 'added' ? ['blue','草稿新增']
+    : d.state === 'changed' ? ['blue','草案改动']
+    : d.state === 'removed' ? ['red','草案删除'] : null;
+  const editable = !liveLocked();
+  document.getElementById('hero').innerHTML = `
+    <div class="hero-main">
+      <div class="row wrap">
+        <h1>${d.name}</h1>
+        <span class="chip">${d.shape}</span>
+        <span class="chip ${bind[0]}"><i class="dot"></i>${bind[1]}</span>
+        ${state ? `<span class="chip ${state[0]}">${state[1]}</span>` : ''}
+        ${d.siteRule.includes('收紧') ? '<span class="chip amber">站点已收紧</span>' : ''}
+      </div>
+      <div class="hero-key mono">adh:obj:${d.key} · 所属模型：${d.model}</div>
+      <p class="hero-desc">${d.desc}</p>
+      <div class="alias">${d.aliases.map(a=>`<span class="chip">${a}</span>`).join('')}
+        <span class="xs faint" style="align-self:center">别名参与检索解析，不复制到字典</span></div>
+    </div>
+    <div class="hero-ops">
+      <button class="btn" ${editable?'':'disabled'} data-gate="save"
+        onclick="toast('只改标量字段（显示名/描述/别名/主表），属性与关系保留原值')">编辑基础信息</button>
+      <button class="btn" onclick="toast('跳转 /data/knowledge-graph?focus=${d.key}，带当前对象上下文')">查看图谱 ↗</button>
+      <button class="btn danger" ${editable?'':'disabled'} data-gate="save" onclick="askDel()">删除对象</button>
+      <button class="btn primary" data-gate="publish" onclick="askPublish()">发布并级联</button>
+    </div>`;
+}
+
+function renderStats(d){
+  const links = d.links.out.length + d.links.in.length;
+  const cards = [
+    ['属性', d.propsTotal, d.props.length < d.propsTotal ? `已列出 ${d.props.length}` : ''],
+    ['关系', links, `出 ${d.links.out.length} · 入 ${d.links.in.length}`],
+    ['指标引用', d.metrics.length, '口径在字典维护'],
+    ['维度引用', d.dims.length, ''],
+    ['可查站点', d.sites.length, d.sites.join(' · ')]
+  ];
+  document.getElementById('stats').innerHTML = cards.map(([k,v,s])=>`
+    <div class="stat"><div class="k">${k}</div>
+      <div class="v">${v}${s?` <small>${s}</small>`:''}</div></div>`).join('');
+}
+
+function renderTabs(d){
+  const count = {
+    props: d.propsTotal, links: d.links.out.length + d.links.in.length,
+    refs: `${d.metrics.length}·${d.dims.length}`, actions: d.actions.length,
+    rules: d.rules.length, diff: (d.diff || []).length
+  };
+  document.getElementById('tabs').innerHTML = TABS.map(([k,label])=>`
+    <button class="${S.tab===k?'on':''}" onclick="setTab('${k}')">${label}
+      ${count[k]!==undefined?`<span class="n">${count[k]}</span>`:''}</button>`).join('');
+}
+
+function renderMain(d){
+  const m = document.getElementById('main');
+  if (S.tab === 'over') return m.innerHTML = viewOverview(d);
+  if (S.tab === 'props') return m.innerHTML = viewProps(d);
+  if (S.tab === 'links') return m.innerHTML = viewLinks(d);
+  if (S.tab === 'refs') return m.innerHTML = viewRefs(d);
+  if (S.tab === 'actions') return m.innerHTML = viewActions(d);
+  if (S.tab === 'rules') return m.innerHTML = viewRules(d);
+  return m.innerHTML = viewDiff(d);
+}
+
+function viewOverview(d){
+  return `
+  <div class="card">
+    <div class="card-head">身份与绑定
+      <div class="ops"><button class="btn sm ghost" onclick="openCanonical()"
+        title="回工作台打开 canonical 只读抽屉并定位到本对象">canonical 片段 ↗</button></div></div>
+    <div class="card-body">
+      <dl class="kv">
+        <dt>对象 key</dt><dd class="mono">${d.key}</dd>
+        <dt>显示名</dt><dd>${d.name}</dd>
+        <dt>所属模型</dt><dd>${d.model}</dd>
+        <dt>形状</dt><dd>${d.shape}${d.table ? '（主表直绑）' : '（未绑表）'}</dd>
+        <dt>主表</dt><dd>${d.table ? `<span class="mono">${d.table}</span>` : '<span class="chip amber">未绑定 · 不可取数</span>'}</dd>
+        <dt>数据源</dt><dd>${d.source}</dd>
+        <dt>模型级站点</dt><dd>${d.sites.join('、')}</dd>
+        <dt>对象级站点</dt><dd>${d.siteRule}</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">描述与口径</div>
+    <div class="card-body">
+      <dl class="kv">
+        <dt>业务描述</dt><dd class="muted">${d.desc}</dd>
+        <dt>别名</dt><dd>${d.aliases.join('、')}</dd>
+        <dt>口径来源</dt><dd>指标与维度字典在「指标与维度」页（/data/metrics）维护；本页只表达引用与影响面</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">沿革</div>
+    <div class="card-body list">
+      ${d.history.map(h=>`<div class="it">
+        <h4>${h.v} <span class="xs faint">${h.t}</span></h4>
+        <p class="xs muted" style="margin-top:2px">${h.d}</p></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function viewProps(d){
+  const rows = d.props.map((p,i)=>`
+    <tr class="${p.added?'added':''}">
+      <td>${p.n} ${p.added?'<span class="tag new">草案新增</span>':''}</td>
+      <td class="mono">${p.c}</td>
+      <td class="muted">${p.t}</td>
+      <td>${p.pk?'<span class="tag pk">PK</span>':''}${p.fk?'<span class="tag fk">FK</span>':''}
+        ${p.drift?'<span class="tag drift">列漂移</span>':''}${!p.pk&&!p.fk&&!p.drift?'<span class="faint xs">—</span>':''}</td>
+      <td>${p.dict?`<span class="chip violet">${p.dict}</span>`:'<span class="faint xs">—</span>'}</td>
+      <td class="muted xs">${p.d||''}</td>
+      <td class="r"><div class="rowops">
+        <button class="mini" data-gate="save" onclick="toast('就地改业务名/物理列（草案，未发布）')">改</button>
+        <button class="mini danger" data-gate="save" onclick="delProp(this,'${p.n}')">删</button>
+      </div></td>
+    </tr>`).join('');
+  return `
+  <div class="card">
+    <div class="card-head">属性
+      <span class="xs faint">全量 ${d.propsTotal}，已展开 ${d.props.length}</span>
+      <div class="ops">
+        <input class="input" style="width:150px;height:26px" placeholder="筛选业务名/物理列"
+          oninput="filterProps(this.value)">
+        <button class="btn sm" data-gate="save" onclick="toast('追加一行属性；保存时整体写入草案')">＋ 添加属性</button>
+      </div>
+    </div>
+    <div class="card-body tight">
+      <table class="tbl" id="propTable">
+        <thead><tr><th>业务名</th><th>物理列</th><th>类型</th><th>标记</th><th>枚举字典</th><th>说明</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">
+    <b>删除属性不走"消失即删"</b>：删行会写进 doc 顶层
+    <span class="mono">_declared_removals</span> 显式声明；未被点名的属性消失会被服务端
+    <span class="mono">_reject_destructive_overwrite</span> 硬阻断（宁阻断勿损毁）。
+  </div>`;
+}
+
+function viewLinks(d){
+  const out = d.links.out.map(l=>`
+    <tr>
+      <td><span class="chip">${l.t}</span>${l.added?' <span class="tag new">草案新增</span>':''}
+        ${l.orphan?' <span class="tag drift">孤儿</span>':''}</td>
+      <td>${l.tg}</td>
+      <td class="muted">${l.c}</td>
+      <td class="mono xs muted">${l.j || '—'}</td>
+    </tr>`).join('');
+  const inn = d.links.in.map(l=>`
+    <tr><td><span class="chip">${l.t}</span></td><td>${l.tg}</td><td class="muted">${l.c}</td>
+      <td class="faint xs">由对方对象声明</td></tr>`).join('');
+  return `
+  <div class="card">
+    <div class="card-head">出边 ${d.links.out.length}
+      <div class="ops"><button class="btn sm" data-gate="save" onclick="toast('新增关系（草案）；目标对象为下拉选择，不手填 key')">＋ 新增关系</button></div>
+    </div>
+    <div class="card-body tight">
+      <table class="tbl"><thead><tr><th>关系名</th><th>目标对象</th><th>基数</th><th>JOIN 表达式（内部）</th></tr></thead>
+        <tbody>${out}</tbody></table>
+    </div>
+  </div>
+  ${d.links.out.some(l=>l.orphan)?`<div class="src danger" style="margin-top:10px">
+    <b>孤儿关系会被发布拦下</b>：指向的对象已不在模型里。发布时逐条列出，必须先清理或改指向，
+    不静默跳过（宁阻断勿悬空）。</div>`:''}
+  <div class="card" style="margin-top:12px">
+    <div class="card-head">入边 ${d.links.in.length}</div>
+    <div class="card-body tight">
+      ${inn ? `<table class="tbl"><thead><tr><th>关系名</th><th>来源对象</th><th>基数</th><th></th></tr></thead><tbody>${inn}</tbody></table>`
+        : '<div class="empty">没有其他对象指向本对象</div>'}
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">JOIN 表达式只在内部 md / 图谱出现；
+    <span class="mono">to_cloud_md</span> 上云时整段剔除，不进云端知识库。</div>`;
+}
+
+function viewRefs(d){
+  const met = d.metrics.length ? d.metrics.map(x=>`
+    <tr><td>${x.n}</td><td class="mono xs muted">${x.f}</td><td class="xs muted">${x.d||'—'}</td></tr>`).join('')
+    : '<tr><td colspan="3"><div class="empty">暂无指标引用</div></td></tr>';
+  const dim = d.dims.length ? d.dims.map(x=>`
+    <tr><td>${x.n}</td><td class="mono xs muted">${x.col}</td>
+      <td>${x.dict?`<span class="chip violet">${x.dict}</span>`:'<span class="faint xs">—</span>'}</td></tr>`).join('')
+    : '<tr><td colspan="3"><div class="empty">暂无维度引用</div></td></tr>';
+  return `
+  <div class="card">
+    <div class="card-head">指标引用 ${d.metrics.length}
+      <div class="ops"><span class="xs faint">只读 · 去「指标与维度」维护</span></div></div>
+    <div class="card-body tight">
+      <table class="tbl"><thead><tr><th>指标名</th><th>口径（仅服务端可见）</th><th>备注</th></tr></thead>
+        <tbody>${met}</tbody></table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">维度引用 ${d.dims.length}</div>
+    <div class="card-body tight">
+      <table class="tbl"><thead><tr><th>维度名</th><th>投影列</th><th>枚举字典</th></tr></thead>
+        <tbody>${dim}</tbody></table>
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">
+    <b>删除本对象前先看这里</b>：字典里仍指向它的指标/维度会让发布被硬阻断并逐条列出；
+    应先在「指标与维度」解绑或改指向，再删对象。</div>`;
+}
+
+function viewActions(d){
+  return `
+  <div class="card">
+    <div class="card-head">行为（M2 · doc.actions）
+      <div class="ops"><button class="btn sm" data-gate="save" onclick="toast('新增行为条目（草案）')">＋ 新增行为</button></div></div>
+    <div class="card-body tight">
+      <table class="tbl"><thead><tr><th>行为</th><th>标识</th><th>所需权限码</th></tr></thead>
+        <tbody>${d.actions.map(a=>`<tr><td>${a.n}</td><td class="mono xs muted">${a.k}</td>
+          <td>${a.perm==='—'?'<span class="faint xs">—</span>':`<span class="chip">${a.perm}</span>`}</td></tr>`).join('')}</tbody></table>
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">行为是建模描述（对象能做什么），不直接产生运行时工具；
+    AS-BOT 可执行什么由权限码 + 工具授权裁决。</div>`;
+}
+
+function viewRules(d){
+  return `
+  <div class="card">
+    <div class="card-head">规则（M3 · doc.rules）
+      <div class="ops"><button class="btn sm" data-gate="save" onclick="toast('新增规则条目（草案）')">＋ 新增规则</button></div></div>
+    <div class="card-body tight">
+      <table class="tbl"><thead><tr><th>规则</th><th>标识</th><th>类型</th></tr></thead>
+        <tbody>${d.rules.map(r=>`<tr><td>${r.n}</td><td class="mono xs muted">${r.k}</td>
+          <td><span class="chip">${r.t}</span></td></tr>`).join('')}</tbody></table>
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">口径类规则以维度字典为唯一可编辑源；这里只登记约束描述。</div>`;
+}
+
+function viewDiff(d){
+  if (!(d.diff || []).length)
+    return `<div class="card"><div class="card-head">变更</div>
+      <div class="empty">本对象没有草案改动（发布后与生效版一致）</div></div>`;
+  return `
+  <div class="card">
+    <div class="card-head">草案 vs 生效版
+      <div class="ops"><span class="xs faint">发布前一切可逆</span></div></div>
+    <div class="diffleg"><span>🟩 新增</span><span>🟨 改动</span><span>🟥 删除</span></div>
+    <div class="card-body tight">
+      <table class="tbl">
+        <thead><tr><th>位置</th><th>变更</th><th>生效版</th><th>草案</th></tr></thead>
+        <tbody>${d.diff.map(x=>`<tr class="${x.t==='新增'?'added':'changed'}">
+          <td class="mono xs">${x.loc}</td>
+          <td><span class="tag ${x.t==='新增'?'new':''}">${x.t}</span></td>
+          <td class="muted">${x.a}</td><td>${x.b}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="src" style="margin-top:10px">草案只写 <span class="mono">draft_json_content</span>，不动线上；
+    发布（需 <span class="mono">ontology:publish</span>）才级联：重展开对象 → 重建图谱 → 刷新部署绑定 → 重推知识库。</div>`;
+}
+
+function renderSide(d){
+  const health = d.health.map(h=>`
+    <div class="it ${h.sev==='high'?'high':h.sev==='warn'?'warn':''}">
+      <span class="bar"></span>
+      <div><h4>${h.t}</h4><p>${h.d}</p></div></div>`).join('');
+  const rel = d.related.map(k=>`<button class="btn sm" onclick="go('${k}')">${DB[k].name}</button>`).join(' ');
+  document.getElementById('side').innerHTML = `
+    <div class="card"><div class="card-head">健康检查 ${d.health.filter(h=>h.sev!=='ok').length} 项待处理</div>
+      <div class="health">${health}</div></div>
+    <div class="card"><div class="card-head">发布影响</div>
+      <div class="card-body">
+        <dl class="kv">
+          <dt>级联</dt><dd>重展开对象 · 重建图谱 · 刷新部署绑定</dd>
+          <dt>知识库</dt><dd>由后台 kb_sync 重推（不在发布链路同步完成）</dd>
+          <dt>影响字典</dt><dd>指标 ${d.metrics.length} · 维度 ${d.dims.length}</dd>
+          <dt>影响站点</dt><dd>${d.sites.join('、')}</dd>
+        </dl>
+        <button class="btn primary" style="width:100%;margin-top:11px" data-gate="publish"
+          onclick="askPublish()">发布并级联</button>
+      </div></div>
+    <div class="card"><div class="card-head">相关对象</div>
+      <div class="card-body row wrap">${rel}</div></div>`;
+}
+
+/* ═════════ 交互 ═════════ */
+function go(key){ if (!DB[key]) return; S.key = key; S.tab = 'over'; history.replaceState(null,'','#'+key); render(); }
+function openCanonical(){ location.href = 'ontology-modeling-redesign.html#doc=' + S.key; }
+function setTab(k){ S.tab = k; render(); }
+function setMode(m){
+  S.mode = m;
+  document.getElementById('segLive').className = m === 'live' ? 'on' : '';
+  document.getElementById('segDraft').className = m === 'draft' ? 'on draft' : '';
+  render();
+  toast(m === 'live' ? '生效版：线上口径，只读（有草案时不可编辑）' : '草案视图：改动只落草案，发布才生效');
+}
+function draftCount(){
+  return Object.keys(DB).reduce((n,k)=> n + ((DB[k].diff || []).length), 0);
+}
+function liveLocked(){ return S.mode === 'live' && draftCount() > 0; }
+function applyGate(){
+  const locked = liveLocked();
+  document.querySelectorAll('[data-gate="save"]').forEach(el=>{
+    if (locked){ el.setAttribute('disabled',''); el.title = '生效版有未发布草案，只读；切到「草案」才能改'; }
+    else { el.removeAttribute('disabled'); el.removeAttribute('title'); }
+  });
+  document.querySelectorAll('[data-gate="publish"]').forEach(el=>{
+    el.style.display = draftCount() ? '' : 'none';
+  });
+}
+function filterProps(q){
+  q = (q||'').trim().toLowerCase();
+  document.querySelectorAll('#propTable tbody tr').forEach(tr=>{
+    tr.style.display = !q || tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+function delProp(btn, name){
+  const tr = btn.closest('tr');
+  tr.classList.add('removed');
+  tr.style.opacity = '.45';
+  tr.querySelector('td').insertAdjacentHTML('beforeend',' <span class="tag drift">待删除声明</span>');
+  btn.disabled = true;
+  toast(`「${name}」将在保存时写入 _declared_removals（草案，可撤回）`);
+}
+
+function askDel(){
+  const d = o();
+  document.getElementById('mDelTitle').textContent = `删除对象「${d.name}」`;
+  document.getElementById('mDelBody').innerHTML = `
+    <div class="src danger"><b>现在只写草案。</b>发布后才级联移除该对象、部署绑定与图谱节点；
+      下发前可在工作台底部托盘逐条撤回。</div>
+    <div class="src"><b>影响面预检</b><br>
+      · 关系：出 ${d.links.out.length} 条 / 入 ${d.links.in.length} 条<br>
+      · 指标引用 ${d.metrics.length} 个 · 维度引用 ${d.dims.length} 个<br>
+      · 可查站点：${d.sites.join('、')}</div>
+    ${d.metrics.length || d.dims.length
+      ? '<div class="src warn"><b>会被硬阻断：</b>字典里仍指向它的指标/维度会让发布失败，并逐条列出。应先解绑或改指向。</div>'
+      : '<div class="src ok">没有字典引用指向本对象，删除不会造成悬空绑定。</div>'}`;
+  openModal('mDel');
+}
+function confirmDel(){
+  const d = o(); d.state = 'removed';
+  closeModal('mDel'); render();
+  toast(`「${d.name}」已标记为草案删除（未发布），可在托盘撤回`,'ok');
+}
+
+function askPublish(){
+  const d = o();
+  const blocking = d.health.filter(h=>h.sev==='high');
+  const body = document.getElementById('mPubBody');
+  if (blocking.length){
+    document.getElementById('mPubOk').setAttribute('disabled','');
+    body.innerHTML = `<div class="src danger"><b>发布被拦下（${blocking.length} 项阻断）</b></div>` +
+      blocking.map(h=>`<div class="src warn"><b>${h.t}</b><br>${h.d}</div>`).join('') +
+      `<div class="src">这些不是"提醒"，是硬阻断：先修好再发布。发布失败会显式报错，不会部分生效。</div>`;
+  } else {
+    document.getElementById('mPubOk').removeAttribute('disabled');
+    body.innerHTML = `<div class="src"><b>${d.name}</b> 将随草案一起发布（${(d.diff||[]).length} 项改动）。</div>
+      <div class="src"><b>级联顺序</b><br>① 重展开对象 → ② 重建图谱 → ③ 刷新部署绑定 → ④ 重推知识库（后台 kb_sync）</div>
+      <div class="src warn">发布是独立权限动作（<span class="mono">ontology:publish</span>）；
+        发布后草案清空，回退需重新走一次草案。</div>`;
+  }
+  openModal('mPub');
+}
+function confirmPublish(){
+  closeModal('mPub');
+  const d = o(); d.diff = []; d.state = '';
+  render();
+  toast(`已发布「${d.name}」，级联完成（对象/图谱/部署绑定）`,'ok');
+}
+
+function openModal(id){ document.getElementById(id).classList.add('show'); }
+function closeModal(id){ document.getElementById(id).classList.remove('show'); }
+document.querySelectorAll('.overlay').forEach(el=>{
+  el.addEventListener('click', e=>{ if (e.target === el) el.classList.remove('show'); });
+});
+document.addEventListener('keydown', e=>{
+  if (e.key === 'Escape') document.querySelectorAll('.overlay.show').forEach(el=>el.classList.remove('show'));
+});
+
+let toastTimer;
+function toast(msg, kind){
+  const box = document.getElementById('toastBox');
+  const el = document.createElement('div');
+  if (kind) el.className = kind;
+  el.textContent = msg;
+  box.appendChild(el);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.remove(), 4200);
+}
+
+/* init：支持 ontology-object-detail.html#product 直达 */
+const hash = location.hash.slice(1);
+if (DB[hash]) S.key = hash;
+render();
+</script>
+</body>
+</html>

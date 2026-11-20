@@ -106,7 +106,7 @@ def test_create_dimension_goes_through_physical_binding_guard(monkeypatch):
 
     历史缺陷：裁决只挂在更新分支，create_dimension 原样写入 payload → 不传 target_table
     就落成空值，planner 按物理表加载字典永远命中 0 行（列名对了却取不到数，
-    repair_rum_field_mapping 修的正是这批空表行）。
+    一次性修复脚本清理的正是这批空表行）。
     裁决必须发生在开库/查重之前：不合法的映射不该消耗一次写窗口。
     """
     from backend.modules.catalog.services import metrics_service as ms

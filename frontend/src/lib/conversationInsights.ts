@@ -106,7 +106,7 @@ export interface CitationCard {
 export interface KnowledgeInsights {
   scopes: ScopeCard[];
   citations: CitationCard[];
-  /** 结果过长被截断、无法结构化的工具调用条数（必须显式暴露，不能当成"没有知识"） */
+  /** 结果过长被截断、无法结构化的工具调用条数（诊断口径；侧栏只列引用，不渲染该计数） */
   unparsed: number;
 }
 
@@ -336,7 +336,8 @@ export function collectKnowledge(messages: ChatMessage[]): KnowledgeInsights {
   return { scopes, citations, unparsed };
 }
 
-/** 会话里是否出现过任何可展示的知识条目（决定侧栏要不要摆空小节）。 */
+/** 会话里是否出现过任何可展示的知识条目（决定侧栏要不要摆空小节）。
+ *  只算真正会被渲染的口径卡与引用卡 —— 截断计数不再是可展示内容。 */
 export function hasKnowledge(ins: KnowledgeInsights): boolean {
-  return !!(ins.scopes.length || ins.citations.length || ins.unparsed);
+  return !!(ins.scopes.length || ins.citations.length);
 }

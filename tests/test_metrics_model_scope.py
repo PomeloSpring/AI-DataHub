@@ -193,6 +193,41 @@ class TestAssetPoolDelete:
         assert "bound_object_key IN" in dims_sql[0]
 
 
+class TestBoundObjectFilter:
+    """本体对象检查器「引用」页签：维度按 bound_object_key 下推 SQL。
+
+    历史做法是前端拉全量再本地筛——字典只会越拉越大，且“这个对象下没有维度”的
+    结论取决于恰好拉到了多少行。归属对象过滤必须与指标列表同口径下推 SQL。
+    """
+
+    def test_dimensions_filter_by_bound_object_key(self, monkeypatch):
+        conn = _Conn([("FROM adh_dimensions",
+                      [{"name": "事件类型", "bound_object_key": "rum_event"}])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        out = ms.list_all_dimensions(bound_object_key="rum_event", is_active="all")
+        assert out["total"] == 1 and out["items"][0]["bound_object_key"] == "rum_event"
+        sql, params = [c for c in conn.cur.calls if "FROM adh_dimensions" in c[0]][0]
+        assert "`bound_object_key` = %s" in sql
+        assert "rum_event" in params
+        # is_active='all' → 不得再叠“只列生效行”的旧谓词(停用行在建模视角也要可见)
+        assert "is_active = 1" not in sql
+
+    def test_dimensions_unset_facet_hits_empty_bucket(self, monkeypatch):
+        conn = _Conn([("FROM adh_dimensions", [])])
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        ms.list_all_dimensions(bound_object_key=ms.UNSET_FACET, is_active="all")
+        sql, params = [c for c in conn.cur.calls if "FROM adh_dimensions" in c[0]][0]
+        assert "COALESCE(bound_object_key, '') = ''" in sql
+        assert ms.UNSET_FACET not in params   # 空值桶是谓词, 不是字面量参数
+
+    def test_route_exposes_bound_object_key(self):
+        """路由必须透传该入参(登记了服务层能力却没接到 HTTP 上 = 前端永远用不到)。"""
+        import inspect
+        from backend.modules.catalog.api import metrics as metrics_api
+        params = inspect.signature(metrics_api.list_all_dimensions).parameters
+        assert "bound_object_key" in params
+
+
 class TestAssetPool:
     def test_pool_classifies_and_counts(self, monkeypatch):
         script = [

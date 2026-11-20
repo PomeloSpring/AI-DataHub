@@ -351,7 +351,6 @@
     "knowledgeEmpty": "No extractable knowledge in this conversation yet. After the assistant searches semantics, the catalog or the knowledge base, used objects/metrics/dimensions and sources will be listed here.",
     "scopes": "Query scope",
     "citations": "Knowledge citations",
-    "unparsed": "{{count}} tool outputs were too long and got truncated, so they could not be turned into cards; view the full content in that turn's execution process.",
     "windowMeta": "Window {{value}}",
     "siteMeta": "Site {{value}}",
     "unregisteredObject": "Unregistered object",

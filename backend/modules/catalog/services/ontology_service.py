@@ -1791,6 +1791,21 @@ def get_model(model_id: int) -> Optional[dict]:
     return _row_to_model(row) if row else None
 
 
+def get_model_meta(model_id: int) -> Optional[dict]:
+    """只取**小字段**（不拉 json/yaml/md 正文）：供只读视图缓存算签名 + 可见性裁决。
+
+    正文百 KB 级，命中缓存时没必要先把它拉出来再丢掉；`updated_at`
+    带 `ON UPDATE CURRENT_TIMESTAMP`，保存/发布/激活都会刷新，可作正文内容版本。
+    """
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, datasource_id, name, kind, domain, status, updated_at "
+                "FROM adh_ontology_models WHERE id = %s", (model_id,))
+            row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def _doc_fingerprint(json_content: str) -> str:
     """生效内容指纹：发布时校验草案基线是否仍匹配（防覆盖他人改动）。"""
     import hashlib
@@ -2874,6 +2889,11 @@ def find_unregistered_tables(doc: dict) -> list:
     """
     objects = doc.get("objects") or []
     ds_name = str(doc.get("datasource_name") or "").strip()
+    # 系统本体（kind='system'）描述平台自身的元数据表（adh_*），它们不是、也不该被登记为
+    # 数据产品——数据产品是业务数据对外提供的契约。若一并套用本门禁，系统本体永远激活不了
+    # （save_draft 告警 + activate 硬阻断），而它本来就不面向业务取数。
+    if str(doc.get("kind") or "").strip() == "system":
+        return []
     pairs: list = []
     for o in objects:
         t = str(o.get("primary_table") or "").strip()

@@ -34,41 +34,21 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import DimensionsDictTab from './DimensionsDictTab';
+import MetricFormDialog, { type MetricRecord } from './MetricFormDialog';
 import {
-  AGG_TYPE_OPTIONS,
   DICT_UNSET,
-  METRIC_KIND_TAG_OPTIONS,
+  METRIC_TAG_COLORS,
   aggLabel,
+  aliasText,
   metricCategoryLabel,
   objectLabel,
+  tagList,
   withCount,
 } from '@/lib/dictLabels';
 import { useTranslation } from 'react-i18next';
-import { t as tr } from '@/i18n/runtime';
 
-interface Metric {
-  id: number;
-  name: string;
-  display_name: string;
-  description?: string;
-  /** 业务域分类(adh_metrics.category) */
-  category?: string;
-  /** 口径标签(adh_metrics.tags, JSON 数组): 基础/衍生/复合… 与业务域正交 */
-  tags?: string[];
-  calculation_type: string;
-  expression?: string;
-  unit?: string;
-  target_table?: string;
-  target_column?: string;
-  granularity?: string;
-  owner?: string;
-  bound_object_key?: string;
-  aliases?: string | string[];
-  certified?: number;
-  is_active?: number;
-  created_at: string;
-  updated_at: string;
-}
+/** adh_metrics 行（表单/列表/详情共用，形状定义在 MetricFormDialog，避免两处漂移） */
+type Metric = MetricRecord;
 
 interface Dimension {
   id: number;
@@ -80,64 +60,6 @@ interface Dimension {
   description?: string;
 }
 
-interface MetricFormData {
-  name: string;
-  display_name: string;
-  description: string;
-  /** 业务域分类(落 category 列) */
-  category: string;
-  /** 口径标签(落 tags 列) */
-  tags: string[];
-  calculation_type: string;
-  expression: string;
-  unit: string;
-  target_table: string;
-  target_column: string;
-  granularity: string;
-  bound_object_key: string;
-  aliases: string;   // 逗号分隔, 提交时拆为数组(后端存 JSON 列)
-  /** 口径状态(is_active): 1=启用参与取数, 0=停用/未发布 */
-  is_active: number;
-}
-
-/** 解析后端 aliases(JSON 字符串或数组) → 逗号串(输入框展示用) */
-function aliasesToText(v: unknown): string {
-  if (Array.isArray(v)) return v.join(', ');
-  if (typeof v === 'string' && v.trim()) {
-    try {
-      const arr = JSON.parse(v);
-      return Array.isArray(arr) ? arr.join(', ') : v;
-    } catch { return v; }
-  }
-  return '';
-}
-
-/** 解析后端 tags(JSON 字符串或数组) → 字符串清单 */
-function tagList(v: unknown): string[] {
-  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
-  if (typeof v === 'string' && v.trim()) {
-    try {
-      const arr = JSON.parse(v);
-      return Array.isArray(arr) ? arr.map((x) => String(x).trim()).filter(Boolean) : [];
-    } catch { return []; }
-  }
-  return [];
-}
-
-/** 三元组预览(只读): 所见 = 所写 = 图谱投影, 与 to_rdf/字典行为同一主语结构 */
-function metricRdfPreview(f: MetricFormData): string {
-  const subj = `adh:metric:${f.display_name || f.name || '?'}`;
-  const lines: string[] = [`${subj} a adh:Metric .`];
-  if (f.bound_object_key) lines.push(`${subj} adh:boundToObject adh:obj:${f.bound_object_key} .`);
-  const als = aliasesToText(f.aliases).split(',').map((s) => s.trim()).filter(Boolean);
-  als.forEach((a) => lines.push(`${subj} skos:altLabel "${a}" .`));
-  if (f.calculation_type) lines.push(`${subj} adh:aggregation "${f.calculation_type.toUpperCase()}" .`);
-  if (f.unit) lines.push(`${subj} adh:unit "${f.unit}" .`);
-  if (f.description) lines.push(`${subj} rdfs:comment "${f.description}" .`);
-  lines.push(tr('k_352b2a8289'));
-  return lines.join('\n');
-}
-
 interface DimensionFormData {
   name: string;
   display_name: string;
@@ -145,30 +67,6 @@ interface DimensionFormData {
   data_type: string;
   description: string;
 }
-
-/** 口径标签着色（tags 列）：与业务域分类无关，只认基础/衍生/复合三个已知标签 */
-const METRIC_TAG_COLORS: Record<string, string> = {
-  基础: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
-  衍生: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
-  复合: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
-};
-
-const emptyMetricForm: MetricFormData = {
-  name: '',
-  display_name: '',
-  description: '',
-  category: '',
-  tags: [],
-  calculation_type: 'sum',
-  expression: '',
-  unit: '',
-  target_table: '',
-  target_column: '',
-  granularity: '',
-  bound_object_key: '',
-  aliases: '',
-  is_active: 1,
-};
 
 const emptyDimensionForm: DimensionFormData = {
   name: '',
@@ -215,11 +113,10 @@ export default function MetricsCenter({
   const [facets, setFacets] = useState<DictFilters | null>(null);
   const [facetsError, setFacetsError] = useState<string | null>(null);
 
-  // Dialog states
+  // Dialog states: 口径表单（新建/编辑）由 MetricFormDialog 承载，同一份表单
+  // 也给本体对象检查器的「引用」页签复用（两处不得各写一套字段/校验）
   const [formOpen, setFormOpen] = useState(false);
   const [editMetric, setEditMetric] = useState<Metric | null>(null);
-  const [formData, setFormData] = useState<MetricFormData>(emptyMetricForm);
-  const [saving, setSaving] = useState(false);
 
   // Detail view
   const [detailMetric, setDetailMetric] = useState<Metric | null>(null);
@@ -305,54 +202,12 @@ export default function MetricsCenter({
 
   const handleOpenCreate = () => {
     setEditMetric(null);
-    setFormData(emptyMetricForm);
     setFormOpen(true);
   };
 
   const handleOpenEdit = (metric: Metric) => {
     setEditMetric(metric);
-    setFormData({
-      name: metric.name,
-      display_name: metric.display_name,
-      description: metric.description || '',
-      category: metric.category || '',
-      tags: tagList(metric.tags),
-      calculation_type: (metric.calculation_type || 'sum').toLowerCase(),
-      expression: metric.expression || '',
-      unit: metric.unit || '',
-      target_table: metric.target_table || '',
-      target_column: metric.target_column || '',
-      granularity: metric.granularity || '',
-      bound_object_key: metric.bound_object_key || '',
-      aliases: aliasesToText(metric.aliases),
-      is_active: metric.is_active === 0 ? 0 : 1,
-    });
     setFormOpen(true);
-  };
-
-  const handleSaveMetric = async () => {
-    if (!formData.name || !formData.display_name) {
-      toast.error(t('k_336d5cec6d'));
-      return;
-    }
-    setSaving(true);
-    try {
-      const payload: any = { ...formData,
-        aliases: formData.aliases.split(',').map((s) => s.trim()).filter(Boolean) };
-      if (editMetric) {
-        await metricsApi.update(editMetric.id, payload);
-        toast.success(t('k_f5e88fe8dc'));
-      } else {
-        await metricsApi.create(payload);
-        toast.success(t('k_45eda4ad25'));
-      }
-      setFormOpen(false);
-      loadMetrics();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || t('k_6de920b4e4'));
-    } finally {
-      setSaving(false);
-    }
   };
 
   /**
@@ -438,28 +293,6 @@ export default function MetricsCenter({
   // 不可复用 objectOptions —— 它按 metric_count>0 过滤（那是筛选用的），新建时目标对象往往是尚未挂指标的那个。
   // 嵌入态优先用传入的本模型对象（限定不跨模型挂接）；独立页退到 facet 全量对象。
   const formObjectList = useMemo(() => (objects?.length ? objects : (facets?.objects || []).map(o => ({ key: o.key, display_name: o.display_name }))), [objects, facets]);
-  // 新建/编辑表单的「业务域分类」候选 = 字典已有真实域(+当前值兜底)。
-  // 不得再拼基础/衍生/复合 —— 那是口径标签(tags 列)，与业务域是两个正交维度，
-  // 混进同一候选会把两个维度写进一列（本次改造的根因）。
-  const categoryFormOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const f of facets?.metrics?.categories || []) {
-      if (f.value !== DICT_UNSET) seen.set(f.value, metricCategoryLabel(f.value));
-    }
-    const current = (formData.category || '').trim();
-    if (current && !seen.has(current)) seen.set(current, metricCategoryLabel(current));
-    return [...seen.entries()];
-  }, [facets, formData.category]);
-  // 表单的「口径标签」候选 = 固定三档 + 字典已有标签(+当前已选)，只能选不能手输
-  const tagFormOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const t of METRIC_KIND_TAG_OPTIONS) seen.set(t, t);
-    for (const f of facets?.metrics?.tags || []) {
-      if (f.value !== DICT_UNSET) seen.set(f.value, f.value);
-    }
-    for (const t of formData.tags) if (t) seen.set(t, t);
-    return [...seen.keys()];
-  }, [facets, formData.tags]);
   const hasFilters = !!(search || fCategory !== 'all' || fTag !== 'all' || fAgg !== 'all' || fObject
     || fCertified !== 'all' || fStatus !== 'all' || fTarget !== 'all');
   const resetFilters = () => {
@@ -700,7 +533,7 @@ export default function MetricsCenter({
                   <td className="p-3 text-muted-foreground">{m.unit || '-'}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-1 max-w-[180px]">
-                      {aliasesToText(m.aliases).split(',').map((s) => s.trim()).filter(Boolean).map((a) => (
+                      {aliasText(m.aliases).split(',').map((s) => s.trim()).filter(Boolean).map((a) => (
                         <Badge key={a} variant="outline" className="text-[11px] font-normal">{a}</Badge>
                       ))}
                     </div>
@@ -777,191 +610,17 @@ export default function MetricsCenter({
         </TabsContent>
       </Tabs>
 
-      {/* Create/Edit Metric Dialog */}
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editMetric ? t('k_6bff860500') : t('k_e4f7015bed')}</DialogTitle>
-          </DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t('k_fbf757538f')}</label>
-              <Input
-                placeholder={t('k_50fecbf25f')}
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t('k_f75459f6f0')}</label>
-              <Input
-                placeholder={t('k_5139413eed')}
-                value={formData.display_name}
-                onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
-              />
-            </div>
-            <div className="col-span-2 space-y-2">
-              <label className="text-sm font-medium">{t("k_412f54dc38")}</label>
-              <Input
-                placeholder={t("k_c0c4a42ea4")}
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_79b96b9bed")}</label>
-              {/* 候选 = 字典已有真实域(facet)，否则存量域(可观测/客户…) 在编辑弹窗里
-                  渲染成空白，看起来像“类型被清空了”。口径标签(基础/衍生/复合)不在本列，见下方标签选择。 */}
-              <Select value={formData.category} onValueChange={(v) => setFormData({ ...formData, category: v })}>
-                <SelectTrigger aria-label={t("k_c695bf5821")}>
-                  <SelectValue placeholder={categoryFormOptions.length ? t('k_af4e7e5c7c') : t('k_111736cc91')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {categoryFormOptions.map(([value, label]) => (
-                    <SelectItem key={value} value={value}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {/* 口径标签与业务域是两个正交维度（落 tags 列）；候选只能选不能手输。
-                fieldset/legend 原生就是一个具名选项组（比 div[role=group] 更可访） */}
-            <fieldset className="space-y-2">
-              <legend className="text-sm font-medium">{t("k_bcfb3e80e0")}</legend>
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {tagFormOptions.map((t) => {
-                  const on = formData.tags.includes(t);
-                  return (
-                    <Button key={t} type="button" size="sm" variant={on ? 'default' : 'outline'}
-                            aria-pressed={on}
-                            className="h-7 px-2 text-xs"
-                            onClick={() => setFormData({
-                              ...formData,
-                              tags: on ? formData.tags.filter((x) => x !== t) : [...formData.tags, t],
-                            })}>
-                      {on && <CheckCircle2 className="w-3 h-3 mr-1" />}{t}
-                    </Button>
-                  );
-                })}
-              </div>
-            </fieldset>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_e13f097b9b")}</label>
-              <Select value={formData.calculation_type} onValueChange={(v) => setFormData({ ...formData, calculation_type: v })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {AGG_TYPE_OPTIONS.map((agg) => (
-                    <SelectItem key={agg} value={agg}>{aggLabel(agg)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="col-span-2 space-y-2">
-              <label className="text-sm font-medium">{t("k_80a343d78c")}</label>
-              <Input
-                placeholder={t('k_a5ad2b377c')}
-                value={formData.expression}
-                onChange={(e) => setFormData({ ...formData, expression: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_8ec8c8c712")}</label>
-              <Input
-                placeholder={t('k_da50dded17')}
-                value={formData.unit}
-                onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_de2e02c66e")}</label>
-              <Input
-                placeholder={t('k_378825f36d')}
-                value={formData.aliases}
-                onChange={(e) => setFormData({ ...formData, aliases: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_baf051c677")}</label>
-              <Input
-                placeholder={t('k_0443e61e41')}
-                value={formData.granularity}
-                onChange={(e) => setFormData({ ...formData, granularity: e.target.value })}
-              />
-            </div>
-            {/* 归属对象: 引用选择器（不手填 key，见 ui-resource-display §2）。
-                嵌入态限本模型对象（不产生悬空/跨模型挂接）；独立页用全量对象 ——
-                此前它被 `{embedded && …}` 锁死，独立页根本看不到，而 bound_object_key 是必填项，
-                导致指标中心页**完全建不了指标**。 */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t('k_8251ec3d2b')}</label>
-              <Select
-                value={formData.bound_object_key || undefined}
-                onValueChange={(v) => setFormData({ ...formData, bound_object_key: v })}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={formObjectList.length ? t('k_02ff67e28e') : t('k_e95a129d4d')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {formObjectList.map((o) => (
-                    <SelectItem key={o.key} value={o.key}>{o.display_name || o.key} ({o.key})</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_442be9c497")}</label>
-              <Input
-                placeholder={t("k_8f4f44b3e6")}
-                value={formData.target_table}
-                onChange={(e) => setFormData({ ...formData, target_table: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t("k_38556b027f")}</label>
-              <Input
-                placeholder={t("k_3c6ca65fb9")}
-                value={formData.target_column}
-                onChange={(e) => setFormData({ ...formData, target_column: e.target.value })}
-              />
-            </div>
-            {/* 口径状态（is_active）：停用与 AS-BOT 「未发布」同一语义 —— 行保留、不参与检索与取数。
-                此前表单没这个字段，停用行在页面上看得见却改不了（只能改库）。 */}
-            <div className="col-span-2 grid grid-cols-2 gap-4 items-end">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t("k_b9dc554215")}</label>
-                <Select value={String(formData.is_active)}
-                        onValueChange={(v) => setFormData({ ...formData, is_active: Number(v) })}>
-                  <SelectTrigger aria-label={t("k_b9dc554215")}><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">{t("k_d7b43aab71")}</SelectItem>
-                    <SelectItem value="0">{t("k_062c1e7b42")}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {formData.is_active === 0 && (
-                <p className="text-xs text-amber-600 pb-2">
-                  {t('k_a0196ad69c')}
-                </p>
-              )}
-            </div>
-          </div>
-          {/* 三元组预览: 所见=所写=图谱投影（限高内部滚动，不得把表单撑出视口） */}
-          <div className="mt-2">
-            <label className="text-sm font-medium text-muted-foreground">{t("k_65b25bea2b")}</label>
-            <pre className="mt-1 p-3 max-h-40 overflow-auto rounded-md bg-muted/50 border text-[11px] font-mono whitespace-pre-wrap leading-relaxed">
-              {metricRdfPreview(formData)}
-            </pre>
-          </div>
-          {/* 长表单弹窗：操作条吸底，滚动到底部之前也能取消/保存 */}
-          <DialogFooter className="sticky bottom-0 -mx-5 -mb-5 px-5 pb-5 pt-3 bg-background border-t border-border/60">
-            <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={handleSaveMetric} disabled={saving}>
-              {saving ? t('k_2a33020e5b') : t('k_fadf24dbc5')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create/Edit Metric Dialog —— 表单在 MetricFormDialog（本体对象「引用」页签复用同一份） */}
+      {formOpen && (
+        <MetricFormDialog
+          metric={editMetric}
+          modelId={modelId}
+          objects={formObjectList}
+          facets={facets}
+          onClose={() => setFormOpen(false)}
+          onSaved={() => { setFormOpen(false); loadMetrics(); }}
+        />
+      )}
 
       {/* 口径状态变更确认（双向）：启用会把口径重新广告给 ChatBI，
           停用会把它从取数里拿掉 —— 都影响线上答案，故不一点即生效。 */}

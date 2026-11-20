@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import client from '@/api/client';
 import {
   ontologyApi,
@@ -17,7 +16,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -32,24 +30,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/lib/toast';
 import {
-  Boxes, Sparkles, CheckCircle2, Archive, RefreshCw, Loader2, Trash2, History, AlertTriangle,
-  Upload, Undo2, BookMarked, GitCompare, Inbox, Eye, Search, Pencil,
+  Activity, Archive, BookMarked, BookOpen, CheckCircle2, FileText, GitCompare, History, Inbox,
+  Layers, LayoutGrid, Loader2, MapPin, Pencil, Plus, RefreshCw, ScrollText, Share2, Sparkles,
+  Tags, Trash2, Undo2, Upload, Zap,
 } from 'lucide-react';
-import ObjectHubTab, { type HubObject } from './ObjectHubTab';
-import { normalizeDocObjects, showsM234, showsSiteScope, countM234Declarations, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
+import OntologyWorkbench, { type WbRailSection, type WbTray } from './OntologyWorkbench';
+import CanonicalDocPanel from './CanonicalDocPanel';
+import ObjectHubTab, { type HubObject, type InspTab } from './ObjectHubTab';
+import ModelHealthTab from './ModelHealthTab';
+import AssetPoolWorkbench from './AssetPoolWorkbench';
+import { normalizeDocObjects, showsM234, showsSiteScope, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import ModelDraftReview from './ModelDraftReview';
 import Glossary from './Glossary';
-import { ModelActionsTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectCreateButton, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
+import { ModelActionsTab, ModelGraphTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
 import { useAsBotStore } from '@/stores/asBotStore';
 import { hasPerm } from '@/stores/permissionStore';
@@ -80,65 +81,11 @@ function parseObjects(jsonContent: string): NormalizeDocObjectsResult {
   return normalizeDocObjects(raw);
 }
 
-/** 模型列表分组(业务/系统能力): 只列本体模型 —— 指标/维度/术语是模型内容, 在模型工作区内配置 */
-function ModelGroup({ title, list, selectedId, onPick }: {
-  title: string;
-  list: OntologyModelSummary[];
-  selectedId: number | null;
-  onPick: (id: number) => void;
-}) {
-  const { t } = useTranslation('ui');
-  if (!list.length) return null;
-  return (
-    <div>
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
-        {title}（{list.length}）
-      </div>
-      <div className="space-y-1">
-        {list.map((m) => {
-          const meta = STATUS_META[m.status] || STATUS_META.draft;
-          return (
-            <button
-              key={m.id}
-              onClick={() => onPick(m.id)}
-              className={`w-full text-left rounded-lg border px-3 py-2 transition-colors
-                ${selectedId === m.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'}`}
-            >
-              <div className="flex items-center justify-between gap-1">
-                <span className="text-sm font-medium truncate">{m.name}</span>
-                <span className="flex items-center gap-1 flex-shrink-0">
-                  {(m.deployment_count ?? 0) >= 2 && (
-                    <Badge variant="outline" className="border-indigo-300 text-indigo-600">
-                      {t('k_973147137c', { p0: m.deployment_count })}</Badge>
-                  )}
-                  <Badge variant="outline" className={`flex-shrink-0 ${meta.cls}`}>
-                    {meta.label}
-                  </Badge>
-                  {/* 有未发布草案：在列表层就提醒“改了还没生效”，不让人到详情页才发现对象不见了 */}
-                  {m.has_draft && (
-                    <Badge variant="outline" className="flex-shrink-0 border-amber-500/40 text-amber-600">
-                      {t('k_0737ae75a2')}
-                    </Badge>
-                  )}
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                {t('k_314bbc9736', { p0: m.domain ? `${m.domain} · ` : '', p1: m.object_count, p2: m.updated_at?.slice(0, 16).replace('T', ' ') })}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 export default function OntologyModeling() {
   const { t } = useTranslation('ui');
   // ── 数据源 ──
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [datasourceId, setDatasourceId] = useState<number>(0);
-  const navigate = useNavigate();
 
   // ── 模型列表 ──
   const [models, setModels] = useState<OntologyModelSummary[]>([]);
@@ -150,7 +97,7 @@ export default function OntologyModeling() {
 
   // ── 编辑器（生效版正文；草案正文另存 draftJson）──
   const [jsonDraft, setJsonDraft] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [, setSaving] = useState(false);
 
   // ── 生成任务：服务端后台静默执行，进度在 AS-BOT 侧边栏呈现（页面不再是执行载体）──
   const [genTask, setGenTask] = useState<GenerateTask | null>(null);
@@ -198,8 +145,10 @@ export default function OntologyModeling() {
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<OntologyModelSummary[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  // 只读文档面板（侧栏「文档」入口；不在模型下拉里，不再塞进选择器）
+  const [docOpen, setDocOpen] = useState(false);
 
-  // ── 未归属资产池：已抽为独立页（/data/asset-pool），本页只留计数与入口 ──
+  // ── 未归属资产池（建模待办）：本页内嵌页签，跨模型缺口不离开建模上下文 ──
   const [poolTotal, setPoolTotal] = useState(0);
   const refreshPool = useCallback(async () => {
     try {
@@ -270,6 +219,8 @@ export default function OntologyModeling() {
   /** 工作区当前展示哪一份正文：生效版（线上只读）/ 草案（可编辑） */
   const [viewMode, setViewMode] = useState<'live' | 'draft'>('live');
   const [tab, setTab] = useState('hub');
+  // 内联新建对象行：点「＋ 新建对象」在画布顶部就地展开（不再弹居中对话框）
+  const [creatingObject, setCreatingObject] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const draftPending = !!draftStatus?.has_draft;
 
@@ -419,7 +370,7 @@ export default function OntologyModeling() {
   // 供建模页签（行为/规则/场景/新建对象/编辑对象）落库。
   // 2026-10-26 拍板：存草案，**不碰生效内容、不级联**；发布（ontology:publish）才生效。
   // 基线纪律：有未发布草案时，编辑基线**只能是草案**（拿生效版整份提交会顶掉 AS-BOT/他人已写的草案）。
-  const saveDocFromTab = useCallback(async (nextJson: string) => {
+  const saveDocFromTab = useCallback(async (nextJson: string, opts?: { stay?: boolean }) => {
     if (!model) return;
     if (viewMode !== 'draft' && draftPending) {
       // 顶栏已禁用编辑入口，走到这里只可能是旧组件缓存的回调：不静默覆盖，显式引导
@@ -436,7 +387,8 @@ export default function OntologyModeling() {
       loadModels();
       // 首次写入（之前无草案）：自动切到草案视图，让人立刻看到“我的改动落在哪”
       if (viewMode !== 'draft') setViewMode('draft');
-      setTab('changes');
+      // 就地新建（opts.stay）不跳走：建完继续在对象画布上补属性/路由；编辑仍去「变更对比」核对
+      if (!opts?.stay) setTab('changes');
       toast.success(t('k_58272cf7ae'));
     } catch (e: any) {
       toast.error(e.response?.data?.detail || t('k_2281d5a551'));
@@ -601,16 +553,13 @@ export default function OntologyModeling() {
     () => model ? parseObjects(activeJson) : { objects: [], issues: [] },
     [model, activeJson]);
   const hubObjects = objects as HubObject[];
-  // 模型分组按 kind（x4 归属改造）：本体归属是 domain+kind，不是数据源。
-  // 业务本体的 datasource_id 也是 0，旧的“有合法数据源 → 业务”口径会把它们误归到系统组。
-  const byKind = (k: string) => models.filter((m) => (m.kind || '') === k);
-  const sourceModels = useMemo(() => byKind('source'), [models]);
-  const bizModels = useMemo(() => byKind('business'), [models]);
-  const sysModels = useMemo(() => byKind('system'), [models]);
-  // 兼容无 kind 的存量模型：回落旧口径（有合法数据源 → 业务），不丢进任一组
-  const legacyModels = useMemo(() =>
-    models.filter((m) => !m.kind && !['source', 'business', 'system'].includes(m.kind || '')), [models]);
-
+  /** 只读文档面板：生效版版本号（doc.model_version，缺省不显 v 号）与对象定位清单 */
+  const liveDocVersion = useMemo(() => {
+    try { return String(JSON.parse(jsonDraft || '{}').model_version || ''); } catch { return ''; }
+  }, [jsonDraft]);
+  const docObjectOptions = useMemo(
+    () => hubObjects.filter((o) => !!o.key).map((o) => ({ key: o.key, name: o.display_name || o.key })),
+    [hubObjects]);
   const editable = !!model && model.status !== 'archived';
   /** 草案视图下对象清单的引导文案：说清“此处编辑落在哪”，避免用户以为在改线上口径 */
   const draftHint = t('k_f8f48c2e2b');
@@ -622,422 +571,439 @@ export default function OntologyModeling() {
   const pendingChangeCount = draftPending
     ? (draftStatus?.added.length || 0) + (draftStatus?.changed.length || 0) + (draftStatus?.removed.length || 0)
     : 0;
-  const matchModel = (m: OntologyModelSummary) => {
-    const k = modelKw.trim().toLowerCase();
-    return !k || (m.name || '').toLowerCase().includes(k) || (m.domain || '').toLowerCase().includes(k);
-  };
-  const filteredBizModels = useMemo(() => bizModels.filter(matchModel), [bizModels, modelKw]);
-  const filteredSourceModels = useMemo(() => sourceModels.filter(matchModel), [sourceModels, modelKw]);
-  const filteredSysModels = useMemo(() => sysModels.filter(matchModel), [sysModels, modelKw]);
-  const filteredLegacyModels = useMemo(() => legacyModels.filter(matchModel), [legacyModels, modelKw]);
-  // 源本体不承载 M2/M3/M4：页签隐藏后，若存量 doc 仍声明了行为/规则/场景，
-  // 必须可看到“声明仍在”（不静默藏起来），并引导去清理
-  const m234Declared = useMemo(() => {
+  // 行为/规则/场景页签：所有 kind 都展示（showsM234 恒真），不再按分域隐藏，
+  // 口径集中在 lib/ontologyObjects.showsM234，调用方不自己判 kind。
+
+// ── 工作台外壳：分区 / 画布头 / 草案托盘都在这里算清，外壳只做布局，不做第二套权限判断 ──
+  const docCounts = useMemo(() => {
     try {
-      return countM234Declarations(JSON.parse(activeJson || '{}'));
+      const d = JSON.parse(activeJson || '{}');
+      const objs = Array.isArray(d.objects) ? d.objects : [];
+      return {
+        actions: objs.reduce((n: number, o: any) => n + (Array.isArray(o?.actions) ? o.actions.length : 0), 0),
+        rules: Array.isArray(d.rules) ? d.rules.length : 0,
+        scenarios: Array.isArray(d.scenarios) ? d.scenarios.length : 0,
+      };
     } catch {
-      return 0;
+      return { actions: 0, rules: 0, scenarios: 0 };
     }
   }, [activeJson]);
-  const hiddenM234 = !!model && !showsM234(model.kind) && m234Declared > 0;
+
+  const m234 = !!model && showsM234(model.kind);
+  const siteScope = !!model && showsSiteScope(model.kind);
+
+  const handleNav = useCallback((k: string) => {
+    if (k === 'doc') {
+      // 只读文档：本地面板，不占页签、不跳路由（它不是一份可编辑视图）
+      setDocOpen(true);
+      return;
+    }
+    if (k === 'health') {
+      // 建模体检：**本模型**对象级缺口（未绑表 / 列漂移 / 孤儿关系 / 缺 key），每条可定位回对象画布
+      setTab('health');
+      return;
+    }
+    if (k === 'todo') {
+      // 建模待办：**跨模型**缺口（源本体里未收编的资产），与体检不是同一份清单
+      setTab('todo');
+      return;
+    }
+    // 关系图谱不跳外层菜单：它就在本页画布里（跟随当前模型，切模型即换图）
+    setTab(k);
+  }, []);
+
+  // 选中态与可见性守卫：草案丢弃/形态切换后，失效的页签回落到对象视图；
+  // 还没选模型时落在「全部模型」总览 —— 模型名是入口（按名字选，不按 id 选），不另造左侧模型列表。
+  // 建模待办是跨模型清单，未选模型时也必须可达（优先于其它回落）
+  const activeTab = tab === 'todo' ? 'todo'
+    : !model ? 'models'
+      : (tab === 'changes' && !draftPending) || (tab === 'sites' && !siteScope) ? 'hub' : tab;
+
+  // 跨模型入口（全部模型 / 建模待办）：未选模型时也必须可达
+  const crossItems: WbRailSection['items'] = [
+    { key: 'models', label: t('k_688facc5f5'), icon: <LayoutGrid className="h-3.5 w-3.5" />, count: models.length },
+    { key: 'todo', label: t('k_0f31c91cb2'), icon: <Inbox className="h-3.5 w-3.5" />, count: poolTotal, warn: true, title: t('k_dedd34b637') },
+  ];
+
+  // 体检问题数：由体检页签上报（本页签未挂载时保留上一次的值，切模型时清零重算）
+  const [healthCount, setHealthCount] = useState(0);
+  const [healthFocus, setHealthFocus] = useState<{ key: string; tab?: InspTab; seq: number } | null>(null);
+  useEffect(() => {
+    setHealthCount(0);
+    setHealthFocus(null);
+  }, [model?.id]);
+  const locateFromHealth = useCallback((key: string, tab?: InspTab) => {
+    setHealthFocus((f) => ({ key, tab, seq: (f?.seq || 0) + 1 }));
+    setTab('hub');
+  }, []);
+
+  const railSections: WbRailSection[] = !model ? [{ title: t('k_41e04e5dda'), items: crossItems }] : [
+    {
+      title: t('k_d2a837c9b1'),
+      items: [
+        { key: 'hub', label: t('k_539cb3b0a6'), icon: <Layers className="h-3.5 w-3.5" />, count: hubObjects.length },
+        { key: 'graph', label: t('k_2ea6798094'), icon: <Share2 className="h-3.5 w-3.5" />, title: t('k_bbd833b001') },
+        ...(m234 ? [
+          { key: 'm234', label: t('k_c09395949f'), icon: <Zap className="h-3.5 w-3.5" />, count: docCounts.actions },
+          { key: 'rules', label: t('k_ed904c685a'), icon: <ScrollText className="h-3.5 w-3.5" />, count: docCounts.rules },
+          { key: 'scenarios', label: t('k_625b392c7b'), icon: <Sparkles className="h-3.5 w-3.5" />, count: docCounts.scenarios },
+        ] : []),
+        ...(siteScope ? [{ key: 'sites', label: t('k_c308156eae'), icon: <MapPin className="h-3.5 w-3.5" /> }] : []),
+      ],
+    },
+    {
+      title: t('k_cebe02952f'),
+      items: [
+        { key: 'terms', label: t('k_779b13e3d9'), icon: <BookOpen className="h-3.5 w-3.5" /> },
+        { key: 'tags', label: t('k_ae0a7afece'), icon: <Tags className="h-3.5 w-3.5" /> },
+      ],
+    },
+    {
+      title: t('k_82f516820c'),
+      items: [
+        { key: 'health', label: t('k_6dca588fdc'), icon: <Activity className="h-3.5 w-3.5" />, count: healthCount || undefined, warn: healthCount > 0, title: t('k_f06c664875') },
+      ],
+    },
+    {
+      title: t('k_82bf9384b6'),
+      items: draftPending ? [
+        { key: 'changes', label: t('k_8d535108e6'), icon: <GitCompare className="h-3.5 w-3.5" />, count: pendingChangeCount, warn: true },
+      ] : [],
+    },
+    {
+      title: t('k_1069127253'),
+      items: [
+        { key: 'doc', label: t('k_27eb0d14f8'), icon: <FileText className="h-3.5 w-3.5" />, action: true, title: t('k_85ca756d04') },
+      ],
+    },
+    { title: t('k_41e04e5dda'), items: crossItems },
+  ];
+
+  const tray: WbTray | null = draftPending ? {
+    pending: pendingChangeCount,
+    added: draftStatus?.added.length || 0,
+    changed: draftStatus?.changed.length || 0,
+    removed: draftStatus?.removed.length || 0,
+    summary: draftSummary || t('k_f576516de9'),
+    // 阻断原因常驻可见：只写在按钮 title 里等于把风险藏起来
+    blockHint: draftStatus?.base_stale ? t('k_8b2f6ff8c9') : undefined,
+    canPublish: editable && hasPerm('ontology:publish'),
+    publishDisabled: publishing || !!draftStatus?.base_stale || !!draftStatus?.draft_parse_error,
+    publishTitle: draftStatus?.base_stale
+      ? t('k_107765e1d2')
+      : draftStatus?.draft_parse_error
+        ? t('k_374f7b7caf')
+        : t('k_a7711f40b9', { p0: draftSummary || t('k_3f445de47a') }),
+    publishing,
+    onPublish: handlePublish,
+    onViewChanges: () => { setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); },
+  } : null;
+
+  const headTitle = (label: string, count?: number, note?: string) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <h2 className="text-sm font-semibold">{label}</h2>
+      {count !== undefined && <span className="text-xs text-muted-foreground tabular-nums">{count}</span>}
+      <div className="flex-1" />
+      {note && <span className="text-[11px] text-muted-foreground">{note}</span>}
+    </div>
+  );
+
+  const hubHead = (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-sm font-semibold">{t('k_539cb3b0a6')}</h2>
+        {/* 当前视图对象数由画布工具条负责（同一数字不在页头重复一份） */}
+        <span className="text-[11px] text-muted-foreground">
+          {t('k_013a59c4bf', { p0: model?.object_count ?? 0 })}
+        </span>
+        <div className="flex-1" />
+        {canEditDoc && model && (
+          <Button size="sm" className="h-7 text-xs" onClick={() => setCreatingObject(true)}>
+            <Plus className="h-3.5 w-3.5 mr-1" />{t('k_fab82bea2e')}
+          </Button>
+        )}
+        {liveLocked && editable && (
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
+            <Pencil className="h-3 w-3 mr-1" />{t('k_417166e66b')}
+          </Button>
+        )}
+      </div>
+      {liveLocked && <div className="text-[11px] text-muted-foreground">{t('k_4652cc5256')}</div>}
+      {viewMode === 'draft' && (
+        <div className="text-[11px] text-amber-600">{t('k_4385768c31')}</div>
+      )}
+    </>
+  );
+
+  const canvasHead = activeTab === 'todo' ? null
+    : activeTab === 'health' ? headTitle(t('k_6dca588fdc'), healthCount || undefined, t('k_3e9ea37e19'))
+    : activeTab === 'hub' ? hubHead
+    : activeTab === 'graph' ? headTitle(t('k_2ea6798094'), undefined, t('k_bbd833b001'))
+      : activeTab === 'changes' ? headTitle(t('k_8d535108e6'), pendingChangeCount, t('k_dc832ca790'))
+      : activeTab === 'terms' ? headTitle(t('k_779b13e3d9'), undefined, draftHint)
+        : activeTab === 'tags' ? headTitle(t('k_ae0a7afece'))
+          : activeTab === 'm234' ? headTitle(t('k_c09395949f'), docCounts.actions)
+            : activeTab === 'rules' ? headTitle(t('k_ed904c685a'), docCounts.rules)
+              : activeTab === 'scenarios' ? headTitle(t('k_625b392c7b'), docCounts.scenarios)
+                : activeTab === 'sites' ? headTitle(t('k_c308156eae'))
+                  : activeTab === 'models' ? headTitle(t('k_688facc5f5'), models.length, t('k_bd92232894'))
+                    : null;
+
+  // 全部模型总览：模型 = 领域 = 发布单元，这里只做总览与切换（未选模型时的落地面）
+  const modelGrid = (
+    <>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+        {models.map((m) => {
+          const meta = STATUS_META[m.status] || STATUS_META.draft;
+          return (
+            <button key={m.id} type="button"
+              onClick={() => { loadModel(m.id); setTab('hub'); }}
+              className={`rounded-xl border p-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/30
+                ${selectedId === m.id ? 'border-primary bg-primary/5' : 'border-border'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <span className="min-w-0 truncate text-sm font-medium">{m.name}</span>
+                <Badge variant="outline" className={`shrink-0 text-[10px] ${meta.cls}`}>{meta.label}</Badge>
+              </div>
+              <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{m.domain || t('k_b28f13ea3e')}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {t('k_013a59c4bf', { p0: m.object_count })}
+                {' · '}{m.kind === 'system' ? t('k_f6b932be1d') : m.kind === 'source' ? t('k_f5db121235') : t('k_d381fb12f2')}
+                {' · '}{m.updated_at?.slice(0, 16).replace('T', ' ')}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {(m.deployment_count ?? 0) >= 2 && (
+                  <Badge variant="outline" className="text-[10px] border-indigo-300 text-indigo-600">
+                    {t('k_dbd9450a62', { p0: m.deployment_count })}</Badge>
+                )}
+                {m.has_draft && (
+                  <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-600">
+                    {t('k_0737ae75a2')}</Badge>
+                )}
+                {selectedId === m.id && <span className="text-[10px] text-primary">{t('k_e18ae87522')}</span>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {!models.length && (
+        <div className="py-10 text-center text-sm text-muted-foreground">{t('k_08f1e09ffd')}</div>
+      )}
+    </>
+  );
+
+  const canvas = activeTab === 'health' ? (
+    // 建模体检：本模型对象级缺口，逐条「定位」回对象画布就地修
+    <div className="h-full p-2">
+      <ModelHealthTab modelId={model!.id} objects={hubObjects} issues={objectIssues}
+        draftStates={draftStates} modelKind={model!.kind} viewMode={viewMode}
+        onLocate={locateFromHealth} onSummary={setHealthCount} />
+    </div>
+  ) : activeTab === 'todo' ? (
+    // 建模待办：跨模型缺口（未归属字典行 + 解析回流候选）就地分诊，不跳独立页
+    <div className="h-full overflow-auto p-2">
+      <AssetPoolWorkbench onChanged={refreshPool} onOpenModel={() => setTab('hub')} />
+    </div>
+  ) : activeTab === 'models' ? (
+    <div className="h-full overflow-auto p-3">{modelGrid}</div>
+  ) : !model ? (
+    <div className="h-full overflow-auto p-3">{modelGrid}</div>
+  ) : activeTab === 'hub' ? (
+    <div className="h-full p-2">
+      <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues}
+        jsonContent={activeJson} onSave={saveDocFromTab}
+        canEdit={canEditDoc} viewMode={viewMode} draftStates={draftStates}
+        draftHint={draftHint} modelKind={model.kind}
+        creating={creatingObject}
+        onCreateCancel={() => setCreatingObject(false)}
+        onCreateDone={() => setCreatingObject(false)}
+        focus={healthFocus || undefined} />
+    </div>
+  ) : activeTab === 'graph' ? (
+    // 图谱就在画布里：按当前模型（kind/domain/model_id）取图，不跳外层菜单
+    <div className="h-full min-h-0">
+      <ModelGraphTab datasourceId={model.datasource_id ?? 0} kind={model.kind} domain={model.domain}
+        modelId={model.id} fill />
+    </div>
+  ) : activeTab === 'changes' ? (
+    <div className="h-full overflow-auto p-2">
+      <ModelDraftReview modelId={model.id} draft={draftStatus}
+        canPublish={editable && hasPerm('ontology:publish')}
+        canEdit={editable && hasPerm('ontology:save')}
+        publishing={publishing}
+        onPublish={handlePublish}
+        onDiscard={handleDiscarded}
+        onEditInDraft={() => void switchView('draft')} />
+    </div>
+  ) : activeTab === 'terms' ? (
+    <div className="h-full overflow-auto p-2">
+      <Glossary embedded datasourceId={model.datasource_id}
+        tables={hubObjects.map((o: any) => String(o.primary_table || '').toLowerCase()).filter(Boolean)} />
+    </div>
+  ) : activeTab === 'tags' ? (
+    <div className="h-full overflow-auto p-2">
+      <ObjectTagsTab objects={hubObjects as any} />
+    </div>
+  ) : activeTab === 'm234' ? (
+    <div className="h-full overflow-hidden p-2">
+      <ModelActionsTab jsonContent={activeJson} onSave={saveDocFromTab} />
+    </div>
+  ) : activeTab === 'rules' ? (
+    <div className="h-full overflow-hidden p-2">
+      <ModelRulesTab jsonContent={activeJson} onSave={saveDocFromTab} />
+    </div>
+  ) : activeTab === 'scenarios' ? (
+    <div className="h-full overflow-hidden p-2">
+      <ModelScenariosTab jsonContent={activeJson} onSave={saveDocFromTab} />
+    </div>
+  ) : activeTab === 'sites' ? (
+    <div className="h-full overflow-hidden p-2">
+      <ModelSitesTab modelId={model.id} readonly={!editable} />
+    </div>
+  ) : (
+    <div className="h-full overflow-auto p-3">{modelGrid}</div>
+  );
 
   return (
     <div className="space-y-4">
-      {/* 顶部工具栏 */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <Boxes className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">{t("k_ea36677e56")}</h1>
-        </div>
-        <div className="flex-1" />
-        <Select
-          value={datasourceId ? String(datasourceId) : ''}
-          onValueChange={(v) => setDatasourceId(Number(v))}
-        >
-          <SelectTrigger className="w-56">
-            <SelectValue placeholder={t("k_422b9e314a")} />
-          </SelectTrigger>
-          <SelectContent>
-            {datasources.map((ds) => (
-              <SelectItem key={ds.id} value={String(ds.id)}>
-                {ds.name}（{ds.db_type || '-'}）
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {/* 辅助生成的参考知识库（多选，选项显示名称）：不选则仅依据表结构归纳 */}
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="outline" className="h-9 font-normal">
-              <BookMarked className="h-4 w-4 mr-1 text-muted-foreground" />
-              {t('k_66928ed465')}
-              <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5">
-                {kbIds.length ? t('k_481be38f76', { p0: kbIds.length }) : t('k_55dc6ec014')}
-              </Badge>
+      <OntologyWorkbench
+        title={t('k_ea36677e56')}
+        current={model}
+        models={models}
+        modelKw={modelKw}
+        onModelKw={setModelKw}
+        onPickModel={loadModel}
+        showArchived={showArchived}
+        onShowArchived={(v) => { setShowArchived(v); loadModels(v); }}
+        view={{
+          mode: viewMode,
+          liveCount: draftStatus?.effective_object_count ?? objects.length,
+          draftCount: draftStatus?.draft_object_count ?? 0,
+          hasDraft: draftPending,
+          draftTitle: draftPending
+            ? t('k_85f0dcdf2c', {
+              p0: draftStatus?.draft_object_count,
+              p1: draftStatus?.draft_updated_by || t('k_1622dc9b6b'),
+              p2: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—',
+            }) + t('k_3ea200ef76')
+            : t('k_30257fb09d'),
+          onSwitch: (m) => void switchView(m),
+        }}
+        tools={(
+          <>
+            <Select value={datasourceId ? String(datasourceId) : ''}
+              onValueChange={(v) => setDatasourceId(Number(v))}>
+              <SelectTrigger className="h-8 w-56 text-xs">
+                <SelectValue placeholder={t('k_422b9e314a')} />
+              </SelectTrigger>
+              <SelectContent>
+                {datasources.map((ds) => (
+                  <SelectItem key={ds.id} value={String(ds.id)}>
+                    {ds.name}（{ds.db_type || '-'}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 font-normal">
+                  <BookMarked className="h-3.5 w-3.5 mr-1 text-muted-foreground" />
+                  {t('k_66928ed465')}
+                  <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5">
+                    {kbIds.length ? t('k_481be38f76', { p0: kbIds.length }) : t('k_55dc6ec014')}
+                  </Badge>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-2">
+                <div className="text-xs text-muted-foreground px-1 pb-1.5">{t('k_c4c7395856')}</div>
+                <div className="max-h-64 overflow-y-auto space-y-0.5">
+                  {knowledgeBases.map((kb) => (
+                    <label key={kb.id}
+                      className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted cursor-pointer">
+                      <input type="checkbox" checked={kbIds.includes(kb.id)}
+                        onChange={() => setKbIds((prev) => (
+                          prev.includes(kb.id) ? prev.filter((x) => x !== kb.id) : [...prev, kb.id]))} />
+                      <span className="truncate">{kb.name}</span>
+                    </label>
+                  ))}
+                  {!knowledgeBases.length && (
+                    <div className="px-1.5 py-1 text-xs text-muted-foreground">{t('k_309f7b3872')}</div>)}
+                </div>
+              </PopoverContent>
+            </Popover>
+            <Button size="sm" className="h-8" onClick={handleGenerate} disabled={running || !datasourceId}>
+              {running ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
+              {running ? t('k_5e59fed789') : t('k_2113dcf9f2')}
             </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-72 p-2">
-            <div className="text-xs text-muted-foreground px-1 pb-1.5">
-              {t('k_c4c7395856')}
-            </div>
-            <div className="max-h-64 overflow-y-auto space-y-0.5">
-              {knowledgeBases.map((kb) => (
-                <label key={kb.id}
-                       className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted cursor-pointer">
-                  <input type="checkbox" checked={kbIds.includes(kb.id)}
-                         onChange={() => setKbIds((prev) => (
-                           prev.includes(kb.id) ? prev.filter((x) => x !== kb.id) : [...prev, kb.id]))} />
-                  <span className="truncate">{kb.name}</span>
-                </label>
-              ))}
-              {!knowledgeBases.length && (
-                <div className="px-1.5 py-1 text-xs text-muted-foreground">{t("k_309f7b3872")}</div>)}
-            </div>
-          </PopoverContent>
-        </Popover>
-        <Button onClick={handleGenerate} disabled={running || !datasourceId}>
-          {running ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
-          {running ? t('k_5e59fed789') : t('k_2113dcf9f2')}
-        </Button>
-        {running && (
-          <Button variant="outline" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
-            {t('k_9600c91810')}
-          </Button>
-        )}
-        {running && (
-          <Button variant="ghost" className="text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
-            {t('k_d926e2f58e')}
-          </Button>
-        )}
-        <Button variant="outline" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
-          <Upload className="h-4 w-4 mr-1" />{t('k_2916bd30b8')}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => loadModels()}
-        >
-          <RefreshCw className="h-4 w-4" />
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
-        {/* 左栏：模型列表（可搜索 + 按 kind 分组）+ 建模待办入口 */}
-        <Card className="xl:col-span-1">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-sm">{t('k_7f3b6807d1', { p0: models.length })}</CardTitle>
-              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                <Switch checked={showArchived} onCheckedChange={(v) => {
-                  setShowArchived(v);
-                  loadModels(v);
-                }} />
-                {t('k_494afe2b9b')}
-              </label>
-            </div>
-            <div className="relative mt-2">
-              <Search className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input value={modelKw} onChange={(e) => setModelKw(e.target.value)}
-                placeholder={t("k_f23093e437")} className="h-8 pl-7 text-xs" />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {models.length === 0 && (
-              <div className="text-xs text-muted-foreground py-4 text-center">
-                {t('k_08f1e09ffd')}
-              </div>
+            {running && (
+              <Button size="sm" variant="outline" className="h-8" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
+                {t('k_9600c91810')}
+              </Button>
             )}
-            {models.length > 0 && !filteredBizModels.length && !filteredSourceModels.length
-              && !filteredSysModels.length && !filteredLegacyModels.length && (
-              <div className="text-xs text-muted-foreground py-3 text-center">{t('k_ab2ff2ce5f', { p0: modelKw })}</div>
+            {running && (
+              <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
+                {t('k_d926e2f58e')}
+              </Button>
             )}
-            <ModelGroup
-              title={t("k_d381fb12f2")} list={filteredBizModels}
-              selectedId={selectedId} onPick={loadModel}
-            />
-            <ModelGroup
-              title={t("k_f5db121235")} list={filteredSourceModels}
-              selectedId={selectedId} onPick={loadModel}
-            />
-            <ModelGroup
-              title={t("k_f6b932be1d")} list={filteredSysModels}
-              selectedId={selectedId} onPick={loadModel}
-            />
-            <ModelGroup
-              title={t("k_b28f13ea3e")} list={filteredLegacyModels}
-              selectedId={selectedId} onPick={loadModel}
-            />
-
-            {/* 建模待办：已抽为独立页（不属于某个模型的全局缺口），本页只留入口与计数 */}
-            <button
-              onClick={() => navigate('/data/asset-pool')}
-              className="w-full text-left rounded-lg border border-dashed px-3 py-2 text-sm transition-colors hover:bg-muted/50"
-            >
-              <div className="flex items-center gap-2">
-                <Inbox className="h-4 w-4 text-amber-500" />
-                {t('k_0f31c91cb2')}
-                {poolTotal > 0 && (
-                  <Badge variant="outline" className="ml-auto text-amber-500 border-amber-500/40">{t('k_397dbb2060', { p0: poolTotal })}</Badge>
-                )}
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">{t("k_4cd3a552c0")}</div>
-            </button>
-          </CardContent>
-        </Card>
-
-        {/* 右主区：模型工作区（生效版/草案 双视图 + 变更对比） */}
-        <Card className="xl:col-span-3">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <CardTitle className="text-sm flex items-center gap-2 flex-wrap">
-                {model ? model.name : t('k_4fa8c1a36b')}
-                {model && (
-                  <Badge variant="outline" className={`text-[10px] font-normal ${STATUS_META[model.status]?.cls}`}>
-                    {STATUS_META[model.status]?.label}
-                  </Badge>
-                )}
-                {model && viewMode === 'draft' && (
-                  <Badge variant="outline" className="text-[10px] font-normal border-amber-500/40 text-amber-600">
-                    {t('k_ce96c43684')}
-                  </Badge>
-                )}
-                {saving && <span className="text-xs text-muted-foreground">{t("k_8dd685ca90")}</span>}
-              </CardTitle>
-              {model && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  {/* 视图切换：生效版（线上只读）↔ 草案（可编辑）。
-                      这就是“有存草案按钮却没有编辑草案的地方”的答案：草案本身就是工作区的一个视图。 */}
-                  <div className="inline-flex items-center rounded-md border border-border bg-muted/40 p-0.5">
-                    <button
-                      onClick={() => switchView('live')}
-                      title={t("k_2f0436bcbf")}
-                      className={`h-7 rounded px-2.5 text-xs transition-colors ${
-                        viewMode === 'live' ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
-                    >
-                      {t('k_3a49375c2d', { p0: draftStatus?.effective_object_count ?? objects.length })}
-                    </button>
-                    <button
-                      onClick={() => switchView('draft')}
-                      disabled={!draftPending}
-                      title={draftPending
-                        ? t('k_85f0dcdf2c', { p0: draftStatus?.draft_object_count, p1: draftStatus?.draft_updated_by || t('k_1622dc9b6b'), p2: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—' }) + t('k_3ea200ef76')
-                        : t('k_30257fb09d')}
-                      className={`h-7 rounded px-2.5 text-xs inline-flex items-center gap-1 transition-colors ${
-                        !draftPending ? 'text-muted-foreground/50 cursor-not-allowed'
-                          : viewMode === 'draft' ? 'bg-amber-500/15 text-amber-700 shadow-sm font-medium'
-                            : 'text-amber-600 hover:bg-amber-500/10'}`}
-                    >
-                      {t('k_2b37a18790', { p0: draftStatus?.draft_object_count ?? 0 })}
-                      {pendingChangeCount > 0 && (
-                        <Badge variant="outline" className="text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
-                          {pendingChangeCount}
-                        </Badge>
-                      )}
-                    </button>
-                  </div>
-                  {(model.datasource_id || 0) > 0 && (
-                    /* v0.5: 业务本体默认同步系统知识库，不再手动选库 */
-                    <Badge variant="outline" className="h-8 px-3 text-muted-foreground">
-                      {t('k_36e30e1540')}
-                    </Badge>
-                  )}
-                  <span title={t("k_4af21def1e")}>
-                    <SyncBadges modelId={model.id} kind={model.kind} />
-                  </span>
-                  <Button size="sm" variant="outline" onClick={handleOpenVersions}>
-                    <History className="h-3.5 w-3.5 mr-1" />
-                    {t('k_fe86275d4d')}
-                  </Button>
-                  {/* 发布 = 两段式第二段：按 ontology:publish 显隐（无码不渲染，不给死开关）；
-                      可用性由服务端草案状态裁决，AS-BOT 写的草案同样可发 */}
-                  {draftPending && editable && hasPerm('ontology:publish') && (
-                    <Button size="sm" variant="default" onClick={handlePublish}
-                      disabled={publishing || !!draftStatus?.base_stale || !!draftStatus?.draft_parse_error}
-                      title={draftStatus?.base_stale
-                        ? t('k_107765e1d2')
-                        : draftStatus?.draft_parse_error
-                          ? t('k_374f7b7caf')
-                          : t('k_a7711f40b9', { p0: draftSummary || t('k_3f445de47a') })}
-                    >
-                      {publishing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-                      {t('k_d4768779cc', { p0: pendingChangeCount })}
-                    </Button>
-                  )}
-                  {(model.status === 'draft' || model.status === 'archived') && (
-                    <Button size="sm" variant="default" onClick={() => setActivateOpen(true)}>
-                      <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-                      {t('k_4366cd37a7')}
-                    </Button>
-                  )}
-                  {model.status === 'archived' && (
-                    <Button size="sm" variant="outline" onClick={handleRestore}>
-                      <Undo2 className="h-3.5 w-3.5 mr-1" />
-                      {t('k_3c01021917')}
-                    </Button>
-                  )}
-                  {model.status === 'active' && (
-                    <Button size="sm" variant="outline" onClick={handleArchive}>
-                      <Archive className="h-3.5 w-3.5 mr-1" />
-                      {t('k_2f51c18f49')}
-                    </Button>
-                  )}
-                  {model.status !== 'active' && (
-                    <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600" onClick={handleDelete}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-            {/* 草案条：当前看的是哪一份 + 待发布内容概要 + 下一步动作（一屏内闭环） */}
-            {model && draftPending && (
-              <div className={`mt-2 flex items-start gap-2 rounded-md border px-3 py-2 text-xs ${
-                viewMode === 'draft' ? 'border-amber-500/40 bg-amber-500/10' : 'border-amber-500/30 bg-amber-500/5'}`}>
-                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-amber-600" />
-                <div className="min-w-0 space-y-0.5">
-                  <div className="font-medium text-amber-700">
-                    {viewMode === 'draft'
-                      ? t('k_f35f5fb7ff', { p0: draftStatus?.draft_object_count })
-                      : t('k_ccc18bda24', { p0: pendingChangeCount, p1: draftStatus?.effective_object_count, p2: draftStatus?.draft_object_count })}
-                  </div>
-                  <div className="text-muted-foreground">
-                    {draftSummary || t('k_f576516de9')}
-                    {' · '}{t('k_08445af37d', { p0: draftStatus?.draft_updated_by || t('k_1622dc9b6b'), p1: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—' })}
-                    {draftStatus?.base_stale && (
-                      <span className="ml-1 text-red-600">{t("k_8b2f6ff8c9")}</span>
-                    )}
-                  </div>
-                  {viewMode === 'live' && (
-                    <div className="text-muted-foreground">
-                      {t('k_c2e9e0351c')}
-                    </div>
-                  )}
-                </div>
-                <div className="ml-auto flex items-center gap-2 shrink-0">
-                  <Button size="sm" variant="outline" className="h-7 text-xs"
-                    onClick={() => { setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }}>
-                    <GitCompare className="h-3 w-3 mr-1" />{t('k_8d535108e6')}
-                  </Button>
-                  {viewMode === 'live' ? (
-                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
-                      <Eye className="h-3 w-3 mr-1" />{t('k_983646f300')}
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('live')}>
-                      {t('k_a2fe5d62d8')}
-                    </Button>
-                  )}
-                </div>
-              </div>
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
+              <Upload className="h-3.5 w-3.5 mr-1" />{t('k_2916bd30b8')}
+            </Button>
+            <Button size="sm" variant="outline" className="h-8" onClick={() => loadModels()}>
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+            <div className="flex-1" />
+            {model && (model.datasource_id || 0) > 0 && (
+              <Badge variant="outline" className="h-8 px-3 text-muted-foreground">{t('k_36e30e1540')}</Badge>
             )}
             {model && (
-              <div className="text-xs text-muted-foreground mt-2">
-                {viewMode === 'draft'
-                  ? t('k_4385768c31')
-                  : model.status === 'archived'
-                    ? t('k_256ef3f80b')
-                    : draftPending
-                      ? t('k_4652cc5256')
-                      : t('k_1dc730d887')}
-              </div>
+              <span title={t('k_4af21def1e')}>
+                <SyncBadges modelId={model.id} kind={model.kind} />
+              </span>
             )}
-          </CardHeader>
-          <CardContent>
-            {!model ? (
-              <div className="text-sm text-muted-foreground py-12 text-center">
-                {t('k_774903319b')}
-              </div>
-            ) : (
-              <Tabs key={model.id} value={tab} onValueChange={setTab}>
-                <TabsList>
-                  <TabsTrigger value="hub">{t("k_27424f442a")}</TabsTrigger>
-                  {draftPending && (
-                    <TabsTrigger value="changes">
-                      {t('k_8d535108e6')}
-                      <Badge variant="outline" className="ml-1 text-[10px] px-1 h-4 border-amber-500/40 text-amber-600">
-                        {pendingChangeCount}
-                      </Badge>
-                    </TabsTrigger>
-                  )}
-                  <TabsTrigger value="terms">{t("k_779b13e3d9")}</TabsTrigger>
-                  <TabsTrigger value="tags">{t("k_ae0a7afece")}</TabsTrigger>
-                  {showsM234(model.kind) && <TabsTrigger value="m234">{t("k_c09395949f")}</TabsTrigger>}
-                  {showsM234(model.kind) && <TabsTrigger value="rules">{t("k_ed904c685a")}</TabsTrigger>}
-                  {showsM234(model.kind) && <TabsTrigger value="scenarios">{t("k_625b392c7b")}</TabsTrigger>}
-                  {showsSiteScope(model.kind) && <TabsTrigger value="sites">{t("k_c308156eae")}</TabsTrigger>}
-                </TabsList>
-                {hiddenM234 && (
-                  <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-600">
-                    <AlertTriangle className="h-3 w-3 mr-1 inline" />
-                    {t('k_9a994413e8', { p0: model.kind === 'source' ? t('k_51ff5d00ed') : t('k_581cece70a'), p1: m234Declared })}
-                  </div>
-                )}
-                <TabsContent value="hub" className="mt-2 h-[62vh] overflow-hidden">
-                  <div className="flex items-center gap-2 mb-2">
-                    {canEditDoc && (
-                      <ObjectCreateButton jsonContent={activeJson} onSave={saveDocFromTab}
-                        modelKind={model.kind} />
-                    )}
-                    {liveLocked && editable && (
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => void switchView('draft')}>
-                        <Pencil className="h-3 w-3 mr-1" />{t('k_417166e66b')}
-                      </Button>
-                    )}
-                    {viewMode === 'draft' && (
-                      <span className="text-[11px] text-muted-foreground">
-                        {t('k_3a1c86f9b5')}
-                      </span>
-                    )}
-                  </div>
-                  <div className="h-[calc(62vh-2.5rem)] overflow-auto">
-                    <ObjectHubTab modelId={model.id} objects={hubObjects} issues={objectIssues}
-                      jsonContent={activeJson} onSave={saveDocFromTab}
-                      canEdit={canEditDoc} viewMode={viewMode} draftStates={draftStates}
-                      draftHint={draftHint} modelKind={model.kind} />
-                  </div>
-                </TabsContent>
-                {draftPending && (
-                  <TabsContent value="changes" className="mt-2">
-                    <ModelDraftReview modelId={model.id} draft={draftStatus}
-                      canPublish={editable && hasPerm('ontology:publish')}
-                      canEdit={editable && hasPerm('ontology:save')}
-                      publishing={publishing}
-                      onPublish={handlePublish}
-                      onDiscard={handleDiscarded}
-                      onEditInDraft={() => void switchView('draft')} />
-                  </TabsContent>
-                )}
-                <TabsContent value="terms" className="mt-2 h-[62vh] overflow-auto">
-                  <Glossary embedded datasourceId={model.datasource_id}
-                    tables={hubObjects.map((o: any) => String(o.primary_table || '').toLowerCase()).filter(Boolean)} />
-                </TabsContent>
-                <TabsContent value="tags" className="mt-2 h-[62vh] overflow-auto">
-                  <ObjectTagsTab objects={hubObjects as any} />
-                </TabsContent>
-                {showsM234(model.kind) && (
-                  <TabsContent value="m234" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelActionsTab jsonContent={activeJson} onSave={saveDocFromTab} />
-                  </TabsContent>
-                )}
-                {showsM234(model.kind) && (
-                  <TabsContent value="rules" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelRulesTab jsonContent={activeJson} onSave={saveDocFromTab} />
-                  </TabsContent>
-                )}
-                {showsM234(model.kind) && (
-                  <TabsContent value="scenarios" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelScenariosTab jsonContent={activeJson} onSave={saveDocFromTab} />
-                  </TabsContent>
-                )}
-                {showsSiteScope(model.kind) && (
-                  <TabsContent value="sites" className="mt-2 h-[62vh] overflow-hidden">
-                    <ModelSitesTab modelId={model.id} readonly={!editable} />
-                  </TabsContent>
-                )}
-              </Tabs>
+          </>
+        )}
+        actions={model ? (
+          <>
+            <Button size="sm" variant="outline" className="h-8" onClick={handleOpenVersions}>
+              <History className="h-3.5 w-3.5 mr-1" />{t('k_fe86275d4d')}
+            </Button>
+            {(model.status === 'draft' || model.status === 'archived') && (
+              <Button size="sm" className="h-8" onClick={() => setActivateOpen(true)}>
+                <CheckCircle2 className="h-3.5 w-3.5 mr-1" />{t('k_4366cd37a7')}
+              </Button>
             )}
-          </CardContent>
-        </Card>
-      </div>
+            {model.status === 'archived' && (
+              <Button size="sm" variant="outline" className="h-8" onClick={handleRestore}>
+                <Undo2 className="h-3.5 w-3.5 mr-1" />{t('k_3c01021917')}
+              </Button>
+            )}
+            {model.status === 'active' && (
+              <Button size="sm" variant="outline" className="h-8" onClick={handleArchive}>
+                <Archive className="h-3.5 w-3.5 mr-1" />{t('k_2f51c18f49')}
+              </Button>
+            )}
+            {model.status !== 'active' && (
+              <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleDelete}
+                title={t('k_2f51c18f49')}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </>
+        ) : undefined}
+        railSections={railSections}
+        nav={activeTab}
+        onNav={handleNav}
+        canvasHead={canvasHead}
+        tray={tray}
+      >
+        {canvas}
+      </OntologyWorkbench>
+
+      <CanonicalDocPanel open={docOpen} onOpenChange={setDocOpen} modelId={model?.id} modelName={model?.name}
+        modelKind={model?.kind} datasourceId={model?.datasource_id ?? undefined}
+        liveVersion={liveDocVersion} draftCount={draftPending ? pendingChangeCount : 0}
+        objectOptions={docObjectOptions}
+        onOpenGraph={() => { setDocOpen(false); setTab('graph'); }}
+        onOpenDraft={() => { setDocOpen(false); setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }} />
 
       {/* 导入 YAML 弹窗 */}
       <Dialog open={yamlOpen} onOpenChange={setYamlOpen}>

@@ -10,7 +10,11 @@ vi.mock('@/api/client', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('@/api/metrics', () => ({
-  metricsApi: { assetPool: vi.fn(async () => ({ data: { counts: { total: 0 } } })) },
+  metricsApi: {
+    assetPool: vi.fn(async () => ({ data: { counts: { total: 0 } } })),
+    // 待办面板挂载即拉词表（对象/聚合/分类候选）；缺失会让面板进“选择框可能为空”分支
+    filters: vi.fn(async () => ({ data: { objects: [], metrics: { agg_types: [] }, dimensions: { categories: [] } } })),
+  },
 }));
 
 /**
@@ -26,7 +30,7 @@ vi.mock('@/api/metrics', () => ({
  *    JSON 只作折叠附录（旧「查看草案」弹窗不得复活）；
  * 4. 发布/丢弃都由服务端草案状态驱动，动作后重拉真值（不出现点了没反应、标记还在）；
  * 5. 无 ontology:publish 权限不渲染发布入口（不给死开关）；基线失效/草案损坏必须禁用并说明；
- * 6. 建模待办已抽为独立页，本页只留跳转入口。
+ * 6. 建模待办是**页内页签**（左栏「跨模型」分区），点击只切画布、不跳独立路由。
  */
 
 const EFF_DOC = {
@@ -167,7 +171,7 @@ function renderPage() {
     <MemoryRouter initialEntries={['/data/ontology']}>
       <Routes>
         <Route path="/data/ontology" element={<OntologyModeling />} />
-        <Route path="/data/asset-pool" element={<div>建模待办工作台</div>} />
+        <Route path="/data/asset-pool" element={<div>建模待办工作台（已下线）</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -229,19 +233,21 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
 
     // 可视化对象清单（不是 JSON）：草案独有的业务对象带「新增」状态徽标
     expect(screen.getByText('此处显示的是草案内容：新建/编辑只写草案，不会改动线上生效版；核对后到「变更对比」点发布才级联。')).toBeTruthy();
-    const addedRow = await screen.findByRole('button', { name: /集成记录/ });
+    // 徽标在表格「草案」列（2026-11-19 画布换成对象表格），所以按行断言而不是按名称按钮
+    const rowOf = (el: HTMLElement) => el.closest('tr') as HTMLElement;
+    const addedRow = rowOf(await screen.findByRole('button', { name: /集成记录/ }));
     expect(within(addedRow).getByText('新增')).toBeTruthy();
     expect(within(addedRow).getByText('isv_integration')).toBeTruthy();
     // 草案里改过的对象带「修改」状态
-    expect(within(screen.getByRole('button', { name: /案例/ })).getByText('修改')).toBeTruthy();
+    expect(within(rowOf(screen.getByRole('button', { name: /案例/ }))).getByText('修改')).toBeTruthy();
 
     // 在草案上新建对象 → 提交正文必须仍是草案（含 AS-BOT 写的 isv_integration）
     await userEvent.click(screen.getByRole('button', { name: /新建对象/ }));
-    const dlg = await screen.findByRole('dialog');
-    const boxes = within(dlg).getAllByRole('textbox');
-    await userEvent.type(boxes[0], 'isv_token');      // 对象 key
-    await userEvent.type(within(dlg).getByPlaceholderText('如：订单明细'), '密钥记录');
-    await userEvent.click(within(dlg).getByRole('button', { name: '创建' }));
+    // 就地新建：画布顶部展开内联行，不再有居中对话框（2026-11-19 拍板）
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.type(screen.getByPlaceholderText('对象 key（唯一标识，不可改）'), 'isv_token');
+    await userEvent.type(screen.getByPlaceholderText('如：订单明细'), '密钥记录');
+    await userEvent.click(screen.getByRole('button', { name: '保存为草案' }));
 
     await waitFor(() => expect(vi.mocked(client.put)).toHaveBeenCalled());
     const call = vi.mocked(client.put).mock.calls.find(([u]) => u === '/catalog/ontology/models/901/draft');
@@ -309,7 +315,7 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.queryByText('待发布')).toBeNull();
     // 发布后视图回生效版：工单/属性不再带草案状态徽标（状态区分只属于未发布内容）
     expect(screen.queryByText('草案视图·未生效')).toBeNull();
-    expect(within(screen.getByRole('button', { name: /集成记录/ })).queryByText('新增')).toBeNull();
+    expect(within(screen.getByRole('button', { name: /集成记录/ }).closest('tr') as HTMLElement).queryByText('新增')).toBeNull();
   });
 
   it('无 ontology:publish 权限 → 两个发布入口都不渲染（不给按下去必拒的死开关）', async () => {
@@ -358,12 +364,13 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.getByRole('button', { name: /新建对象/ })).toBeTruthy();
   });
 
-  it('建模待办已抽为独立页：本页只留入口，点击跳 /data/asset-pool', async () => {
+  it('建模待办在建模页内实现：点左侧入口只切画布，不跳 /data/asset-pool（外部菜单已下线）', async () => {
     renderPage();
-    const entry = await screen.findByRole('button', { name: /建模待办（未归属资产）/ });
+    // 未选模型也必须可达（跨模型清单），所以入口是 tab 而不是 link
+    const entry = await screen.findByRole('tab', { name: /建模待办（未归属资产）/ });
     await userEvent.click(entry);
-    expect(await screen.findByText('建模待办工作台')).toBeTruthy();
-    // 旧的「未归属资产池」内嵌视图不得残留
-    expect(screen.queryByText('联耀业务本体')).toBeNull();
+    // 画布就地渲染待办面板（mock 的资产池为空 → 显空态），路由页未被跳转
+    expect(await screen.findByText('语义层没有待办缺口')).toBeTruthy();
+    expect(screen.queryByText('建模待办工作台（已下线）')).toBeNull();
   });
 });

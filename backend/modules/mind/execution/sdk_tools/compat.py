@@ -169,8 +169,14 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
         ctx = get_execution_context()
         runtime = ctx.extra.get("secure_runtime")
         current = asyncio.current_task()
-        if runtime is not None:
+        if runtime is not None and current is not None:
             runtime.tool_tasks.add(current)
+            # 任务名只为“终止回合”时能点名（secure_sdk._cancel_inflight_tools 的日志/span），
+            # 不给工具行任何能力；SDK 侧任务名无消费方。
+            try:
+                current.set_name(f"mcp-tool:{qualified_name}")
+            except Exception:  # noqa: BLE001 — 取名失败不得影响工具调用
+                pass
         try:
             await run_owned_sync(check_tool, ctx, qualified_name)
             from backend.modules.mind.execution.resource_guard import validate_tool_resources
@@ -239,7 +245,7 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
                 "工具执行未完成：服务端内部异常（不是权限/授权拒绝）。真实错误已记录在服务端日志，"
                 "请勿向用户猜测原因，也不要让用户去改权限，先让管理员按日志核对处理。")}]}
         finally:
-            if runtime is not None:
+            if runtime is not None and current is not None:
                 runtime.tool_tasks.discard(current)
 
     sdk = load_sdk(backend)

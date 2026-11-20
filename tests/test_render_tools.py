@@ -689,30 +689,6 @@ def test_as_bot_tool_catalog_lists_render_group():
             assert name in _TOOL_LABELS, f"工具 {name} 未登记中文标签（编辑器里显示成裸英文像不可选项）"
 
 
-def test_migration_scripts_stay_in_sync_with_registered_tools():
-    """授权脚本与权威清单必须同源：漏更新会让新工具静默不下发（历史同类坑）。"""
-    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
-    from backend.scripts import migrate_render_tool_group as mig
-    assert mig.RENDER_TOOLS == TOOL_SERVER_TOOLS["render"][1]
-
-
-def test_migration_merge_does_not_mutate_its_input():
-    """幂等判定必须在副本上做：原地改入参会让“待改 vs 原值”永远相等 → 新工具静默不下发。
-
-    这个坑在本批接入 render_chart 时真撞过一次（dry-run 报“无需变更”，而库里只有
-    render_html）：只数 affected rows 根发现不了。
-    """
-    from backend.scripts import migrate_render_tool_group as mig
-    tools = {"mcp": {"render": ["render_html"], "semantic": ["get_metrics"]}, "groups": ["render"]}
-    before = json.dumps(tools, sort_keys=True)
-    merged = mig._merge(tools)
-    assert json.dumps(tools, sort_keys=True) == before, "入参不得被改动"
-    assert "render_chart" in merged["mcp"]["render"]
-    assert merged["mcp"]["semantic"] == ["get_metrics"], "只动本批拥有的组，其他组原样保留"
-    # 已是最新则原样返回（二次重跑不产生 UPDATE）
-    assert mig._merge(merged) == merged
-
-
 # ── 交付契约注入门控（没授权就不能向模型承诺这条通道存在）──────────────────
 
 def _compose(cap_names):

@@ -160,7 +160,12 @@ def test_multi_skill_turn_residents_no_body_at_all():
     loaded, reasons, _missing = pc._select_skill_bodies(
         skills, _caps([SEM, GUIDE]), "转化趋势怎么样", progressive=True)
     assert loaded == [], "正文常驻提示词 = 每回合为可能不发生的任务付费"
-    assert "首次调用该域工具时随结果自动附带" in reasons["data-analysis"]
+    # 主通道是"动手前先取回"，措辞必须是命令式：旧文案写"也可以先调"，实测三轮重问
+    # + 纠正轮模型一次都没调用（会话 1783069459335/336/337/340），等于没有口径。
+    assert "必须先调" in reasons["data-analysis"], "动手前取回细则要写成命令式，不是可选项"
+    assert 'load_skill_guide("data-analysis")' in reasons["data-analysis"], "必须点名该取哪一份"
+    assert "也可以" not in reasons["data-analysis"], "不得留可选式措辞（会被模型读成不必做）"
+    assert "随结果补发" in reasons["data-analysis"], "事后核对那份的来处也要说清，不能只字不提"
     assert "命中 2 个触发词" in reasons["data-analysis"], "命中信息要留着当相关性提示"
     assert "未命中" in reasons["arms-observability"], "零命中与命中了必须写成两句话（历史误诊点）"
     assert 'load_skill_guide("data-analysis")' in reasons["data-analysis"], "主动取回入口要写明"
@@ -253,7 +258,10 @@ def test_prompt_carries_no_body_and_points_at_the_boundary():
     text, state = _compose(_caps([SEM, GUIDE]), skills, "各渠道转化怎么样")
     assert "剧本AAA" not in text and "剧本BBB" not in text, "两份正文一份都不许进提示词"
     assert "技能详细指引" not in text, "没有常驻正文就没有该小节"
-    assert "随结果自动附带" in text, "模型要能在动手前知道细则会从哪来"
+    assert "必须先调" in text, "模型要能在动手前知道要先取回细则（不是等附带）"
+    assert "技能作业细则（收尾复述，动手前生效）" in text, \
+        "命令式要求必须落在尾部：中部会被后面的通用规则与工具权限段压过（本平台实测失效模式）"
+    assert "不代替动手前取口径" in text, "附带那份的定位要写清，否则模型会以为不必取"
     assert "数据分析" in text and "可观测分析" in text, "名称+契约仍常驻可见"
     assert state["loaded"] == [] and state["progressive"] is True
 

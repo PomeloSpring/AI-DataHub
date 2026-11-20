@@ -1,7 +1,9 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ontologyApi } from '@/api/ontology';
+import { metricsApi } from '@/api/metrics';
 import ObjectHubTab from '../ObjectHubTab';
 
 vi.mock('@/api/ontology', () => ({
@@ -11,6 +13,14 @@ vi.mock('@/api/ontology', () => ({
     list: vi.fn(), get: vi.fn(),
     // 「编辑对象 → 属性列映射」的实存列候选
     objectColumns: vi.fn(),
+  },
+}));
+
+// 「引用」页签在本页内直接展示/编辑该对象的口径（不再只给一个跳转按钮）
+vi.mock('@/api/metrics', () => ({
+  metricsApi: {
+    list: vi.fn(), filters: vi.fn(), listAllDimensions: vi.fn(),
+    create: vi.fn(), update: vi.fn(), createDimension: vi.fn(), updateDimension: vi.fn(),
   },
 }));
 
@@ -24,6 +34,13 @@ beforeEach(() => {
   vi.mocked(ontologyApi.objectColumns).mockReset();
   vi.mocked(ontologyApi.objectColumns).mockResolvedValue(
     { data: { object_key: '', table: '', bind_kind: 'primary', dataset_ref: '', columns: [], note: '' } } as any);
+  // 「引用」页签：默认两段都空（具体用例自行 mock）
+  vi.mocked(metricsApi.list).mockReset();
+  vi.mocked(metricsApi.list).mockResolvedValue({ data: { total: 0, items: [] } } as any);
+  vi.mocked(metricsApi.listAllDimensions).mockReset();
+  vi.mocked(metricsApi.listAllDimensions).mockResolvedValue({ data: { total: 0, items: [] } } as any);
+  vi.mocked(metricsApi.filters).mockReset();
+  vi.mocked(metricsApi.filters).mockResolvedValue({ data: { metrics: { categories: [], tags: [] }, objects: [] } } as any);
 });
 
 /**
@@ -63,7 +80,7 @@ describe('ObjectHubTab — 对象清单渲染不因字段形状崩溃', () => {
       />,
     );
     expect(screen.getByText(/1 个对象定义无法展示/)).toBeTruthy();
-    expect(screen.getByText('该模型的对象定义均缺少 key，无法展示（见左侧提示）')).toBeTruthy();
+    expect(screen.getByText('该模型的对象定义均缺少 key，无法展示（见上方提示）')).toBeTruthy();
     expect(screen.getByText('对象（0）')).toBeTruthy();
   });
 
@@ -75,6 +92,50 @@ describe('ObjectHubTab — 对象清单渲染不因字段形状崩溃', () => {
       />,
     );
     expect(screen.getByText(/1 条 Link 目标不在本模型/)).toBeTruthy();
+  });
+});
+
+describe('ObjectHubTab — 「指标」/「维度」两个页签就地展示与编辑', () => {
+  beforeEach(() => {
+    vi.mocked(metricsApi.list).mockResolvedValue({
+      data: { total: 1, items: [{
+        id: 9, name: '事件总数', display_name: '事件总数', calculation_type: 'COUNT',
+        bound_object_key: 'rum_event', is_active: 1,
+      }] },
+    } as any);
+    vi.mocked(metricsApi.listAllDimensions).mockResolvedValue({
+      data: { total: 1, items: [{
+        id: 3, name: '事件类型', category: '属性', bound_object_key: 'rum_event',
+        target_table: 'rum_event', target_column: 'type', is_active: 1,
+      }] },
+    } as any);
+  });
+
+  const renderHub = () => render(<MemoryRouter><ObjectHubTab modelId={7} canEdit
+    objects={[{ key: 'rum_event', display_name: '前端事件' } as any]} /></MemoryRouter>);
+
+  it('指标/维度分别是独立页签：切到哪个才拉哪一段，不再堆在一列', async () => {
+    renderHub();
+    expect(screen.getByRole('button', { name: '指标' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '维度' })).toBeTruthy();
+    // 旧「引用」页签已拆掉
+    expect(screen.queryByRole('button', { name: '引用' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: '指标' }));
+    expect(await screen.findByText('事件总数')).toBeTruthy();
+    // 归属对象过滤下推 SQL（不拉全量再本地筛），且不白拉维度
+    expect(vi.mocked(metricsApi.list)).toHaveBeenCalledWith(
+      expect.objectContaining({ bound_object_key: 'rum_event' }));
+    expect(vi.mocked(metricsApi.listAllDimensions)).not.toHaveBeenCalled();
+    expect(screen.queryByText('事件类型')).toBeNull();
+    // 就地编辑入口（不再只给一个跳去指标中心的按钮）
+    expect(screen.getByRole('button', { name: '编辑指标 事件总数' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: '维度' }));
+    expect(await screen.findByText('事件类型')).toBeTruthy();
+    expect(vi.mocked(metricsApi.listAllDimensions)).toHaveBeenCalledWith(
+      expect.objectContaining({ bound_object_key: 'rum_event', is_active: 'all' }));
+    expect(screen.getByRole('button', { name: '编辑维度 事件类型' })).toBeTruthy();
   });
 });
 
@@ -143,6 +204,27 @@ describe('ObjectHubTab — 绑定徽标读部署绑定层（不拿 doc 字段误
     expect(screen.queryByText('未绑定物理表')).toBeNull();
     // 明细行用业务名（数据源名）展示，不要求手输/裸显 id
     expect(screen.getByText(/logstore-rum/).textContent).toContain('arms-prd-cn');
+  });
+
+  it('系统本体内置对象给「平台内置」，不误报未绑定物理表（含无物理表的纯概念对象）', async () => {
+    vi.mocked(ontologyApi.sites).mockResolvedValue({
+      data: { kind: 'system', sites: [], selected: [], contract_objects: [
+        { object_key: 'role', object_name: '角色', datasource: '', physical_table: 'adh_roles',
+          bind_kind: 'platform', column_count: 6, sync_state: '', product_ref: '',
+          allowed_sites: [], binding_source: 'platform' },
+        { object_key: 'skill', object_name: '技能 (Skill)', datasource: '', physical_table: '',
+          bind_kind: 'platform', column_count: 0, sync_state: '', product_ref: '',
+          allowed_sites: [], binding_source: 'platform' },
+      ] },
+    } as any);
+    render(<ObjectHubTab modelId={9} modelKind="system" objects={[
+      { key: 'role', display_name: '角色' } as any,
+      { key: 'skill', display_name: '技能 (Skill)' } as any,
+    ]} />);
+    // 两个对象都是「平台内置」（含没有物理表的 skill），不得退化成业务绑定徽标
+    await waitFor(() => expect(screen.getAllByText('平台内置').length).toBe(2));
+    expect(screen.queryByText('未绑定物理表')).toBeNull();
+    expect(screen.queryByText('bound')).toBeNull();
   });
 
   it('契约行缺失时显式给可诊断告警（含修复入口提示）', async () => {
@@ -289,13 +371,14 @@ describe('ObjectHubTab — 属性列漂移显式暴露', () => {
     } as any);
     render(<ObjectHubTab modelId={7} objects={hub} modelKind="business" />);
     expect(await screen.findByText('列待修1')).toBeTruthy();
-    expect(screen.getByText('列不存在')).toBeTruthy();
+    // 概览先给漂移归因 + 页面真能做的修复出口；属性行逐行徽标在「属性」页签
     expect(screen.getByText(/1 个属性列不在该表实存列里/)).toBeTruthy();
-    // 列不存在的引导必须落在页面真能做的动作上（改选实存列 / 取消绑定）
     expect(screen.getByText(/改选实存列/)).toBeTruthy();
     expect(screen.queryByText(/同步这张表的字段/)).toBeNull();
     // 徽标不能只说"bound"就完事：漂移状态要一起看得见
     expect(screen.getByText(/状态：形状漂移/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '属性' }));
+    expect(screen.getByText('列不存在')).toBeTruthy();
   });
 
   it('列元数据未同步时按「未核验」出声，不谎称列不存在', async () => {
@@ -311,13 +394,14 @@ describe('ObjectHubTab — 属性列漂移显式暴露', () => {
       },
     } as any);
     render(<ObjectHubTab modelId={7} objects={hub} modelKind="business" />);
-    expect(await screen.findByText('未核验')).toBeTruthy();
-    expect(screen.queryByText('列不存在')).toBeNull();
+    expect(await screen.findByText('列待同步1')).toBeTruthy();
     // 全量 unverified 时不得叫「列待修」：改了列名也没依据，引导必须指向同步元数据
     expect(screen.queryByText(/^列待修/)).toBeNull();
-    expect(screen.getByText('列待同步1')).toBeTruthy();
     expect(screen.getByText(/同步这张表的字段/)).toBeTruthy();
     expect(screen.queryByText(/改选实存列/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '属性' }));
+    expect(screen.getByText('未核验')).toBeTruthy();
+    expect(screen.queryByText('列不存在')).toBeNull();
   });
 
   it('列不存在与未核验混在一起时分开计数、分开引导', async () => {

@@ -14,6 +14,7 @@
 ④ _preflight_inputs 对身份/空间/AS-BOT 不匹配一律拒绝复用（退回全量解析）。
 """
 import asyncio
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -384,3 +385,121 @@ def test_normal_skip_reasons_are_not_errors(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR):
         ss._persist_turn_fallback({"conversation_id": 1, "user_id": 7, "message": {}})
     assert "兜底落库未完成" not in caplog.text
+
+
+# ── ⑥ 终止会话 = 同时终止进行中的任务（用户拍板 2026-11-20）──────────────
+# 历史实现收尾用无超时的 `gather(*runtime.tool_tasks)`：用户点停止/关闭后执行权要绑到
+# 工具自己返回（实测 8s，卡住的取数/建屏工具 40s+），前端只能轮询 /send/status 干等。
+# 契约：断连/超时/失败的回合，先给执行层发 interrupt（停本轮），再 cancel 在途工具任务；
+# 正成功的回合不发 interrupt。宽限内没停的工具任务显式记账（日志 + span），不静默。
+
+class _AbortSpyClient(_FakeClient):
+    """记录 interrupt / disconnect 的调用顺序：先中止本回合再拆连接才算“终止”。"""
+
+    def __init__(self, events, spy):
+        super().__init__(events, spy)
+        self.order = []
+
+    async def interrupt(self):
+        self.order.append("interrupt")
+
+    async def disconnect(self):
+        self.order.append("disconnect")
+        await super().disconnect()
+
+
+def _quiet_teardown(monkeypatch):
+    """产物上云走真实会话目录/对象存储，单测不碰：换成 no-op，只保留收尾时序。"""
+    monkeypatch.setattr(secure_sdk, "_sync_turn_files", lambda runtime, user_id: None)
+
+
+def test_abort_interrupts_turn_and_cancels_inflight_tool(monkeypatch):
+    """用户点停止（断流）：先 interrupt 停本轮 → cancel 在途工具任务 → 再断连。"""
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    client = _AbortSpyClient([streamed_assistant("半段"), ResultMessage()], spy)
+    _patch_startup(monkeypatch, runtime, [], spy, client_factory=lambda options=None: client)
+    _quiet_teardown(monkeypatch)
+    holder = {}
+
+    async def scenario():
+        async def _slow_tool():
+            await asyncio.sleep(30)
+        task = asyncio.create_task(_slow_tool(), name="mcp-tool:create_data_screen")
+        runtime.tool_tasks.add(task)
+        holder["task"] = task
+        stream = secure_sdk._execute_stream(_make_adapter(), _make_task(), "qoder")
+        it = stream.__aiter__()
+        await it.__anext__()          # capabilities
+        await it.__anext__()          # token
+        await stream.aclose()         # 客户端断开 = 用户点停止
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+
+    asyncio.run(scenario())
+    assert holder["task"].cancelled(), "在途工具任务必须被取消，不能等它自己跑满 30s"
+    assert client.order == ["interrupt", "disconnect"], "必须先中止本回合再拆连接"
+    assert runtime.finished is True
+
+
+def test_successful_turn_does_not_interrupt(monkeypatch):
+    """正常完成的回合已收口：不得再给执行层补发中止指令。"""
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    client = _AbortSpyClient([AssistantMessage("答案正文"), ResultMessage()], spy)
+    _patch_startup(monkeypatch, runtime, [], spy, client_factory=lambda options=None: client)
+    _quiet_teardown(monkeypatch)
+    events = []
+
+    async def scenario():
+        stream = secure_sdk._execute_stream(_make_adapter(), _make_task(), "qoder")
+        await _drain(stream, events)
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+
+    asyncio.run(scenario())
+    assert events[-1]["type"] == "done" and events[-1]["result"].success is True
+    assert client.order == ["disconnect"], "成功回合不该触发 interrupt"
+    assert runtime.finished is True
+
+
+def test_stubborn_tool_abandoned_with_loud_accounting(monkeypatch):
+    """宽限内停不下来的工具任务：放弃等待但必须显式记账，且执行权照样释放。"""
+    monkeypatch.setattr(secure_sdk, "_TOOL_CANCEL_GRACE_S", 0.05)
+    abandoned = []
+    monkeypatch.setattr(secure_sdk, "_obs_tool_abandoned",
+                        lambda labels, grace: abandoned.extend(labels))
+    runtime = _FakeRuntime()
+    spy = {"disconnected": False}
+    client = _AbortSpyClient([streamed_assistant("半段"), ResultMessage()], spy)
+    _patch_startup(monkeypatch, runtime, [], spy, client_factory=lambda options=None: client)
+    _quiet_teardown(monkeypatch)
+
+    async def scenario():
+        async def _stubborn():
+            # 模拟跑在线程池里的同步 handler：取消只能在返回点生效
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.3)
+        task = asyncio.create_task(_stubborn(), name="mcp-tool:execute_sql")
+        runtime.tool_tasks.add(task)
+        stream = secure_sdk._execute_stream(_make_adapter(), _make_task(), "qoder")
+        it = stream.__aiter__()
+        await it.__anext__()
+        await it.__anext__()
+        await stream.aclose()
+        await asyncio.gather(*secure_sdk._teardown_tasks)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert abandoned == ["mcp-tool:execute_sql"], "放弃等待必须点名到具体工具（可归因）"
+    assert runtime.finished is True, "工具不肯停也必须释放执行权（记账），不能无限挂着"
+
+
+def test_teardown_source_has_no_unbounded_tool_wait():
+    """源码级护栏：收尾不得再出现无超时等待在途工具任务的写法。"""
+    import inspect
+    src = inspect.getsource(secure_sdk._teardown_client)
+    assert "_cancel_inflight_tools" in src
+    assert "asyncio.gather(*pending" not in src

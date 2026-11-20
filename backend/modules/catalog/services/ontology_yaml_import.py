@@ -47,8 +47,8 @@ _CARD_MAP = {
 _TABLE_SUFFIX_NOISE = re.compile(r"[\s(（].*$")
 
 # 别名来源只认 YAML `aliases:` 与对象自身的 name/api_name/primary_table 变体。
-# 历史硬编码兜底表 _ALIAS_ZH（暗登记处）已删除，存量别名经
-# backend/scripts/migrate_alias_zh.py 收编进 canonical doc 对象 aliases。
+# 历史硬编码兜底表 _ALIAS_ZH（暗登记处）已删除，存量别名已一次性收编进
+# canonical doc 对象 aliases（别名只登记在对象/字典层，不回到代码常量）。
 
 
 def _derive_aliases(name: str, api_name: str, primary_table: str,

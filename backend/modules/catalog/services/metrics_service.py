@@ -967,7 +967,8 @@ _DIM_EDITABLE = [
 
 def list_all_dimensions(model_id: Optional[int] = None,
                         scope: Optional[str] = None,
-                        is_active: Optional[str] = None) -> dict:
+                        is_active: Optional[str] = None,
+                        bound_object_key: Optional[str] = None) -> dict:
     """全局维度字典只读列表(供指标中心「维度字典」Tab 与模型工作区复用)。
 
     model_id/scope 语义同 list_metrics: scope='model' 只看本模型对象挂接维度,
@@ -977,6 +978,10 @@ def list_all_dimensions(model_id: Optional[int] = None,
       None(未传) → 只列 is_active=1（Chat 上下文/看板参数枚举等取数向消费方不得看到停用行）;
       'all'      → 全部（字典维护页，停用行也要可见可恢复）;
       '1'/'0'    → 只看该状态。非法值抛 ValueError(路由层转 400)，不当成“未传”。
+
+    bound_object_key: 归属本体对象等值过滤(UNSET_FACET=未归属)。本体对象检查器
+    「引用」页签按对象看口径时用它下推 SQL —— 不得前端拉全量再本地筛（那会让
+    “对象下没有维度”的结论取决于是否拉全，且字典只会越拉越大）。
 
     为何本面不提供 category/certified 等过滤入参(而指标列表提供):
     维度列表**不分页**(字典量级，一次全量返回)，筛选在前端于全量集上做是精确的且即时;
@@ -992,6 +997,8 @@ def list_all_dimensions(model_id: Optional[int] = None,
         if flag is not None:
             conditions.append("COALESCE(is_active, 1) = %s")
             params.append(flag)
+    # 归属对象等值过滤(与指标列表同口径，UNSET_FACET 复用空值桶语义)
+    _apply_equality_filter(conditions, params, "bound_object_key", bound_object_key)
     if not _apply_model_scope(conditions, params, model_id, scope):
         return {"total": 0, "items": []}
     # 条件可能为空(all + 全局视图) —— 裸 WHERE 是非法 SQL, 与 list_metrics 同口径守卫
@@ -1163,7 +1170,7 @@ def create_dimension(data: dict) -> dict:
 
     # 物理锚点实存裁决与归一**必须与 update_dimension 同路**（历史缺陷：只挂在更新分支，
     # 新建维度原样写入 payload → 不传 target_table 就落成空值，planner 按物理表加载字典
-    # 永远命中 0 行：列名对了却取不到数，repair_rum_field_mapping 修的正是这批空表行）。
+    # 永远命中 0 行：列名对了却取不到数（一次性修复脚本清理的正是这批空表行）。
     # 放在开库/查重之前：不合法的映射不应消耗一次写窗口，也让调用方能直接拿到拒绝原因。
     _normalize_dim_physical_binding({}, data)
 

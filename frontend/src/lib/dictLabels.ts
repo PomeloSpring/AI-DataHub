@@ -80,3 +80,37 @@ export function objectLabel(names: Record<string, string>, key?: string | null):
 export function withCount(label: string, count?: number): string {
   return typeof count === 'number' ? t('k_ba20101bb8', { p0: label, p1: count }) : label;
 }
+
+/**
+ * 字典行的 aliases 列（JSON 字符串或数组）→ 逗号串（表单输入框展示用）。
+ * 后端该列可能存 JSON 字符串也可能已是数组（历史写入形状不一），解析失败不崩、原样返回。
+ */
+export function aliasText(v: unknown): string {
+  if (Array.isArray(v)) return v.join(', ');
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? arr.join(', ') : v;
+    } catch { return v; }
+  }
+  return '';
+}
+
+/** 字典行的 tags 列（JSON 字符串或数组）→ 字符串清单 */
+export function tagList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const arr = JSON.parse(v);
+      return Array.isArray(arr) ? arr.map((x) => String(x).trim()).filter(Boolean) : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
+/** 口径标签着色（tags 列）：与业务域分类无关，只认基础/衍生/复合三个已知标签 */
+export const METRIC_TAG_COLORS: Record<string, string> = {
+  基础: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
+  衍生: 'bg-purple-500/10 text-purple-500 border-purple-500/20',
+  复合: 'bg-orange-500/10 text-orange-500 border-orange-500/20',
+};

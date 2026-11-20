@@ -101,13 +101,15 @@ export function writeObjectField(
 }
 
 /**
- * M2/M3/M4（行为 / 规则 / 场景）建模位的可见域：只对系统能力本体开放。
- * 业务本体是路由索引层（对象 + route），源本体是某数据源物理表的语义投影——
- * 两者都不承载行为/规则/场景（写动作权限由功能权限码把关，口径规则入指标字典）。
- * 空 kind 的存量模型维持可见，不因分域判别而误伤。
+ * M2/M3/M4（行为 / 规则 / 场景）建模位的可见域。
+ *
+ * 2026-11-20 用户拍板：**不再按 kind 分域隐藏，所有本体（系统 / 业务 / 源）都展示**。
+ * 理由：三类模型里都可能存在存量声明，按 kind 隐藏只会让“doc 里有、界面上看不到”变成静默缺口；
+ * 该不该写这类声明由菜单与功能权限码把门（`as-bot-system-waker.md` §3），不是靠界面藏页签。
+ * 保留函数作为口径的唯一出口（调用方不自己判 kind），后续如需收紧只改这一处。
  */
-export function showsM234(kind?: string): boolean {
-  return kind !== 'business' && kind !== 'source';
+export function showsM234(_kind?: string): boolean {
+  return true;
 }
 
 /**
@@ -121,9 +123,7 @@ export function showsSiteScope(kind?: string): boolean {
 }
 
 /**
- * doc 里已声明的行为/规则/场景条数。
- * 页签隐藏后用于判断是否存在“存量声明被隐藏”的情况——那必须显式提示，
- * 不得静默把仍在 doc 里的建模声明藏起来（no-silent-degradation）。
+ * doc 里已声明的行为/规则/场景条数（口径唯一来源，供徽标计数与回归用）。
  */
 export function countM234Declarations(raw: unknown): number {
   if (!raw || typeof raw !== 'object') return 0;

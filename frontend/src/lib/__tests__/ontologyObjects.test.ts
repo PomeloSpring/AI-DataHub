@@ -68,12 +68,12 @@ describe('resolveObjectKey / resolveDisplayName — 单值解析', () => {
   });
 });
 
-/** 拍板：源本体不需要行为/规则/场景（M2/M3/M4 只对系统能力本体开放） */
+/** 2026-11-20 拍板：不再按 kind 分域隐藏，所有本体（含业务/源）都展示行为/规则/场景 */
 describe('showsM234 / countM234Declarations — 建模位可见域', () => {
-  it('源本体与业务本体不展示行为/规则/场景，系统能力本体与空 kind 存量模型仍展示', () => {
-    expect(showsM234('source')).toBe(false);
-    expect(showsM234('business')).toBe(false);
+  it('系统、业务、源本体与空 kind 存量模型均展示行为/规则/场景', () => {
     expect(showsM234('system')).toBe(true);
+    expect(showsM234('business')).toBe(true);
+    expect(showsM234('source')).toBe(true);
     expect(showsM234('')).toBe(true);
     expect(showsM234(undefined)).toBe(true);
   });

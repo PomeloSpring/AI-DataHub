@@ -1,6 +1,7 @@
 """Knowledge Graph API — Oxigraph SPARQL query interface."""
 
 import logging
+import re
 import redis
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -39,6 +40,31 @@ class SparqlQuery(BaseModel):
     format: Optional[str] = "json"
 
 
+_QUERY_FORMS = ("SELECT", "ASK")
+_GRAPH_FORMS = ("CONSTRUCT", "DESCRIBE")
+
+
+def _sparql_form(query: str) -> str:
+    """判断 SPARQL 语句形态：query(SELECT/ASK) | graph(CONSTRUCT/DESCRIBE) | update(其余)。
+
+    **必须先跳过注释与 PREFIX/BASE 声明**再看首个关键字：
+    按 `query.strip().startswith("SELECT")` 判，所有带 PREFIX 的查询都会被误当成 UPDATE，
+    被发到 Oxigraph 的 /update 而后直接 400——历史缺陷：控制台自带示例全部以 PREFIX 开头，点了必失败。
+    """
+    body = "\n".join(
+        ln for ln in query.splitlines()
+        if not re.match(r"^\s*(#|PREFIX\b|BASE\b)", ln, re.IGNORECASE)
+    ).strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="SPARQL 语句为空（只有注释/PREFIX 声明）")
+    kw = body.split(None, 1)[0].upper()
+    if kw in _QUERY_FORMS:
+        return "query"
+    if kw in _GRAPH_FORMS:
+        return "graph"
+    return "update"
+
+
 class NodeCreate(BaseModel):
     node_type: str  # e.g. "Table", "Column", "Term"
     properties: dict
@@ -56,20 +82,20 @@ class RelationCreate(BaseModel):
 async def execute_sparql(req: SparqlQuery):
     """执行 SPARQL 查询."""
     try:
+        form = _sparql_form(req.query)
         client = get_sparql_client()
-        # Determine query type
-        query_stripped = req.query.strip().upper()
-        if query_stripped.startswith("SELECT") or query_stripped.startswith("ASK"):
+        if form == "query":
             results = client.query(req.query)
             return {"records": results, "count": len(results)}
-        elif query_stripped.startswith("CONSTRUCT") or query_stripped.startswith("DESCRIBE"):
+        if form == "graph":
             triples = client.construct(req.query)
             return {"triples": [{"s": str(t[0]), "p": str(t[1]), "o": str(t[2])} for t in triples],
                     "count": len(triples)}
-        else:
-            # UPDATE query
-            client.update(req.query)
-            return {"success": True, "message": "Update executed"}
+        # UPDATE 语句
+        client.update(req.query)
+        return {"success": True, "message": "Update executed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("SPARQL query failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -70,8 +70,14 @@
   /* ── 主体三区 ── */
   .body{display:grid;grid-template-columns:190px minmax(0,1fr) 344px;min-height:0}
   @media(max-width:1240px){.body{grid-template-columns:64px minmax(0,1fr) 320px}}
-  @media(max-width:1000px){.body{grid-template-columns:64px minmax(0,1fr)}
-    .inspector{display:none}}
+  /* 窄视口不再整块隐藏检查器：改为右侧滑出抽屉（选中对象即打开），否则“点对象看不到详情” */
+  @media(max-width:1040px){
+    .body{grid-template-columns:64px minmax(0,1fr)}
+    .inspector{position:fixed;right:0;top:50px;bottom:0;width:min(380px,92vw);z-index:45;
+      box-shadow:-14px 0 36px hsl(222 47% 11% / .18);transform:translateX(101%);transition:transform .18s}
+    .inspector.open{transform:none}
+    .insp-close{display:inline-flex !important}
+  }
 
   /* 左导航 */
   .rail{background:var(--rail);border-right:1px solid var(--border);padding:8px 7px;overflow:auto}
@@ -167,6 +173,7 @@
   .inspector{background:#fff;border-left:1px solid var(--border);display:flex;flex-direction:column;
     min-width:0;overflow:hidden}
   .insp-head{padding:10px 12px;border-bottom:1px solid var(--border)}
+  .insp-close{display:none}
   .insp-head h3{font-size:13.5px;font-weight:650;display:flex;align-items:center;gap:6px}
   .insp-sub{font-size:11px;color:var(--muted);margin-top:2px}
   .insp-tabs{display:flex;gap:2px;padding:0 8px;border-bottom:1px solid var(--border)}
@@ -221,6 +228,24 @@
   .pop-sep{height:1px;background:var(--border);margin:5px 0}
   .pop-label{font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:var(--faint);padding:6px 8px 3px}
 
+  /* 模型总览（切换器 + 全部模型视图） */
+  .model-pop{min-width:368px;max-width:420px}
+  .model-pop-search{padding:3px 3px 7px}
+  .model-list{max-height:min(56vh,400px);overflow:auto}
+  .pop-item.model-row{align-items:flex-start;gap:7px;padding:7px 8px}
+  .pop-item.model-row.on{background:var(--primary-weak)}
+  .mrow-name{font-size:12.5px;font-weight:600}
+  .mrow-sub{font-size:10.5px;color:var(--faint);margin-top:1px}
+  .mrow-badges{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;max-width:150px}
+  .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(262px,1fr));gap:10px;padding:12px}
+  .mcard{border:1px solid var(--border);border-radius:10px;background:#fff;padding:11px 12px;cursor:pointer;transition:.12s}
+  .mcard:hover{border-color:hsl(221 83% 53% / .45);box-shadow:0 4px 14px hsl(222 47% 11% / .06)}
+  .mcard.on{border-color:var(--primary);box-shadow:0 0 0 3px hsl(221 83% 53% / .12)}
+  .mcard h4{font-size:13px;font-weight:650;display:flex;align-items:center;gap:6px}
+  .mcard .sub{font-size:11px;color:var(--muted);margin-top:3px}
+  .mcard .badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+  .mcard .foot{display:flex;gap:5px;margin-top:9px;align-items:center}
+
   .overlay{position:fixed;inset:0;background:hsl(222 47% 11% / .45);display:none;align-items:center;
     justify-content:center;z-index:90;padding:16px}
   .overlay.show{display:flex}
@@ -257,6 +282,38 @@
   details.spec .bd{padding:0 11px 11px;font-size:11.5px;color:var(--muted)}
   details.spec ol{margin:0;padding-left:19px}
   details.spec li{margin:3px 0}
+  /* ── canonical 只读抽屉（结构化视图在建模台的落位） ── */
+  .scrim{position:fixed;inset:0;background:hsl(222 47% 11% / .26);z-index:78;display:none}
+  .scrim.show{display:block}
+  .drawer{position:fixed;right:0;top:0;bottom:0;width:min(720px,94vw);background:#fff;z-index:80;
+    border-left:1px solid var(--border);box-shadow:-18px 0 48px hsl(222 47% 11% / .18);
+    display:flex;flex-direction:column;transform:translateX(101%);transition:transform .18s}
+  .drawer.open{transform:none}
+  .drawer-head{padding:10px 13px;border-bottom:1px solid var(--border)}
+  .drawer-title{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:650}
+  .drawer-sub{font-size:11px;color:var(--muted);margin-top:2px}
+  .seg.sm button{height:22px;padding:0 8px;font-size:11px}
+  .doc-tabs{display:flex;align-items:center;gap:2px;padding:0 10px;border-bottom:1px solid var(--border)}
+  .doc-tabs button{height:32px;padding:0 10px;border:0;border-bottom:2px solid transparent;
+    background:transparent;font-size:12px;color:var(--muted)}
+  .doc-tabs button.on{color:var(--fg);font-weight:650;border-bottom-color:var(--primary)}
+  .doc-tabs .ops{margin-left:auto;display:flex;gap:6px;align-items:center}
+  .doc-body{flex:1;overflow:auto;background:#fbfcfd}
+  pre.code{margin:0;padding:9px 0;font:11.5px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;
+    min-width:max-content}
+  pre.code .line{display:flex;gap:10px;padding-right:14px}
+  pre.code .line .ln{width:38px;flex:0 0 38px;text-align:right;color:#b6c0cc;user-select:none}
+  pre.code .line .lc{white-space:pre}
+  pre.code .line.hl{background:hsl(43 96% 86% / .6)}
+  pre.code .line.hl .ln{color:var(--amber)}
+  .tk-key{color:#0f766e} .tk-str{color:#b45309} .tk-num{color:#7c3aed} .tk-bool{color:#2563eb}
+  .mdbox{padding:13px 16px;font-size:12.5px;line-height:1.7}
+  .mdbox h4{font-size:13px;margin:12px 0 3px}
+  .mdbox code{background:#f1f4f7;border-radius:4px;padding:0 4px;font-size:11.5px}
+  .mdbox ul{margin:5px 0 0;padding-left:18px}
+  .doc-foot{display:flex;align-items:center;gap:8px;padding:8px 13px;border-top:1px solid var(--border);
+    background:var(--amber-weak);font-size:11.5px;color:hsl(28 80% 34%)}
+
   .tag{display:inline-block;padding:0 4px;border-radius:4px;font-size:9.5px;font-weight:700;height:14px;
     line-height:14px;vertical-align:middle}
   .tag.new{background:hsl(142 71% 35% / .14);color:var(--green)}
@@ -270,8 +327,9 @@
   <div class="brand"><span class="logo">本</span>本体建模</div>
 
   <button class="model-btn" id="modelBtn" onclick="togglePop('popModel')">
-    <span id="modelName">销售分析模型</span>
-    <span class="chip green"><i class="dot"></i>生效</span>
+    <span id="modelName">联袂业务本体</span>
+    <span class="chip green" id="modelState"><i class="dot"></i>生效</span>
+    <span class="faint xs" id="modelCount">18 对象</span>
     <span class="faint" style="font-size:10px">▾</span>
   </button>
 
@@ -296,17 +354,25 @@
   <nav class="rail">
     <div class="rail-sec">建模</div>
     <button class="rail-item on" data-nav="objects" onclick="setNav('objects')"><i>▤</i><span class="lbl">对象</span><span class="n">18</span></button>
-    <button class="rail-item" data-nav="graph" onclick="setNav('graph')"><i>◎</i><span class="lbl">关系图谱</span><span class="n">18</span></button>
+    <button class="rail-item" data-nav="graph" title="现有实现为独立路由 /data/knowledge-graph，落地时本项应为带当前模型上下文的跳转入口" onclick="setNav('graph')"><i>◎</i><span class="lbl">关系图谱 ↗</span><span class="n">18</span></button>
     <button class="rail-item" data-nav="actions" onclick="setNav('actions')"><i>⚙</i><span class="lbl">行为</span><span class="n">12</span></button>
     <button class="rail-item" data-nav="rules" onclick="setNav('rules')"><i>≡</i><span class="lbl">规则</span><span class="n">9</span></button>
     <button class="rail-item" data-nav="scenes" onclick="setNav('scenes')"><i>✧</i><span class="lbl">场景</span><span class="n">4</span></button>
     <button class="rail-item" data-nav="sites" onclick="setNav('sites')"><i>⊞</i><span class="lbl">站点部署</span><span class="n">2</span></button>
 
+    <div class="rail-sec">语义资产</div>
+    <button class="rail-item" data-nav="terms" onclick="setNav('terms')"><i>✎</i><span class="lbl">术语</span><span class="n">8</span></button>
+    <button class="rail-item" data-nav="tags" onclick="setNav('tags')"><i>▦</i><span class="lbl">对象标签</span><span class="n">5</span></button>
+
     <div class="rail-sec">质量</div>
-    <button class="rail-item" data-nav="health" onclick="setNav('health')"><i>⚑</i><span class="lbl">建模体检</span><span class="n warn">12</span></button>
+    <button class="rail-item" data-nav="health" title="现有实现为独立页 /data/asset-pool（跨模型分诊台），落地时本项应为跳转入口" onclick="setNav('health')"><i>⚑</i><span class="lbl">建模体检 ↗</span><span class="n warn">12</span></button>
 
     <div class="rail-sec">变更</div>
     <button class="rail-item" data-nav="diff" onclick="setNav('diff')"><i>⇄</i><span class="lbl">待发布</span><span class="n warn">3</span></button>
+
+    <div class="rail-sec">跨模型</div>
+    <button class="rail-item" data-nav="models" onclick="setNav('models')"><i>▦</i><span class="lbl">全部模型</span><span class="n">6</span></button>
+    <button class="rail-item" data-nav="todo" title="现有实现为独立页 /data/asset-pool（跨模型分诊台），本项为跳转入口" onclick="setNav('todo')"><i>⌂</i><span class="lbl">建模待办 ↗</span><span class="n warn">4</span></button>
   </nav>
 
   <!-- ══ 中央画布 ══ -->
@@ -336,6 +402,7 @@
     <span class="t">草案 · 3 项待发布</span>
     <span class="muted xs">张三 11-18 10:22 写入 · 生效版之后未被他人改动</span>
     <div class="grow"></div>
+    <button class="btn sm" onclick="openDoc('draft')">查看草案 doc</button>
     <button class="btn sm" onclick="setNav('diff')">查看全部变更</button>
     <button class="btn sm danger" onclick="openModal('mDiscard')">丢弃草案</button>
     <button class="btn sm primary" data-perm="publish" onclick="openModal('mPublish')">发布并级联</button>
@@ -349,20 +416,16 @@
 </footer>
 
 <!-- ══ 模型下拉 ══ -->
-<div class="pop" id="popModel" style="left:150px;top:46px;min-width:300px">
-  <div class="pop-label">业务本体</div>
-  <button class="pop-item" onclick="pickModel('销售分析模型','业务',18);closePop('popModel')">
-    <span>销售分析模型</span><span class="chip amber" style="margin-left:6px">草案</span>
-    <span class="meta">18 对象</span></button>
-  <button class="pop-item" onclick="pickModel('客户服务模型','业务',9);closePop('popModel')">
-    <span>客户服务模型</span><span class="meta">9 对象</span></button>
-  <div class="pop-label">系统本体</div>
-  <button class="pop-item" onclick="pickModel('系统能力本体','系统',6);closePop('popModel')">
-    <span>系统能力本体</span><span class="meta">6 对象</span></button>
-  <div class="pop-label">源本体</div>
-  <button class="pop-item" onclick="pickModel('数仓主库（自动生成）','源',132);closePop('popModel')">
-    <span>数仓主库（自动生成）</span><span class="chip" style="margin-left:6px">归档</span>
-    <span class="meta">132 对象</span></button>
+<div class="pop model-pop" id="popModel" style="left:150px;top:46px">
+  <div class="model-pop-search">
+    <input class="input" style="height:28px" placeholder="搜模型名 / 领域" oninput="renderModelList(this.value)">
+  </div>
+  <div class="model-list" id="modelList"></div>
+  <div class="pop-sep"></div>
+  <button class="pop-item" onclick="closePop('popModel');setNav('models')">▦ 全部模型总览 <span class="meta">6 个</span></button>
+  <button class="pop-item" onclick="closePop('popModel');setNav('todo')">⌂ 建模待办 <span class="meta">4 项</span></button>
+  <button class="pop-item" onclick="closePop('popModel');openDoc('live')">◧ 查看 canonical 文档（只读）
+    <span class="meta">JSON / YAML / MD / SPARQL</span></button>
   <div class="pop-sep"></div>
   <button class="pop-item" onclick="closePop('popModel');openModal('mNewModel')">＋ 新建模型 <span class="tag new">NEW</span></button>
   <button class="pop-item" onclick="closePop('popModel');openModal('mArchive')">归档当前模型</button>
@@ -385,6 +448,31 @@
   <div class="pop-sep"></div>
   <div class="xs faint" style="padding:2px 8px 6px">无权限 = 入口不渲染 + 说明原因，不是点了才 403。</div>
 </div>
+
+<!-- ══ canonical 只读抽屉：结构化视图的唯一落位（不提供写入） ══ -->
+<div class="scrim" id="docScrim" onclick="closeDoc()"></div>
+<aside class="drawer" id="docDrawer">
+  <div class="drawer-head">
+    <div class="row">
+      <div class="grow">
+        <div class="drawer-title">canonical 文档 <span class="chip" id="docModelChip">销售分析模型</span></div>
+        <div class="drawer-sub" id="docSub">唯一事实源 · 只读</div>
+      </div>
+      <button class="btn sm ghost" onclick="closeDoc()" title="关闭">✕</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="seg sm">
+        <button id="docLive" class="on" onclick="setDocSrc('live')">生效版 v18</button>
+        <button id="docDraft" onclick="setDocSrc('draft')">草案</button>
+      </div>
+      <div class="grow"></div>
+      <button class="btn sm ghost" onclick="openGraphPage()">在关系图谱页打开 ↗</button>
+    </div>
+  </div>
+  <div class="doc-tabs" id="docTabs"></div>
+  <div class="doc-body" id="docBody"></div>
+  <div class="doc-foot" id="docFoot"></div>
+</aside>
 
 <!-- ══ 命令面板 ══ -->
 <div class="overlay" id="cmdk" onclick="if(event.target===this)closeModal('cmdk')">
@@ -560,7 +648,7 @@ const ISSUES = [
 ];
 
 /* ═════════════ 状态 ═════════════ */
-const S = { nav:'objects', selected:'customer_case', mode:'draft', insp:'props',
+const S = { nav:'objects', selected:'customer_case', mode:'draft', insp:'props', model:'lianmei',
   perms:{ save:true, publish:true, delete:true }, checked:new Set(), sel:new Set(),
   hasDraft:true, trayOpen:true, newRow:false };
 const has = k => S.perms[k];
@@ -583,6 +671,33 @@ function renderCanvas(){
   const body = document.getElementById('canvasBody');
   const n = S.nav;
 
+  if (n === 'models') {
+    head.innerHTML = `<div class="canvas-title">全部模型 <span class="chip">6 个 · 跨模型总览</span></div>
+      <div class="grow"></div>
+      <span class="xs faint">原有左栏模型列表的职责落在这里；日常切模型走顶栏</span>
+      <button class="btn primary" data-perm="save" onclick="openModal('mNewModel')">＋ 新建模型</button>`;
+    body.innerHTML = `<div class="mgrid">${MODELS.map(modelCard).join('')}</div>
+      <div class="xs muted" style="padding:0 14px 14px">一个模型 = 一个领域 = 一个发布单元（含站点声明与图谱作用域）；
+        领域内细分用对象标签，不拆模型边界。</div>`;
+    applyPerms();
+    return;
+  }
+
+  if (n === 'todo') {
+    head.innerHTML = `<div class="canvas-title">建模待办 <span class="chip amber">4 项 · 跨模型</span></div>
+      <div class="grow"></div><span class="xs faint">现有实现是独立页 /data/asset-pool，本项为带上下文的跳转入口</span>`;
+    body.innerHTML = `<div class="list">${[
+      ['未归属资产 6 个','源本体里存在、但未收编进任何业务模型的对象','联袂业务本体'],
+      ['孤儿关系 1 条','客户案例 → 历史订单（目标对象已在草案中删除）','联袂业务本体'],
+      ['列漂移 2 处','商品 · 物理列改名后未重新映射','联袂业务本体'],
+      ['字典绑定悬空 3 条','指标/维度 bound_object_key 指向不存在的对象','联袂业务本体']
+    ].map(([t,d,m])=>`<div class="list-item"><div class="grow"><h4>${t}</h4><p>${d}</p></div>
+        <span class="chip">${m}</span>
+        <button class="btn sm" onclick="toast('落地时跳 /data/asset-pool?model=…（带当前模型上下文）')">去处理 ↗</button>
+      </div>`).join('')}</div>`;
+    return;
+  }
+
   if (n === 'objects') {
     head.innerHTML = `
       <div class="search"><span class="ic">⌕</span><input class="input" placeholder="搜对象名 / key" oninput="renderTable(this.value)"></div>
@@ -590,18 +705,29 @@ function renderCanvas(){
         <option>全部绑定状态</option><option>仅未绑表</option><option>仅列待修</option></select>
       <button class="btn" onclick="toast('按引用数排序（指标/维度引用越多越靠前）')">按引用排序</button>
       <div class="grow"></div>
-      <span class="xs faint" id="objCount">18 个对象 · 草案含 3 处变更</span>
+      <span class="xs faint" id="objCount">${curModel().objects} 个对象 · 草案含 3 处变更</span>
       <button class="btn primary" data-perm="save" onclick="startNewObj()">＋ 新建对象</button>`;
-    body.innerHTML = `<div id="newRowHost"></div><div id="tableHost"></div>
+    body.innerHTML = `<div id="newRowHost"></div>
+      ${curModel().id !== 'lianmei' ? `<div class="ro" style="margin:10px 12px">原型说明：「${curModel().name}」
+        （${curModel().objects} 对象）的真实清单未接入，下表为演示样本；本页演示的是切模型后上下文与状态的变化。</div>` : ''}
+      <div id="tableHost"></div>
       <details class="spec" open><summary>本次重设计的界面主张</summary><div class="bd"><ol>
-        <li><span class="tag new">NEW</span> 模型切换收进顶栏，左侧改为「能力分区」——释放整块空间给对象。</li>
+        <li><span class="tag new">NEW</span> 模型切换收进顶栏；左栏改成「能力分区」，但<b>没丢掉多模型总览</b>——
+          下拉按业务/系统分组带状态与徽章，另设「全部模型」总览视图与「建模待办」跨模型入口。</li>
         <li><span class="tag new">NEW</span> 对象是主画布（表格/图谱双视图 + 批量选择），详情常驻右侧检查器，就地编辑。</li>
         <li><span class="tag new">NEW</span> 变更变成底部「草案托盘」，可逐条撤回；发布只有一个入口，就在托盘上。</li>
         <li><span class="tag new">NEW</span> 「建模体检」成一等公民：问题 → 直接定位到对象，不是藏起来的待办入口。</li>
+        <li><span class="tag keep">KEEP</span> 术语 / 对象标签归到「语义资产」分组，仍是本模型作用域；
+          指标 / 维度字典不在本页（独立「指标与维度」页是唯一编辑源），此处只显示引用与影响面。</li>
         <li><span class="tag fix">FIX</span> 模型删除/归档/新建都收进模型下拉；删除有二次确认与状态门禁。</li>
         <li><span class="tag fix">FIX</span> 入口按权限码显隐并说明原因（右上角色模拟可验证）。</li>
+        <li><span class="tag keep">边界</span> 带 <b>↗</b> 的两项（关系图谱 / 建模体检）现有实现是独立路由，
+          本页只做带模型上下文的跳转入口，不在页内再造第二套视图与权限口径。</li>
+        <li><span class="tag keep">边界</span> 模型 = 领域 = 发布单元，<b>不按子域拆模型</b>：关系 target、deploy_sites、
+          图谱重建、字典 bound_object_key 全部以模型为作用域；领域内细分走对象标签。</li>
       </ol></div></details>`;
     renderTable();
+    return;
   }
 
   if (n === 'graph') {
@@ -665,6 +791,50 @@ function renderCanvas(){
     return;
   }
 
+  if (n === 'terms') {
+    const TERMS = [
+      ['GMV','成交总额、GMV','dws_order','本模型'],
+      ['复购','二次购买','dim_customer','本模型'],
+      ['客单价','平均订单金额','dws_order','本模型'],
+      ['流失','沉默客户、流失客户','dim_customer','全局']
+    ];
+    head.innerHTML = `<div class="canvas-title">术语 <span class="chip">按本模型对象主表过滤</span></div>
+      <div class="grow"></div>
+      <span class="xs faint">术语是缓冲区：收编进对象别名后应退役，不在两处各留一份</span>
+      <button class="btn primary" data-perm="save">＋ 新建术语</button>`;
+    body.innerHTML = `<table class="objs"><thead><tr>
+        <th>术语</th><th>同义词</th><th style="width:150px">作用表</th>
+        <th style="width:80px">来源</th><th style="width:100px"></th></tr></thead><tbody>
+      ${TERMS.map(([t,al,tb,src])=>`<tr>
+        <td><div class="cell-name">${t}</div></td>
+        <td class="muted">${al}</td>
+        <td class="mono xs muted">${tb}</td>
+        <td><span class="chip ${src === '全局' ? '' : 'blue'}">${src}</span></td>
+        <td style="text-align:right"><button class="mini" data-perm="save">编辑</button>
+          <button class="mini danger" data-perm="save" onclick="toast('已写入草案：删除术语「${t}」')">删除</button></td>
+      </tr>`).join('')}</tbody></table>
+      <div class="xs muted" style="padding:8px 12px">只列本模型对象主表命中的术语（系统本体无物理表也能正确隔离，不依赖数据源 id）。
+        术语收编后应落对象/字典别名，避免同一概念两处各留一份。</div>`;
+    applyPerms(); return;
+  }
+
+  if (n === 'tags') {
+    head.innerHTML = `<div class="canvas-title">对象标签 <span class="chip">本模型 4 个标签定义</span></div>
+      <div class="grow"></div><span class="xs faint">标签定义与取值维护在「标签管理」页，此处按本模型对象聚合</span>
+      <button class="btn" onclick="toast('跳转「标签管理」页维护标签定义')">管理标签定义</button>`;
+    body.innerHTML = `<table class="objs"><thead><tr>
+        <th>标签</th><th style="width:90px">类型</th><th style="width:110px">覆盖对象</th>
+        <th>取值示例</th><th style="width:110px"></th></tr></thead><tbody>
+      ${[['数据分级','枚举','12 个对象','P0 / P1 / P2'],['更新频率','枚举','9 个对象','T+1 / 实时'],
+         ['负责人','文本','8 个对象','张三、李四'],['是否对外','布尔','6 个对象','是 / 否']]
+        .map(([t,ty,cnt,ex])=>`<tr><td><div class="cell-name">${t}</div></td>
+          <td class="muted">${ty}</td><td class="num">${cnt}</td>
+          <td class="xs muted">${ex}</td>
+          <td style="text-align:right"><button class="mini" data-perm="save" onclick="toast('给选中对象赋值（逐条写入）')">给对象赋值</button></td></tr>`).join('')}
+      </tbody></table>`;
+    applyPerms(); return;
+  }
+
   if (n === 'diff') {
     head.innerHTML = `<div class="canvas-title">待发布变更 <span class="chip amber">3 项</span></div>
       <div class="grow"></div><button class="btn sm danger" onclick="openModal('mDiscard')">丢弃全部</button>
@@ -697,6 +867,7 @@ function renderCanvas(){
       items:[['客户复购分析','订单 + 客户 + 区域','4 步骤'],['渠道 ROI 对比','订单 + 渠道 + 促销','3 步骤'],
              ['流失预警','客户 + 历史订单','5 步骤']] }
   }[n];
+  if (!meta) return;
 
   head.innerHTML = `<div class="canvas-title">${meta.t} <span class="chip">${meta.n} 条</span></div>
     <div class="grow"></div><span class="xs faint">${meta.d}</span>
@@ -751,7 +922,12 @@ function renderTable(kw = ''){
         </div></td>
       </tr>`).join('')}</tbody></table>`;
   const c = document.getElementById('objCount');
-  if (c) c.textContent = `${rows.length} 个对象 · 草案含 3 处变更`;
+  if (c) {
+    const total = curModel().objects;
+    c.textContent = curModel().id === 'lianmei'
+      ? `${total} 个对象${k ? ` · 命中 ${rows.length}` : ''} · 草案含 3 处变更`
+      : `${total} 个对象（原型演示样本 ${rows.length} 行）· 草案 3 处`;
+  }
   applyPerms();
 }
 
@@ -805,6 +981,7 @@ function createObj(){
 /* ═════════════ 选中 / 检查器 ═════════════ */
 function selectObj(key){
   S.selected = key; S.insp = 'props';
+  document.querySelector('.inspector')?.classList.add('open');
   if (S.nav !== 'objects') S.nav = 'objects';
   document.querySelectorAll('.rail-item').forEach(b => b.classList.toggle('on', b.dataset.nav === 'objects'));
   renderTable(document.querySelector('.search input')?.value || '');
@@ -817,17 +994,43 @@ function renderInspector(){
   const tabs = document.getElementById('inspTabs');
   const body = document.getElementById('inspBody');
 
+  if (S.nav === 'models') {
+    const m = MODELS.find(x => x.id === S.model) || MODELS[1];
+    head.innerHTML = `<h3>${m.name} ${stateChipOf(m)}</h3><div class="insp-sub">${m.domain}</div>`;
+    tabs.innerHTML = '';
+    body.innerHTML = `<div class="sec"><div class="sec-head">当前模型</div><div style="padding:9px">
+      <dl class="kv">
+        <dt>类型</dt><dd>${m.kindLabel}</dd>
+        <dt>对象</dt><dd>${m.objects} 个</dd>
+        <dt>契约模型</dt><dd>${m.contract ? `是 · ${m.sites} 站部署` : '否'}</dd>
+        <dt>草案</dt><dd>${m.drafts ? m.drafts + ' 项待发布' : '无'}</dd>
+        <dt>待处理</dt><dd>${m.issues ? m.issues + ' 项体检问题' : '无'}</dd>
+        <dt>更新时间</dt><dd>${m.updated}</dd>
+      </dl></div></div>
+      <div class="ro">切模型只换上下文，不改数据边界：一个模型 = 一个领域 = 一个发布单元。</div>
+      <button class="btn" style="width:100%" onclick="setNav('objects')">进入对象画布</button>`;
+    return;
+  }
+
   if (S.nav !== 'objects') {
     head.innerHTML = `<h3>${({graph:'关系图谱',health:'建模体检',sites:'站点部署',diff:'待发布变更',
-      actions:'行为',rules:'规则',scenes:'场景'})[S.nav] || '工作区'}</h3>
+      actions:'行为',rules:'规则',scenes:'场景',terms:'术语',tags:'对象标签',
+      models:'全部模型',todo:'建模待办'})[S.nav] || '工作区'}</h3>
       <div class="insp-sub">选中对象后在此就地编辑</div>`;
     tabs.innerHTML = ''; body.innerHTML = `<div class="empty">在「对象」里选一个对象，或点图谱节点</div>`;
     return;
   }
 
   const o = obj(S.selected) || OBJECTS[0];
-  head.innerHTML = `<h3>${o.name} ${stateChip(o)}</h3>
-    <div class="insp-sub"><span class="mono">adh:obj:${o.key}</span></div>`;
+  head.innerHTML = `<div class="row" style="align-items:flex-start">
+      <div class="grow">
+        <h3>${o.name} ${stateChip(o)}</h3>
+        <div class="insp-sub"><span class="mono">adh:obj:${o.key}</span></div>
+      </div>
+      <button class="btn sm ghost" onclick="openDoc('${S.mode==='draft'?'draft':'live'}','${o.key}')" title="查看该对象的 canonical 片段（只读）">{ } doc</button>
+      <button class="btn sm ghost" onclick="openDetail('${o.key}')" title="在新标签打开完整对象详情页">⤢ 整页</button>
+      <button class="btn sm ghost insp-close" onclick="closeInspector()" title="收起详情">✕</button>
+    </div>`;
   tabs.innerHTML = ['概览','属性','关系','引用'].map((t,i)=>{ const k=['over','props','links','refs'][i];
     return `<button class="${S.insp===k?'on':''}" onclick="setInsp('${k}')">${t}</button>`; }).join('');
 
@@ -887,8 +1090,9 @@ function inspContent(o){
       <dt>维度</dt><dd>${o.dims ? '客户等级、签约日期' : '—'}</dd>
       <dt>场景</dt><dd>客户复购分析</dd>
     </dl></div></div>
-    <div class="xs muted">被引用的对象不能直接删：发布时字典里的悬空绑定会被硬阻断，
-      并逐条列出是哪条指标/维度。</div>`;
+    <div class="xs muted" style="margin-top:6px">指标与维度字典本体在「指标与维度」页（/data/metrics）维护，
+      本体页只表达引用关系与影响面，不在这里改口径。被引用的对象不能直接删：发布时字典里的
+      悬空绑定会被硬阻断，并逐条列出是哪条指标/维度。</div>`;
 }
 
 function setInsp(k){ S.insp = k; renderInspector(); }
@@ -998,9 +1202,88 @@ document.addEventListener('click', e => {
     document.querySelectorAll('.pop').forEach(p => p.classList.remove('show'));
 });
 
-function pickModel(name, kind, n){
-  document.getElementById('modelName').textContent = name;
-  toast(`已切换到「${name}」（${kind} · ${n} 对象）`);
+/* ═════════════ 模型总览（顶栏切换器 + 全部模型视图） ═════════════ */
+const MODELS = [
+  { id:'cloud_log', name:'云平台运行日志本体', kind:'business', kindLabel:'业务本体',
+    domain:'云平台运行日志域（设备/软件/第三方接口遥测）', objects:4, sites:0, contract:false,
+    status:'active', drafts:0, issues:1, updated:'2026-11-18 17:13' },
+  { id:'lianmei', name:'联袂业务本体', kind:'business', kindLabel:'业务本体',
+    domain:'医疗运营域（患者/医生/机构/角色）', objects:18, sites:5, contract:true,
+    status:'active', drafts:3, issues:4, updated:'2026-11-17 15:53' },
+  { id:'app_event', name:'应用使用事件本体', kind:'business', kindLabel:'业务本体',
+    domain:'应用使用域（桌面 app 遥测）', objects:1, sites:5, contract:true,
+    status:'active', drafts:0, issues:0, updated:'2026-11-17 15:05' },
+  { id:'arms_rum', name:'ARMS RUM 观测本体', kind:'business', kindLabel:'业务本体',
+    domain:'ARMS 可观测域（RUM 前端体验）', objects:1, sites:2, contract:true,
+    status:'active', drafts:0, issues:0, updated:'2026-11-17 15:05' },
+  { id:'dw_model', name:'数据仓库模型', kind:'business', kindLabel:'业务本体',
+    domain:'医疗业务', objects:4, sites:0, contract:false,
+    status:'active', drafts:0, issues:2, updated:'2026-11-04 20:35' },
+  { id:'as_bot_sys', name:'AS-BOT 系统能力本体', kind:'system', kindLabel:'系统本体',
+    domain:'平台系统能力（工具/权限/动作）', objects:14, sites:0, contract:false,
+    status:'active', drafts:0, issues:0, updated:'2026-10-16 13:06' }
+];
+const curModel = () => MODELS.find(m => m.id === S.model) || MODELS[1];
+
+function stateChipOf(m){
+  if (m.status === 'draft') return '<span class="chip amber">草案</span>';
+  if (m.status === 'archived') return '<span class="chip">归档</span>';
+  return '<span class="chip green"><i class="dot"></i>生效</span>';
+}
+function renderModelList(q){
+  const kw = (q || '').trim().toLowerCase();
+  const hit = MODELS.filter(m => !kw || m.name.toLowerCase().includes(kw) || m.domain.toLowerCase().includes(kw));
+  const groups = [['business','业务本体（按业务域）'],['system','系统能力本体'],['source','源本体']];
+  document.getElementById('modelList').innerHTML = hit.length ? groups.map(([k,label]) => {
+    const arr = hit.filter(m => m.kind === k);
+    if (!arr.length) return '';
+    return `<div class="pop-label">${label}（${arr.length}）</div>` + arr.map(m => `
+      <button class="pop-item model-row ${m.id===S.model?'on':''}" onclick="pickModel('${m.id}')">
+        <div class="grow" style="min-width:0">
+          <div class="mrow-name">${m.name}</div>
+          <div class="mrow-sub">${m.domain} · ${m.objects} 对象 · ${m.updated}</div>
+        </div>
+        <div class="mrow-badges">
+          ${m.contract?`<span class="chip blue">${m.sites} 站部署</span>`:''}
+          ${m.drafts?`<span class="chip amber">${m.drafts} 项草案</span>`:''}
+          ${stateChipOf(m)}
+        </div>
+      </button>`).join('');
+  }).join('') : '<div class="xs faint" style="padding:12px">无匹配模型</div>';
+}
+function modelCard(m){
+  return `<div class="mcard ${m.id===S.model?'on':''}" onclick="pickModel('${m.id}');setNav('objects')">
+    <h4>${m.name}</h4>
+    <div class="sub">${m.domain}</div>
+    <div class="sub">${m.objects} 个对象 · ${m.kindLabel} · ${m.updated}</div>
+    <div class="badges">
+      ${stateChipOf(m)}
+      ${m.contract?`<span class="chip blue">契约模型 · ${m.sites} 站部署</span>`:''}
+      ${m.drafts?`<span class="chip amber">${m.drafts} 项草案</span>`:''}
+      ${m.issues?`<span class="chip red">${m.issues} 项待处理</span>`:''}
+    </div>
+    <div class="foot">
+      <span class="xs faint grow">${m.id===S.model?'当前模型':''}</span>
+      <button class="btn sm" onclick="event.stopPropagation();pickModel('${m.id}');setNav('objects')">进入</button>
+    </div>
+  </div>`;
+}
+function pickModel(id){
+  const m = MODELS.find(x => x.id === id);
+  if (!m) return;
+  S.model = id;
+  document.getElementById('modelName').textContent = m.name;
+  document.getElementById('modelCount').textContent = `${m.objects} 对象`;
+  const st = document.getElementById('modelState');
+  st.className = 'chip ' + (m.status === 'draft' ? 'amber' : m.status === 'archived' ? '' : 'green');
+  st.innerHTML = `<i class="dot"></i>${m.status === 'draft' ? '草案' : m.status === 'archived' ? '归档' : '生效'}`;
+  closePop('popModel');
+  renderModelList('');
+  renderCanvas();
+  renderInspector();
+  toast(id === 'lianmei'
+    ? `已切换到「${m.name}」（${m.kindLabel} · ${m.objects} 对象）`
+    : `已切换到「${m.name}」· 原型只展开了「联袂业务本体」的对象清单，其余模型仅演示总览与状态`);
 }
 
 /* 命令面板 */
@@ -1040,6 +1323,175 @@ document.addEventListener('keydown', e => {
     document.querySelectorAll('.pop').forEach(p=>p.classList.remove('show')); }
 });
 
+/* ═════════════ canonical 只读抽屉（派生投影 · 无写入） ═════════════ */
+const DOC_TABS = [['json','JSON'],['yaml','YAML'],['md','MD 预览'],['sparql','SPARQL 查询']];
+const DOC = { src:'live', tab:'json', key:null, query:'SELECT ?s ?p ?o WHERE { GRAPH ?g { ?s ?p ?o } } LIMIT 25', rows:null };
+
+function buildDoc(src){
+  const list = OBJECTS.filter(x => src === 'draft' ? x.state !== 'removed' : x.state !== 'added');
+  const doc = {
+    model_key:'sales_analysis', domain:'销售与客户经营域', kind:'business',
+    datasource_name:'cloud-platform-dw', model_version: src === 'draft' ? 'draft' : 'v18',
+    deploy_sites:[{ site_code:'cn', datasource:'数仓主库' },{ site_code:'sg', datasource:'数仓主库' }],
+    objects: list.map(x => ({
+      key:x.key, display_name:x.name, aliases:[x.name],
+      description:x.desc, primary_table:x.table || '',
+      properties:(PROPS[x.key] || PROPS._default).map(([name,column]) => ({ name, column, type:'string' })),
+      links:(LINKS[x.key] || LINKS._default).map(([type,target,cardinality]) => ({ type, target, cardinality }))
+    }))
+  };
+  if (src === 'draft') doc._declared_removals = { order:['备注'] };
+  return doc;
+}
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function toYaml(d){
+  const q = s => /[:#]/.test(s) ? `"${s}"` : s;
+  const L = ['model_key: ' + d.model_key, 'domain: ' + q(d.domain), 'kind: ' + d.kind,
+    'datasource_name: ' + d.datasource_name, 'model_version: ' + d.model_version, 'objects:'];
+  d.objects.forEach(o => {
+    L.push('  - key: ' + o.key, '    display_name: ' + q(o.display_name),
+      '    primary_table: ' + (o.primary_table || '""'),
+      '    aliases: [' + o.aliases.map(q).join(', ') + ']', '    properties:');
+    o.properties.forEach(p => L.push('      - { name: ' + q(p.name) + ', column: ' + p.column + ', type: string }'));
+    L.push('    links:');
+    if (o.links.length) o.links.forEach(k => L.push('      - { type: ' + k.type + ', target: ' + k.target + ', cardinality: ' + k.cardinality + ' }'));
+    else L.push('      []');
+  });
+  if (d._declared_removals) L.push('_declared_removals:', '  order: [' + d._declared_removals.order.join(', ') + ']');
+  return L.join('\n');
+}
+
+function docJsonLines(src){
+  const lines = JSON.stringify(buildDoc(src), null, 2).split('\n');
+  const ranges = {};
+  lines.forEach((l,i) => {
+    const m = l.match(/^\s{6}"key": "([^"]+)"/);
+    if (!m) return;
+    let end = lines.length - 1;
+    for (let j = i + 1; j < lines.length; j++) if (/^\s{4}\},?$/.test(lines[j])) { end = j; break; }
+    ranges[m[1]] = [i - 1, end];
+  });
+  return { lines, ranges };
+}
+function hlLine(l){
+  let s = esc(l);
+  s = s.replace(/"(?:[^"\\]|\\.)*"(\s*:)?/g, (m, col) => col
+    ? '<span class="tk-key">' + m.slice(0, m.length - col.length) + '</span>' + col
+    : '<span class="tk-str">' + m + '</span>');
+  s = s.replace(/(:\s*)(-?\d+(?:\.\d+)?)(,?\s*)$/g, '$1<span class="tk-num">$2</span>$3');
+  return s;
+}
+function docJsonHtml(){
+  const { lines } = docJsonLines(DOC.src);
+  return lines.map((l,i) =>
+    `<div class="line" id="docLine${i}"><span class="ln">${i+1}</span><span class="lc">${hlLine(l)}</span></div>`).join('');
+}
+function docMd(src){
+  const d = buildDoc(src);
+  const head = `<div class="callout info" style="margin-bottom:10px">内部 MD（<span class="mono">to_md</span>）：含物理表/列与 JOIN 表达式，
+    <b>不上云</b>；云端文档由 <span class="mono">to_cloud_md</span> 脱敏后另行推送。</div>`;
+  return head + d.objects.map(o => `
+    <h4>${o.display_name}（<code>${o.key}</code>）</h4>
+    <div class="xs muted">主表：${o.primary_table || '未绑定'} · 属性 ${o.properties.length} · 关系 ${o.links.length}</div>
+    <div class="xs" style="margin-top:4px">${o.description}</div>
+    <ul class="xs muted">${o.properties.slice(0,4).map(p => `<li><code>${p.column}</code> → ${p.name}</li>`).join('')}</ul>
+    ${o.links.length ? `<div class="xs muted" style="margin-top:4px">关系：${o.links.map(k => `${k.type} → ${k.target}（${k.cardinality}）`).join('；')}</div>` : ''}`).join('');
+}
+function docSparqlView(){
+  const rows = DOC.rows;
+  return `<div style="padding:12px">
+    <div class="xs muted" style="margin-bottom:6px">对当前模型的命名图执行 SPARQL（只读）：语句可改，结果只读，不能写图。</div>
+    <textarea class="input" style="height:84px;padding:7px 9px;font:11.5px/1.6 ui-monospace,Menlo,monospace;resize:vertical"
+      oninput="DOC.query=this.value">${esc(DOC.query)}</textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn sm" onclick="runSparql()">执行查询</button>
+      <span class="xs faint">示例：对象→指标/维度 · 对象关系 · 多跳可达</span>
+    </div>
+    ${rows ? `<div class="matrix" style="margin:10px 0 0"><table><thead><tr><th>s</th><th>p</th><th>o</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td class="mono xs">${r[0]}</td><td class="mono xs">${r[1]}</td><td class="mono xs">${r[2]}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">尚未执行查询</div>'}
+  </div>`;
+}
+function runSparql(){
+  DOC.rows = [
+    ['adh:obj:order','rdf:type','owl:Class'],
+    ['adh:obj:order','adh:hasMetric','adh:metric:gmv'],
+    ['adh:obj:order','adh:hasDimension','adh:dim:channel'],
+    ['adh:obj:order','adh:linkedTo','adh:obj:customer']
+  ];
+  renderDoc();
+  toast('查询完成（4 行 · 只读结果）','ok');
+}
+
+function renderDoc(){
+  const isDraft = DOC.src === 'draft';
+  document.getElementById('docModelChip').textContent = document.getElementById('modelName').textContent;
+  document.getElementById('docLive').className = isDraft ? '' : 'on';
+  const dt = document.getElementById('docDraft');
+  dt.className = isDraft ? 'on draft' : '';
+  dt.textContent = '草案 · ' + OBJECTS.filter(x => x.state).length + ' 项';
+  document.getElementById('docSub').textContent = isDraft
+    ? '草案 draft_json_content · 未发布（发布后才级联）'
+    : '唯一事实源 adh_ontology_models.json_content · 生效版';
+  document.getElementById('docFoot').textContent = isDraft
+    ? '草案只读：编辑请回画布 / 检查器；未发布前不影响线上口径。'
+    : '生效版只读：此处不含未发布草案；编辑请回画布 / 检查器。';
+
+  const objSel = DOC.tab === 'json' ? `<select class="input" style="width:158px;height:26px;font-size:11.5px" onchange="jumpObj(this.value)">
+      <option value="">定位对象…</option>
+      ${buildDoc(DOC.src).objects.map(o => `<option value="${o.key}">${o.display_name}（${o.key}）</option>`).join('')}
+    </select>` : '';
+  document.getElementById('docTabs').innerHTML =
+    DOC_TABS.map(([k,l]) => `<button class="${DOC.tab===k?'on':''}" onclick="setDocTab('${k}')">${l}</button>`).join('')
+    + `<div class="ops">${objSel}</div>`;
+
+  const body = document.getElementById('docBody');
+  if (DOC.tab === 'json') body.innerHTML = `<pre class="code">${docJsonHtml()}</pre>`;
+  else if (DOC.tab === 'yaml') body.innerHTML = `<pre class="code">${esc(toYaml(buildDoc(DOC.src)))}</pre>`;
+  else if (DOC.tab === 'md') body.innerHTML = `<div class="mdbox">${docMd(DOC.src)}</div>`;
+  else body.innerHTML = docSparqlView();
+
+  if (DOC.key) setTimeout(() => jumpObj(DOC.key, true), 0);
+}
+
+function jumpObj(key, silent){
+  if (!key) return;
+  DOC.key = key;
+  if (DOC.tab !== 'json'){ DOC.tab = 'json'; renderDoc(); return; }
+  const { ranges } = docJsonLines(DOC.src);
+  const r = ranges[key];
+  if (!r){ toast(`当前视图里没有「${key}」（生效版/草案差异）`); return; }
+  document.querySelectorAll('pre.code .line.hl').forEach(el => el.classList.remove('hl'));
+  for (let i = r[0]; i <= r[1]; i++) document.getElementById('docLine' + i)?.classList.add('hl');
+  document.getElementById('docLine' + r[0])?.scrollIntoView({ block:'start' });
+  const sel = document.querySelector('#docTabs select'); if (sel) sel.value = key;
+  if (!silent) toast(`已定位到 ${key}（第 ${r[0]+1}-${r[1]+1} 行）`);
+}
+
+function openDoc(src, key){
+  DOC.src = src === 'draft' ? 'draft' : 'live';
+  DOC.tab = 'json'; DOC.key = key || null; DOC.rows = null;
+  document.getElementById('docScrim').classList.add('show');
+  document.getElementById('docDrawer').classList.add('open');
+  renderDoc();
+}
+function closeDoc(){
+  document.getElementById('docScrim').classList.remove('show');
+  document.getElementById('docDrawer').classList.remove('open');
+}
+function setDocSrc(src){ DOC.src = src; DOC.rows = null; renderDoc(); }
+function setDocTab(k){ DOC.tab = k; DOC.key = null; renderDoc(); }
+function openGraphPage(){
+  toast('落地时跳 /data/knowledge-graph?model=当前模型（带上下文，不复制第二套入口）');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDoc(); });
+
+/* 收起（窄视口抽屉） */
+function closeInspector(){ document.querySelector('.inspector')?.classList.remove('open'); }
+/* 打开整页对象详情 */
+function openDetail(key){ window.open('ontology-object-detail.html#' + (key || S.selected), '_blank'); }
+
 /* toast */
 function toast(msg, kind){
   const box = document.getElementById('toastBox');
@@ -1051,7 +1503,13 @@ function toast(msg, kind){
 }
 
 /* init */
+renderModelList('');
 renderCanvas(); renderInspector(); renderTray(); applyPerms();
+/* 深链：对象详情页 → #doc=order 直接打开该对象的 canonical 片段 */
+(function(){
+  const h = location.hash.slice(1);
+  if (h.indexOf('doc=') === 0) openDoc('live', h.slice(4));
+})();
 </script>
 </body>
 </html>

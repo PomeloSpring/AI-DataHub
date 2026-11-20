@@ -7,7 +7,7 @@
 --
 -- 幂等：MySQL 的 CHANGE/ADD COLUMN 不支持 IF NOT EXISTS，重复执行会报
 --       "Duplicate column name" / "Can't DROP" —— 属预期，按语句顺序执行一次即可。
--- 配套：backend/scripts/backfill_llm_trace_usage.py 会按新列补算历史成本。
+-- 配套：历史成本已按新列一次性补算（回填脚本已下线，列语义不变）。
 
 USE adh2;
 

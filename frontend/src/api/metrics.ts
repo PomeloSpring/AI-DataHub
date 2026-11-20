@@ -68,6 +68,8 @@ export const metricsApi = {
     model_id?: number;
     scope?: 'model' | 'unbound';
     is_active?: 'all' | '1' | '0';
+    /** 归属本体对象（本体对象检查器「引用」页签按对象取口径，服务端下推 SQL） */
+    bound_object_key?: string;
   }) => client.get('/metrics/dimensions', { params }),
   updateDimension: (id: number, data: any) => client.put(`/metrics/dimensions/${id}`, data),
   // 新建全局维度字典行(与 updateDimension 对称) —— 必填 display_name + bound_object_key

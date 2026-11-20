@@ -72,13 +72,16 @@ def list_all_dimensions(
     scope: Optional[str] = Query(None, description="model | unbound | 空=全局(旧行为)"),
     is_active: Optional[str] = Query(
         None, description="all=含已停用(字典维护页用) | 1/0=只看该状态 | 空=只列生效行(旧行为)"),
+    bound_object_key: Optional[str] = Query(
+        None, description="归属本体对象(__unset__=未归属; 本体对象「引用」页签用)"),
 ):
     """维度字典列表(全局/模型工作区共用)。必须注册在 /{metric_id} 之前。"""
     if scope not in (None, "", "model", "unbound"):
         raise HTTPException(status_code=400, detail="scope 仅支持 model/unbound")
     try:
         return metrics_service.list_all_dimensions(
-            model_id=model_id, scope=scope or None, is_active=is_active)
+            model_id=model_id, scope=scope or None, is_active=is_active,
+            bound_object_key=bound_object_key)
     except ValueError as e:
         # 非法筛选值不得当成“未传”默默返回全量 —— 那会把错误参数伪装成正常结果
         raise HTTPException(status_code=400, detail=str(e))

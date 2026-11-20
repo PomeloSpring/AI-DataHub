@@ -112,6 +112,8 @@ export interface ContractObjectRow {
   product_ref: string;
   /** 对象级站点白名单：显式限定的站点 code；空 = 不收紧（上方勾选的站点全可用） */
   allowed_sites: string[];
+  /** 绑定来源：缺省 = 部署绑定层（业务/源本体）；platform = 系统本体内置对象（随版本发布，不参与取数） */
+  binding_source?: 'platform' | '';
 }
 
 /** 对象属性列候选（「编辑对象 → 属性列映射」选择框的选项；与漂移判定同源，仅列元数据已同步时有值） */
@@ -236,6 +238,11 @@ export const ontologyApi = {
     }),
   syncDoc: (id: number) =>
     client.get<{ markdown: string }>(`/catalog/ontology/models/${id}/sync-doc`),
+  /** 只读文档投影（当前**生效版**）：服务端先 hydrate 字典口径再渲染成 json/yaml/md。
+   *  只读，不走 save_draft/activate，存储的 canonical json_content 不变。 */
+  docView: (id: number, as: 'json' | 'yaml' | 'md', format: 'internal' | 'palantir' = 'internal') =>
+    client.get<{ format: string; as: string; text: string; cached?: boolean }>(
+      `/catalog/ontology/models/${id}/view`, { params: { format, as } }),
   versions: (id: number) =>
     client.get<{ items: OntologyModelSummary[] }>(`/catalog/ontology/models/${id}/versions`),
   save: (id: number, jsonContent: string, name?: string) =>
