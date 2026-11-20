@@ -13,7 +13,12 @@
   并在对象描述里显式写明「运维专属，不对 AI 开放」（data-sync-engineering §2）。
 - 关系（links）的 target 必须是本目录内对象 key；规则/场景对行为与对象的引用必须可解析
   （`ontology_service.find_m234_issues` 在保存/激活时会校验）。
+- 每个对象都必须在 `CAPABILITY_PERM_CODES` 或 `CAPABILITY_NO_OWN_CODE` 里声明
+  「该能力由哪个权限码把关」（未声明的能力 = 不可授予 = 隐式仅管理员，必须显式记账）：
+  能不能用只看角色是否持有该码（口径见 `.qoder/rules/ontology-modeling.md` §9）。
 """
+
+import re
 
 
 def _p(col: str, name: str, typ: str, key: bool = False, desc: str = "") -> tuple:
@@ -496,6 +501,7 @@ OBJECTS: list[dict] = [
     _obj(
         "permission", "权限点", ["功能权限", "PERMISSION"],
         "权限点登记表（adh_perm_registry）：角色勾选的权限码（adh_role_perms）由此取标签与 AI 口径。"
+        "api_pattern/api_method 是权限码与接口的绑定（中间件按角色持码取并集放行，fnmatch 的 * 会跨 /）；"
         "ai_access=write 的权限码才会映射为 AI 写动作；数据工程域恒为 none（运维专属）。",
         "adh_perm_registry",
         [
@@ -509,6 +515,10 @@ OBJECTS: list[dict] = [
             _p("ai_access", "AI 开放级别", "enum", False, "none/read/write"),
             _p("ai_action_key", "AI 动作键", "varchar", False, "为空表示不对应任何 AI 动作"),
             _p("ai_note", "AI 口径说明", "varchar", False, "不开放给 AI 的域在此写明原因"),
+            _p("api_pattern", "接口匹配式", "text", False,
+               "逗号分隔多条，fnmatch 匹配；* 会跨 /，子路径须用字面量后缀锚定"),
+            _p("api_method", "接口方法", "varchar", False,
+               "GET/POST/PUT/DELETE，逗号分隔；与 pattern 求笛卡尔积"),
             _p("is_active", "是否启用", "tinyint"),
         ],
         [
@@ -1183,6 +1193,117 @@ OBJECTS: list[dict] = [
 ]
 
 
+# ── 能力 ↔ 权限码绑定（回答「这个功能要哪个码 / 这个码管哪些接口」）──
+# 真值源：`adh_perm_registry`（api_pattern + api_method）+ `adh_role_perms`；
+# 口径矩阵见 `.qoder/rules/ontology-modeling.md` §9.2。改绑定必须三处同批：
+# 本表 → 绑定迁移 SQL → 重跑 `refresh_system_ontology.py --apply`（否则本体继续教旧口径）。
+# 未登记任何权限码的能力用 CAPABILITY_NO_OWN_CODE 显式记账，原因只允许两类：
+# ① 个人自助（中间件按属主放行，补码会与属主校验重复裁决）；
+# ② 路由层 require_admin 把门（补码也不放行，要先改路由依赖）。
+# 不得静默省略，也不得笼统写「仅管理员可达」：省略会让 AS-BOT 把「谁都能用」当事实，
+# 笼统写法会让人误以为补个码就能开放。
+CAPABILITY_PERM_CODES: dict[str, tuple[str, ...]] = {
+    "ontology_model": ("ontology:read", "ontology:save", "ontology:publish",
+                       "ontology:activate", "ontology:generate", "ontology:import",
+                       "ontology:create", "catalog:read", "catalog:manage"),
+    "as_bot": ("asbot:read", "asbot:manage", "asbot:use"),
+    "knowledge_base": ("kb:read", "kb:manage"),
+    "datasource": ("datasource:read", "datasource:manage"),
+    "skill": ("skill:read", "skill:manage"),
+    "role": ("role:read", "role:manage"),
+    "menu": ("role:read", "role:manage"),
+    "permission": ("role:read", "role:manage"),
+    "report": ("report:read", "report:manage"),
+    "report_template": ("report-template:read", "report-template:manage"),
+    "dashboard": ("dashboard:read", "dashboard:manage"),
+    "dashboard_design": ("dashboard:read", "dashboard:manage"),
+    "scheduled_task": ("scheduled:read", "scheduled:manage", "scheduled:execute"),
+    "quality_rule": ("quality:read", "quality:manage"),
+    "quality_result": ("quality:read",),
+    "dataset": ("dataset:read", "dataset:manage", "dataset:query"),
+    "metric": ("metrics:read", "metrics:manage"),
+    "dimension": ("metrics:read", "metrics:manage"),
+    "user": ("user:read", "user:manage"),
+    "workspace": ("workspace:read", "workspace:manage"),
+    "data_product": ("catalog:read", "dataset:manage"),
+    "vis_component": ("vis:read", "vis:manage"),
+    "content_article": ("article:read", "article:manage", "article:publish",
+                        "article:review"),
+    "content_category": ("article:read", "article:manage"),
+    "decision_advice": ("decision:read", "decision:manage", "decision:publish"),
+    "tag": ("tags:read", "tags:manage"),
+    # 术语写面（POST/PUT/DELETE /api/admin/terms*）由路由层 require_admin 把关，尚无独立管理码
+    "business_term": ("glossary:read",),
+    # 别名候选的 HTTP 面（/api/as-bot/alias-suggestions*）目前仅 admin 可达，路由内另按
+    # ontology:save 复核（require_write_perm）；两个码分别对应读/写语义
+    "alias_suggestion": ("catalog:read", "ontology:save"),
+    "sensitive_field": ("sensitive:read", "sensitive:manage"),
+    "rls_policy": ("rls:read", "rls:manage"),
+    "data_standard": ("standard:read", "standard:manage"),
+    "lineage_node": ("lineage:read", "lineage:manage"),
+    "lineage_edge": ("lineage:read", "lineage:manage"),
+    # 站点清单/授权站点是数据源域的派生视图（/api/datasources/sites*、/authorized-sites）
+    "site": ("datasource:read", "datasource:manage", "chat:use"),
+    # 集成应用（AK 嵌入）：/api/embed/applications*、/api/embed/logs
+    "application": ("embed:read", "embed:manage"),
+    # 已保存查询/查询数据集：/api/playground/queries*
+    "saved_query": ("playground:read", "playground:manage"),
+    "execution_layer": ("chat:use",),
+    "mcp_server": ("mcp:read", "mcp:manage"),
+    "llm_model": ("model:read", "model:manage"),
+    "sandbox_environment": ("sandbox:read", "sandbox:manage"),
+    "notification_channel": ("notification:read", "notification:manage"),
+    "conversation": ("chat:use",),
+    "eval_case": ("eval:read", "eval:manage", "eval:gate"),
+    "llm_trace": ("observability:read",),
+    "audit_log": ("audit:read",),
+    "release_note": ("release-note:manage",),
+    "sync_task": ("sync:read", "sync:manage", "sync:execute", "sync-logs:read"),
+    "dag_workflow": ("dag:read", "dag:manage"),
+    "udf": ("udf:read", "udf:manage"),
+}
+
+CAPABILITY_NO_OWN_CODE: dict[str, str] = {
+    "user_asset": "/api/assets* 属个人自助：中间件 _SELF_ROUTE_PATTERNS 按属主放行（不按权限码拦，"
+                  "跨空间资产跟随用户），菜单显隐用 asset:read（workspace:assets）；域码会与属主校验重复裁决",
+}
+
+_PERM_CODE_RE = re.compile(r"^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)+$")
+
+
+def _attach_perm_bindings(objects: list[dict]) -> list[dict]:
+    """把「能力 → 权限码」绑定挂到对象 links（requires_permission），不改其它字段。
+
+    写进本体而不是只留在权限表里，是因为 AS-BOT 只能看到本体/知识库：
+    「这个功能谁能用、由哪个码把关」必须以本体为可读载体，否则模型只会猜。
+    """
+    import copy as _copy
+
+    out = _copy.deepcopy(objects)
+    for obj in out:
+        key = str(obj.get("key") or "")
+        codes = CAPABILITY_PERM_CODES.get(key)
+        if codes is None:
+            reason = CAPABILITY_NO_OWN_CODE.get(key)
+            if reason is None:
+                # 未声明绑定：留给 validate_catalog 判红，这里不替它兜底
+                continue
+            # 不能写死「仅管理员可达」：无码分两类（路由层 require_admin / 个人自助属主校验），
+            # 真实原因以 reason 文字为准（no-silent-degradation：不得用笼统说法掩过差异）
+            desc = f"当前无独立权限码（原因：{reason}）"
+        else:
+            desc = ("由权限码 " + "、".join(codes) + " 把关"
+                    "（UI 显隐 hasPerm / HTTP 中间件 api_pattern / AI 侧 require_write_perm 三处同码）")
+        obj.setdefault("links", []).append({
+            "target": "permission",
+            # 与 menu 的 gated_by（菜单挂载权限点）区分：这里是「该能力需要哪些权限码」
+            "type": "requires_permission",
+            "cardinality": "N:N",
+            "description": desc,
+        })
+    return out
+
+
 RULES: list[dict] = [
     {
         "key": "perm_admin_full_by_role_perms",
@@ -1243,6 +1364,83 @@ RULES: list[dict] = [
                      "不得绕过级联直接改派生表",
         "source": "ontology-modeling §1",
         "enforcement": {"rule": "draft_then_publish"},
+    },
+    {
+        "key": "perm_capability_own_code",
+        "type": "permission",
+        "statement": "平台每项能力只由它自己的权限码把关：UI 显隐（hasPerm）、HTTP 中间件（api_pattern）、"
+                     "AI 侧（require_write_perm）三处必须同码；子路径用字面量后缀锚定，"
+                     "禁用 /models* 这类宽模式（一行方法集跨 pattern 求笛卡尔积，会连带放行同前缀其它动作）。",
+        "source": "ontology-modeling §9.3",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "allow", "perm_code": "*"},
+    },
+    {
+        "key": "perm_ontology_write_codes",
+        "type": "permission",
+        "statement": "本体写动作分码把关：保存草案 ontology:save、发布 ontology:publish、"
+                     "激活/归档/恢复 ontology:activate、生成 ontology:generate、导入 ontology:import；"
+                     "发布是独立动作与独立码，不得被激活码带过。",
+        "source": "ontology-modeling §9.2",
+        "enforcement": {"subject": "role:*", "action": "ontology.save", "level": "allow",
+                          "perm_code": "ontology:save"},
+    },
+    {
+        "key": "perm_graph_write_graph_manage",
+        "type": "permission",
+        "statement": "重建/同步命名图与原生 SPARQL（/api/graph/query 可按语句 form 执行 update）归 graph:manage；"
+                     "读图 GET 归 graph:read；裸三元组写入 POST /api/graph/{nodes,relations} 当前无本体域码（仅管理员）。",
+        "source": "ontology-modeling §9.2",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
+                          "perm_code": "graph:manage"},
+    },
+    {
+        "key": "perm_kb_sync_kb_manage",
+        "type": "permission",
+        "statement": "模型→知识库同步（kb-sync）与挂接知识库归 kb:manage；kb:read 只读，"
+                     "知识库动作不得挂在 ontology:activate 上。",
+        "source": "ontology-modeling §9.2",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
+                          "perm_code": "kb:manage"},
+    },
+    {
+        "key": "perm_union_no_isolation",
+        "type": "permission",
+        "statement": "角色持多码按并集放行：catalog:read / catalog:manage 的 /api/catalog* 覆盖整个本体前缀，"
+                     "收回 ontology:* 码并不等于收回能力；建只读本体角色前必须先收窄 catalog 码（并给数据产品独立码）。",
+        "source": "ontology-modeling §9.4",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
+                          "perm_code": "catalog:read"},
+    },
+    {
+        "key": "perm_no_code_is_admin_only",
+        "type": "permission",
+        "statement": "下面这些路径不匹配任何权限码，中间件 fail-closed（403），实际只有管理员旁路可达："
+                     "运维/管理端点 /api/admin/terms*、/api/admin/metadata*、/api/admin/table-info*、"
+                     "/api/admin/relations* 写面、/api/admin/sync*、/api/admin/execution-layers*、"
+                     "/api/admin/cache*、/api/admin/menu-tree* 写面、/api/admin/brand 写面、/api/admin/release-notes*、"
+                     "/api/task-monitor*、/api/model-train*、POST /api/graph/{nodes,relations}，"
+                     "这些路由另由 require_admin 依赖把门（不是靠码）。"
+                     "新增能力必须登记权限码，不得把 admin 旁路当默认授权。",
+        "source": "ontology-modeling §9.4 / api_permission fail-closed",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "deny"},
+    },
+    {
+        "key": "perm_self_service_owner_only",
+        "type": "permission",
+        "statement": "个人自助面不按权限码拦，而由中间件白名单 + 路由层属主校验把关（只看自己的数据）："
+                     "/api/assets*（个人资产）、/api/release-notes* 读（公告与已读状态）、/api/memory*（用户记忆）、"
+                     "/api/workspace-assets/*（空间文件）、/api/chat/session-file*（会话文件）、/api/users/me*；"
+                     "个人资产菜单显隐仍用 asset:read。给这些面另设域码等于与属主校验重复裁决，不采用。",
+        "source": "ontology-modeling §9.2 / api_permission _SELF_ROUTE_PATTERNS",
+        "enforcement": {"subject": "role:*", "action": "*", "level": "allow"},
+    },
+    {
+        "key": "perm_ai_channel_two_consumers",
+        "type": "permission",
+        "statement": "AI 可调用级别只有两类消费方：功能工具登记（ai_action_key）与执行期权限码把关"
+                     "（perm_link.PERM_GATED_ACTION_PERMS）；两者皆无即 none（配了不生效，不得当能力广告）。",
+        "source": "as-bot-system-waker §3",
+        "enforcement": {"subject": "ai:as_bot", "action": "*", "level": "deny"},
     },
 ]
 
@@ -1328,6 +1526,19 @@ SCENARIOS: list[dict] = [
         "uses_rules": ["constraint_data_engineering_ai_closed"],
         "eval_seed": ["能让 AI 帮我建一个同步任务吗？"],
     },
+    {
+        "key": "ops_capability_lookup",
+        "title": "能力与权限码核查",
+        "goal": "回答「这个功能要什么权限码、由哪个菜单开、码管哪些接口、哪些能力还没有码」",
+        "actors": ["role:admin"],
+        "uses_objects": ["permission", "menu", "role", "as_bot", "ontology_model"],
+        "uses_actions": [],
+        "uses_rules": ["perm_capability_own_code", "perm_no_code_is_admin_only",
+                        "perm_ai_channel_two_consumers"],
+        "eval_seed": ["重建本体图谱需要什么权限码？",
+                      "哪些功能还没有权限码，只能管理员用？",
+                      "这个权限码管哪些接口？"],
+    },
 ]
 
 
@@ -1349,10 +1560,11 @@ _FORBIDDEN_COLUMNS = frozenset({
 })
 
 
-def validate_catalog() -> list[str]:
-    """目录自检（fail-loud）：key 唯一、引用可解析、无涉密列。返回错误清单。"""
+def validate_catalog(objects: list[dict] | None = None) -> list[str]:
+    """目录自检（fail-loud）：key 唯一、引用可解析、无涉密列、能力绑定齐全。返回错误清单。"""
+    objects = OBJECTS if objects is None else objects
     errors: list[str] = []
-    keys = [str(o.get("key") or "") for o in OBJECTS]
+    keys = [str(o.get("key") or "") for o in objects]
     if len(keys) != len(set(keys)):
         errors.append("对象 key 重复: " + ", ".join(sorted({k for k in keys if keys.count(k) > 1})))
     key_set = set(keys)
@@ -1387,14 +1599,52 @@ def validate_catalog() -> list[str]:
             for ref in (s.get(field) or []):
                 if str(ref) not in valid:
                     errors.append(f"场景 {s.get('key')} 的 {field} 引用了不存在的项: {ref}")
+    errors.extend(_binding_errors(key_set))
+    return errors
+
+
+def _binding_errors(key_set: set[str]) -> list[str]:
+    """能力↔权限码绑定的自检：每个对象必须恰好一种声明，码必须合法且写进规则 statement。"""
+    errors: list[str] = []
+    overlap = set(CAPABILITY_PERM_CODES) & set(CAPABILITY_NO_OWN_CODE)
+    if overlap:
+        errors.append("能力绑定重复声明（不能同时有码与无码）: " + ", ".join(sorted(overlap)))
+    declared = set(CAPABILITY_PERM_CODES) | set(CAPABILITY_NO_OWN_CODE)
+    unknown = declared - key_set
+    if unknown:
+        errors.append("能力绑定引用了不存在的对象: " + ", ".join(sorted(unknown)))
+    missing = key_set - declared
+    if missing:
+        errors.append("以下对象未声明能力↔权限码绑定（必须进 CAPABILITY_PERM_CODES 或"
+                      " CAPABILITY_NO_OWN_CODE）: " + ", ".join(sorted(missing)))
+    for okey, codes in CAPABILITY_PERM_CODES.items():
+        if not codes:
+            errors.append(f"对象 {okey} 的能力绑定为空（无码请改用 CAPABILITY_NO_OWN_CODE 并写原因）")
+        for code in codes:
+            if not _PERM_CODE_RE.match(str(code)):
+                errors.append(f"对象 {okey} 绑定了非法权限码: {code!r}")
+    for okey, reason in CAPABILITY_NO_OWN_CODE.items():
+        if not str(reason or "").strip():
+            errors.append(f"对象 {okey} 声明无权限码但未写原因（不得静默留空）")
+    # 码只进 enforcement 不写 statement 等于白配：上云投影剥掉 enforcement，模型只看得到 statement
+    for r in RULES:
+        code = str((r.get("enforcement") or {}).get("perm_code") or "")
+        if code and code != "*" and code not in str(r.get("statement") or ""):
+            errors.append(f"规则 {r.get('key')} 的 perm_code={code} 未写进 statement"
+                          "（AS-BOT 只读 statement，enforcement 不上云）")
     return errors
 
 
 def build_system_ontology_doc() -> dict:
-    """组装系统本体 canonical doc（确定性输出，不含时间戳）。"""
+    """组装系统本体 canonical doc（确定性输出，不含时间戳）。
+
+    对象先挂「能力 → 权限码」绑定（`requires_permission`）再自检：AS-BOT 只能看到本体/知识库，
+    「这个功能要哪个码、码管哪些接口、哪些能力还没码」必须以本体为可读载体。
+    """
     import copy
 
-    problems = validate_catalog()
+    objects = _attach_perm_bindings(OBJECTS)
+    problems = validate_catalog(objects)
     if problems:
         raise ValueError("系统本体目录自检失败: " + "; ".join(problems[:20]))
     return {
@@ -1402,7 +1652,7 @@ def build_system_ontology_doc() -> dict:
         "description": SYSTEM_DESCRIPTION,
         "kind": "system",
         "sources": [],
-        "objects": copy.deepcopy(OBJECTS),
+        "objects": objects,
         "rules": copy.deepcopy(RULES),
         "scenarios": copy.deepcopy(SCENARIOS),
     }

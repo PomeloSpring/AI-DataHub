@@ -57,3 +57,84 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - 涉及取数执行链（planner/semantic_query/gates）另按护栏 §11 跑护城河三件套。
 - 触碰站点拓扑或 `binding_resolver` 的站点路由/`deploy_sites` 读写后，另跑 `tests/test_site_scope.py` + `tests/test_cross_site.py`（锁定：契约行只一行、跳站路由后产品身份随站刷新、未声明站点/路由目标不匹配均拒、未配置 deploy_sites 行为零变化、对象级白名单（未列对象=全部声明站点可用；列了=只这些站点可查，路由与本站精确命中两条路径都拒；越出声明站点/对象悬空均报错；`list_deployments` 与取数门同口径））。
 新增建模/解析行为分支必须同步新增 eval 用例（尤其：别名命中档位、孤儿引用阻断、上云脱敏、模糊回抛）。
+- 改本体/图谱**接口或权限绑定**后另跑 `tests/test_ontology_perm_binding.py`（见 §9）。
+
+## 9. 权限标识与能力可见性（能不能看/能不能改 = 角色是否持有权限码）
+
+> 本体的每项能力与每个接口都由**权限码（perm_code）**把关，没有"登录了就能改"的通道：
+> 能否使用，只看调用者所属角色是否持有对应码（`adh_role_perms`），且 **UI 显隐 / HTTP 裁决 / AI 把关三处必须同码**。
+> 新增或改动本体能力时不补这一层，就是"看得见点不动"（点了必 403）或"看不见也能调"（权限形同虚设）。
+
+### 9.1 真值源与生效点
+- 三件真值源：`adh_perm_registry`（`perm_code` / `api_pattern` + `api_method` / `menu_key` / `ai_access` / `ai_action_key`）、`adh_role_perms`（角色持码）、`adh_menu_registry`（菜单显隐，按 `perm_code` 反查）。
+- 四层生效点，缺一层即口径分裂：
+  1. **菜单显隐**：`adh_menu_registry.perm_code` → `/roles/current/permissions` 下发 menus（规则见 `menu-permission-sync.md`）；
+  2. **前端显隐**：`hasPerm('<码>')` 决定按钮/页签是否渲染——**不渲染点了必 403 的治理按钮**（样板：`GraphRebuildButton`）；
+  3. **HTTP 裁决**：`backend/common/api_permission` 中间件按角色持码展开 `api_pattern`（逗号分隔多值、方法精确匹配；`fnmatch` 的 `*` **跨 `/`**；无匹配即 403；admin 旁路）；
+  4. **AI 侧**：`require_write_perm(user_id, ws, '<码>', '<动作>')` 在 AS-BOT 写动作执行前把关，并把该码登记进 `perm_link.PERM_GATED_ACTION_PERMS`（否则角色页把它误报"未接 AI"）。
+
+### 9.2 能力 ↔ 权限码（当前落地；绑定迁移：`docker/mysql/ontology_perm_binding_migration.sql` + `docker/mysql/capability_perm_gap_migration.sql`）
+| 能力 | 权限码 | 接口落点 |
+|---|---|---|
+| 查看本体/对象/草案/版本/同步状态/生成任务/KB 候选 | `ontology:read` | GET `/api/catalog/ontology/*`（全前缀） |
+| 保存 canonical doc（对象增删改、站点白名单、挂 KB） | `ontology:save` | PUT `/api/catalog/ontology/models*` |
+| 发布草案（级联生效：objects→bindings→图→KB） | `ontology:publish` | POST `/models/*/publish` |
+| 激活 / 归档 / 恢复 | `ontology:activate` | POST `/models/*/{activate,archive,restore}` |
+| 生成本体草案、取消生成任务 | `ontology:generate` | POST `/generate*` |
+| 导入 YAML | `ontology:import` | POST `/import-yaml` |
+| 重建命名图（系统图 ds:-1 / 聚合图 ds:0 / 本源图 ds:N） | `graph:manage` | POST `/api/graph/{sync,rebuild}` |
+| 原生 SPARQL / 最短路径（`/query` 可执 update） | `graph:manage` | POST `/api/graph/{query,shortest-path}` |
+| 读图（节点/统计/检索/邻接） | `graph:read` | GET `/api/graph*` |
+| 同步模型到知识库、挂接知识库 | `kb:manage` | POST `/models/*/kb-sync`、`PUT /models/*/kb`、`/api/knowledge-bases*` |
+| 网页侧新增对象 | 走 `ontology:save`（无独立 POST `/objects`） | — |
+| 新增本体对象（**仅 AI 通道**） | `ontology:create` | `create_ontology_object`（HTTP 无落点） |
+| 标签清单/分类/取值（读写） | `tags:read` / `tags:manage` | GET `/api/tags*` / POST,PUT,DELETE `/api/tags*` |
+| 已保存查询/查询数据集（读/改删） | `playground:read` / `playground:manage` | GET `/api/playground/queries*` / PUT,DELETE 同前缀（POST 建归 `playground:execute`） |
+| 手工登记血缘、SQL 血缘解析 | `lineage:manage` | POST `/api/lineage/{nodes,edges,parse-sql}` |
+| 集成应用（AK 嵌入）读/写 | `embed:read` / `embed:manage` | GET `/api/embed/applications*,/api/embed/logs` / POST,PUT,DELETE `/api/embed/applications*` |
+| 定时任务/同步任务启停 | `scheduled:manage` / `sync:manage` | PATCH `/api/scheduled-tasks/tasks/*/toggle`、PATCH `/api/sync/tasks/*/toggle` |
+| 站点清单 / 可查站点 | `datasource:read`、`datasource:manage`（清单）/ `chat:use`（`authorized-sites` 派生视图） | GET/POST/DELETE `/api/datasources/sites*`、GET `/api/datasources/authorized-sites` |
+| 个人资产（列表/下载/归档） | **无域码**：中间件 `_SELF_ROUTE_PATTERNS` 按属主放行；菜单显隐用 `asset:read` | `/api/assets*` |
+
+### 9.3 纪律（新增/改本体能力必须同批完成）
+1. `api_pattern` / `api_method` 登记：子路径用**字面量后缀**锚定（如 `.../models/*/publish`），**禁用 `/models*` 这类宽模式兜**——一行的方法集是跨 pattern 求笛卡尔积，宽模式会把同前缀的其它动作一起放行；
+2. `menu_key` 归属（读码归消费菜单、写码归管理菜单，同菜单多码靠 `perm_registry.menu_key` 并集反查）；
+3. 前端 `hasPerm` 同码显隐；
+4. 给 AI 的写动作补 `require_write_perm` + `PERM_GATED_ACTION_PERMS`，并核对 `ai_access` 级别；
+5. 绑定变更走**幂等迁移**（`docker/mysql/*.sql`，UPDATE 带条件）并**应用到当前库**核验（改完等 60s 中间件缓存过期或用 `invalidate_perm_cache()`）。
+
+### 9.4 已知口径风险与例外（诚实记账，收敛前不得当成"已隔离"）
+- **`catalog:read` / `catalog:manage` 仍按 `/api/catalog*` 覆盖整个 `/api/catalog/ontology/*`** → 收回 `ontology:*` 码并不等于收回能力（中间件按并集放行）。当前只有 admin/analyst 同时持有两组码，尚无角色差异暴露；在新建"只读本体"角色前必须先把 catalog 码收窄（同时给 `/api/catalog/data-products*` 独立码，否则会连带打挂数据产品）。
+- **`DELETE /models/{id}` 与 `DELETE /models/{id}/draft` 只由 `catalog:manage` 写域把关**（本体码无 DELETE 落点；丢弃草案端点内另要求 `ontology:save`，构成双码交集）。收敛方向：给删除动作单独码，或改成受本体写码覆盖的子路径。
+- **`POST /api/graph/{nodes,relations}`（裸三元组写入）无本体域码**，目前 admin 专用；面向用户的 SPARQL 视图走 `/graph/query`（归 `graph:manage`）。
+
+### 9.5 回归
+- `tests/test_ontology_perm_binding.py` 锁四件事：每个本体/图谱路由都被本体域码覆盖（例外集合只能少不能多）；`publish` 只归 `ontology:publish`；`kb-sync` 归 `kb:manage`；本体前缀下全部 GET 归 `ontology:read`。改绑定先改 `docker/mysql/ontology_perm_binding_migration.sql` 再跑此用例。
+- `tests/test_system_ontology_catalog.py` 锁系统能力本体这一层：`permission` 必须投影 `api_pattern`/`api_method`；**每个对象**都必须在 `CAPABILITY_PERM_CODES` 或 `CAPABILITY_NO_OWN_CODE` 里声明，未声明即红；绑定会以 `requires_permission` 关系进 canonical doc；本体点名/规则点名的码必须在 `adh_perm_registry` 真实生效（库不可用时 skip）。
+- `tests/test_capability_perm_bindings.py` 锁「有页面/有接口就有码」：此前无码的 16 条路由（标签读、已保存查询读写、血缘写、集成应用、两个 PATCH 启停）必须仍被码覆盖；新码的 pattern/method 不得漂移；新码必须已授权给持有同域码的既有角色；个人自助面不得再套域码；「无码 = 仅管理员」规则不得回引已补码路径。
+
+### 9.6 系统能力本体是权限口径的 LLM 可读层（动态本体的「更全面」就落在这里）
+
+> `adh_perm_registry` 里的绑定对模型是黑盒：AS-BOT 只能看到系统本体与知识库。
+> 不让本体携带「能力 → 码 → 接口」，模型就只能猜「这个功能谁都能用」，比不知道更危险。
+
+**单一事实源与镜像关系**
+- 结构化声明：`backend/modules/catalog/services/system_ontology_catalog.py` 的 `CAPABILITY_PERM_CODES`（能力 → 码）与 `CAPABILITY_NO_OWN_CODE`（无码能力 + 原因）。
+- 接口绑定：`permission` 对象的 `api_pattern` / `api_method` 是 `adh_perm_registry` 同名列的投影（只读，不在本体侧编辑）。
+- 口径矩阵：本文 §9.2 是人工可读版；三处（catalog 表 / 迁移 SQL / §9.2）**同批修改**。
+
+**落地纪律**
+1. 新增能力对象必须同批声明权限码；确实暂无码的，进 `CAPABILITY_NO_OWN_CODE` 并写清**真实原因**（个人自助属主校验 / 路由层 `require_admin` 把门），**禁止省略**，也禁止笼统写「仅管理员可达」——它会让人误以为补码就能开放。
+2. 规则（M3）里凡声明某能力由某码把关，该码必须**写进 `statement`**——上云投影（`to_cloud_md`）只渲染 statement/source，`enforcement` 不上云，码只放 enforcement 等于没告诉模型。
+3. 绑定进 doc 用关系 `requires_permission`（与菜单的 `gated_by` 区分：后者是「菜单挂载权限点」）；每个对象恰好一条。
+4. 改完必须重跑 `./venv/bin/python -m backend.scripts.refresh_system_ontology --apply`（走 `save_draft → 级联 → 图谱 → KB 同步`），并在库里核 `object_count` 与 `adh_ontology_objects` 行数一致；只改 py 不落库 = 本体继续教旧口径。
+
+**当前无码能力（诚实记账，收敛前不得当「已隔离」）**
+
+2026-11-20 按 openapi 全路由 × `adh_perm_registry` 逐条 fnmatch 实探，把「无码」分成三类，不得混为一谈：
+
+1. **已补码（本文 §9.2 已登记）**：标签读 `tags:read`、已保存查询写 `playground:manage`（`playground:read` 补 GET pattern）、血缘写 `lineage:manage`、集成应用 `embed:read`/`embed:manage`、定时/同步启停补 PATCH。迁移与角色默认授权见 `capability_perm_gap_migration.sql`。
+2. **个人自助（不该补码）**：`/api/assets*`、`/api/release-notes*` 读、`/api/memory*`、`/api/workspace-assets/*`、`/api/chat/session-file*` —— 中间件 `_SELF_ROUTE_PATTERNS` + 路由层属主校验，域码会构成第二套裁决（规则 `perm_self_service_owner_only`）。
+3. **路由层 `require_admin` 把门（补码也不放行）**：`/api/admin/terms*`、`/api/admin/metadata*`、`/api/admin/table-info*`、`/api/admin/relations*` 写面、`/api/admin/sync*`、`/api/admin/execution-layers*`、`/api/admin/cache*`、`/api/admin/menu-tree*` 写面、`/api/admin/brand` 写面、`/api/admin/release-notes*`、`/api/task-monitor*`、`/api/model-train*`、`POST /api/graph/{nodes,relations}`（另见 §9.4）。
+
+**收敛方向**：要开放第 3 类，先改路由依赖（`require_admin` → 按码裁决）**再**补码并同批授权，顺序反了就是空承诺（角色页能勾、接口仍 403）。第 2 类不要补码。第 1 类改口径必须三处同批（catalog 表 / 迁移 SQL / §9.2）。

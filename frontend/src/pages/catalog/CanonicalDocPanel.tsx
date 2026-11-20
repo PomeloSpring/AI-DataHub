@@ -16,6 +16,7 @@ import { Check, Copy, FileText, Loader2, Play, RotateCw, X } from 'lucide-react'
 import { toast } from '@/lib/toast';
 import client from '@/api/client';
 import { ontologyApi } from '@/api/ontology';
+import { hasPerm } from '@/stores/permissionStore';
 import { useTranslation } from 'react-i18next';
 
 const DOC_FORMATS = [
@@ -269,12 +270,15 @@ export default function CanonicalDocPanel({ open, onOpenChange, modelId, modelNa
               {f.key === 'md' ? t('k_6af87bfe5d') : f.label}
             </button>
           ))}
-          <button type="button" onClick={() => { setPane('sparql'); setHlLine(-1); }}
-            className={`h-7 px-2.5 text-xs transition-colors ${pane === 'sparql'
-              ? 'border-b-2 border-primary font-medium text-primary'
-              : 'text-muted-foreground hover:text-foreground'}`}>
-            {t('k_5e42489108')}
-          </button>
+          {/* SPARQL 档位打的是 POST /graph/query（可执 update），服务端归 graph:manage；无码不渲染 */}
+          {hasPerm('graph:manage') && (
+            <button type="button" onClick={() => { setPane('sparql'); setHlLine(-1); }}
+              className={`h-7 px-2.5 text-xs transition-colors ${pane === 'sparql'
+                ? 'border-b-2 border-primary font-medium text-primary'
+                : 'text-muted-foreground hover:text-foreground'}`}>
+              {t('k_5e42489108')}
+            </button>
+          )}
           {pane === 'doc' && (
             <span className="ml-2 text-[11px] text-muted-foreground">{lines.length ? `${lines.length}` : ''}</span>
           )}

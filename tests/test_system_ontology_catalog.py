@@ -142,3 +142,74 @@ def test_system_property_drift_checks_real_columns(monkeypatch):
     assert list(drift) == ["role"], "纯概念对象/实存列不得产生漂移条目"
     assert drift["role"] == [{"property": "角色名", "column": "adh_roles.nope",
                               "table": "adh_roles", "verdict": "bad"}]
+
+
+def test_permission_object_exposes_api_binding():
+    """权限点必须能回答「这个码管哪些接口」：api_pattern/api_method 是真实表列，不得漏投影。"""
+    perm = next(o for o in catalog.OBJECTS if o["key"] == "permission")
+    cols = {p["column"].rsplit(".", 1)[-1] for p in perm["properties"]}
+    assert {"api_pattern", "api_method"} <= cols, (
+        f"permission 对象缺接口绑定列（只剩 {sorted(cols)}）——"
+        "AS-BOT 无法回答「这个权限码管哪些接口」")
+
+
+def test_every_object_declares_capability_binding():
+    """每个能力对象都要声明「由哪个权限码把关」；无码的必须显式记账原因（不得静默省略）。"""
+    keys = {o["key"] for o in catalog.OBJECTS}
+    declared = set(catalog.CAPABILITY_PERM_CODES) | set(catalog.CAPABILITY_NO_OWN_CODE)
+    assert keys - declared == set(), f"以下对象未声明能力↔权限码绑定: {sorted(keys - declared)}"
+    assert declared - keys == set(), f"绑定表引用了不存在的对象: {sorted(declared - keys)}"
+    overlap = set(catalog.CAPABILITY_PERM_CODES) & set(catalog.CAPABILITY_NO_OWN_CODE)
+    assert overlap == set(), f"同一对象不能既声明有码又声明无码: {sorted(overlap)}"
+
+
+def test_capability_bindings_reach_the_doc():
+    """绑定必须真的进 canonical doc（links.requires_permission）：只写在常量表里等于没告诉模型。"""
+    doc = catalog.build_system_ontology_doc()
+    for obj in doc["objects"]:
+        links = [l for l in obj.get("links") or []
+                 if l.get("target") == "permission"
+                 and l.get("type") == "requires_permission"]
+        assert len(links) == 1, f"{obj['key']} 缺能力↔权限码绑定关系（requires_permission）"
+        assert links[0]["description"].strip(), f"{obj['key']} 的绑定关系缺说明"
+
+
+def _registry_codes():
+    """active 权限码集合（元数据库不可用时返回 None，由用例 skip）。"""
+    try:
+        import pymysql
+
+        env = {}
+        path = os.path.join(os.path.dirname(__file__), "..", "backend", ".env")
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+        conn = pymysql.connect(
+            host=env["METADATA_DB_HOST"], port=int(env["METADATA_DB_PORT"]),
+            user=env["METADATA_DB_USER"], password=env["METADATA_DB_PASSWORD"],
+            database=env["METADATA_DB_DATABASE"], charset="utf8mb4", autocommit=True)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT perm_code FROM adh_perm_registry WHERE is_active=1")
+            return {str(r[0]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def test_bound_codes_exist_in_registry():
+    """本体里点名的权限码必须在 adh_perm_registry 真实生效（防写出不存在的码教坏模型）。"""
+    codes = _registry_codes()
+    if codes is None:
+        import pytest
+
+        pytest.skip("元数据库不可用，跳过权限码存在性断言")
+    bound = {c for cs in catalog.CAPABILITY_PERM_CODES.values() for c in cs}
+    bound |= {str((r.get("enforcement") or {}).get("perm_code") or "")
+              for r in catalog.RULES}
+    bound.discard("")
+    bound.discard("*")
+    assert bound - codes == set(), f"本体绑定了库里不存在的权限码: {sorted(bound - codes)}"

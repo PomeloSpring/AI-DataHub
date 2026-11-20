@@ -29,6 +29,7 @@ import { yaml } from '@codemirror/lang-yaml';
 import { markdown } from '@codemirror/lang-markdown';
 import { ModelGraphTab, SyncBadges } from './ModelAssetTabs';
 import GraphRebuildButton from './GraphRebuildButton';
+import { hasPerm } from '@/stores/permissionStore';
 import { useTranslation } from 'react-i18next';
 import { t as i18nTr } from '@/i18n/runtime';
 
@@ -294,32 +295,36 @@ export default function OntologyGraphView() {
                   }} />
                 {/* 同步目标库选择：默认按模型 kind 路由（业务/系统→全局库、源本体不同步）；
                     选具体库=一次性定向推送到该库（含源本体，用户主动的手动例外） */}
-                <Select value={selectedKbId} onValueChange={(v) => setSelectedKbId(v)}
-                        disabled={syncingKb}>
-                  <SelectTrigger className="w-44 h-8 text-xs" title={t("k_343e6fa5bb")}>
-                    <SelectValue placeholder={t("k_85bab14432")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">{t("k_85bab14432")}</SelectItem>
-                    {kbOptions.map((kb) => (
-                      <SelectItem key={kb.id} value={String(kb.id)}>
-                        <span className="truncate max-w-[12rem]">{kb.name}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button size="sm" variant="outline" onClick={handleSyncKb}
-                        disabled={syncingKb || selected.status !== 'active'}
-                        title={selected.status !== 'active'
-                          ? t('k_e0c202beb0')
-                          : (selectedKbId !== '0'
-                              ? t('k_bb6f402308', { p0: syncTargetKbName || selectedKbId })
-                              : t('k_1c44d22877'))}>
-                  {syncingKb
-                    ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                    : <UploadCloud className="h-3.5 w-3.5 mr-1" />}
-                  {t('k_010f64ab9b')}
-                </Button>
+                {hasPerm('kb:manage') && (
+                  <>
+                    <Select value={selectedKbId} onValueChange={(v) => setSelectedKbId(v)}
+                            disabled={syncingKb}>
+                      <SelectTrigger className="w-44 h-8 text-xs" title={t("k_343e6fa5bb")}>
+                        <SelectValue placeholder={t("k_85bab14432")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="0">{t("k_85bab14432")}</SelectItem>
+                        {kbOptions.map((kb) => (
+                          <SelectItem key={kb.id} value={String(kb.id)}>
+                            <span className="truncate max-w-[12rem]">{kb.name}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button size="sm" variant="outline" onClick={handleSyncKb}
+                            disabled={syncingKb || selected.status !== 'active'}
+                            title={selected.status !== 'active'
+                              ? t('k_e0c202beb0')
+                              : (selectedKbId !== '0'
+                                  ? t('k_bb6f402308', { p0: syncTargetKbName || selectedKbId })
+                                  : t('k_1c44d22877'))}>
+                      {syncingKb
+                        ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        : <UploadCloud className="h-3.5 w-3.5 mr-1" />}
+                      {t('k_010f64ab9b')}
+                    </Button>
+                  </>
+                )}
                 <Button size="sm" variant="outline" onClick={() => setViewTick((t) => t + 1)}
                         title={t("k_fb4e24d4ae")}>
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_38108eaa1d')}
@@ -419,10 +424,13 @@ export default function OntologyGraphView() {
                       className="border border-border rounded-md text-xs overflow-hidden"
                     />
                     <div className="flex items-center gap-2">
-                      <Button size="sm" onClick={handleRunSparql} disabled={sparqlRunning}>
-                        {sparqlRunning ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
-                        {t('k_4fb36a6129')}
-                      </Button>
+                      {/* POST /graph/query 按语句 form 可能执行 SPARQL update，服务端归 graph:manage */}
+                      {hasPerm('graph:manage') ? (
+                        <Button size="sm" onClick={handleRunSparql} disabled={sparqlRunning}>
+                          {sparqlRunning ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Play className="h-3.5 w-3.5 mr-1" />}
+                          {t('k_4fb36a6129')}
+                        </Button>
+                      ) : null}
                       <Button size="sm" variant="outline" onClick={handleLoadSparqlPreview} disabled={sparqlLoading}>
                         {sparqlLoading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Code2 className="h-3.5 w-3.5 mr-1" />}
                         {t('k_f509520f3c')}

@@ -933,23 +933,31 @@ export default function OntologyModeling() {
                 </div>
               </PopoverContent>
             </Popover>
-            <Button size="sm" className="h-8" onClick={handleGenerate} disabled={running || !datasourceId}>
-              {running ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {running ? t('k_5e59fed789') : t('k_2113dcf9f2')}
-            </Button>
-            {running && (
-              <Button size="sm" variant="outline" className="h-8" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
-                {t('k_9600c91810')}
+            {/* 生成/进度/取消都按 ontology:generate 裁决（无码不渲染点了必 403 的按钮） */}
+            {hasPerm('ontology:generate') && (
+              <>
+                <Button size="sm" className="h-8" onClick={handleGenerate} disabled={running || !datasourceId}>
+                  {running ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
+                  {running ? t('k_5e59fed789') : t('k_2113dcf9f2')}
+                </Button>
+                {running && (
+                  <Button size="sm" variant="outline" className="h-8" onClick={() => genTask && openTaskConversation(genTask.conversation_id)}>
+                    {t('k_9600c91810')}
+                  </Button>
+                )}
+                {running && (
+                  <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
+                    {t('k_d926e2f58e')}
+                  </Button>
+                )}
+              </>
+            )}
+            {/* 导入 YAML 属独立写码 ontology:import（不能蹭保存码） */}
+            {hasPerm('ontology:import') && (
+              <Button size="sm" variant="outline" className="h-8" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
+                <Upload className="h-3.5 w-3.5 mr-1" />{t('k_2916bd30b8')}
               </Button>
             )}
-            {running && (
-              <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleCancelGenerate}>
-                {t('k_d926e2f58e')}
-              </Button>
-            )}
-            <Button size="sm" variant="outline" className="h-8" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
-              <Upload className="h-3.5 w-3.5 mr-1" />{t('k_2916bd30b8')}
-            </Button>
             <Button size="sm" variant="outline" className="h-8" onClick={() => loadModels()}>
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
@@ -974,22 +982,23 @@ export default function OntologyModeling() {
             <Button size="sm" variant="outline" className="h-8" onClick={handleOpenVersions}>
               <History className="h-3.5 w-3.5 mr-1" />{t('k_fe86275d4d')}
             </Button>
-            {(model.status === 'draft' || model.status === 'archived') && (
+            {(model.status === 'draft' || model.status === 'archived') && hasPerm('ontology:activate') && (
               <Button size="sm" className="h-8" onClick={() => setActivateOpen(true)}>
                 <CheckCircle2 className="h-3.5 w-3.5 mr-1" />{t('k_4366cd37a7')}
               </Button>
             )}
-            {model.status === 'archived' && (
+            {model.status === 'archived' && hasPerm('ontology:activate') && (
               <Button size="sm" variant="outline" className="h-8" onClick={handleRestore}>
                 <Undo2 className="h-3.5 w-3.5 mr-1" />{t('k_3c01021917')}
               </Button>
             )}
-            {model.status === 'active' && (
+            {model.status === 'active' && hasPerm('ontology:activate') && (
               <Button size="sm" variant="outline" className="h-8" onClick={handleArchive}>
                 <Archive className="h-3.5 w-3.5 mr-1" />{t('k_2f51c18f49')}
               </Button>
             )}
-            {model.status !== 'active' && (
+            {/* 删除模型在服务端只由 catalog 写域把关（本体码无 DELETE 落点），按同码显隐 */}
+            {model.status !== 'active' && hasPerm('catalog:manage') && (
               <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleDelete}
                 title={t('k_2f51c18f49')}>
                 <Trash2 className="h-3.5 w-3.5" />
