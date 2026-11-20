@@ -278,6 +278,10 @@ class TestQueryDatasetWiring:
     def _stub(self, monkeypatch, row, sink):
         monkeypatch.setattr(svc, "get_dataset", lambda _id: dict(row))
         monkeypatch.setattr(svc, "_scope_filters", lambda *a: [])
+        # 数据集可见性（2026-11-20 口径）：取数口与清单同口径校验，
+        # 这里按“角色已授权该数据集”放行，本类只验接线。
+        from backend.core.role_service import role_service as _rs
+        monkeypatch.setattr(_rs, "get_user_allowed_datasets", lambda uid: [501])
 
         def fake_query_sql(ds, params, scopes, identity):
             sink.append(ds)
@@ -831,22 +835,35 @@ class TestChatSurface:
         out = json.loads(ft._list_datasets({})["content"][0]["text"])
         assert [d["name"] for d in out["datasets"]] == ["单源集"]
         assert "d.id IN (%s,%s)" in seen["sql"]
-        assert seen["params"] == (502, 503, 50)
+        # 归属可见（2026-11-20）：非 admin = 属主 ∪ 角色授权的 workspace 行
+        assert "d.owner_id = %s" in seen["sql"]
+        assert seen["params"] == (1, 502, 503, 50)
 
-    def test_function_tools_list_datasets_empty_grant_fails_closed(self, monkeypatch):
-        """空授权 = 一律不可见，且必须如实说明原因（不得静默回空表）。"""
+    def test_function_tools_list_datasets_empty_grant_owner_only(self, monkeypatch):
+        """空授权 ≠ 什么都看不到：仍可列自己的数据集（owner 口径），别人一概不可见。
+
+        历史缺陷（2026-11-20 修正）：旧实现空授权直接短路返回空，用户 chat 建完数据集
+        就“凭空消失”。现在下推 `AND 1=0` 给角色授权分支，属主分支照常。
+        """
         from backend.modules.mind.execution import function_tools as ft
 
         monkeypatch.setattr(ft, "_identity", lambda: {"user_id": 1, "role": "viewer",
                                                       "workspace_id": 301})
         monkeypatch.setattr(ft, "_limit", lambda args: 50)
-        monkeypatch.setattr(ft, "_select", lambda sql, params=None: (
-            pytest.fail("空授权不得再查数据集表")))
+        seen = {}
+
+        def _fake_select(sql, params=None):
+            seen["sql"] = sql
+            seen["params"] = tuple(params or ())
+            return []                      # 本人无数据集 → 空清单
+
+        monkeypatch.setattr(ft, "_select", _fake_select)
         from backend.core.role_service import role_service
         monkeypatch.setattr(role_service, "get_user_allowed_datasets", lambda uid: [])
         out = json.loads(ft._list_datasets({})["content"][0]["text"])
         assert out["datasets"] == []
-        assert "未获授" in out["note"]
+        assert "AND 1=0" in seen["sql"]           # 无角色授权分支恒不命中
+        assert seen["params"] == (1, 50)             # 只带属主过滤，不拼空 IN
 
     def test_function_tools_list_datasets_truncation_is_explicit(self, monkeypatch):
         from backend.modules.mind.execution import function_tools as ft

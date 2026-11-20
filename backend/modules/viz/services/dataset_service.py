@@ -126,6 +126,75 @@ def normalize_origin(value) -> str:
     return origin if origin in DATASET_ORIGINS else "manual"
 
 
+# 归属与可见性（DDL/回填见 docker/mysql/dataset_ownership_visibility_migration.sql）：
+#   private    仅属主可见（admin 在管理面可见可编辑）—— chat / Playground 等个人产物
+#   workspace  角色授权可见（adh_role_dataset_access）—— 内置/人工建模、已显式共享
+#   public     保留枚举位但**未启用**：页面不提供开关，裁决也不因它放行（避免提前开一个
+#              没有产品口径的口子；将来启用时必须同批改 dataset_visible_to 与用例）。
+DATASET_VISIBILITIES = ("private", "workspace", "public")
+VISIBILITY_LABELS = {"private": "仅创建者", "workspace": "按角色共享", "public": "全体可见"}
+
+
+def normalize_visibility(value, default: str = "workspace") -> str:
+    """可见性取值归一：未识别/为空按 default（存量行历史上等价于 workspace）。"""
+    v = str(value or "").strip().lower()
+    return v if v in DATASET_VISIBILITIES else default
+
+
+def default_visibility(identity: dict) -> str:
+    """新建数据集的默认可见性（服务端裁决，不信请求体）。
+
+    管理员在数据集页建的是**系统内置/治理资源**，按角色分发（workspace，存量口径）；
+    其余人建的是**个人产物**（chat/Playground 渠道同理），默认只给属主（private），
+    要给同角色用必须走显式共享（`set_dataset_sharing`），不得靠补授角色“顺带”共享。
+    """
+    return "workspace" if str(identity.get("role") or "") == "admin" else "private"
+
+
+def dataset_visible_to(ds: dict, identity: dict,
+                       allowed_ids: set | None = None) -> bool:
+    """数据集可见性**唯一裁决**（清单/详情/取数/挂图共用，不得另写一套）。
+
+    - 无可信身份 → 不可见（fail-closed，护栏 §2）；
+    - admin → 全可见（管理面展示语义；数据行仍由 permission_enforcer 按查看者治理）；
+    - 属主 → 恒可见（含 private：自己的产物必须自己能看到、能用）；
+    - 其余 → 仅 `visibility='workspace'` 且命中角色数据集授权；空授权 = 不可见。
+
+    `public` 刻意不放行：枚举位保留但未启用（见常量区注释）。
+    """
+    if not ds:
+        return False
+    user_id = int(identity.get("user_id") or 0)
+    if not user_id:
+        return False
+    if str(identity.get("role") or "") == "admin":
+        return True
+    if int(ds.get("owner_id") or 0) == user_id:
+        return True
+    if normalize_visibility(ds.get("visibility")) != "workspace":
+        return False
+    if allowed_ids is None:
+        from backend.core.role_service import role_service
+
+        allowed_ids = {int(v) for v in role_service.get_user_allowed_datasets(user_id)}
+    return int(ds.get("id") or 0) in {int(v) for v in allowed_ids}
+
+
+def _assert_dataset_visible(ds: dict, identity: dict, *, action: str = "访问") -> None:
+    """不可见时显式拒绝（fail-loud）：文案带业务名与出路，但不含任何内部标识。"""
+    if dataset_visible_to(ds, identity):
+        return
+    visibility = normalize_visibility(ds.get("visibility"))
+    name = str(ds.get("name") or "").strip() or "该数据集"
+    if visibility == "private":
+        raise PermissionError(
+            f"数据集「{name}」是创建者的个人数据集（仅创建者可见），未共享给当前角色，"
+            f"不能{action}。需要多人使用时，请让创建者或在数据集页发布共享（按角色授权）。")
+    raise PermissionError(
+        f"当前角色未被授权数据集「{name}」，不能{action}。"
+        "可申请角色授权（角色权限 → 数据集），或改用有权限的数据集。")
+
+
 def _parse_json(value, default):
     if isinstance(value, (dict, list)):
         return value
@@ -427,56 +496,110 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
     ES 型数据源上，所与 `datasource_id` 筛选不再互斥（两者可以同时给：先按源筛、再按通道筛）。
     传错值显式拒，不静默当“不限”（no-silent-degradation）。
     """
-    from backend.core.role_service import role_service
-
     channel = _canonical_channel_filter(channel)
 
-    user_id = int(identity.get("user_id") or 0)
-    user_role = identity.get("role") or ""
-
-    # 被引计数随主查询一次 LEFT JOIN 取回：元数据库在远端（单往返百 ms 级），
-    # 逐行 COUNT 会把 24 行清单拖成 24 次往返（实测 11s+）。
-    sql = ("SELECT d.id, d.name, d.description, d.source_type, d.object_key, "
-           "d.datasource_id, d.available_datasources, d.chart_type, d.chart_preset, d.owner_id, "
-           "d.status, d.origin, "
-           "d.field_config, d.created_at, d.updated_at, COALESCE(ref.n, 0) AS `references`, "
-           # 入参证据只用于服务端算摘要，算完即剥（见 _fill_param_summaries）：
-           # 一趟带回而不是二次回源，清单的往返次数不随行数增长（有契约用例锁）。
-           "d.variables, d.sql_query, d.sql_bodies "
-           "FROM adh_datasets d "
-           "LEFT JOIN (SELECT source_id, COUNT(*) AS n FROM adh_charts "
-           "WHERE source_type='dataset' GROUP BY source_id) ref ON ref.source_id = d.id "
-           "WHERE d.status='active'")
-    params: list = []
-
-    # admin 全可见, 其余角色 fail-closed: 只展示已授权的数据集
-    if user_role != "admin":
-        allowed_ids = role_service.get_user_allowed_datasets(user_id)
-        if not allowed_ids:
-            return []
-        ph = ",".join(["%s"] * len(allowed_ids))
-        sql += f" AND d.id IN ({ph})"
-        params.extend(allowed_ids)
-
-    if keyword:
-        sql += " AND (d.name LIKE %s OR d.description LIKE %s OR d.object_key LIKE %s)"
-        like = f"%{keyword}%"
-        params += [like, like, like]
-    sql += " ORDER BY d.updated_at DESC LIMIT 200"
-    rows = execute_query(sql, tuple(params)) or []
-
-    # 数据源筛选（数据集页顶栏选择器）：语义 = 该源在可用范围内（含执行源）。
-    # 按可用范围/交集的判定要拿全量源清单与授权集，故在 Python 侧一次算好（源表行数个位数）。
     catalog = _load_datasource_catalog()
-    # 执行通道判定复用这份目录（与下面 dict_memo 同一纪律）：不传 db_type 时 `execution_is_es`
-    # 会逐行发一条 `SELECT db_type FROM adh_datasources WHERE id=%s`，而元库在公网另一侧，
-    # 82 行清单实测 3.5s（占整个接口 95%+）。判据不变，只是免掉逐行往返。
-    db_type_by_id = {int(v["id"]): str(v.get("db_type") or "") for v in catalog.values()}
     filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
     if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
         return []                      # 筛选的源已不存在 → 无命中（不静默当"全部"）
+    select_sql, _where, params, allowed_ids, user_role, user_id = _list_sql(
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name)
+    rows = execute_query(
+        select_sql + " ORDER BY d.updated_at DESC, d.id DESC LIMIT 200",
+        tuple(params)) or []
+
+    # 数据源筛选（数据集页顶栏选择器）：语义 = 该源在可用范围内（含执行源）。
+    # 按可用范围/交集的判定要拿全量源清单与授权集，故在 Python 侧一次算好（源表行数个位数）。
+    # 执行通道判定复用这份目录（与 dict_memo 同一纪律）：不传 db_type 时 `execution_is_es`
+    # 会逐行发一条 `SELECT db_type FROM adh_datasources WHERE id=%s`，而元库在公网另一侧，
+    # 82 行清单实测 3.5s（占整个接口 95%+）。判据不变，只是免掉逐行往返。
+    db_type_by_id = {int(v["id"]): str(v.get("db_type") or "") for v in catalog.values()}
+    out = _hydrate_dataset_rows(
+        rows, identity=identity, allowed_ids=allowed_ids, catalog=catalog,
+        db_type_by_id=db_type_by_id, channel=channel, datasource_id=datasource_id)
+    _fill_param_summaries(out)
+    return out
+
+
+_LIST_SELECT = (
+    "SELECT d.id, d.name, d.description, d.source_type, d.object_key, "
+    "d.datasource_id, d.available_datasources, d.chart_type, d.chart_preset, d.owner_id, "
+    "d.status, d.origin, d.visibility, "
+    "COALESCE(u.username, '') AS owner_name, "
+    "d.field_config, d.created_at, d.updated_at, COALESCE(ref.n, 0) AS `references`, "
+    # 入参证据只用于服务端算摘要，算完即剥（见 _fill_param_summaries）：
+    # 一趟带回而不是二次回源，清单的往返次数不随行数增长（有契约用例锁）。
+    "d.variables, d.sql_query, d.sql_bodies "
+    "FROM adh_datasets d "
+    "LEFT JOIN adh_users u ON u.id = d.owner_id "
+    "LEFT JOIN (SELECT source_id, COUNT(*) AS n FROM adh_charts "
+    "WHERE source_type='dataset' GROUP BY source_id) ref ON ref.source_id = d.id"
+)
+
+
+def _list_sql(identity: dict, *, keyword: str = "", datasource_id: int = 0,
+              filter_name: str = "", visibility: str = "", owner_id: int = 0):
+    """清单与分页共用的 SELECT/WHERE 构造（唯一谓词来源，禁止两套漂移）。
+
+    返回 `(select_sql, where_sql, params, allowed_ids, user_role, user_id)`；
+    `where_sql` 供 COUNT(*) 直接拼（用不到 JOIN，避免被引用计数放大）。
+    筛选/搜索全部下推 SQL（list-pagination §2），前端不再二次过滤。
+    """
+    from backend.core.role_service import role_service
+
+    user_id = int(identity.get("user_id") or 0)
+    user_role = identity.get("role") or ""
+    where = " WHERE d.status='active'"
+    params: list = []
+
+    # 可见性唯一裁决（与 dataset_visible_to 同口径）：admin 全可见；
+    # 其余 = 属主（含 private 个人产物）∪ 角色授权（仅 workspace 行）。
+    allowed_ids: set = set()
+    if user_role != "admin":
+        allowed_ids = {int(v) for v in role_service.get_user_allowed_datasets(user_id)}
+        ph = ",".join(["%s"] * len(allowed_ids)) if allowed_ids else ""
+        where += (" AND (d.owner_id = %s OR (d.visibility = 'workspace'"
+                  + (f" AND d.id IN ({ph})" if ph else " AND 1=0") + "))")
+        params.append(user_id)
+        params.extend(sorted(allowed_ids))
+
+    if keyword:
+        where += " AND (d.name LIKE %s OR d.description LIKE %s OR d.object_key LIKE %s)"
+        like = f"%{keyword}%"
+        params += [like, like, like]
+
+    if int(datasource_id or 0):
+        # 必要条件：执行源命中，或可用范围（JSON 文本）里出现该源业务名。
+        # Python 侧仍按 usable_scope 精判（多源交集），这里只是把大多数行先筛掉。
+        where += " AND (d.datasource_id = %s OR d.available_datasources LIKE %s)"
+        params += [int(datasource_id), f'%"{filter_name}"%']
+
+    vis = str(visibility or "").strip().lower()
+    if vis:
+        if vis not in DATASET_VISIBILITIES:
+            raise ValueError("可见范围只能是 private / workspace / public")
+        where += " AND d.visibility = %s"
+        params.append(vis)
+
+    if int(owner_id or 0) > 0:
+        where += " AND d.owner_id = %s"
+        params.append(int(owner_id))
+
+    return _LIST_SELECT + where, where, params, allowed_ids, user_role, user_id
+
+
+def _hydrate_dataset_rows(rows: list[dict], *, identity: dict, allowed_ids: set,
+                          catalog: dict, db_type_by_id: dict, channel: str,
+                          datasource_id: int, keep_unexecutable: bool = False) -> list[dict]:
+    """清单行加工（归属/可见性/可用源/通道位），清单与分页同源。
+
+    `keep_unexecutable=True` 用于分页：无可用源的行不再静默丢弃（那会让服务端 total 与
+    渲染行数不一致），改为带 `executable=False` 显式下发，前端标“无可用源”。
+    """
+    user_id = int(identity.get("user_id") or 0)
+    user_role = identity.get("role") or ""
     allowed_ds = _allowed_source_ids(identity)
-    # 语义字典按数据源复用（一次请求内同一源只取一遍）：同上，不得逐行回源。
+    # 语义字典按数据源复用（一次请求内同一源只取一遍）：不得逐行回源。
     dict_memo: dict[int, tuple[list, list]] = {}
 
     out: list[dict] = []
@@ -484,14 +607,25 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
         # 口径来源显示业务名（ui-resource-display）：前端不得自己映射枚举
         r["origin"] = normalize_origin(r.get("origin"))
         r["origin_label"] = ORIGIN_LABELS[r["origin"]]
+        # 归属与可见性（页面展示“创建者/可见范围”；不得回退成裸 id）
+        r["visibility"] = normalize_visibility(r.get("visibility"))
+        r["visibility_label"] = VISIBILITY_LABELS[r["visibility"]]
+        r["owner_name"] = str(r.get("owner_name") or "") or "未知创建者"
+        r["editable"] = bool(
+            user_role == "admin" or int(r.get("owner_id") or 0) == user_id)
+        r["is_owner"] = int(r.get("owner_id") or 0) == user_id
+        # 与裁决函数同口径兜底（SQL 已过滤；这里挡住可见性列缺失的旧库行被误展示）
+        if not dataset_visible_to(r, identity, allowed_ids=allowed_ids):
+            continue
         usable, _missing = usable_scope(r, identity, catalog=catalog, allowed_ds=allowed_ds)
-        if not usable:
-            continue                   # 无任何可执行源 → 不可见（与取数侧 fail-closed 同口径）
         # 执行通道位与取数分派同源（内置通道已退役：ES = 挂在 ES 型数据源上的普通 SQL 集）
         r["is_es"] = execution_is_es(
             r, db_type=db_type_by_id.get(int(r.get("datasource_id") or 0), ""))
         if channel == "es" and not r["is_es"]:
             continue                   # 只要 ES 执行通道：非 ES 源的集不命中
+        r["executable"] = bool(usable)
+        if not usable and not keep_unexecutable:
+            continue                   # 全量模式保持旧语义：无可用源不出现
         if datasource_id and datasource_id not in {u["id"] for u in usable}:
             continue
         r["chart_preset"] = _parse_json(r.get("chart_preset"), {})
@@ -503,8 +637,46 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
                                        for u in usable_sources(r, catalog)[0]]
         r["usable_now"] = [u["name"] or _DEFAULT_ENGINE_LABEL for u in usable]
         out.append(r)
-    _fill_param_summaries(out)
     return out
+
+
+def list_datasets_page(identity: dict, *, page: int = 1, page_size: int = 20,
+                       keyword: str = "", datasource_id: int = 0, channel: str = "",
+                       visibility: str = "", owner_id: int = 0) -> dict:
+    """数据集管理页服务端分页（`{items,total,page,page_size}`）。
+
+    - `total` = 同筛选条件下服务端 `COUNT(*)`，不是当前页长度；
+    - 当前页 `LIMIT/OFFSET` 由服务端算（不接受调用方递 offset）；
+    - 筛选/搜索全部下推 SQL；排序含唯一 tiebreaker（`id DESC`）防跨页重行。
+    没传 `page_size` 的调用方走 `list_datasets`（全量，供选择面板），两档接口显式不同。
+    """
+    page = max(int(page or 1), 1)
+    page_size = max(1, min(int(page_size or 20), 200))    # 服务端夹死，越界不照单全收
+    channel = _canonical_channel_filter(channel)
+
+    catalog = _load_datasource_catalog()
+    filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
+    if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    select_sql, where_sql, params, allowed_ids, _role, _uid = _list_sql(
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
+        visibility=visibility, owner_id=owner_id)
+
+    row = execute_query(f"SELECT COUNT(*) AS n FROM adh_datasets d{where_sql}",
+                        tuple(params), fetchone=True) or {}
+    total = int(row.get("n") or 0)
+    rows = execute_query(
+        select_sql + " ORDER BY d.updated_at DESC, d.id DESC LIMIT %s OFFSET %s",
+        tuple(params) + (page_size, (page - 1) * page_size)) or []
+
+    db_type_by_id = {int(v["id"]): str(v.get("db_type") or "") for v in catalog.values()}
+    items = _hydrate_dataset_rows(
+        rows, identity=identity, allowed_ids=allowed_ids, catalog=catalog,
+        db_type_by_id=db_type_by_id, channel=channel, datasource_id=datasource_id,
+        keep_unexecutable=True)
+    _fill_param_summaries(items)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 def _fill_param_summaries(rows: list[dict]) -> None:
@@ -676,9 +848,15 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
     `origin` 为**仅限服务端调用方的**关键字参数（收编脚本/会话产物沉淠）：
     REST 请求体里的同名字段不参与判定（否则任何人可把自己的口径伪造成
     「AI 会话产物」或反向洗白），API 层不传即按 manual 落库。
+
+    归属与可见性：`owner_id` = 服务端身份；`visibility` 由 `default_visibility`
+    裁决（管理员建 = workspace，其余 = private），**不接受请求体指定**——
+    要共享必须建后走 `set_dataset_sharing`（dataset:manage 把关），
+    避免“建的时候顺手勾一下”就成了同角色可见。
     """
     from backend.modules.viz.services import dataset_registry
 
+    visibility = default_visibility(identity)
     name = (req.get("name") or "").strip()
     if not name:
         raise ValueError("数据集名称必填")
@@ -716,8 +894,8 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
     execute_write(
         "INSERT INTO adh_datasets (id, name, description, source_type, object_key, es_pattern, "
         "datasource_id, available_datasources, sql_query, sql_bodies, variables, touched_tables, field_config, "
-        "chart_type, chart_preset, paginable, owner_id, origin, status) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
+        "chart_type, chart_preset, paginable, owner_id, origin, visibility, status) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
         (new_id, name, req.get("description") or "",
          _derive_source_type(object_key, sql_query), object_key, "",
          datasource_id, available_json, sql_query,
@@ -728,7 +906,7 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
          (req.get("chart_type") or "").strip(),
          json.dumps(req.get("chart_preset") or {}, ensure_ascii=False),
          1 if req.get("paginable") else 0,
-         int(identity.get("user_id") or 0), normalize_origin(origin)))
+         int(identity.get("user_id") or 0), normalize_origin(origin), visibility))
     ds = get_dataset(new_id) or {}
     warnings = _dialect_coverage_warnings(
         {**ds, "available_datasources": available_json}, catalog)
@@ -875,6 +1053,139 @@ def _require_editor(ds: dict, identity: dict):
         return
     if int(ds.get("owner_id") or 0) != int(identity.get("user_id") or 0):
         raise ValueError("仅创建者或管理员可编辑/删除该数据集")
+
+
+# ── 归属共享（private ⇄ workspace）───────────────────────────────────────
+#
+# 语义：`private` 只给属主；`workspace` 按 adh_role_dataset_access 分给角色。
+# 发布/收回都是**显式动作**，不得由创建路径暗自补授（历史缺陷：AI 建屏
+# 把数据集授给创建者所有角色，同角色人互相看得见）。
+
+def _dataset_role_grants(dataset_id: int) -> list[dict]:
+    rows = execute_query(
+        "SELECT r.id, r.name, COALESCE(NULLIF(r.display_name, ''), r.name) AS label "
+        "FROM adh_role_dataset_access rda JOIN adh_roles r ON r.id = rda.role_id "
+        "WHERE rda.dataset_id = %s ORDER BY label, r.id", (dataset_id,)) or []
+    return [{"id": int(r["id"]), "name": r.get("label") or r.get("name") or ""}
+            for r in rows]
+
+
+def owner_name_of(owner_id: int) -> str:
+    """属主业务名（页面展示用；ui-resource-display：不得回退成裸 id）。"""
+    oid = int(owner_id or 0)
+    if not oid:
+        return "未知创建者"
+    row = execute_query("SELECT username FROM adh_users WHERE id=%s", (oid,), fetchone=True)
+    return str((row or {}).get("username") or "") or "未知创建者"
+
+
+def dataset_sharing(dataset_id: int, identity: dict) -> dict:
+    """读取数据集归属与共享配置（共享对话框数据源；仅属主/管理员可读）。"""
+    ds = get_dataset(dataset_id)
+    if not ds:
+        raise ValueError("数据集不存在")
+    _require_editor(ds, identity)
+    owner_id = int(ds.get("owner_id") or 0)
+    refs = _references(dataset_id)
+    return {
+        "dataset_id": dataset_id,
+        "name": ds.get("name") or "",
+        "visibility": normalize_visibility(ds.get("visibility")),
+        "visibility_label": VISIBILITY_LABELS[normalize_visibility(ds.get("visibility"))],
+        "owner_name": owner_name_of(owner_id),
+        "is_owner": (str(identity.get("role") or "") == "admin"
+                     or owner_id == int(identity.get("user_id") or 0)),
+        "roles": _dataset_role_grants(dataset_id),
+        "references": refs,
+    }
+
+
+def publish_dataset_to_roles(dataset_id: int, role_ids, *, visibility: str = "workspace") -> list[int]:
+    """把数据集发布给指定角色（服务端内部唯一写入口，**不做权限校验**）。
+
+    调用方必须是已经过权限校验的入口（`set_dataset_sharing`）或服务端链路（AI 建屏
+    共享看板时级联发布）。幂等：全量替换该数据集的角色授权行。
+    """
+    roles = sorted({int(r) for r in (role_ids or []) if str(r).strip()})
+    if not roles:
+        raise ValueError("共享数据集时至少要选择一个角色（否则选「仅创建者」）")
+    target = normalize_visibility(visibility, "workspace")
+    if target != "workspace":
+        raise ValueError("只有 workspace（按角色共享）可以写入角色授权")
+    ph = ",".join(["%s"] * len(roles))
+    exists = execute_query(f"SELECT id FROM adh_roles WHERE id IN ({ph})", tuple(roles)) or []
+    found = {int(r["id"]) for r in exists}
+    missing = [str(r) for r in roles if r not in found]
+    if missing:
+        raise ValueError(f"角色不存在或已删除：{'、'.join(missing)}（请刷新角色清单后重选）")
+    execute_write("UPDATE adh_datasets SET visibility='workspace' WHERE id=%s", (dataset_id,))
+    execute_write("DELETE FROM adh_role_dataset_access WHERE dataset_id=%s", (dataset_id,))
+    for rid in roles:
+        execute_write(
+            "INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s,%s)",
+            (rid, int(dataset_id)))
+    return roles
+
+
+def grant_dataset_to_roles(dataset_id: int, role_ids) -> list[int]:
+    """把数据集**追加**发布给指定角色（幂等，不清除既有授权）。
+
+    用途只有一类：共享看板时的级联（看板已授给这批角色 → 它引用的数据集必须一并
+    可用，否则查看者能打开看板却取不到数）。多个看板引用同一数据集时，这里是并集
+    而不是全量替换，不得把别的看板共享出去的访问撤掉。
+    """
+    roles = sorted({int(r) for r in (role_ids or []) if str(r).strip()})
+    if not roles:
+        return []
+    ph = ",".join(["%s"] * len(roles))
+    exists = execute_query(f"SELECT id FROM adh_roles WHERE id IN ({ph})", tuple(roles)) or []
+    found = {int(r["id"]) for r in exists}
+    live = [r for r in roles if r in found]
+    if not live:
+        return []
+    execute_write("UPDATE adh_datasets SET visibility='workspace' WHERE id=%s", (dataset_id,))
+    for rid in live:
+        execute_write(
+            "INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s,%s)",
+            (rid, int(dataset_id)))
+    return live
+
+
+def revoke_dataset_sharing(dataset_id: int) -> None:
+    """收回共享：回 private + 清角色授权（服务端内部唯一写入口，不做权限校验）。"""
+    execute_write("UPDATE adh_datasets SET visibility='private' WHERE id=%s", (dataset_id,))
+    execute_write("DELETE FROM adh_role_dataset_access WHERE dataset_id=%s", (dataset_id,))
+
+
+def set_dataset_sharing(dataset_id: int, req: dict, identity: dict) -> dict:
+    """显式共享/收回（HTTP 入口）：属主或管理员 + dataset:manage。
+
+    body: `{visibility: 'private'|'workspace', role_ids: [int]}`。
+    收回共享时若数据集仍被看板引用，返回 warnings 显式提醒（不阻断：属主有权收回，
+    但那些看板的查看者会取不到数，必须让人看得见这个后果）。
+    """
+    ds = get_dataset(dataset_id)
+    if not ds:
+        raise ValueError("数据集不存在")
+    _require_editor(ds, identity)
+    _require_manage(identity, f"/api/datasets/{dataset_id}/sharing")
+    target = normalize_visibility(req.get("visibility"), "")
+    if target == "public":
+        raise ValueError("「全体可见」尚未开放；请选择「仅创建者」或「按角色共享」")
+    if target not in ("private", "workspace"):
+        raise ValueError("visibility 必须是 private（仅创建者）或 workspace（按角色共享）")
+    if target == "private":
+        revoke_dataset_sharing(dataset_id)
+    else:
+        publish_dataset_to_roles(dataset_id, req.get("role_ids") or [])
+    out = dataset_sharing(dataset_id, identity)
+    if target == "private":
+        refs = out.get("references") or []
+        if refs:
+            out["warnings"] = [
+                f"已收回共享：以下 {len(refs)} 个看板仍引用该数据集，其查看者将取不到数——"
+                + "、".join(str(r.get("dashboard_name") or "") for r in refs[:5])]
+    return out
 
 
 def _validate_select(sql: str):
@@ -1502,6 +1813,9 @@ def query_dataset(dataset_id: int, params: dict, identity: dict) -> dict:
     ds = get_dataset(dataset_id)
     if not ds or ds.get("status") != "active":
         raise ValueError("数据集不存在或已停用")
+    # 归属/可见性同口径校验（列表隐藏 ≠ 取不到数，这里才是真闸门）：
+    # 属主/admin/workspace+角色授权 可过；他人 private 或未授权的 workspace 一律拒。
+    _assert_dataset_visible(ds, identity, action="取数")
     if params.get("datasource_id"):
         raise ValueError("不接受数据源内部 id：请用 site（站点业务名）或 datasource（数据源业务名）指定")
     scopes = _scope_filters(dataset_id, identity)

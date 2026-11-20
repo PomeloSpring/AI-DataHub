@@ -75,6 +75,65 @@ export function collectArtifacts(messages: ChatMessage[]): SessionArtifacts {
   return { docs, reports };
 }
 
+// ── 会话技能 ─────────────────────────────────────────────────────
+
+export interface SkillUsageCard {
+  name: string;
+  /** 首次加载它的那一轮（与产物/知识同一个锚点口径，供定位跳转） */
+  idx: number;
+  /** 以下三个是**回合数**（不是技能名出现次数），与 list 接口的 skill_usage 同口径 */
+  resident: number;
+  attached: number;
+  fetched: number;
+}
+
+export interface SkillInsights {
+  cards: SkillUsageCard[];
+  /** 本会话的回答回合数（判“还没开始”与“早于记录上线”是两件事，不能混说） */
+  turns: number;
+  /** 会话里出现过装载事实字段（哪怕数组为空）：整份都缺 = 该字段上线前的历史会话 */
+  recorded: boolean;
+}
+
+/** 三条通道与消息字段一一对应（顺序即「怎么到达模型」的优先级）。 */
+const SKILL_FLAGS = ['skills_loaded', 'skills_attached', 'skills_fetched'] as const;
+
+/** 从会话消息派生「会话技能」：本会话每轮真正读到过哪几份作业细则。
+ *
+ * 事实源是回合 meta（`skills_loaded/attached/fetched`，由执行层写入），不是模型自述：
+ * 用户排查“答得不按口径”时，这里就是“细则到底加载了没有”的唯一依据。
+ * 与产物/知识同一个口径：只读已加载的消息，不请求新接口、不另存一份。
+ */
+export function collectSkills(messages: ChatMessage[]): SkillInsights {
+  const acc = new Map<string, SkillUsageCard>();
+  let turns = 0;
+  let recorded = false;
+
+  (messages || []).forEach((m, idx) => {
+    if (!m || m.role !== 'assistant') return;
+    turns += 1;
+    const lists = SKILL_FLAGS.map(key => m[key]);
+    if (lists.some(Array.isArray)) recorded = true;
+    lists.forEach((list, flagIdx) => {
+      if (!Array.isArray(list)) return;
+      // 同一条消息里重复写同一个技能名只算一个回合（计数口径是“回合数”，不是条目数）
+      const names = new Set(list.map(x => String(x || '').trim()).filter(Boolean));
+      for (const name of names) {
+        const card = acc.get(name) || { name, idx, resident: 0, attached: 0, fetched: 0 };
+        if (flagIdx === 0) card.resident += 1;
+        else if (flagIdx === 1) card.attached += 1;
+        else card.fetched += 1;
+        acc.set(name, card);
+      }
+    });
+  });
+
+  const cards = [...acc.values()].sort((a, b) =>
+    (b.resident + b.attached + b.fetched) - (a.resident + a.attached + a.fetched)
+    || a.name.localeCompare(b.name));
+  return { cards, turns, recorded };
+}
+
 // ── 关键知识 ─────────────────────────────────────────────────────
 
 export interface ScopeCard {

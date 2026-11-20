@@ -149,15 +149,35 @@ def list_datasets(
     keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
     datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
     channel: str = QueryParam("", description="按执行通道筛选：''=全部，es=执行通道为 ES 型数据源"),
+    visibility: str = QueryParam("", description="按可见范围筛选：''=全部，private/workspace/public"),
+    owner_id: int = QueryParam(0, description="按创建者筛选(0=全部)"),
+    page: int = QueryParam(1, ge=1, description="页号(从 1 起，仅在传 page_size 时生效)"),
+    page_size: Optional[int] = QueryParam(
+        None, ge=1, le=200, description="每页条数；不传=全量数组(选择面板档)"),
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """列出数据集(可见性功能已退役, 取数侧治理不变)。"""
+    """列出当前身份可见的数据集。
+
+    两档契约（list-pagination §5）：**不传 `page_size`** → 全量 `{items}`（下拉/选择面板用）；
+    **传 `page_size`** → 服务端真分页 `{items,total,page,page_size}`（管理页用，筛选/搜索全部
+    下推 SQL，`total` 为同条件下的 COUNT）。
+
+    可见性唯一裁决 = `dataset_visible_to`：admin 全可见；其余 = 属主（含 private
+    个人产物）∪ workspace 行命中角色数据集授权（fail-closed）。
+    """
     try:
-        items = dataset_service.list_datasets(
-            _identity(user, workspace_id), keyword=keyword, datasource_id=int(datasource_id or 0),
-            channel=channel or "")
-        return {"items": items}
+        ident = _identity(user, workspace_id)
+        if page_size is None:
+            items = dataset_service.list_datasets(
+                ident, keyword=keyword, datasource_id=int(datasource_id or 0),
+                channel=channel or "")
+            return {"items": items}
+        return dataset_service.list_datasets_page(
+            ident, page=int(page or 1), page_size=int(page_size),
+            keyword=keyword, datasource_id=int(datasource_id or 0),
+            channel=channel or "", visibility=visibility or "",
+            owner_id=int(owner_id or 0))
     except Exception as e:  # noqa: BLE001
         _raise(e)
 
@@ -189,6 +209,16 @@ def get_dataset(dataset_id: int,
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
     ident = _identity(user, workspace_id)
+    # 归属/可见性同口径校验（他人 private 数据集不得凭 id 详情化）
+    try:
+        dataset_service._assert_dataset_visible(ds, ident, action="查看")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    ds["visibility"] = dataset_service.normalize_visibility(ds.get("visibility"))
+    ds["visibility_label"] = dataset_service.VISIBILITY_LABELS[ds["visibility"]]
+    ds["owner_name"] = dataset_service.owner_name_of(int(ds.get("owner_id") or 0))
+    ds["editable"] = bool(ident["role"] == "admin"
+                          or int(ds.get("owner_id") or 0) == ident["user_id"])
     ds["chart_preset"] = dataset_service._parse_json(ds.get("chart_preset"), {})
     # ES 执行通道：把方言规则随详情下发（文案源只有 `_ES_SQL_HINT` 一处）。
     # 内置通道退役后它原先的出口 `/es-patterns` 已不存在，不补这一位的话，
@@ -347,6 +377,43 @@ def batch_update_datasource(
     except Exception as e:  # noqa: BLE001
         _raise(e)
 
+
+
+# ── 归属共享（private ⇄ workspace，显式动作）───────────────────────────
+#
+# 新建默认可见性由服务端裁决（管理员=workspace，其余=private）；要多人使用必须
+# 在这里显式发布给角色（属主/管理员 + dataset:manage）。不得在创建路径暗自补授。
+
+@router.get("/{dataset_id}/sharing")
+def get_dataset_sharing(
+    dataset_id: int,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """读取归属与共享配置（仅属主/管理员；角色以业务名下发）。"""
+    try:
+        return dataset_service.dataset_sharing(dataset_id, _identity(user, workspace_id))
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.put("/{dataset_id}/sharing")
+def set_dataset_sharing(
+    dataset_id: int,
+    req: dict,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """发布/收回数据集共享：`{visibility, role_ids}`。
+
+    workspace 必须显式给角色（至少一个）；private = 收回给属主。
+    收回时若有看板仍引用，响应里 `warnings` 显式提醒（不静默让别人的看板坏掉）。
+    """
+    try:
+        return dataset_service.set_dataset_sharing(
+            dataset_id, req, _identity(user, workspace_id))
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
 
 
 # ── 行级范围(分享时生效; 只收紧不放宽) ──────────────────────────────────

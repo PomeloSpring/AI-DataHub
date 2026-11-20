@@ -1,6 +1,6 @@
 // 会话右侧栏契约：默认收起（不渲染）；产物区分「未归档草稿」与「已归档报告」两种事实，
-// 已归档不再给重复归档入口；关键知识只显示业务名；侧栏只列引用，
-// 不展示「工具返回被截断」这类过程提示（完整内容在该轮执行过程里看）。
+// 已归档不再给重复归档入口；会话技能只报回合 meta 的装载事实（三条通道）且显示业务名；
+// 关键知识只显示业务名；侧栏只列引用，不展示「工具返回被截断」这类过程提示。
 import userEvent from '@testing-library/user-event';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -118,9 +118,49 @@ describe('ConversationSidePanel', () => {
     await waitFor(() => expect(props.onJumpToMessage).toHaveBeenCalledWith(1));
   });
 
+  it('会话技能：业务名 + 三条通道回合数 + 定位到首次加载的那一轮', async () => {
+    const props = renderPanel({
+      messages: [
+        { role: 'user', content: '做个大屏看上周转化' } as ChatMessage,
+        { role: 'assistant', content: '好', skills_attached: ['screen-builder'] } as ChatMessage,
+        {
+          role: 'assistant', content: '再补一版',
+          skills_loaded: ['screen-builder'], skills_fetched: ['data-analysis'],
+        } as ChatMessage,
+      ],
+      skillDisplayNames: { 'screen-builder': '数据大屏搭建' },
+    });
+    expect(screen.getByText('数据大屏搭建')).toBeInTheDocument();
+    // 技术名不面用户（候选清单没给业务名的才退回技术名，不编造）
+    expect(screen.queryByText('screen-builder')).toBeNull();
+    expect(screen.getByText('常驻 1 · 附带 1 · 取回 0')).toBeInTheDocument();
+    expect(screen.getByText('2 轮')).toBeInTheDocument();
+    expect(screen.getByText('data-analysis')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '定位到首次加载「数据大屏搭建」的一轮' }));
+    await waitFor(() => expect(props.onJumpToMessage).toHaveBeenCalledWith(1));
+  });
+
+  it('历史会话（整份缺装载字段）说「未记录」，不说「没加载」', () => {
+    renderPanel({ messages: [{ role: 'assistant', content: '旧回答' } as ChatMessage] });
+    expect(screen.getByText(/早于「技能加载记录」上线/)).toBeInTheDocument();
+    expect(screen.queryByText(/还没有加载过技能细则/)).toBeNull();
+  });
+
+  it('有记录但一条技能都没加载 → 明确说没加载，不与历史会话混说', () => {
+    renderPanel({
+      messages: [{
+        role: 'assistant', content: '答',
+        skills_loaded: [], skills_attached: [], skills_fetched: [],
+      } as ChatMessage],
+    });
+    expect(screen.getByText(/还没有加载过技能细则/)).toBeInTheDocument();
+  });
+
   it('没有产物也没有知识时给引导文案，而不是空白块', () => {
     renderPanel({ messages: [{ role: 'user', content: '你好' } as ChatMessage] });
     expect(screen.getByText(/还没有报告草稿/)).toBeInTheDocument();
     expect(screen.getByText(/还没有可摘取的知识/)).toBeInTheDocument();
+    // 还没有回答回合（新会话）：技能小节给“发送后就会列出”，不报“未记录”
+    expect(screen.getByText(/发送消息后，这里会列出/)).toBeInTheDocument();
   });
 });

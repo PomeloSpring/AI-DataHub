@@ -199,7 +199,7 @@ class TestRegistryRows:
         assert rows["workspace:chat"]["is_active"] == 1, "decision:read 挂的菜单必须可见，否则角色页里它无处可勾"
         d = rows["data:decisions"]
         assert (d["label"], d["section"], d["module"], d["perm_code"], d["is_active"]) == \
-            ("决策建议", "数据目录", "data", "decision:manage", 1)
+            ("决策建议", "数据资产", "data", "decision:manage", 1)
 
     def test_no_role_is_granted_by_default(self):
         """用户拍板"默认全关，管理员逐个开通"——迁移写一行 INSERT IGNORE 都算违反。"""

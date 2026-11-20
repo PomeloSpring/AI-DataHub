@@ -1,5 +1,6 @@
 ---
 name: metadata-manager
+intent: 元数据与表结构
 display_name: 元数据管理
 description: 协助用户查看和管理数据元数据，包括数据源浏览、表结构查看、元数据摘要、术语和指标查询等。
 category: metadata

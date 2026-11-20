@@ -4,7 +4,8 @@
 // * 显隐一律走 `menuAccess.allowed(toMenuKey(path))` + `pruneEmptySections`，
 //   不允许页面自己再写一套"我看得到吗"的判断；
 // * 角色页的菜单分组/名称/顺序必须与实际导航逐项一致 —— 所以这里同时锁
-//   「决策建议」在「数据目录」段内的位置（与 adh_menu_registry 的 sort=10 对齐）。
+//   「决策建议」在「数据资产」段内的位置（与 adh_menu_registry 的 sort=9 对齐），
+//   段名口径见 docker/mysql/data_assets_section_migration.sql。
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -61,7 +62,7 @@ describe('数据中台侧栏按菜单码显隐', () => {
     expect(screen.queryByText('决策建议')).not.toBeInTheDocument();
   });
 
-  it('授权后出现在「数据目录」段最后，并可点进 /data/decisions', () => {
+  it('授权后出现在「数据资产」段最后，并可点进 /data/decisions', () => {
     usePermissionStore.setState({ loaded: true, unrestricted: false, allowedMenus: CATALOG, perms: ['decision:manage'] });
     renderLayout();
     const nav = screen.getByRole('navigation', { name: '数据中台导航' });
@@ -71,10 +72,10 @@ describe('数据中台侧栏按菜单码显隐', () => {
     expect(screen.getByTestId('path')).toHaveTextContent('/data/decisions');
   });
 
-  it('只授决策建议时「数据目录」段标题仍出现（pruneEmptySections 只删空段）', () => {
+  it('只授决策建议时「数据资产」段标题仍出现（pruneEmptySections 只删空段）', () => {
     usePermissionStore.setState({ loaded: true, unrestricted: false, allowedMenus: ['data:decisions'], perms: ['decision:manage'] });
     renderLayout();
-    expect(screen.getByText('数据目录')).toBeInTheDocument();
+    expect(screen.getByText('数据资产')).toBeInTheDocument();
     expect(screen.getByText('决策建议')).toBeInTheDocument();
     expect(screen.queryByText('指标与维度')).not.toBeInTheDocument();
   });
@@ -84,7 +85,7 @@ describe('数据中台侧栏按菜单码显隐', () => {
     renderLayout();
     expect(screen.getByLabelText('菜单加载中')).toBeInTheDocument();
     expect(screen.queryByText('决策建议')).not.toBeInTheDocument();
-    expect(screen.queryByText('数据目录')).not.toBeInTheDocument();
+    expect(screen.queryByText('数据资产')).not.toBeInTheDocument();
   });
 
   it('admin（unrestricted）全部可见，无需逐个勾码', () => {

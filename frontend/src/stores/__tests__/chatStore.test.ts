@@ -211,6 +211,46 @@ describe('chatStore', () => {
       expect(useChatStore.getState().messages).toEqual([])
       expect(useChatStore.getState().conversations[0].id).toBe(100)
     })
+
+    it('把首条提问作为初始标题一起落库（列表不必等整轮结束才摆脱“新对话”）', async () => {
+      mockClient.post.mockResolvedValue({
+        data: { id: 101, title: '本月 GMV 趋势', datasource_id: 0, created_at: '2024-01-01' },
+      })
+      useChatStore.setState({ selectedDsId: 0 })
+
+      await useChatStore.getState().createConversation('本月 GMV 趋势')
+      expect(mockClient.post).toHaveBeenCalledWith('/chat/conversations',
+        expect.objectContaining({ title: '本月 GMV 趋势' }))
+      // 本地列表用服务端回包标题（与入库同一值），不自己拼一份
+      expect(useChatStore.getState().conversations[0].title).toBe('本月 GMV 趋势')
+    })
+  })
+
+  describe('首轮建会话的标题', () => {
+    it('sendMessage 首轮用提问截断作为初始标题落库', async () => {
+      const clipped = 'A'.repeat(30) + '...'
+      mockClient.post.mockResolvedValue({
+        data: { id: 88, title: clipped, datasource_id: 0, created_at: 'x' },
+      })
+      mockClient.put.mockResolvedValue({})
+      const enc = new TextEncoder()
+      const chunk = enc.encode('event: done\ndata: {"intent":"agent","reply":"ok","handled_by":"agent"}\n\n')
+      let read = 0
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () => (read++ === 0 ? { done: false, value: chunk } : { done: true, value: undefined }),
+            cancel: async () => {},
+          }),
+        },
+      })))
+      try {
+        await useChatStore.getState().sendMessage('A'.repeat(40))
+        expect(mockClient.post).toHaveBeenCalledWith('/chat/conversations',
+          expect.objectContaining({ title: clipped }))
+      } finally { vi.unstubAllGlobals() }
+    })
   })
 
   describe('switchConversation', () => {

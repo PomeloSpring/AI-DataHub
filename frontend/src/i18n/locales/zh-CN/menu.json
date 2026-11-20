@@ -4,7 +4,7 @@
     "cloud": "云空间",
     "automation": "自动化",
     "dataSources": "数据源",
-    "catalog": "数据目录",
+    "assets": "数据资产",
     "security": "数据安全配置",
     "quality": "数据质量",
     "sync": "数据同步",

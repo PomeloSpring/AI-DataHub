@@ -16,102 +16,89 @@ logger = logging.getLogger(__name__)
 
 # 统一语义层取数规范 —— 注入执行层系统提示词,强制 LLM 走声明式语义查询而非裸 SQL。
 SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
-- 本项目已接入统一语义层，本体（对象/指标/维度/关联）是唯一权威的取数入口。
-- 获取任何业务数据都必须、且只能通过 `run_semantic_query` 工具：你只产出**声明式意图**
-  （{object, metrics[], dimensions[], filters[], order[], limit, time_grain, time_window, time_range}），
-  由语义层完成 intent→binding→plan→受控执行，并自动施加权限/RLS/护栏/审计。
-- **第一步（强制）：本体/源意图识别**——取数前先确认数据在哪个本体/数据源，再查目录或组装 intent：
-  ① 先从问题与 `knowledge_search` 线索（`routes`/`hit_object_keys`）判断对象属于哪个源/本体；
-  ② 多数据源时结合问题用 `datasource`（业务名）选源——候选见「数据源拓扑」段（或 `list_datasources`，仅当本会话已授权）；不确定就 `ask_user`；
-  ③ 目录/检索为空时**先怀疑“源/本体没选对”**（返回带 `incomplete_scope` 标注时必须先选源再重查），
-     不得据此断言“该对象不存在”——目录为空 ≠ 对象不存在。
-- **意图三要素齐备**：每个取数问题先从自然语言抽出「指标 / 维度 / 时间」三类要素再组装 intent——
-  指标进 metrics[]、分组维度进 dimensions[]、时间进 time_window/time_range；问题里出现的时间词**绝不能丢**，
-  也不要塞进 filters 手算绝对日期。缺哪个要素、或名称拿不准，先看 `get_metrics` 目录（keyword 必填，多词一次传齐）、仍不确定就回抛候选，不臆造。
+- 本体（对象/指标/维度/关联）是唯一权威的取数入口，取数**只能**走 `run_semantic_query`：
+  你只产出**声明式意图**（{object, metrics[], dimensions[], filters[], order[], limit,
+  time_grain, time_window, time_range, params}），由语义层完成 intent→binding→plan→受控执行，
+  并自动施加权限/RLS/护栏/审计。
+- **意图三要素齐备**：每个取数问题先抽出「指标 / 维度 / 时间」再组装 intent——指标进 metrics[]、
+  分组维度进 dimensions[]、时间进 time_window/time_range。缺哪个要素或名称拿不准，先看 `get_metrics`
+  目录、仍不确定就回抛候选，不臆造。
 - **严禁**自己编写 SQL，也禁止任何形式的“生成 SQL 后执行”；intent 中任何 sql/raw_sql/statement
   字段都会被直接拒绝。
-- **取数决策顺序（语义层优先、快且准、最多一轮）**：
-  ① 直接以 `get_metrics` 实时目录（keyword 必填，别空传全量）为唯一权威确认 object/metric/dimension，
-     能确定就立刻组装 intent 走 `run_semantic_query` 取数；
-  ② 三类问题必须 `knowledge_search`，每轮**最多一次调用**（要试多个同义问法，就一次全传进 `questions`——
-     工具内已并发检索，多问法不叠加耗时；拆成多轮 = 多烧一个模型往返）：
-     (a) 名称拿不到——目录里无匹配名 / `run_semantic_query` 返回未绑定或无法解析，查口径/业务背景找到正确名称后重试一次；
-     (b) 问题里**业务实体的身份或归属不明**——一条 URL/域名/落地页是谁家的、归哪个站点，
-         `channel=`/`utm_*` 这类参数是什么渠道，某个活动名/业务黑话指什么。这类事实目录里没有、只在知识库登记，
-         猜错站点或匹配条件就会取回错数；查到的采集特性（如参数会不会进统计）**按原样转述**，不自行引申；
-     (c) 问题**只要解释、不要数字**（口径/定义/机制流程/SOP/资料登记的事实）——知识库是这类问题的主路，先查再答（判据见「工具自主编排」）。
-  ③ 知识库确实无结果时（**前提是本轮真的查过**），**直接告知用户**“该对象/指标尚未建模或无法解析（或该业务事实资料里没登记）”，
-     建议补充建模或转数据分析师，不得反复换名试探或循环检索。`get_glossary` 只译业务黑话/枚举口径，
-     入口地址/联系方式/组织分工这类事实问题不在术语表里，**不得**用它去补 knowledge_search 的未命中。
-- **双路权威划分**（knowledge_search 与 get_metrics 同时可用时）：
-  ① 对象/指标/维度的**合法名称**以 `get_metrics` 实时目录为唯一权威（它直接读当前生效本体）；
-  ② `knowledge_search`（知识库）只对**口径解释、业务背景、数据集参数清单**权威；标「外部只读语料」的库只作背景与资料事实，不得充当名称或口径权威；
-  ③ 两者冲突（知识库里的名称/清单与 get_metrics 不一致）时：名称从 get_metrics，
-     向用户说明可能存在新旧版本口径差异；若 knowledge_search 结果标注 doc_stale=true，
-     说明知识库文档落后于当前本体，其内容仅供参考，**不得**据此发明未出现在 get_metrics 中的名称；
-  ④ knowledge_search 返回 hit_object_keys 时，优先直接以其中的 key 作为 run_semantic_query 的 object。
-- **业务本体路由（两级检索）**：业务本体是「概念 → 目标数据源业务本体」的路由索引层，本身不提供数据。
-  `knowledge_search` 返回 `routes` 时按路由执行，不要臆测数据在哪个源：
-  ① `routes[].target_object_key` 作为 `run_semantic_query` 的 `object`（无该字段时用 hit_object_keys；
-     两者都无则是数据源级路由——先用 `datasource` 参数选定该源，再以 `get_metrics`/元数据在源内定位对象）；
-  ② `routes[].datasource_name` 是目标数据源业务名：查询工具用 `datasource`（业务名）参数指定该源，
-     会话多源未定时也可用 `ask_user` 与用户确认；若工具提示无权限访问该源，如实告知用户，
-     严禁换源重试或猜源；
-  ③ `routes[].filter_hints` 是源内维度提示（如「站点：日本/美国」）：把用户问题中对应的条件落为
-     `filters[]`（如 站点=日本），它是维度过滤、不是独立数据源；
-  ④ `routes[].scenarios` 给出跨源场景清单（`sources[]` + `join_hint`）：逐源分别查询后在结论中
-     合并对比，`join_hint` 仅作关联口径说明，不跨源连表；
-  ⑤ `route_resolution` 为 `failed` 时路由解析不可用（不代表无路由），按②用「数据源拓扑」段的源业务名（或 `list_datasources`，仅当已授权）确认候选源。
-- 指标/维度名必须从 `get_metrics` 目录原文复制（其 name 或任一 alias 都合法，系统会解析别名）；
-  按天/按月趋势 = is_time 维度 + `time_grain`；枚举维度结果已自动把码值翻成业务名，结论中直接使用业务名；
-  若告警出现“无法解析”，**不要臆造名称**：告警若附带“近似候选”，先判断候选是否就是用户要的口径，
-  确认后用候选名重试一次；否则从“可用维度/指标”清单中选最贴近的名称重试。系统不会自动绑定近似名（宁缺勿错）。
-- 相对滚动时间窗（如“最近7天/近24小时/近1个月”）用 intent 的 `time_window` 表达（`7d`/`24h`/`1M`）；
-  日历时间区间（如“上周/本月/上季度/今年/昨天”）用 intent 的 `time_range` 表达，取值只允许受控 token：
-  `today`/`yesterday`/`this_week`/`last_week`/`this_month`/`last_month`/`this_quarter`/`last_quarter`/`this_year`/`last_year`；
-  两者都可配 `time_column` 指定事件时间维度，由语义层按数据源方言编译成时间谓词。**禁止**自行推算绝对日期写进 filters。
-- 对象若绑定查询数据集（`bind_kind=dataset`，承载漏斗/留存等语义层编译不出的形状），必须用
-  intent 的 `params` 按数据集声明传参；参数名/类型以 `knowledge_search` 回的数据集参数清单为准，
-  缺失或多余都会被拒绝执行。
-- 数据集若返回 `available_datasources` 且多于 1 个源时（一份预制 SQL 可在多个数据源上执行），本次取数必须定源：
-  用户已说站点就传 `site`（站点业务名），已知具体源就传 `datasource`（数据源业务名）；两者都不得传 id。
-  未定源而服务端回“无法确定取哪个”时，按它列出的候选名用 `ask_user` 确认后再查，**不得猜源、不得换源重试**；
-  候选之外的源 = 无权或该数据集不适用，如实告知用户。
-- **行为路径/漏斗（关键路径转化）不得拆成多个步骤指标**：把各步 UV 并列查询没有顺序与窗口
-  约束，转化率会系统性偏高（错数比无答案危害大）。正确做法：`knowledge_search` 命中 `paths[]` 后，
-  优先用 `paths[].dataset_hint.dataset` 作为 `query_dataset` 的 `name`、按 `dataset_hint.params` 传 `args`；
-  若 `paths[].query_object` 非空，也可用 `run_semantic_query(object=query_object, params=…)`；
-  `dataset_hint.dimensions/metrics` 非空时，这些业务名可直接进 `dimensions`/`metrics` 下钻；
-  `path_resolution=failed` 或无 `paths[]` 命中时，如实告知“该路径尚未建模/口径不可解析”，
-  **不得**自行用多个步骤指标拼接替代。
+- **先查再答：三类问题必须检索**（每轮最多一次 `knowledge_search`，多个问法一次传进 `questions`，
+  工具内已并发检索；拆成多轮 = 多烧一个模型往返）：
+  (a) 名称拿不到——目录里无匹配名，或返回未绑定/无法解析：查口径与业务背景后按目录原文名重试一次；
+  (b) 业务实体的**身份或归属**不明——一条 URL/域名/落地页是谁家的、归哪个站点，`channel=`/`utm_*`
+      是什么渠道，某个活动名/业务黑话指什么：这类事实目录里没有、只在知识库登记，猜错就取回错数；
+      查到的采集特性（如参数会不会进统计）**按原样转述**，不自行引申；
+  (c) 问题**只要解释、不要数字**（口径/定义/机制流程/SOP/资料登记的事实）：知识库是这类问题的主路。
+  查过确实无依据才说「尚未建模或无法解析（资料里也没登记）」并建议补建模/转数据分析师；
+  `get_glossary` 只译业务黑话与枚举口径，入口地址/联系方式这类事实不收录，**不得**拿它补检索未命中。
+  **本轮没查过就没资格说「不知道/没登记/平台没这个口径」**。
+- **双路权威划分**：对象/指标/维度的**合法名称**以 `get_metrics` 实时目录为唯一权威（它直接读当前
+  生效本体；keyword 必填，多词一次传齐）；`knowledge_search` 只对**口径解释、业务背景、数据集参数
+  清单**权威，标「外部只读语料」的库只作背景与资料事实。两者冲突时名称取目录，向用户说明可能有
+  新旧版本口径差异；`doc_stale=true` 时知识库文档落后于本体，内容仅供参考，**不得**据此发明目录里
+  没有的名称；返回 `hit_object_keys` 时优先直接以其 key 作为 object。
+- **业务本体路由**（`routes[]` 是「概念 → 目标源本体」的路由索引，本身不提供数据）：
+  ① `target_object_key` 作 object；无该字段用 `hit_object_keys`；两者都无则是**源级路由**——先用
+     `datasource` 定源，再在源内用 `get_metrics`/元数据定位对象；
+  ② `datasource_name` 是目标数据源业务名（查询工具用 `datasource` 参数）；提示无权限访问该源时如实告知，
+     **严禁**换源重试或猜源；
+  ③ `filter_hints` 是源内维度提示（如「站点：日本/美国」），落为 `filters[]`——它是维度过滤，不是独立数据源；
+  ④ `scenarios` 是跨源场景清单：逐源分别查询后在结论里合并对比，`join_hint` 只作关联口径说明，**不跨源连表**；
+  ⑤ `route_resolution=failed` 只表示路由解析不可用（不代表无路由），按「数据源拓扑」段的源业务名定源。
+- 指标/维度名必须从 `get_metrics` 目录原文复制（name 或任一 alias 都合法）；告警提示「无法解析」时，
+  附近似候选就先判断是否就是用户要的口径、确认后重试一次，否则从「可用指标/维度」清单里选最贴近的重试——
+  系统不会自动绑定近似名（宁缺勿错）。
+- **时间必须落成参数**：相对滚动窗用 `time_window`（`7d`/`24h`/`1M`），日历区间用 `time_range`（只接受
+  `today`/`yesterday`/`this_week`/`last_week`/`this_month`/`last_month`/`this_quarter`/`last_quarter`/
+  `this_year`/`last_year`），两者可配 `time_column`，由语义层按数据源方言编译成时间谓词；按天/按月趋势 =
+  is_time 维度 + `time_grain`；枚举维度结果已自动翻成业务名，结论直接用业务名。**禁止**自行推算绝对
+  日期写进 filters，也不得把问题里的时间词丢掉。
+- **工具返回字段怎么用**（契约，不是可选提示）：
+  ① 目录/检索返回 `incomplete_scope`：先怀疑「源/本体没选对」，先定源再重查，**不得**据此断言「该对象不存在」；
+  ② 对象绑定查询数据集（`bind_kind=dataset`，承载漏斗/留存等语义层编译不出的形状）：用 intent 的 `params`
+     按数据集声明传参（参数名/类型以 `knowledge_search` 回的数据集参数清单为准，缺失或多余都会被拒绝执行）；
+  ③ 数据集回 `available_datasources` 且多于 1 个源：本次取数必须定源——用户已说站点就传 `site`（站点业务名），
+     已知具体源就传 `datasource`（源业务名），两者都不得传 id；服务端回「无法确定取哪个」时按候选名 `ask_user`，
+     **不得猜源、不得换源重试**；候选之外的源 = 无权或该数据集不适用，如实告知；
+  ④ 命中 `paths[]`（行为路径/漏斗）：按 `dataset_hint.dataset` + `dataset_hint.params` 取**整条路径**
+     （或用 `paths[].query_object` 走 `run_semantic_query`），`dataset_hint.dimensions/metrics` 可直接下钻。
+     **不得**把各步 UV 并列查询拼转化率——没有顺序与窗口约束，转化率会系统性偏高（错数比无答案危害大）；
+     `path_resolution=failed` 或无命中时如实说「该路径尚未建模/口径不可解析」，不自行拼接替代。
 - **探索预算（硬约束）**：整个取数最多 1 次 `get_metrics`（keyword 必填、多词一次传齐；未命中可换业务词重查 1 次）
-  + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；
-  命中即作答，取不到即按上面③告知用户。严禁循环试探物理结构（list_datasources / get_table_schema / search_metadata），
-  严禁同一名目反复改词重试——ChatBI 以准确与快速为先。
-  需要多个问法/多个术语时用 `questions`/`keywords` 一次传齐（工具内已合并/并发检索，拆开传只会多烧模型往返）。
-- 若 `run_semantic_query` 返回“object 未绑定/未在本体中 bound”，如实告知用户该对象尚未在本体建模或绑定，
-  不要回退到裸 SQL 取数。"""
+  + 必要时 1 次 `knowledge_search` + 1–2 次 `run_semantic_query`；命中即作答。
+  严禁循环试探物理结构（list_datasources / get_table_schema / search_metadata）、严禁同一名目反复改词重试。
+- **取不到就如实说**：`run_semantic_query` 返回「object 未绑定/未在本体中 bound」或目录确实没有该口径 →
+  告知用户该对象尚未建模或无法解析，建议补建模或转数据分析师；**不得**换近义词反复试探、不得回退裸 SQL、
+  不得拿别的对象凑数。
+- **作业细则归口**：本轮绑定了查数类技能时（见「意图识别与技能分诊」），执行手法（名称重试、枚举与模板
+  参数、分站编排剧本、分析剧本）以该技能正文为准；未绑定技能的角色按本段执行。"""
 
 
 # nl2sql 路径（execute_sql 已授权时）——语义层仍主路，受治理只读 SQL 为补充，二者均不旁路护城河。
 NL2SQL_QUERY_RULES = """## 数据查询规范（语义层主路 + 受治理 SQL 补充）
-- 本体已绑定的对象/指标/维度，**优先**用 `run_semantic_query`（声明式意图），由语义层 intent→binding→plan→受控执行，自动施加权限/RLS/护栏/审计。
-- 仅当语义层无法表达（对象未建模/未绑定，或需多表 JOIN、窗口函数、复杂子查询等）且本会话已授权 `execute_sql` 时，用 `execute_sql` 取数：
-  它同样是**受治理只读入口**（经统一执行器，仅 SELECT/WITH、自动校验、自动补 LIMIT、权限/RLS/敏感屏蔽/审计自动施加），**不是**裸连数据源。
+- 已绑定本体对象/指标/维度**优先**用 `run_semantic_query`；仅当语义层表达不了（对象未建模/未绑定，
+  或需多表 JOIN、窗口函数、复杂子查询）且本会话已授权 `execute_sql` 时才写只读 SQL。`execute_sql`
+  同样是**受治理只读入口**（统一执行器：仅 SELECT/WITH、自动校验、自动补 LIMIT、权限/RLS/敏感屏蔽/
+  审计自动施加），**不是**裸连数据源。名称权威、时间参数与「统一语义层」段同口径。
 - 「语义层无法表达」**不包含本轮没定出站点/数据源**：`run_semantic_query` 回「需要先定站点/数据源」时，
-  按提示补上 `site`（站点业务名）或 `datasource`（源业务名）重试语义层；**不得**据此判定对象未建模/未绑定，
+  按提示补 `site`（站点业务名）或 `datasource`（源业务名）重试语义层；**不得**据此判定对象未建模/未绑定，
   更不得转去手写 SQL 绕开本体（历史缺陷：一个误写的「未绑定」文案让模型弃语义层去写 SQL，最终三重失败）。
-  SQL 的 FROM 只能是**物理表名**（先用 `get_table_schema`/`search_metadata` 确认），不是本体对象 key；
-  结果里 `failure_category=sql_dialect/missing_object/sql_shape` 是**确定性缺陷**（需重写或换源；sql_shape = 非聚合列没进 GROUP BY），重试同一句永远不会好。
-- `execute_sql` 规范：业务背景/指标口径/字段含义一律先用 `knowledge_search`（已绑定知识库）了解，不靠直接翻表结构去猜业务语义；只有需要把口径落到具体物理表/列以拼装 SQL 时，才用 `get_table_schema` / `search_metadata` 确认表名列名。查询形状（时间/过滤/聚合/JOIN）由你自主组织，但写 SQL 前必须先 `check_sql` 预检、只读 SELECT/WITH、禁止 DDL/DML 与多语句；huge 表无过滤谓词的全表扫描会被护栏拒绝，需加 WHERE。
-- 指标/维度名、枚举业务名以 `get_metrics` / 字典为准；相对时间优先用 `run_semantic_query` 的 `time_window`，SQL 路径不得臆造列名。
-- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选数据源；若当前工作空间授权了多个数据源，先看候选业务名（`list_datasources`，仅当已授权；否则看「数据源拓扑」段；均只给业务名，不含 id），按问题选最匹配的一个并用 `datasource`（业务名）参数指定；若 `knowledge_search` 返回 `routes`，数据源优先按 `routes[].datasource_name`（业务本体路由）指定；不确定用哪个源时调 `ask_user` 让用户选，严禁臆测源名或传数字 id。单源时可省略。
-- 不确定口径先检索（knowledge_search / get_metrics / get_glossary / 元数据），宁缺勿错；两档权威冲突时名称以 `get_metrics` 实时目录为准。
-  检索**一次传齐**：多个候选问法用 `knowledge_search` 的 `questions`、多个术语用 `get_glossary` 的 `keywords`（工具内已合并成一次检索）；
-  `get_glossary` 只译业务黑话/枚举口径，资料类事实问题（入口地址/联系方式/组织分工）不收录，不得拿它补 `knowledge_search` 的未命中。
-- 无论走哪条路径，返回数据都必须遵守下方数据源黑盒与敏感合规约束：不得暴露账号/IP/连接信息/
-  数据源内部标识/服务端治理改写后的 SQL；业务查询 SQL 与其携带的表/列名按「数据源黑盒」段
-  口径处理（本会话可见），不作为泄露项，也不得据此选择性拒答。"""
+- SQL 的 FROM 只能是**物理表名**（先用 `get_table_schema`/`search_metadata` 确认），不是本体对象 key；
+  返回 `failure_category=sql_dialect/missing_object/sql_shape` 是**确定性缺陷**（重写或换源；
+  sql_shape = 非聚合列没进 GROUP BY），重试同一句永远不会好。
+- `execute_sql` 规范：业务背景/指标口径/字段含义先用 `knowledge_search` 了解，不靠直接翻表结构猜业务语义；
+  只有要把口径落到具体物理表/列时才 `get_table_schema`/`search_metadata`。查询形状（时间/过滤/聚合/JOIN）
+  自主组织，但写 SQL 前必须先 `check_sql` 预检、只读 SELECT/WITH、禁 DDL/DML 与多语句；huge 表无过滤
+  谓词的全表扫描会被护栏拒绝，需加 WHERE。
+- **数据源选择**：`check_sql`/`execute_sql` 默认作用于会话已选源；多源时按「数据源拓扑」段的业务名
+  （或 `list_datasources`，仅当已授权）用 `datasource` 参数指定，`routes[].datasource_name` 优先；
+  不确定用哪个源就 `ask_user`，**严禁**臆测源名或传数字 id。单源可省略。
+- 无论走哪条路径，返回数据都受下方「数据源黑盒」与「敏感数据合规」约束：不得暴露账号/IP/连接信息/
+  数据源内部标识/服务端治理改写后的 SQL；你自己写、且已 `check_sql` 预检过的业务 SQL 属本会话口径，
+  用户索要时照常给出，不作为泄露项拒答。"""
 
 
 # 工具自主编排 + 歧义闸门（常驻原则，所有角色共用）。
@@ -387,8 +374,9 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
        两者同时展开就是给模型的矛盾指令。
     2. **只绑一个技能时始终展开**: analyst/viewer 这类单职责角色与改造前完全一致,
        不拿主力角色的回答质量换字数。
-    3. **多技能按命中展开**（已被规则 6 取代为"一份都不展开"）：`description` 本身就是浓缩契约，
-       硬约束仍常驻可见；`MAX_SKILL_BODIES` 现在只对规则 4 的 `pinned` 生效。
+    3. **多技能按命中展开**（已被规则 6 取代为"一份都不展开"）：正文不常驻，
+       意图分诊表（`_routing_lines`）告诉模型“这轮归哪份技能”，由它先取回再动手；
+       `MAX_SKILL_BODIES` 现在只对规则 4 的 `pinned` 生效。
        `force_all=True` 跳过规则 3/6（仍走能力门控）: 无人值守链路（定时分析/评测）没有
        人在现场纠偏, 不因省字数拿产出口径冒险。
     4. **用户显式指定优先**: `pinned` = 聊天输入框 `/` 选中的技能名或快速入口对应的剧本,
@@ -497,12 +485,17 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
         if progressive:
             # 命令式前置：附带那份到得太晚（在工具结果里），不能代替动手前的口径。
             # 同时划出"不必取回"的边界（纯问答），否则每个只读回合都多付一轮工具调用。
-            reasons[key] = (
-                f"{head}；作业细则本轮未常驻。凡要**按该技能动手产出或执行**"
-                f"（建板/改板/删板、写内容、出报告与文件、下取数）之前，**必须先调** "
-                f"`load_skill_guide(\"{key}\")` 取回细则，再按细则决定后续动作；"
-                f"首次调用该域工具时服务端还会随结果补发一份，那份只用于**事后核对**，"
-                f"不代替动手前取口径。只是解释概念、复述已有结果而不新增产出时不必取回。")
+            # 声明了 intent 的技能已进「意图识别与技能分诊」表，取回命令在那里统一写一次；
+            # 这里只留病因，否则同一句命令按技能数重复 N 遍（9 份技能 ≈ 2K 字符白付）。
+            if str(s.get("intent") or "").strip():
+                reasons[key] = f"{head}；作业细则本轮未常驻，取回方式见上文「意图识别与技能分诊」"
+            else:
+                reasons[key] = (
+                    f"{head}；作业细则本轮未常驻。凡要**按该技能动手产出或执行**"
+                    f"（建板/改板/删板、写内容、出报告与文件、下取数）之前，**必须先调** "
+                    f"`load_skill_guide(\"{key}\")` 取回细则，再按细则决定后续动作；"
+                    f"首次调用该域工具时服务端还会随结果补发一份，那份只用于**事后核对**，"
+                    f"不代替动手前取口径。只是解释概念、复述已有结果而不新增产出时不必取回。")
         else:
             # 本会话没接入主动取回通道：不许写"可以先调"这种做不到的承诺（空承诺入口）。
             reasons[key] = (
@@ -512,8 +505,52 @@ def _select_skill_bodies(skills: list, capabilities: dict | None,
     return [], reasons, missing
 
 
+def _routing_lines(skills: list, capabilities: dict | None) -> list[str]:
+    """意图识别与技能分诊表：把每份技能自述的意图域渲染给模型，由**模型自己**认意图。
+
+    为什么判定权在模型而不在服务端词表：真实问题常是混合句（「做个大屏看下上周转化」
+    既像大屏又像查数），词表打分会在这种句子上判错且无法解释；提示词给“意图 → 技能”
+    的对位关系 + 技能自述的适用场景，模型按主任务取一份，判错也能下一轮自行换。
+    服务端只确定两件事实：这轮绑了哪些技能（以及它们各自的 intent 标签）。
+
+    只列声明了 `intent` 的技能：存量自定义技能没这个键就不进表（不编造意图），
+    它们仍出现在「已绑定技能」清单里，按 description 与触发词取用。
+    """
+    rows: list[str] = []
+    for s in skills or []:
+        if not isinstance(s, dict):
+            continue
+        intent = str(s.get("intent") or "").strip()
+        name = str(s.get("name") or "").strip()
+        if not intent or not name:
+            continue
+        rows.append(f"- {intent} → `{name}`")
+    if not rows:
+        return []
+    head = ["## 意图识别与技能分诊（先认意图，再取该技能的作业细则）",
+            "动手前先判断这轮的主任务属于下表哪一类；判不准就按最近的一类理解，"
+            "不要为了分诊反问用户。"]
+    if _progressive_disclosure(capabilities):
+        tail = ["- 认到哪一类，动手前**先调** `load_skill_guide(\"<该类的技能名>\")` 取回作业细则，"
+                "再按细则决定参数与顺序；只凭「已绑定技能」里那行概述动手算违规，"
+                "取回之前也不得声称“已按该技能作业”。",
+                "- 一个问题跨多类时只按**主任务**取一份，其余在回答里说明；"
+                "纯解释、复述已有结果、闲聊确认不必取回。"]
+    else:
+        tail = ["- 认到哪一类，该技能的作业细则会在本回合首次调用其域工具时随结果附带；"
+                "细则到达前，涉及该类的参数与顺序不得凭常识补。",
+                "- 一个问题跨多类时只按**主任务**处理，其余在回答里说明。"]
+    return head + rows + tail + [
+        "- 上表没有的意图 = 本助手未绑定该能力，不要假装会做；用户需要时如实说明"
+        "需管理员在「AS-BOT 配置」里绑定对应技能。"]
+
+
 def _skill_lines(skills: list, loaded: list, reasons: dict) -> list[str]:
-    """已绑定技能清单行: 名称 + description(浓缩契约) + 未展开正文时的显式原因。"""
+    """已绑定技能清单行: 名称 + description(定位行) + 未展开正文时的显式原因。
+
+    description 只用于让模型知道“这份技能是干什么的”（定位）；作业口径一律在正文里，
+    正文本轮未到时由原因行写明去处（先取回 / 随工具附带 / 未授权），不得让人只看概述就动手。
+    """
     loaded_names = {s.get("name") for s in loaded}
     lines = []
     for s in skills or []:
@@ -1124,6 +1161,13 @@ def compose_system_prompt(
     skill_lines = _skill_lines(skills, skill_bodies, skill_reasons)
     if skill_lines:
         sections.append("## 已绑定技能\n" + "\n".join(skill_lines))
+        # 意图分诊表：只对多技能角色渲染（单技能角色正文本就按规则 2 常驻，多一张表只是噪声）。
+        # 它是“意图识别”的提示词形态：把“这轮要干什么 → 取哪份技能”的对位关系统一在一个地方，
+        # 与「已绑定技能」清单相邻，不与具体作业细则混写。
+        if len([s for s in skills if isinstance(s, dict)]) > 1:
+            route_lines = _routing_lines(skills, capabilities)
+            if route_lines:
+                sections.append("\n".join(route_lines))
         skill_sections = _skill_sections(skill_bodies)
         if skill_sections:
             sections.append("## 技能详细指引\n\n" + "\n\n".join(skill_sections))

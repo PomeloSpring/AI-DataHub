@@ -112,6 +112,20 @@ def _delivered_skill_names(ctx) -> list[str]:
     return out
 
 
+def _turn_question(ctx) -> str:
+    """本回合用户问题（轮次起点由 ``secure_sdk`` 写进 ``ctx.extra["question"]``）。空串 = 不知道问什么。"""
+    return str((getattr(ctx, "extra", None) or {}).get("question") or "").strip()
+
+
+def _scope_hits(skill: dict, question: str) -> list[str]:
+    """frontmatter `attach_scope` 的作用域词命中（与 triggers 同机制：子串、大小写不敏感）。"""
+    q = str(question or "").strip().lower()
+    if not q:
+        return []
+    return [w for w in (str(x).strip() for x in (skill.get("attach_scope") or []))
+            if w and w.lower() in q]
+
+
 def _match_bound(name: str, bound: list[str]) -> str:
     """在绑定清单里按业务名精确命中（大小写不敏感、允许 display_name）。不猜、不做包含式模糊。"""
     want = str(name or "").strip().lower()
@@ -221,6 +235,15 @@ async def load_skill_guide(args):
         "note": "以上是作业细则（方法文字），**不是查询结果**：不得把它当数据引用，"
                 "也不得在未真正取数时声称已按该技能完成分析。",
     }
+    scope = [str(x).strip() for x in (skill.get("attach_scope") or []) if str(x).strip()]
+    question = _turn_question(ctx)
+    if scope and question and not _scope_hits(skill, question):
+        # 显式取回不拒绝（用户/模型可能确实要读全文），但必须点明“本轮问题不在该作用域”，
+        # 否则这份细则会被当成这个业务问题的作业口径（历史缺陷：业务取数被观测剧本带偏）。
+        payload["scope_note"] = (
+            "⚠ 本轮问题未命中该技能的作用域（" + "、".join(scope[:8]) + " 等）："
+            "它只管站点网页端的观测数据，案例/订单/客户等内容型业务取数不属于它。"
+            "若这其实是业务取数问题，请改用业务数据分析技能，不要把观测数据当业务数字。")
     if truncated:
         payload["truncated"] = (f"正文超过 {SKILL_GUIDE_MAX_CHARS} 字符已截断，"
                                 "截断部分未下发；如需完整口径请让管理员精简该技能。")
@@ -261,6 +284,10 @@ def guide_block_for_tool(ctx, tool_suffix: str) -> str:
 
     域→技能的绑定沿用 frontmatter `requires_any`（与 `_select_skill_bodies` 的能力门控、
     `load_skill_guide` 的缺工具提醒同一份口径），不另造第二套映射。
+
+    作用域（frontmatter `attach_scope`，可选）是**同一个工具被多个域共用**时的隔离阀：
+    声明了它且本轮问题一个词都没命中 → 不附带（如「案例有多少」不该拿到 ARMS 观测口径）。
+    这是“问错域”的隔离，不是对失败的降级：正文可由模型显式取回，取回时会被提示作用域不符。
     """
     if not tool_suffix:
         return ""
@@ -274,6 +301,15 @@ def guide_block_for_tool(ctx, tool_suffix: str) -> str:
         if name in delivered:
             continue
         skill = (as_bots.load_skills([name]) or [{}])[0]
+        scope = [str(x).strip() for x in (skill.get("attach_scope") or []) if str(x).strip()]
+        question = _turn_question(ctx)
+        if scope and question and not _scope_hits(skill, question):
+            # 作用域外不附带。典型场景：ARMS 可观测与业务数据分析共用 run_semantic_query，
+            # 「案例有多少」这类业务取数问题不该拿到观测口径（历史缺陷：业务问题被 RUM 剧本带偏）。
+            # 问题为空时不判（宁附带也不静默丢口径）；模型仍可显式 load_skill_guide 取回，
+            # 那里会写明“本轮问题不在该技能作用域”，不会把两份口径混成一份。
+            logger.debug("[skill_tools] 技能 %s 不在本轮问题作用域内，跳过附带", name)
+            continue
         group = str(skill.get("exclusive_group") or "").strip()
         if group and group in delivered_groups:
             # 同域互斥剧本（如「知识问答」与「数据分析」）只发一份：两份口径同时进上下文

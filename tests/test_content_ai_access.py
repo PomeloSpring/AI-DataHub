@@ -257,15 +257,25 @@ def test_db_ai_action_keys_cover_content_actions():
 
 
 def test_skill_body_exists_and_only_declares_real_tools():
-    """SKILL.md 的 requires_any 必须是真注册的工具名：技能不能向模型承诺它没有的能力。"""
+    """SKILL.md 的 requires_any 必须是**模型真能调用**的工具名：技能不能向模型承诺它没有的能力。
+
+    口径修正（2026-11-20）：内容动作已改惰性壳接入（只注册 `list_platform_functions` /
+    `run_platform_function`，具体动作由清单实时下发），所以可调用的名字是**壳名**，
+    不再是 `FUNCTION_ACTION_SPECS` 里的动作名。旧断言锁的是退役形态（逐动作直调），
+    正是它让 frontmatter 里三个不存在的动作名活了很久：能力门控把它们当“未授权”
+    永久剔除，技能永远展开不了正文，而用例一直是绿的。
+    """
     from backend.modules.mind.config import skill_loader
-    from backend.modules.mind.execution import as_bots
+    from backend.modules.mind.execution import as_bots, function_tools
+    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
 
     skill = skill_loader.load_skill("content-writer")
     assert skill and skill.get("display_name") == "内容创作"
     meta = as_bots.load_skills(["content-writer"])[0]
-    tool_names = {s["tool_name"] for s in ft.FUNCTION_ACTION_SPECS.values()}
-    assert set(meta["requires_any"]) <= tool_names, meta["requires_any"]
+    callable_names = {s["name"] for s in function_tools.SHELL_TOOL_SPECS}
+    for _server, tools in TOOL_SERVER_TOOLS.values():
+        callable_names.update(str(t) for t in tools)
+    assert set(meta["requires_any"]) <= callable_names, meta["requires_any"]
     assert meta["triggers"], "没有命中词的话多技能绑定时永远不展开正文"
 
 

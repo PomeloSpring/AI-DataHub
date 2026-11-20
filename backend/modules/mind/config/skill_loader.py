@@ -13,12 +13,18 @@ Skills are prompt templates that agents can dynamically load.
 A TTL cache (default 60s) enables dynamic hot-reload: SKILL.md 修改
 在 60 秒内生效，无需重启服务。
 
-两个**可选** frontmatter 键供执行层控制正文装载量（消费方 = `prompt_composer._select_skill_bodies`，
-由 `as_bots.load_skills` 透出）：
+三个**可选** frontmatter 键供执行层控制“技能怎么被选中/怎么下发”（由 `as_bots.load_skills`
+透出）：
+  * `intent: 查数分析（语义层）` —— 本技能负责的**意图域**（人话标签）：由
+    `prompt_composer._routing_lines` 渲染成提示词里的「意图识别与技能分诊」表，模型据此
+    自己认意图后先取回该技能细则；不会写这个键的技能不进表（不编造意图）。
   * `requires_any: [tool_name, ...]` —— 本技能的作业细则依赖哪些工具（取 `mcp__<server>__<tool>`
     的 `tool` 段）；本会话工具清单一个都没注册时不展开正文（不向模型承诺它没有的能力）。
-  * `triggers: [词, ...]` —— 用户问题命中词；一个 AS-BOT 绑定多个技能时只展开命中的那几个正文。
-未命中/未展开不静默消失：技能仍以 `description`（浓缩契约）出现在提示词的「已绑定技能」清单里并标原因。
+  * `triggers: [词, ...]` —— 用户问题命中词；多技能且意图识别判不准时作兜底证据。
+  * `attach_scope: [词, ...]` —— 本技能的**作用域**（可选）：两个域共用同一工具时（如 `arms-observability`
+    与 `data-analysis` 都靠 `run_semantic_query`）靠它隔离——问题一个词都没命中就不随工具结果附带正文
+    （业务取数问题不会被观测剧本带偏）；未写该键 = 不设作用域（用到该域工具即附带）。
+未命中/未展开不静默消失：技能仍以 `description` 出现在提示词的「已绑定技能」清单里并标原因。
 """
 
 import logging

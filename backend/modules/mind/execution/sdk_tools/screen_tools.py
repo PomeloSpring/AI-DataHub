@@ -312,28 +312,6 @@ def _unique_dataset_name(base: str) -> str:
     return candidate
 
 
-def _grant_dataset_to_user_roles(user_id: int, dataset_id: int) -> list[int]:
-    """数据集可见性 = 角色授权（fail-closed）：创建者所属角色逐条补授。
-
-    不补授就出现“工具说建好了、图表挂不上”（assert_chart_data_source 按角色清单裁决）。
-    账号没有任何角色时直接拒——那不是本工具能替他决定的事。
-    """
-    from backend.common.db import execute_query, execute_write
-
-    rows = execute_query("SELECT role_id FROM adh_user_roles WHERE user_id=%s", (int(user_id),)) or []
-    roles = sorted({int(r["role_id"]) for r in rows if r.get("role_id")})
-    if not roles:
-        # fail-loud：没角色就挂不上图（assert_chart_data_source 按角色清单裁决），
-        # 不能“建了再说”——也不把这条咽成“数据源不可用”。
-        raise ScreenIntentError(_error(
-            "当前账号没有任何角色，新建数据集无法授权给角色（图表会挂不上）；"
-            "请先为该账号配置角色后重试。"))
-    for rid in roles:
-        execute_write("INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s,%s)",
-                      (rid, int(dataset_id)))
-    return roles
-
-
 def _grant_dashboard_to_user_roles(user_id: int, dashboard_id: int, user_role: str = "") -> list[int]:
     """看板可见性 = 角色授权（fail-closed）：建屏同批把看板授给创建者所属角色。
 
@@ -356,7 +334,26 @@ def _grant_dashboard_to_user_roles(user_id: int, dashboard_id: int, user_role: s
     for rid in roles:
         execute_write("INSERT IGNORE INTO adh_role_dashboard_access (role_id, dashboard_id) VALUES (%s,%s)",
                       (rid, int(dashboard_id)))
+    # 级联：看板已共享给这批角色 → 它引用的数据集一并发布（workspace + 授权）。
+    # 数据集的默认可见性是 private（仅创建者），不级联就会出现「别人能打开看板、
+    # 图表却报无权取数」；拍板口径：共享看板时级联发布数据集。
+    _publish_datasets_of_dashboard(dashboard_id, roles)
     return roles
+
+
+def _publish_datasets_of_dashboard(dashboard_id: int, role_ids: list[int]) -> list[int]:
+    """把看板引用的数据集追加发布给同一批角色（幂等并集，见 dataset_service）。"""
+    from backend.common.db import execute_query
+    from backend.modules.viz.services import dataset_service
+
+    rows = execute_query(
+        "SELECT DISTINCT source_id FROM adh_charts "
+        "WHERE dashboard_id=%s AND source_type='dataset' AND source_id > 0",
+        (int(dashboard_id),)) or []
+    ids = [int(r["source_id"]) for r in rows if r.get("source_id")]
+    for did in ids:
+        dataset_service.grant_dataset_to_roles(did, role_ids)
+    return ids
 
 
 def _find_reusable_dataset(identity: dict, object_key: str, source: int, intent_key: str) -> dict | None:
@@ -382,7 +379,12 @@ def _find_reusable_dataset(identity: dict, object_key: str, source: int, intent_
 
 def _materialize_dataset(*, identity: dict, screen_name: str, title: str, chart_type: str,
                          object_key: str, source: int, intent: dict) -> dict:
-    """声明式意图 → 数据集资产：等价则复用，否则新建（origin=ai_session）+ 角色补授。"""
+    """声明式意图 → 数据集资产：等价则复用，否则新建（origin=ai_session）。
+
+    新建的数据集是**个人产物**（默认 private，仅创建者可见）——不在这里补授角色。
+    若最终看板被共享给角色，`_grant_dashboard_to_user_roles` 会级联发布它引用的数据集；
+    这样「只建屏不共享」时数据集与看板都不会被同角色其他人看见。
+    """
     from backend.modules.viz.services import dataset_service
 
     key = _intent_key(intent)
@@ -397,8 +399,9 @@ def _materialize_dataset(*, identity: dict, screen_name: str, title: str, chart_
         "chart_type": chart_type,
         "chart_preset": _dataset_preset(intent),
     }, identity, origin="ai_session")
-    roles = _grant_dataset_to_user_roles(int(identity["user_id"]), int(ds["id"]))
-    return {"id": int(ds["id"]), "name": ds.get("name"), "roles": roles, "reused": False}
+    return {"id": int(ds["id"]), "name": ds.get("name"),
+            "visibility": dataset_service.normalize_visibility(ds.get("visibility")),
+            "reused": False}
 
 
 def _fetch_dataset(dataset_id: int, intent: dict, identity: dict) -> dict:

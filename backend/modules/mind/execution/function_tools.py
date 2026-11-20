@@ -185,19 +185,22 @@ def _list_datasets(args):
     数据源一律以**业务名**下发（护栏 §7：内部 datasource_id 是黑盒）——多源数据集
     要让 LLM 知道可以用 site/datasource 指定这次跑哪个源，否则它只能看见一个名字。
 
-    可见范围与「数据集」页同口径（角色数据集授权唯一裁决）：admin 全可见，其余角色
-    走 ``role_service.get_user_allowed_datasets``，**空授权 = 一律不可见（fail-closed）**。
-    历史缺陷（2026-11-17）：这里不过角色过滤，AI 能列出用户在页面上看不到的数据集。
+    可见范围与「数据集」页同口径（`dataset_service.dataset_visible_to`）：admin 全可见；
+    其余 = 属主（含 private 个人产物）∪ workspace 行命中角色授权，**空授权不等于全量**。
+    历史缺陷（2026-11-17）：这里不过角色过滤，AI 能列出用户在页面上看不到的数据集；
+    反向缺陷（2026-11-20 修正）：直接短路空授权，会让用户看不到自己 chat 建的数据集。
     """
     ident = _identity()
     if not ident:
         return _text({"error": "无法确认调用者身份"}, is_error=True)
     limit = _limit(args)
     cols = ("d.id, d.name, d.description, d.source_type, d.object_key, d.chart_type, "
-            "d.status, d.available_datasources, ds.name AS datasource_name, "
+            "d.status, d.available_datasources, d.visibility, d.owner_id, "
+            "COALESCE(u.username, '') AS owner_name, ds.name AS datasource_name, "
             "d.created_at, d.updated_at")
     base = ("FROM adh_datasets d "
             "LEFT JOIN adh_datasources ds ON ds.id = d.datasource_id "
+            "LEFT JOIN adh_users u ON u.id = d.owner_id "
             "WHERE d.status = 'active'")
     # updated_at 同秒的行很多, 末尾 d.id 兜底保证 LIMIT 截断确定（list-pagination §2）
     order = "ORDER BY d.updated_at DESC, d.id DESC LIMIT %s"
@@ -207,14 +210,15 @@ def _list_datasets(args):
         from backend.core.role_service import role_service
 
         allowed_ids = role_service.get_user_allowed_datasets(int(ident["user_id"]))
-        if not allowed_ids:                  # fail-closed：角色未获授任何数据集
-            return _text({"datasets": [],
-                          "note": "当前角色未获授任何数据集（角色授权为空即一律不可见）"})
-        ph = ",".join(["%s"] * len(allowed_ids))
-        rows = _select(f"SELECT {cols} {base} AND d.id IN ({ph}) {order}",
-                       (*allowed_ids, limit))
+        ph = ",".join(["%s"] * len(allowed_ids)) if allowed_ids else ""
+        scope = ("d.owner_id = %s OR (d.visibility = 'workspace'"
+                 + (f" AND d.id IN ({ph})" if ph else " AND 1=0") + ")")
+        rows = _select(f"SELECT {cols} {base} AND ({scope}) {order}",
+                       (int(ident["user_id"]), *sorted(allowed_ids), limit))
     for r in rows:
         r["datasource"] = str(r.pop("datasource_name", "") or "") or "默认引擎"
+        r["visibility"] = str(r.pop("visibility", "") or "workspace")
+        r["is_owner"] = int(r.pop("owner_id", 0) or 0) == int(ident["user_id"])
         raw = r.pop("available_datasources", None)
         if isinstance(raw, str):
             try:
@@ -225,8 +229,9 @@ def _list_datasets(args):
         names = list(dict.fromkeys([r["datasource"]] + scope if r["datasource"] else scope))
         if len(names) > 1:                     # 单源数据集不加噪声
             r["available_datasources"] = names
-    note = ("SQL 原文与字段配置不在 AI 可见范围内；数据源只给 业务名，"
-            "跨源数据集按 site/datasource 指定其一（不得传 id ）")
+    note = ("清单 = 你创建的数据集 + 已按角色共享给你的数据集（他人私有集不可见不可用）；"
+            "SQL 原文与字段配置不在 AI 可见范围内；数据源只给业务名，"
+            "跨源数据集按 site/datasource 指定其一（不得传 id）")
     if len(rows) >= limit:                   # 截断必须显式（不得静默少给）
         note += f"；结果已按上限 {limit} 条截断，可调大 limit（最大 200）"
     return _text({"datasets": [_iso(r, "created_at", "updated_at") for r in rows],

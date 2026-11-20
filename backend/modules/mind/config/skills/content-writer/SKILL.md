@@ -1,9 +1,10 @@
 ---
 name: content-writer
+intent: 内容创作（内容中心）
 display_name: 内容创作
 description: 在内容中心（资讯栏目）里生成与管理对外内容：查清单与正文、取栏目/标签名册、写草稿、改草稿、提交审核。只落草稿，发布/下架/审核必须由人在页面操作；不进知识库语料。
 category: content
-requires_any: [create_content_draft, update_content_draft, list_content_articles]
+requires_any: [list_platform_functions, run_platform_function]
 triggers: [内容中心, 资讯, 栏目, 写一篇, 生成内容, 草稿, 发稿, 提交审核, 内容管理, 白皮书, 行业动态, 产品动态, 合规, 术语解释, 科普, 对外内容]
 display_name_en: "Content Authoring"
 description_en: "Generate and manage outward-facing content in the Content Center (news columns): list articles and bodies, fetch category/tag rosters, write and edit drafts, submit review. Draft only; publish/unpublish/review must be done by a human on the page. Content is not for the knowledge corpus."

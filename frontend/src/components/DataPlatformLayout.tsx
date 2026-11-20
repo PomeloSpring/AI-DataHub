@@ -43,7 +43,11 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasources', icon: Database, labelKey: 'data.datasources' },
   { key: '/data/tables', icon: FileText, labelKey: 'data.tables' },
   { key: '/data/playground', icon: Terminal, labelKey: 'data.playground' },
-  { section: 'section.catalog' },
+  /* 数据资产段：接进来之后形成/维护的资产（上一段「数据源」是“把数据接进来”）。
+     段内顺序按「浏览型资产在前、配置型资产在后」：数据集 → 本体建模 → 指标与维度
+     → 关系图谱 → 分析场景 → 决策建议；与 adh_menu_registry 的 section/sort 逐项一致
+     （data_assets_section_migration.sql）。 */
+  { section: 'section.assets' },
   { key: '/data/datasets', icon: Layers, labelKey: 'data.datasets' },
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
   { key: '/data/ontology', icon: Boxes, labelKey: 'data.ontology' },
@@ -51,13 +55,13 @@ const DATA_PLATFORM_MENU_ITEMS = [
      菜单/权限点登记同批退出，见 docker/mysql/asset_pool_retire_migration.sql */
   /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：
      见 docker/mysql/sql_pairs_retire_migration.sql 与 App.tsx 的路由注释 */
-  /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语义层语料, 归数据中台 */
-  { key: '/data/scenario', icon: Workflow, labelKey: 'data.scenario' },
   { key: '/data/metrics', icon: BarChart3, labelKey: 'data.metrics' },
   { key: '/data/knowledge-graph', icon: Network, labelKey: 'data.knowledgeGraph' },
+  /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语料资产 */
+  { key: '/data/scenario', icon: Workflow, labelKey: 'data.scenario' },
   /* 决策建议（配置面）：条件引用指标/维度字典，本质是口径资产，与本段的
      「指标与维度」「本体建模」同族（不放系统配置——那是一级 AI 模板/凭据域）。
-     菜单登记 data:decisions ↔ decision:manage，sort=10 排在本段最后。 */
+     菜单登记 data:decisions ↔ decision:manage。 */
   { key: '/data/decisions', icon: Signpost, labelKey: 'data.decisions' },
   { section: 'section.security' },
   { key: '/data/sensitive', icon: Shield, labelKey: 'data.sensitive' },

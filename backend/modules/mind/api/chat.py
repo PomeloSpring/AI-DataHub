@@ -726,6 +726,19 @@ class CreateConversationRequest(BaseModel):
     workspace_id: Optional[int] = 0
     as_bot_key: Optional[str] = ""
     site_code: Optional[str] = ""
+    # 初始标题（前端用首条提问截断）：空 = 新对话。
+    # 为什么建会话时就收：旧形态统一先写死“新对话”、等整轮结束随 messages 一起改，
+    # 中间这段时间列表面板只能显示“新对话”，用户分不清“记录还没建”与“建了没标题”。
+    title: Optional[str] = ""
+
+
+def _initial_conversation_title(raw: Optional[str]) -> str:
+    """建会话时的初始标题：折叠空白、限长 60；空串回到“新对话”。
+
+    标题只是展示文本（不参与路由/权限），但仍要归一：提问里的换行会直接进列表行。
+    """
+    title = " ".join(str(raw or "").split()).strip()
+    return title[:60] if title else "新对话"
 
 
 @router.post("/conversations")
@@ -769,12 +782,15 @@ def create_conversation(
             raise HTTPException(status_code=422, detail=f"站点「{site_code}」不可用，请重新选择查询站点")
 
     conn = get_metadata_conn()
+    # 首轮标题随行落库（不等整轮结束再改）：列表现刻就能显示那句提问，
+    # “新对话”只作为真正的缺省值保留。
+    initial_title = _initial_conversation_title(req.title)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO adh_conversations (user_id, title, datasource_id, workspace_id, as_bot_key, site_code, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())",
-                (user["user_id"], "新对话", req.datasource_id or 0, workspace_id,
+                (user["user_id"], initial_title, req.datasource_id or 0, workspace_id,
                  as_bot_key, site_code),
             )
             conn.commit()
@@ -782,7 +798,7 @@ def create_conversation(
             _invalidate_conv_cache(user["user_id"])
             return {
                 "id": conv_id,
-                "title": "新对话",
+                "title": initial_title,
                 "datasource_id": req.datasource_id or 0,
                 "workspace_id": workspace_id,
                 "as_bot_key": as_bot_key,

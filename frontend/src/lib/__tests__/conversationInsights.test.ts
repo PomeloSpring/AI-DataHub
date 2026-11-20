@@ -3,9 +3,11 @@
 // ② 关键知识 = 本次口径（run_semantic_query 的 intent）+ 命中的字典口径 + 知识引用出处；
 // ③ 字段白名单：术语的 target_table/target_column、目录检索的物理表名、知识库片段正文
 //    一律不得进入侧栏数据（护栏 §7：物理标识不对客户端渲染）；
-// ④ 结果被截断时必须数出来（unparsed），不能静默当成"没有知识"。
+// ④ 结果被截断时必须数出来（unparsed），不能静默当成"没有知识"；
+// ⑤ 会话技能 = 回合 meta 的三条通道（常驻/附带/取回），计"回合数"不等同"条目数"，
+//    字段整份缺失是历史会话（未记录），绝不等于"没加载"。
 import { describe, expect, it } from 'vitest';
-import { collectArtifacts, collectKnowledge } from '../conversationInsights';
+import { collectArtifacts, collectKnowledge, collectSkills } from '../conversationInsights';
 
 const assistant = (over: Record<string, any> = {}) => ({
   role: 'assistant', content: '结论正文', reply: '结论正文', ...over,
@@ -145,5 +147,42 @@ describe('collectKnowledge', () => {
     ]) {
       expect(blob, `侧栏数据不应包含 ${forbidden}`).not.toContain(forbidden);
     }
+  });
+});
+
+describe('collectSkills', () => {
+  it('三条通道各自计「回合数」，同一回合内重复写同一个技能名只算一次', () => {
+    const got = collectSkills([
+      { role: 'user', content: '做个大屏看上周转化' } as any,
+      assistant({ skills_attached: ['screen-builder'], skills_loaded: [], skills_fetched: [] }),
+      assistant({
+        // 同一回合里同一通道写了两次：计数口径是回合数，不是条目数
+        skills_attached: ['screen-builder', 'screen-builder'],
+        skills_loaded: ['screen-builder'],
+        skills_fetched: ['data-analysis'],
+      }),
+    ]);
+    expect(got.turns).toBe(2);
+    expect(got.recorded).toBe(true);
+    expect(got.cards.map(c => c.name)).toEqual(['screen-builder', 'data-analysis']);
+    expect(got.cards[0]).toMatchObject({ idx: 1, resident: 1, attached: 2, fetched: 0 });
+    expect(got.cards[1]).toMatchObject({ idx: 2, resident: 0, attached: 0, fetched: 1 });
+  });
+
+  it('记录字段整份缺失 = 历史会话（recorded=false），不得当成「没加载」', () => {
+    const got = collectSkills([assistant({ content: '旧回合' })]);
+    expect(got.turns).toBe(1);
+    expect(got.recorded).toBe(false);
+    expect(got.cards).toEqual([]);
+  });
+
+  it('字段在但都是空数组 = 确实没加载（recorded=true）', () => {
+    const got = collectSkills([assistant({ skills_loaded: [], skills_attached: [], skills_fetched: [] })]);
+    expect(got.recorded).toBe(true);
+    expect(got.cards).toEqual([]);
+  });
+
+  it('新会话（还没有回答回合）turns=0', () => {
+    expect(collectSkills([{ role: 'user', content: '你好' } as any])).toMatchObject({ turns: 0, cards: [] });
   });
 });

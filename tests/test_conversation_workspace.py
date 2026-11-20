@@ -99,6 +99,28 @@ def test_create_conversation_fails_loud_without_workspace(make_env):
     assert not any("INSERT INTO adh_conversations" in sql for sql, _ in log)
 
 
+def test_create_conversation_persists_initial_title(make_env):
+    """首条提问随建会话落库：列表不必等整轮结束才摆脱“新对话”。"""
+    log = make_env({})
+    resp = chat.create_conversation(
+        chat.CreateConversationRequest(workspace_id=7, title="  本月\nGMV 趋势  "),
+        user={"user_id": 7})
+    _, params = log[-1]
+    assert params[1] == "本月 GMV 趋势"      # 折叠空白后入库
+    assert resp["title"] == "本月 GMV 趋势"   # 回包与入库同一值（前端列表直接用）
+
+
+def test_create_conversation_title_defaults_and_caps(make_env):
+    """空标题回落“新对话”（真正的缺省值），过长标题截到 60 字。"""
+    make_env({})
+    resp = chat.create_conversation(chat.CreateConversationRequest(workspace_id=7),
+                                    user={"user_id": 7})
+    assert resp["title"] == "新对话"
+    resp2 = chat.create_conversation(
+        chat.CreateConversationRequest(workspace_id=7, title="长" * 100), user={"user_id": 7})
+    assert len(resp2["title"]) == 60
+
+
 # ── 服务端兜底落库（Phase E）──────────────────────────────────────
 # 会话 1783069459150：回合跑满 126s、烧掉 12 次模型请求，用户中途断连后前端那次
 # PUT 永不到达，`messages=[]` —— 产出只在服务端内存里存在过。落库不再只押注前端，

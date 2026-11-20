@@ -1,8 +1,10 @@
 ---
 name: report-delivery
+intent: 报告与文件交付
 display_name: 报告交付
 description: 报告与产物的标准化交付技能。统一 Excel/HTML/Markdown/脑图/图表 的呈现风格与结构，约束为专业、严谨、克制的书面语风格（禁止 emoji 与装饰性图标）；内容锁定到平台内置渲染通道（chart/mermaid/artifact/prose），HTML 产物按 UI 字模库主题包在生成时内联令牌快照（默认继承用户当前主题），确保同类产物风格一致、可预览、可下载、不依赖外部 CDN；地图与复杂图表不在 HTML 里自绘伪图，退回表格并指向平台渲染/导出通道。
 category: report
+requires_any: [render_chart, render_html, render_report]
 triggers: [报告, 报表, 周报, 月报, 日报, 导出, 下载, 生成文件, excel, html, markdown, 交付, 文档, 脑图, mermaid, 归档, 分享, 主题, 风格]
 display_name_en: "Report Delivery"
 description_en: "Produce, save and publish HTML reports (Jinja2 templates, spec snapshots, publishing rules); only drafts, publication is done by a human."

@@ -1,23 +1,25 @@
 /**
- * 会话右侧栏：会话产物 + 关键知识。
+ * 会话右侧栏：会话技能 + 会话产物 + 关键知识。
  *
  * 为什么默认收起：正文那 25% 留白原本是留给这些信息的，但常驻占位会让长会话的阅读区
  * 变窄；用户拍板默认收起，入口在输入卡片底行（与「会话文件」同一个按钮），展开时正文列放开。
  *
  * 数据全部来自**已加载的会话消息**（见 lib/conversationInsights）与既有会话文件接口：
  * 不新造事实源、不调模型、不额外消耗 token。侧栏只做呈现，动作仍走原有落库/归档通道。
+ * 「会话技能」列的是回合 meta 里的装载事实（常驻/附带/取回），不是模型自述，
+ * 也不与技能**绑定清单**混为一谈：没加载的技能不进这一节（侧栏只报“真读过哪些细则”）。
  */
 import { useMemo } from 'react';
 import {
-  Archive, ArrowLeftRight, BarChart3, BookOpen, Crosshair, FileBarChart, FileType,
+  Archive, ArrowLeftRight, BarChart3, Blocks, BookOpen, Crosshair, FileBarChart, FileType,
   FolderOpen, Loader2, PanelRightClose, Sparkles,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { formatSize } from '@/lib/dataGrid';
 import {
-  collectArtifacts, collectKnowledge,
-  type CitationCard, type ScopeCard,
+  collectArtifacts, collectKnowledge, collectSkills,
+  type CitationCard, type ScopeCard, type SkillUsageCard,
 } from '@/lib/conversationInsights';
 import type { ChatMessage } from '@/stores/chatStore';
 import SessionFilesPanel from './SessionFilesPanel';
@@ -37,6 +39,8 @@ interface Props {
   archivingIdx: number | null;
   /** 会话文件区刷新计数（「存为工作区」等产物落盘后递增）：不依会话切换也能看到新文件 */
   filesRefreshKey?: number;
+  /** 技能名 → 业务显示名（来自 `/` 候选同源清单）：侧栏不露 screen-builder 这类技术名 */
+  skillDisplayNames?: Record<string, string>;
 }
 
 /** 时间戳呈现：服务端草稿用 `YYYY-MM-DD HH:mm:ss`，消息文档用 ISO —— 两种都要能读，
@@ -82,6 +86,29 @@ function Chip({ children }: { children: React.ReactNode }) {
     <span className="max-w-full truncate rounded border border-border/70 bg-muted/40 px-1.5 py-0.5 text-[11px]">
       {children}
     </span>
+  );
+}
+
+function SkillRow({ card, label, onJump }: { card: SkillUsageCard; label: string; onJump: (i: number) => void }) {
+  const { t } = useTranslation('chat');
+  const turns = card.resident + card.attached + card.fetched;
+  return (
+    <li className="rounded-md border border-border/60 bg-card px-2 py-1.5">
+      <div className="flex items-center gap-1.5">
+        <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={label}>{label}</span>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+          {t('sidePanel.skillTurns', { count: turns })}
+        </span>
+        <JumpButton idx={card.idx} onJump={onJump} label={t('sidePanel.jumpToSkill', { name: label })} />
+      </div>
+      {/* 三个数各自是「回合数」：随提示词常驻 / 随工具结果附带 / 模型主动取回 */}
+      <p className="mt-0.5 text-[10px] text-muted-foreground">
+        {t('sidePanel.skillChannels', {
+          resident: card.resident, attached: card.attached, fetched: card.fetched,
+        })}
+      </p>
+    </li>
   );
 }
 
@@ -148,11 +175,13 @@ function CitationRow({ card, onJump }: { card: CitationCard; onJump: (i: number)
 export default function ConversationSidePanel({
   open, onToggle, workspaceId, conversationId, messages,
   onJumpToMessage, onOpenDoc, onEditDraft, onArchiveDraft, archivingIdx, filesRefreshKey,
+  skillDisplayNames,
 }: Props) {
   const { t } = useTranslation(['chat', 'common']);
   // hooks 必须无条件调用（`open` 提前 return 会把后面的 useMemo 变成条件 hook）
   const artifacts = useMemo(() => collectArtifacts(messages), [messages]);
   const knowledge = useMemo(() => collectKnowledge(messages), [messages]);
+  const skills = useMemo(() => collectSkills(messages), [messages]);
   if (!open) return null;
   const hasDocs = artifacts.docs.length > 0;
   const hasReports = artifacts.reports.length > 0;
@@ -176,6 +205,32 @@ export default function ConversationSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+        {/* ── 会话技能 ──
+            本会话每轮真正读到过哪几份作业细则（回合 meta，不是模型自述）：用户排查
+            “答得不按口径”时，这里是“细则到底加载了没有”的第一手依据。 */}
+        <section className="space-y-2">
+          <SectionTitle icon={Blocks} title={t('sidePanel.skills')} />
+          {skills.turns === 0 ? (
+            <p className="text-xs text-muted-foreground">{t('sidePanel.skillsIdle')}</p>
+          ) : !skills.recorded ? (
+            /* 字段整份缺失 = 该功能上线前的历史会话，不得说成“没加载”（两件事不能混说） */
+            <p className="text-xs text-muted-foreground">{t('sidePanel.skillsUnrecorded')}</p>
+          ) : skills.cards.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{t('sidePanel.skillsEmpty')}</p>
+          ) : (
+            <ul className="space-y-1">
+              {skills.cards.map(card => (
+                <SkillRow
+                  key={card.name}
+                  card={card}
+                  label={skillDisplayNames?.[card.name] || card.name}
+                  onJump={onJumpToMessage}
+                />
+              ))}
+            </ul>
+          )}
+        </section>
+
         {/* ── 会话产物 ── */}
         <section className="space-y-2">
           <SectionTitle icon={FileBarChart} title={t('sidePanel.artifacts')} />

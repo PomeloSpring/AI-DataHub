@@ -703,7 +703,6 @@ def assert_chart_data_source(data: dict, identity: dict, *, chart_id: int = 0) -
     if not int((identity or {}).get("user_id") or 0):
         raise NoIdentityError("缺少可信用户身份，不能挂数据集图表（数据合规护城河）")
 
-    from backend.core.role_service import role_service
     from backend.modules.viz.services import dataset_service
 
     ds = dataset_service.get_dataset(dataset_id)
@@ -712,15 +711,17 @@ def assert_chart_data_source(data: dict, identity: dict, *, chart_id: int = 0) -
     if ds.get("status") != "active":
         raise ValueError(f"数据集「{ds.get('name')}」已停用，不能挂到看板上；"
                          "请启用它或改用其他数据集。")
-    # 角色清单裁决（与下拉同源）：不在授权集里 = 不开放挂接，不开第二套判断
-    if str((identity or {}).get("role") or "") != "admin":
-        allowed = {int(v) for v in role_service.get_user_allowed_datasets(
-            int(identity["user_id"]))}
-        if dataset_id not in allowed:
+    # 可见性唯一裁决（与数据集页/取数口同源）：属主可挂自己的 private 数据集，
+    # workspace 行按角色授权，admin 全可见。
+    if not dataset_service.dataset_visible_to(ds, identity):
+        if dataset_service.normalize_visibility(ds.get("visibility")) == "private":
             raise ValueError(
-                f"当前角色未被授权数据集「{ds.get('name')}」，不能挂到看板。"
-                "可挂清单来自「角色权限 → 数据集」；请联系管理员授权，"
-                "或把本看板开放给该角色时一并勾选数据集。")
+                f"数据集「{ds.get('name')}」是他人创建的个人数据集（仅创建者可见），不能挂到看板。"
+                "请让创建者在数据集页发布共享（按角色授权），或改用自己被授权的数据集。")
+        raise ValueError(
+            f"当前角色未被授权数据集「{ds.get('name')}」，不能挂到看板。"
+            "可挂清单来自「角色权限 → 数据集」；请联系管理员授权，"
+            "或把本看板开放给该角色时一并勾选数据集。")
 
     scope, missing = dataset_service.usable_scope(ds, identity)
     if not scope:

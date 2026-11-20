@@ -338,6 +338,10 @@ async def render_chart(args):
     rows = list(args.get("rows") or [])
     sql = str(args.get("sql") or "").strip()
     notes: list[str] = []
+    # **只回给模型**的作业约束（不落 doc.warnings、不进图表卡徽标）：这类是“下一步怎么写”
+    # 的命令式提示，用户看到的是"数字必须…不得凭记忆补数"这种看不懂的指令（已现网暴露）。
+    # 与 `notes`（用户可见的非阻断状态：图型推断、结果截断）分两堆，不混发。
+    model_notes: list[str] = []
     row_count = 0
 
     if isinstance(intent, dict) and intent:
@@ -356,8 +360,8 @@ async def render_chart(args):
         sql = ""
     elif columns and rows:
         row_count = len(rows)
-        notes.append("本图数据由对话侧提供（未经服务端取数对账）："
-                     "数字必须与本轮已展示的查询结果一致，不得凭记忆补数")
+        model_notes.append("本图数据由对话侧提供（未经服务端取数对账）："
+                           "数字必须与本轮已展示的查询结果一致，不得凭记忆补数")
         if sql:
             hits = docs.find_sensitive_hits(sql)
             if hits:
@@ -406,7 +410,7 @@ async def render_chart(args):
                     None, notes)
 
     _record_channel(ctx, channel="chart", doc_id=saved["doc_id"], status="success",
-                    notes=notes, started_at=started)
+                    notes=notes + model_notes, started_at=started)
     return _text({
         "chart_id": saved["doc_id"],
         "chart_type_applied": applied,
@@ -415,7 +419,8 @@ async def render_chart(args):
         "row_count": row_count,
         "returned_rows": len(rows),
         "digest": saved["digest"],
-        "notes": notes,
+        # 回给模型的是两堆合并（作业约束 + 用户可见状态）；doc.warnings 只落后者。
+        "notes": notes + model_notes,
         "next": "在回答正文输出一个 ```chart 代码块引用它（严格 JSON、无多余文本）："
                 '{"chart_ref": "%s", "title": "%s"}' % (saved["doc_id"], title),
         "note_detail": "不要再把 columns/rows 抄进正文：前端按 chart_ref 取回同一份数据渲染，"

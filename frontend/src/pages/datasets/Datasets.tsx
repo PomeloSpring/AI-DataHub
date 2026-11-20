@@ -4,6 +4,7 @@ import { t , t as tr } from '@/i18n/runtime';
 import {
   Plus, Layers, Code2, Trash2, Eye, Loader2, Check,
   RefreshCw, BarChart3, Square, CheckSquare, Database, AlertTriangle,
+  Share2, ShieldCheck, ShieldOff,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -20,9 +21,13 @@ import {
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
 import { CHART_TYPES } from '../../components/DashboardChart';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
-import { useClientPagination } from '@/hooks/useClientPagination';
+import { formatDateTime } from '@/lib/format';
 import DatasetBatchSourceDialog from './DatasetBatchSourceDialog';
+import ShareDatasetDialog from './ShareDatasetDialog';
 import { useTranslation } from 'react-i18next';
 
 interface Dataset {
@@ -41,6 +46,16 @@ interface Dataset {
   usable_now?: string[];
   chart_type: string;
   owner_id: number;
+  /** 归属（服务端 JOIN adh_users 下发，页面显示业务名而非裸 id） */
+  owner_name?: string;
+  /** 可见范围：private=仅创建者 / workspace=按角色共享 / public=保留未启用 */
+  visibility?: 'private' | 'workspace' | 'public';
+  visibility_label?: string;
+  /** 当前用户是否可编辑/共享（admin 或属主） */
+  editable?: boolean;
+  is_owner?: boolean;
+  /** 当前身份是否真有可执行源（分页档显式下发，false=标“不可用”，不静默藏行） */
+  executable?: boolean;
   field_count: number;
   references: number;
   updated_at: string;
@@ -54,9 +69,6 @@ const SOURCE_LABELS: Record<string, string> = {
   semantic: tr('k_668cea6a49'),
   both: tr('k_764b4b7d97'),
 };
-const CHART_TYPE_LABELS: Record<string, string> = Object.fromEntries(
-  CHART_TYPES.map(t => [t.value, t.label]),
-);
 // 图表预设只支持真实图表(排除参数控件)
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
 
@@ -74,9 +86,13 @@ export default function Datasets() {
   const navigate = useNavigate();
   const [items, setItems] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(false);
+  // 搜索框输入与生效关键词分开：停手 300ms 再发请求（list-pagination §3）
+  const [kwInput, setKwInput] = useState('');
   const [keyword, setKeyword] = useState('');
   // 筛选项：'0'=全部 | '<id>'=具体数据源（ES 型数据集也挂在 ES 数据源上，按源筛自然涵盖）
   const [sourceFilter, setSourceFilter] = useState('0');
+  // 筛选：可见范围 'all' | 'private' | 'workspace'
+  const [visibilityFilter, setVisibilityFilter] = useState('all');
   const [datasources, setDatasources] = useState<any[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -87,10 +103,14 @@ export default function Datasets() {
   const [batchSourceOpen, setBatchSourceOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchResult, setBatchResult] = useState<any>(null);
+  // 共享对话框（private ⇄ workspace）：只对「管理权限 ∧ 该行可编辑」的行开放
+  const [shareTarget, setShareTarget] = useState<Dataset | null>(null);
   const canManage = hasPerm('dataset:manage');
 
-  // 数据集清单一次性拉全量 → 客户端分页（全站统一默认每页 20 条，候选 20/50/100）
-  const paged = useClientPagination(items, DEFAULT_PAGE_SIZE);
+  // 服务端真分页：total 来自服务端 COUNT（不在前端切片，不用 useClientPagination）
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,22 +119,36 @@ export default function Datasets() {
         params: {
           keyword,
           datasource_id: Number(sourceFilter) || 0,
+          visibility: visibilityFilter === 'all' ? '' : visibilityFilter,
+          page,
+          page_size: pageSize,
         },
       });
-      setItems(data.items || []);
+      const rows: Dataset[] = data.items || [];
+      setItems(rows);
+      setTotal(Number(data.total ?? rows.length));
+      // 末页被删空时收敛到最后一个有效页（不停在空白页）
+      if (rows.length === 0 && page > 1) setPage(p => Math.max(1, p - 1));
     } catch (e: any) {
       // 清单拉失败不得静默渲成「暂无数据集」（会被误读为数据丢了），显式提醒
       setItems([]);
+      setTotal(0);
       toast.error(e?.response?.data?.detail || tr('k_65aaefc869'));
     } finally {
       setLoading(false);
     }
-  }, [keyword, sourceFilter]);
+  }, [keyword, sourceFilter, visibilityFilter, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
 
-  // 筛选条件变化重置到第 1 页（避免停在越界空页）
-  useEffect(() => { paged.reset(); }, [keyword, sourceFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 搜索防抖（停手再发请求）
+  useEffect(() => {
+    const id = setTimeout(() => setKeyword(kwInput.trim()), 300);
+    return () => clearTimeout(id);
+  }, [kwInput]);
+
+  // 筛选/搜索/每页条数变化 → 回到第 1 页（停在旧页码会拿到错位空清单）
+  useEffect(() => { setPage(1); }, [keyword, sourceFilter, visibilityFilter, pageSize]);
 
   // 数据源筛选器选项（显示 name、value=id，符合“显示用 name、选择用选择框”规范）
   useEffect(() => {
@@ -139,8 +173,8 @@ export default function Datasets() {
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const clearSelection = () => setSelected([]);
   const exitBatchMode = () => { setBatchMode(false); setSelected([]); };
-  const pageIds = () => paged.slice.map(d => d.id);
-  const allPageSelected = paged.slice.length > 0 && paged.slice.every(d => selected.includes(d.id));
+  const pageIds = () => items.map(d => d.id);
+  const allPageSelected = items.length > 0 && items.every(d => selected.includes(d.id));
   const toggleSelectPage = () => setSelected(prev => {
     const ids = pageIds();
     return allPageSelected ? prev.filter(x => !ids.includes(x)) : [...new Set([...prev, ...ids])];
@@ -232,11 +266,12 @@ export default function Datasets() {
         </div>
       </div>
 
+      {/* 筛选项：关键字（防抖）/ 数据源 / 可见范围；筛选全部下推服务端（不在前端再 filter） */}
       <div className="flex gap-2 mb-4 flex-wrap shrink-0">
         <Input
           placeholder={t("k_b05ef3f713")}
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
+          value={kwInput}
+          onChange={(e) => setKwInput(e.target.value)}
           className="max-w-xs"
         />
         <Select
@@ -248,13 +283,28 @@ export default function Datasets() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="0">{t("k_f8d22fd22e")}</SelectItem>
-            {/* 只留「数据源」一个维度：“ES 取数通道”那组已撤（与按 ES 源筛重复且词容易误读，
+            {/* 只留「数据源」维度：“ES 取数通道”那组已撤（与按 ES 源筛重复且词容易误读，
                 理由见文首 ES 通道注释）；数据源清单回源 `/datasources/`，不写死。 */}
             {datasources.map((d: any) => (
               <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
+        <Select value={visibilityFilter} onValueChange={setVisibilityFilter}>
+          <SelectTrigger className="w-44 h-9" aria-label={t("k_7b52e18fa3")}>
+            <SelectValue placeholder={t("k_778fc8f994")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{tr('k_778fc8f994')}</SelectItem>
+            <SelectItem value="private">{tr('k_9e40c7b158')}</SelectItem>
+            <SelectItem value="workspace">{tr('k_2f81d5ae64')}</SelectItem>
+          </SelectContent>
+        </Select>
+        {(kwInput || sourceFilter !== '0' || visibilityFilter !== 'all') && (
+          <Button size="sm" variant="ghost" className="h-9"
+            onClick={() => { setKwInput(''); setSourceFilter('0'); setVisibilityFilter('all'); }}>
+            {tr('k_3d81345303')}</Button>
+        )}
       </div>
 
       {/* 批量操作条：进入批量模式即出现（含全选，未选时也可先全选）；未选时动作按钮置灰 */}
@@ -276,92 +326,145 @@ export default function Datasets() {
         </div>
       )}
 
-      {/* 清单区：仅此区域滚动（页头与分页固定，参考表&字段） */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      {/* 清单区：表格式列表（表头固定 + 仅此区域滚动），分页由服务端驱动 */}
+      <div className="flex-1 min-h-0 overflow-auto border rounded-lg">
       {loading ? (
         <div className="flex justify-center py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
         </div>
       ) : items.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground border rounded-lg">
+        <div className="text-center py-12 text-muted-foreground">
           {tr('k_c46e035dbe')}{canManage ? tr('k_1e2ac39e19') : ''}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {paged.slice.map(ds => (
-            <div key={ds.id} className="border rounded-lg p-4 hover:bg-muted/30 transition-colors">
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2 min-w-0 flex-1">
-                  {canManage && batchMode && (
+        <Table>
+          <TableHeader className="sticky top-0 z-10 bg-background">
+            <TableRow>
+              {/* 批量模式下多一列勾选框；全选按钮只在顶部批量操作条上（避免同名按钮两处） */}
+              {canManage && batchMode && <TableHead className="w-10" />}
+              <TableHead className="min-w-[220px]">{tr('k_1be7ae4fc2')}</TableHead>
+              <TableHead>{tr('k_c63f79e636')}</TableHead>
+              <TableHead>{tr('k_a3ccf702c5')}</TableHead>
+              <TableHead className="text-right">{tr('k_77a49f2c38')}</TableHead>
+              <TableHead className="text-right">{tr('k_23c0e102a0')}</TableHead>
+              <TableHead>{tr('k_3a91f0c4d7')}</TableHead>
+              <TableHead>{tr('k_7b52e18fa3')}</TableHead>
+              <TableHead>{tr('k_093dea88c9')}</TableHead>
+              <TableHead className="text-right">{tr('k_f3ea6d345e')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.map(ds => (
+              <TableRow key={ds.id} className="hover:bg-muted/40">
+                {canManage && batchMode && (
+                  <TableCell className="w-10">
                     <button type="button" aria-label={tr('k_f7c57733fd', { p0: ds.name })} onClick={() => toggleSelect(ds.id)}
-                      className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground">
+                      className="text-muted-foreground hover:text-foreground">
                       {selected.includes(ds.id)
                         ? <CheckSquare className="h-4 w-4 text-primary" />
                         : <Square className="h-4 w-4" />}
                     </button>
-                  )}
+                  </TableCell>
+                )}
+                <TableCell className="py-2">
                   <button className="text-left min-w-0" onClick={() => navigate(`/data/datasets/${ds.id}`)}>
                     <div className="font-medium truncate">{ds.name}</div>
                     {ds.description && (
-                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{ds.description}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[380px]"
+                        title={ds.description}>{ds.description}</p>
                     )}
                   </button>
-                </div>
-                <Badge variant="outline" className="shrink-0 flex items-center gap-1 text-[10px]">
-                  <Code2 className="h-3 w-3" />
-                  {SOURCE_LABELS[ds.source_type] || ds.source_type || 'SQL'}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground flex-wrap">
-                <span>{ds.field_count} {tr('k_77a49f2c38')}</span>
-                <span>{tr('k_22ae803c52')}{' '}{ds.references} {tr('k_26a842c9d3')}</span>
-                {/* 数据源显示业务名（后端返回，不靠前端拼 ID 兜底）；多源时标注可用范围 */}
-                <Badge variant="outline" className="text-[10px]"
-                  title={tr('k_8b470f2735', { p0: ds.datasource_name || tr('k_a3ccf702c5') })}>
-                  {ds.datasource_name || tr('k_a3ccf702c5')}
-                </Badge>
-                {/* 执行通道位只从服务端 `is_es` 读：这一位与其他源同一个治理口（列级/行级策略已编译进 SQL） */}
-                {ds.is_es && (
-                  <Badge variant="secondary" className="text-[10px]"
-                    title={t("k_e7f2685f92")}>
-                    {tr('k_645f449115')}</Badge>
-                )}
-                {(ds.available_source_names || []).length > 1 && (
-                  <Badge variant="secondary" className="text-[10px]"
-                    title={tr('k_950ed5943e', { p0: (ds.available_source_names || []).join('、') })}>
-                    {tr('k_e91365cf9e')}{' '}{(ds.usable_now || []).length}/{(ds.available_source_names || []).length} {tr('k_66f5e225b7')}</Badge>
-                )}
-                {ds.chart_type && (
-                  <Badge variant="secondary" className="text-[10px] flex items-center gap-1">
-                    <BarChart3 className="h-3 w-3" />
-                    {CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type}
+                </TableCell>
+                <TableCell className="py-2">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <Badge variant="outline" className="text-[10px] flex items-center gap-1">
+                      <Code2 className="h-3 w-3" />
+                      {SOURCE_LABELS[ds.source_type] || ds.source_type || 'SQL'}
+                    </Badge>
+                    {/* 执行通道位只从服务端 `is_es` 读：这一位与其他源同一个治理口 */}
+                    {ds.is_es && (
+                      <Badge variant="secondary" className="text-[10px]" title={t("k_e7f2685f92")}>
+                        {tr('k_645f449115')}</Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="py-2">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <Badge variant="outline" className="text-[10px]"
+                      title={tr('k_8b470f2735', { p0: ds.datasource_name || tr('k_a3ccf702c5') })}>
+                      {ds.datasource_name || tr('k_a3ccf702c5')}
+                    </Badge>
+                    {(ds.available_source_names || []).length > 1 && (
+                      <Badge variant="secondary" className="text-[10px]"
+                        title={tr('k_950ed5943e', { p0: (ds.available_source_names || []).join('、') })}>
+                        {tr('k_e91365cf9e')}{' '}{(ds.usable_now || []).length}/{(ds.available_source_names || []).length} {tr('k_66f5e225b7')}</Badge>
+                    )}
+                    {/* 无可用源的行不静默藏起来（服务端 total 与本页行数要一致），显式标不可用 */}
+                    {ds.executable === false && (
+                      <Badge variant="destructive" className="text-[10px]"
+                        title={tr('k_950ed5943e', { p0: (ds.available_source_names || []).join('、') || tr('k_a3ccf702c5') })}>
+                        <ShieldOff className="h-3 w-3 mr-1" />{tr('k_beff4a1cd1')}</Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="py-2 text-right tabular-nums">{ds.field_count}</TableCell>
+                <TableCell className="py-2 text-right tabular-nums">{ds.references}</TableCell>
+                <TableCell className="py-2 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1" title={tr('k_3a91f0c4d7')}>
+                    {ds.owner_name || tr('k_a3ccf702c5')}
+                  </span>
+                </TableCell>
+                <TableCell className="py-2">
+                  <Badge
+                    variant={ds.visibility === 'private' ? 'secondary' : 'outline'}
+                    className="text-[10px] flex items-center gap-1 w-fit"
+                    title={ds.visibility_label || ''}>
+                    {ds.visibility === 'private'
+                      ? <ShieldOff className="h-3 w-3" />
+                      : <ShieldCheck className="h-3 w-3" />}
+                    {ds.visibility_label
+                      || (ds.visibility === 'private' ? tr('k_9e40c7b158') : tr('k_2f81d5ae64'))}
                   </Badge>
-                )}
-              </div>
-              <div className="flex justify-end gap-1 mt-2">
-                <Button variant="ghost" size="sm" onClick={() => navigate(`/data/datasets/${ds.id}`)}>
-                  <Eye className="h-3.5 w-3.5" />
-                </Button>
-                {canManage && (
-                  <Button variant="ghost" size="sm" onClick={() => handleDelete(ds)}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
+                </TableCell>
+                <TableCell className="py-2 text-xs text-muted-foreground whitespace-nowrap">
+                  {ds.updated_at ? formatDateTime(ds.updated_at) : '—'}
+                </TableCell>
+                <TableCell className="py-2">
+                  <div className="flex justify-end gap-1">
+                    <Button variant="ghost" size="sm" title={tr('k_f7acefd2d4')}
+                      aria-label={tr('k_f7acefd2d4')} onClick={() => navigate(`/data/datasets/${ds.id}`)}>
+                      <Eye className="h-3.5 w-3.5" />
+                    </Button>
+                    {/* 共享是显式动作：admin 在管理面可代为治理他人私有数据集（editable 由服务端裁决） */}
+                    {canManage && ds.editable !== false && (
+                      <Button variant="ghost" size="sm" title={tr('k_c1d6a4b902')}
+                        aria-label={tr('k_c1d6a4b902')} onClick={() => setShareTarget(ds)}>
+                        <Share2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    {canManage && ds.editable !== false && (
+                      <Button variant="ghost" size="sm" title={tr('k_5cc232620c')}
+                        aria-label={tr('k_5cc232620c')} onClick={() => handleDelete(ds)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
       </div>
 
-      {/* 统一分页条：固定底栏，始终可见（不随页面滚走，也不悬浮在卡片上） */}
+      {/* 统一分页条：固定底栏，total 来自服务端 COUNT（翻页/换页大小均重新请求） */}
       <PaginationBar
-        page={paged.page}
-        pageSize={paged.pageSize}
-        total={paged.total}
-        onChange={(p: number) => paged.setPage(p)}
-        onPageSizeChange={paged.setPageSize}
-        hideWhenSingle
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        busy={loading}
+        onChange={setPage}
+        onPageSizeChange={setPageSize}
         className="shrink-0 mt-2"
       />
 
@@ -370,6 +473,16 @@ export default function Datasets() {
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => { setCreateOpen(false); navigate(`/data/datasets/${id}`); }}
       />
+
+      {shareTarget && (
+        <ShareDatasetDialog
+          open
+          datasetId={shareTarget.id}
+          datasetName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+          onSaved={load}
+        />
+      )}
 
       <DatasetBatchSourceDialog
         open={batchSourceOpen}

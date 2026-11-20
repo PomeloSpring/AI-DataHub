@@ -91,26 +91,6 @@ function answerMarkdownOf(msg: any): string {
   return reply ? String(msg.reply) : String(msg?.content || '');
 }
 
-/**
- * 会话侧栏技能徽标的数据：服务端把每块会话的回合 meta 聚合成
- * `skill_usage = {技能名: {resident: 随提示词常驻的回合数, attached: 随工具结果附带的回合数,
- *  fetched: 模型主动取回正文的回合数}}`。
- * 按"加载过的回合总数"降序，让最常真正被读到的细则排在前面。
- * 显示名走 slashOptions 的 display_name（与消息体里的技能徽章同一口径），
- * 侧栏不出现 screen-builder 这类技术名。
- */
-function convSkillChips(conv: { skill_usage?: Record<string, { resident?: number; attached?: number; fetched?: number }> }) {
-  return Object.entries(conv.skill_usage || {})
-    .map(([name, usage]) => ({
-      name,
-      resident: usage?.resident || 0,
-      attached: usage?.attached || 0,
-      fetched: usage?.fetched || 0,
-    }))
-    .sort((a, b) => (b.resident + b.attached + b.fetched) - (a.resident + a.attached + a.fetched)
-      || a.name.localeCompare(b.name));
-}
-
 // 错误卡按服务端分类给下一步（分类码与 capacity.classify_failure 同源）：
 // 繁忙/限流是“平台过载”（稍后再试/换模型），超时是“本轮太大”，failed 才是查配置。
 // 文案只存 key，渲染期经 t() 取。
@@ -254,6 +234,14 @@ export default function Chat() {
   };
   // 进度条属于“当前会话”视图：切会话/新开会话都重拉（新会话无值时组件会说“未测量”）
   useEffect(() => { void loadContextUsage(currentConvId); }, [currentConvId, loadContextUsage]);
+  // 每轮结束重拉会话文件清单：首轮里图表/表格是在执行过程中才落盘的，
+  // 而侧栏在“建会话后、执行前”就已挂载（那一刻确实还没有文件）——不重拉就停在空清单。
+  const wasLoadingRef = useRef(false);
+  useEffect(() => {
+    const finished = wasLoadingRef.current && !loading;
+    wasLoadingRef.current = loading;
+    if (finished && currentConvId) setFilesRefreshKey(k => k + 1);
+  }, [loading, currentConvId]);
   // 本轮失败后服务端递回的草稿：回填输入框与待发区（一次性消费，不重复回填）。
   // 用函数式更新：用户在这空档里已经敲了新问题时，不能把刚敲的盖掉（覆盖比不回填更让人丢数据）。
   useEffect(() => {
@@ -1527,30 +1515,8 @@ export default function Chat() {
               ) : (
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate">{conv.title}</div>
-                  {/* 这块会话到底读过哪份作业细则：用户排查"答得不按口径"时的第一手依据，
-                      也是"技能没加载"这类争论的唯一事实源（数据来自回合 meta，不是模型自述）。
-                      字段缺失 = 该功能上线前的历史会话，不渲染，绝不等于"没加载"。 */}
-                  {convSkillChips(conv).length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1 mt-0.5" role="group"
-                      aria-label={t('page.convSkillsAria')}>
-                      {convSkillChips(conv).slice(0, 2).map(chip => (
-                        <span key={chip.name} className="inline-flex max-w-full items-center gap-0.5 rounded bg-muted px-1 py-px text-[10px] text-muted-foreground"
-                          title={t('page.convSkillsTip', {
-                            name: slashOptions?.skills.find(o => o.name === chip.name)?.display_name || chip.name,
-                            resident: chip.resident, attached: chip.attached, fetched: chip.fetched,
-                          })}>
-                          <Sparkles className="h-2.5 w-2.5 shrink-0" />
-                          <span className="truncate">{slashOptions?.skills.find(o => o.name === chip.name)?.display_name || chip.name}</span>
-                          <span className="shrink-0 tabular-nums opacity-70">{chip.resident + chip.attached + chip.fetched}</span>
-                        </span>
-                      ))}
-                      {convSkillChips(conv).length > 2 && (
-                        <span className="text-[10px] text-muted-foreground">
-                          {t('page.convSkillsMore', { count: convSkillChips(conv).length - 2 })}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {/* 技能装载事实不进对话列表：一列会话都挂徽标会把清单变成“信息墙”，
+                      且同一会话的细则要跟产物/知识一起看。它归右侧「会话侧栏 → 会话技能」。 */}
                 </div>
               )}
               {!batchMode && renamingId !== conv.id && (
@@ -2292,6 +2258,9 @@ export default function Chat() {
           onArchiveDraft={(idx: number) => { void archiveReportDraft(idx); }}
           archivingIdx={savingReport}
           filesRefreshKey={filesRefreshKey}
+          // 技能名→业务显示名：与列表徽标、`/` 候选同一份清单，侧栏不露技术名
+          skillDisplayNames={Object.fromEntries(
+            (slashOptions?.skills || []).map(s => [s.name, s.display_name || s.name]))}
         />
       )}
 

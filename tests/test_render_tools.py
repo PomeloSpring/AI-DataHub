@@ -352,6 +352,11 @@ def test_render_chart_columns_rows_fallback_is_labelled_unreconciled(ctx, store,
                                  "rows": [{"省份": "江苏省", "订单量": 251}]}))
     assert out["chart_id"]
     assert any("未经服务端取数对账" in n for n in out["notes"]), out["notes"]
+    # 2026-11-20 拍板：这句是**给模型**的作业约束（别凭记忆补数），不是给用户看的状态。
+    # 落进 doc.warnings 就会被图表卡渲染成一条“数字必须…不得凭记忆补…”的命令式徽标，
+    # 用户看不懂也不知道该做什么（已现网暴露）。只回模型，不落库。
+    assert "未经服务端取数对账" not in (store.rows[out["chart_id"]]["warnings"] or ""), \
+        store.rows[out["chart_id"]]["warnings"]
 
 
 @pytest.mark.parametrize("chart_type, columns, rows, keyword", [
@@ -680,13 +685,22 @@ def test_render_group_registers_only_wired_tools():
 
 
 def test_as_bot_tool_catalog_lists_render_group():
-    """AS-BOT 编辑器拿不到这个组 = 配不了，属"功能有、配置无"。"""
+    """AS-BOT 编辑器拿不到这个组 = 配不了，属"功能有、配置无"。
+
+    口径（与 `platform/api/as_bots.py: /tools/catalog` 同源）：**机制组不进授权面**。
+    `sdk_tools.MECHANISM_GROUPS`（当前为 `skills`）里的工具是执行链自动接入的，
+    面板不渲染它们的复选框；登记标签反而会造出"默认生效但显示未勾"的死开关（历史缺陷）。
+    旧版用例遍历全量 TOOL_SERVER_TOOLS，因此在 `load_skill_guide` 标签被删除后一直红——
+    锁错了对象，这里按端点同样的过滤口径断言。
+    """
     from backend.modules.platform.api.as_bots import _TOOL_GROUP_META, _TOOL_LABELS
-    from backend.modules.mind.execution.sdk_tools import TOOL_SERVER_TOOLS
+    from backend.modules.mind.execution.sdk_tools import MECHANISM_GROUPS, TOOL_SERVER_TOOLS
     assert "render" in _TOOL_GROUP_META
-    for _, (_server, tool_names) in TOOL_SERVER_TOOLS.items():
+    for group, (_server, tool_names) in TOOL_SERVER_TOOLS.items():
+        if group in MECHANISM_GROUPS:
+            continue  # 机制组不进授权面，不应要求登记面板标签
         for name in tool_names:
-            assert name in _TOOL_LABELS, f"工具 {name} 未登记中文标签（编辑器里显示成裸英文像不可选项）"
+            assert name in _TOOL_LABELS, f"工具 {name} 未登记中文标签（编辑器里 显示成裸英文像不可选项）"
 
 
 # ── 交付契约注入门控（没授权就不能向模型承诺这条通道存在）──────────────────

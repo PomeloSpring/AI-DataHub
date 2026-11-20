@@ -320,11 +320,16 @@ def load_skills(skill_names: list[str]) -> list[dict]:
     """按名加载已绑定技能(name/display_name/description/system_prompt + 装载控制元数据),供提示词注入.
 
     除正文外还透出 SKILL.md frontmatter 里的装载控制键(由 prompt_composer 消费):
+      - `intent`:       本技能负责的**意图域**（人话标签，如「查数分析（语义层）」）：
+        由 prompt_composer 渲染成提示词里的「意图识别与技能分诊」表，让**模型自己**认意图
+        后先取回该技能的作业细则；服务端不参与打分路由（混合句无法用词表判准）。
       - `requires_any`: 本正文依赖的工具名(任一授权即可展开), 全未注册时不展开;
-      - `triggers`:     用户问题命中词, 多技能绑定时决定展开哪几个;
+      - `triggers`:     用户问题命中词, 意图缺省或域内需细分时决定展开哪几个;
+      - `attach_scope`: 作用域词(可选): 只有用户问题命中其一, 正文才随工具结果附带
+        (两个域共用同一工具时的隔离阀, 如「ARMS 可观测」与「业务数据分析」都用 run_semantic_query; 未写 = 不设作用域);
       - `exclusive_group`: 互斥组名, 同组只展开得分最高的一个正文
         (两份互斥剧本同时展开 = 给模型矛盾指令, 如「先分诊取数」撞「不要取数」)。
-    description 同时作为未展开正文时的常驻浓缩契约。
+    description 只作清单里的定位行（不再承担“浓缩契约”职责：口径由正文常驻承担）。
     加载失败或技能不存在时跳过该项(行为容错)。
     """
     out: list[dict] = []
@@ -347,9 +352,11 @@ def load_skills(skill_names: list[str]) -> list[dict]:
                 "display_name": skill.get("display_name") or name,
                 "description": skill.get("description") or "",
                 "category": skill.get("category") or "",
+                "intent": str((cfg.get("intent") if isinstance(cfg, dict) else "") or "").strip(),
                 "system_prompt": skill.get("system_prompt") or "",
                 "requires_any": _name_list(cfg.get("requires_any"), name, "requires_any") if isinstance(cfg, dict) else [],
                 "triggers": _name_list(cfg.get("triggers"), name, "triggers") if isinstance(cfg, dict) else [],
+                "attach_scope": _name_list(cfg.get("attach_scope"), name, "attach_scope") if isinstance(cfg, dict) else [],
                 "exclusive_group": str((cfg.get("exclusive_group") if isinstance(cfg, dict) else "") or ""),
             })
     return out

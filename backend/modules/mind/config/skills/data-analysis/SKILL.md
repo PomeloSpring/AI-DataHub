@@ -1,5 +1,6 @@
 ---
 name: data-analysis
+intent: 查数分析（语义层）
 display_name: 数据分析（语义层）
 description: ChatBI 分析师的语义层分析技能：以假设驱动的探索循环灵活决策，只用统一语义层(run_semantic_query 声明式意图)取数、不写也不执行任何 SQL；覆盖趋势/异常/留存/漏斗/流量/画像分析剧本，强调量化归因、统计严谨、自我校验与可执行结论。
 category: analysis

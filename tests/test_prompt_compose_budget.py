@@ -213,15 +213,16 @@ def test_prompt_size_guardrail_multi_skill_role():
 
     empty = compose_system_prompt(None, [], username="u", user_role="admin",
                                  skills=skills, capabilities=caps, question="")
-    # 改造前同等配置实测 45,548 字符；护栏值取 2 倍余量，防止重新堆料
-    assert len(empty) < 20_000, f"空输入 system_prompt 回涨到 {len(empty)} 字符"
+    # 改造前同等配置实测 45,548 字符；旧形态 20,000。2026-11-20 常驻「数据查询规范」按
+    # “约束/权威划分/工具返回契约”去重后实测 14,152，上限收到 16,000（~13% 余量）。
+    assert len(empty) < 16_000, f"空输入 system_prompt 回涨到 {len(empty)} 字符"
 
     analysis = compose_system_prompt(None, [], username="u", user_role="admin",
                                      skills=skills, capabilities=caps, question="看下趋势")
     assert "剧本剧本" not in analysis and "SQL剧本" not in analysis, "正文常驻 = 护栏白做"
-    # 正文退出提示词后的实测基线 15,146 字符（旧形态同载荷 25,973）；上限取 1.5 倍留余量，
-    # 再涨说明往常驻指令里堆料，必须显式拍板。
-    assert len(analysis) < 23_000, f"分析回合 system_prompt 回涨到 {len(analysis)} 字符"
+    # 正文退出提示词后的实测基线：25,973（全量正文）→ 15,146（本轮之前）→ 14,126（去重后）。
+    # 上限按 ~17% 余量取 16,500；再涨说明往常驻指令里堆料，必须显式拍板。
+    assert len(analysis) < 16_500, f"分析回合 system_prompt 回涨到 {len(analysis)} 字符"
 
 
 def test_safety_sections_never_dropped_by_slimming():
@@ -310,20 +311,30 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
     「双路权威划分」补一句外部语料的裁决），其余通道语义写在工具描述里、不占本用例口径。
     那 1,100 属未提交的「数据源黑盒 / 平台功能操作 / 技能互斥展开」三处常驻改写，需另一次拍板
     核对其行为收益；在它被核对之前，本用例的上限保持 26,000，不得为了变绿而抬。
+
+    2026-11-20 拍板（口径变化，不是瘦身失败）：意图识别写进提示词（技能自述 intent → 分诊表），
+    技能正文按意图按需取回；常驻「数据查询规范」只留**约束 / 权威划分 / 工具返回字段契约**，
+    作业手法（名称重试、枚举与模板参数、分站编排剧本、分析剧本）归 SKILL.md 正文。
+    实测 11,560 / 13,086，上限**收到** 13,000 / 15,000——本次是收紧，不是抬；后续再涨仍需说明换来了什么行为。
+
+    2026-11-20 同批（技能作用域）：ARMS 正文只服务站点观测域，裸词「页面 / 访问量」不再算它命中
+    （否则「案例有多少」这类业务取数问题会拿到观测剧本，见 `test_skill_scope_gate.py`）。
+    本用例要的“两个分析剧本同时命中”的最坏形状改用「官网流量的趋势和占比」（官网属观测域、
+    趋势/占比属业务分析域），字数基线与上限不变。
     """
     from backend.modules.mind.execution.as_bots import load_skills
 
     skills = list(load_skills(["data-analysis", "arms-observability", "report-delivery"]))
     caps = _caps("mcp__datahub_semantic__run_semantic_query", "mcp__datahub_semantic__get_metrics")
-    question = "这个页面的访问量和上周比怎么样"
+    # 观测域（官网）+ 分析域（趋势/占比）同时命中：这才是“两份剧本都到手”的最坏 字数形状。
+    question = "官网流量的趋势和占比"
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=caps, question=question)
     loaded, reasons, _ = _select_skill_bodies(skills, caps, question)
     assert loaded == [], "正文常驻回来了（本用例的护栏前提被破坏）"
     assert {k for k, v in reasons.items() if v.startswith("命中 ")} == {"data-analysis", "arms-observability"}
-    # 实测基线 12,415 字符（两个分析剧本常驻的旧形态是 25,000+）：正文退出提示词后，
-    # 护栏锁的是"常驻指令"这一份，不能再拿正文体积当余量。
-    assert len(prompt) < 18_000, f"两个分析剧本命中的 system_prompt 回涨到 {len(prompt)} 字符"
+    # 实测基线：25,000+（两剧本常驻）→ 12,415（正文退出）→ 11,560（常驻段去重后）。
+    assert len(prompt) < 13_000, f"两个分析剧本命中的 system_prompt 回涨到 {len(prompt)} 字符"
 
     # 生产同形：加上知识库段与站点拓扑段（聚合态的逐站规则 ③ 是最长的一条注入项），护栏必须跟着抬
     rich_caps = _caps(*[f"mcp__datahub_semantic__{n}" for n in (
@@ -338,7 +349,7 @@ def test_shipped_skill_bodies_keep_traffic_prompt_within_guardrail():
                                        skills=skills, capabilities=rich_caps, quick_paths=[],
                                        site_code="global", authorized_sites=sites, question=question)
     assert "## 数据源拓扑" in prod_shape and "运营知识库" in prod_shape, "生产同形载荷未注入拓扑/知识库段"
-    assert len(prod_shape) < 20_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
+    assert len(prod_shape) < 15_000, f"生产同形载荷（含拓扑与知识库）回涨到 {len(prod_shape)} 字符"
 
     # 多源知识检索注入段必须真的在载荷里（写了但被条件分支吞掉 = 白付字数也白拍板）
     assert "（平台同步语料）" in prod_shape, "知识库归属标注未按 provider 派生（措辞回潮或注入被吞）"
@@ -368,7 +379,7 @@ def test_multi_kb_prompt_shape_stays_within_guardrail():
                                   knowledge_bases=kbs, skills=skills, capabilities=rich_caps,
                                   quick_paths=[], site_code="", question=question)
     assert "（外部只读语料）" in shape, "外部语料没被标注归属（模型会拿它当口径权威）"
-    assert len(shape) < 26_000, f"两库同绑的生产同形回涨到 {len(shape)} 字符"
+    assert len(shape) < 14_500, f"两库同绑的生产同形回涨到 {len(shape)} 字符"
     # 每多一个已接入库的增量必须是个位数级（标签写法漂移会先在这里暴露）
     single = compose_system_prompt(None, [], username="u", user_role="operator",
                                    knowledge_bases=kbs[:1], skills=skills, capabilities=rich_caps,

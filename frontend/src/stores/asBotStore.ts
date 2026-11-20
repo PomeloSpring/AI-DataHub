@@ -245,6 +245,8 @@ export const useAsBotStore = create<AsBotState>((set, get) => ({
       try {
         const { data } = await client.post('/chat/conversations', {
           workspace_id: 0, datasource_id: 0,  // workspace_id=0 未指定 → 服务端解析为用户默认工作空间
+          // 首条提问当初始标题：建会话到本轮结束之间列表不能一直显示“新对话”
+          title: deriveTitle([userMsg]),
         });
         if (!ownsRequest() || abortController.signal.aborted) return;
         convId = data.id;

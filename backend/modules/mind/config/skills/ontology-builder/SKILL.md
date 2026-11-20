@@ -1,5 +1,6 @@
 ---
 name: ontology-builder
+intent: 本体建模
 display_name: 本体构建
 description: 协助用户构建和管理本体模型，包括对象定义、关系建模、属性设计、YAML导入等全流程本体建模能力。
 category: ontology

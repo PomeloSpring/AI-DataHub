@@ -340,9 +340,10 @@ interface Conversation {
   /** 会话查询站点(adh_sites.site_code)；空=未选定 */
   site_code?: string;
   /** 本会话加载过的技能正文 → 回合数（resident=随提示词常驻，attached=随工具结果附带，
-   *  fetched=模型主动取回）。常规回合走 attached：正文只在真正用到该域动作时才下发。
-   *  服务端整页一次聚合（`GET /chat/conversations`）。缺键 = 该字段上线前的历史会话，
-   *  侧栏显示"未记录"，不得当成"没加载技能"（两件事不能混说）。 */
+   *  fetched=模型主动取回）。服务端整页一次聚合（`GET /chat/conversations`）。
+   *  注意：对话列表不再渲染这些徽标（会把清单变成信息墙），会话技能列表在右侧
+   *  「会话侧栏」，由消息里的回合 meta 现场派生（lib/conversationInsights.collectSkills），
+   *  能随本轮即时更新并定位到首次加载的那一轮；本字段作为列表接口的事实快照保留。 */
   skill_usage?: Record<string, { resident: number; attached: number; fetched: number }>;
   created_at: string;
   updated_at: string;
@@ -475,7 +476,12 @@ interface ChatState {
   setRetrievalStrategy: (strategy: string) => void;
   setSelectedWorkspaceId: (id: number) => void;
   loadMcpTools: () => Promise<void>;
-  createConversation: () => Promise<number>;
+  /**
+   * 建会话（首条消息发送时调用）。
+   * `title` 用首条提问截断，随创建请求一起落库：不传时服务端回落“新对话”，
+   * 要等整轮结束随 messages 一起改——那段时间列表只能显示“新对话”。
+   */
+  createConversation: (title?: string) => Promise<number>;
   startNewConversation: () => void;
   switchConversation: (convId: number) => Promise<void>;
   /** 往前翻一页更早的消息（prepend），并同步后移写回窗口起点。 */
@@ -755,11 +761,16 @@ export async function saveMessages(
 
 export function deriveTitle(messages: ChatMessage[]): string | undefined {
   const firstUser = messages.find(m => m.role === 'user');
-  if (firstUser) {
-    const t = firstUser.content.slice(0, 30);
-    return t.length < firstUser.content.length ? t + '...' : t;
-  }
-  return undefined;
+  return firstUser ? clipConversationTitle(firstUser.content) : undefined;
+}
+
+/**
+ * 标题截断口径（与 `deriveTitle` 同一个 30 字上限）。
+ * 单独提出是为了让建会话时还能用首条提问直接当初始标题（那时消息数组还没成形）。
+ */
+export function clipConversationTitle(text: string): string {
+  const t = String(text || '').slice(0, 30);
+  return t.length < String(text || '').length ? t + '...' : t;
 }
 
 let chatContextVersion = 0;
@@ -1036,7 +1047,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setPipelineMode: (mode) => set({ pipelineMode: mode }),
   setRetrievalStrategy: (strategy) => set({ retrievalStrategy: strategy }),
 
-  createConversation: async () => {
+  createConversation: async (title?: string) => {
     const origin = get();
     const workspaceId = get().selectedWorkspaceId;
     const siteCode = get().selectedSiteCode;
@@ -1047,6 +1058,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       datasource_id: dsId,
       workspace_id: workspaceId,
       site_code: siteCode,
+      // 首条提问当初始标题：建会话与首轮结束之间的列表现刻显示真实标题
+      // （旧形态一直写死“新对话”，看起来像“记录没建/新会话没进去”）。
+      ...(title ? { title } : {}),
     });
     if (get().selectedWorkspaceId !== origin.selectedWorkspaceId ||
         get().selectedAsBotKey !== origin.selectedAsBotKey || get().messages !== origin.messages ||
@@ -1263,7 +1277,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
     };
     try {
-      if (!convId) { convId = await get().createConversation(); createdHere = true; }
+      if (!convId) {
+        // 首条提问直接作为初始标题落库：否则列表在整轮结束前一直是“新对话”
+        convId = await get().createConversation(clipConversationTitle(question));
+        createdHere = true;
+      }
     } catch {
       if (get().abortController === abortController) {
         set({ loading: false, abortController: null });

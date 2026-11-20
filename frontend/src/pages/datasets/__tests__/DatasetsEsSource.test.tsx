@@ -123,7 +123,7 @@ describe('筛选器 — 只有「数据源」一个维度（ES 取数通道项�
     (client.get as any).mockClear();
     await userEvent.click(screen.getByRole('option', { name: 'prd-cn' }));
     await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
-      params: { keyword: '', datasource_id: 11 },
+      params: expect.objectContaining({ keyword: '', datasource_id: 11 }),
     }));
     expect((client.get as any).mock.calls.at(-1)?.[1]?.params).not.toHaveProperty('channel');
   });
@@ -134,7 +134,7 @@ describe('筛选器 — 只有「数据源」一个维度（ES 取数通道项�
     await userEvent.click(await screen.findByRole('combobox', { name: '按数据源筛选数据集' }));
     await userEvent.click(await screen.findByRole('option', { name: 'cloud-platform-es' }));
     await waitFor(() => expect(client.get).toHaveBeenCalledWith('/datasets/', {
-      params: { keyword: '', datasource_id: 1794535612029 },
+      params: expect.objectContaining({ keyword: '', datasource_id: 1794535612029 }),
     }));
   });
 

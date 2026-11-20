@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { t , t as tr } from '@/i18n/runtime';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
-  BarChart3, Check, ChevronsUpDown,
+  BarChart3, Check, ChevronsUpDown, Share2, User as UserIcon, Lock,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,7 @@ import { CONTROL_LABELS, KIND_LABELS, ROLE_LABELS, VALUE_TYPE_LABELS } from '@/l
 import { useChartDesign } from '@/hooks/useChartDesign';
 import { FIELD_DISPLAY_FORMATS, applyFieldFormats } from '@/lib/fieldFormat';
 import { useTranslation } from 'react-i18next';
+import ShareDatasetDialog from './ShareDatasetDialog';
 
 // Radix Select 不接受空串作为选项值，「不格式化」用哨兵位表示（存回后端仍是空 = 原样下发）
 const NO_FORMAT = '__no_format__';
@@ -107,7 +108,11 @@ export default function DatasetDetail() {
   const [fields, setFields] = useState<DatasetField[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // 共享对话框（归属与可见范围是服务端裁决，前端只负责调起）
+  const [shareOpen, setShareOpen] = useState(false);
   const canManage = hasPerm('dataset:manage');
+  // 可编辑 = 管理员或属主（服务端 `editable` 下发；缺省按管理权限兼容旧接口）
+  const canEdit = canManage && ds?.editable !== false;
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -173,6 +178,22 @@ export default function DatasetDetail() {
             <BarChart3 className="h-3 w-3" /> {CHART_TYPE_LABELS[ds.chart_type] || ds.chart_type}
           </Badge>
         )}
+        {/* 归属与可见范围：创建者业务名 + 可见范围业务名（不显示裸 id） */}
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <UserIcon className="h-3.5 w-3.5" />
+          {ds.owner_name || tr('k_a3ccf702c5')}
+        </span>
+        <Badge variant={ds.visibility === 'private' ? 'secondary' : 'outline'}
+          className="flex items-center gap-1">
+          {ds.visibility === 'private' ? <Lock className="h-3 w-3" /> : <Share2 className="h-3 w-3" />}
+          {ds.visibility_label
+            || (ds.visibility === 'private' ? tr('k_9e40c7b158') : tr('k_2f81d5ae64'))}
+        </Badge>
+        {canEdit && (
+          <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
+            <Share2 className="h-3.5 w-3.5 mr-1" /> {tr('k_c1d6a4b902')}
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="config" className="mt-2">
@@ -190,7 +211,7 @@ export default function DatasetDetail() {
             {/* 左栏: 配置表单 */}
             <div className="space-y-4 min-w-0">
               {/* 统一保存: 一次提交基本信息/查询定义/图表预设 */}
-              {canManage && (
+              {canEdit && (
                 <div className="flex items-center gap-2">
                   <Button size="sm" onClick={saveConfig} disabled={saving}>
                     {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Save className="h-3.5 w-3.5 mr-1" />}
@@ -204,7 +225,7 @@ export default function DatasetDetail() {
                 <div className="text-sm font-medium">{t("k_b122f813d5")}</div>
                 <div className="space-y-1.5">
                   <Label>{t("k_412f54dc38")}</Label>
-                  <Textarea rows={2} value={ds.description || ''} disabled={!canManage}
+                  <Textarea rows={2} value={ds.description || ''} disabled={!canEdit}
                     onChange={e => setDs({ ...ds, description: e.target.value })} />
                 </div>
               </div>
@@ -213,7 +234,7 @@ export default function DatasetDetail() {
               <ExecPanel
                 ds={ds}
                 fields={fields}
-                canManage={canManage}
+                canManage={canEdit}
                 onSaved={(_data: any) => { load(); }}
                 onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
               />
@@ -224,7 +245,7 @@ export default function DatasetDetail() {
                 <ChartPresetPanel
                   ds={ds}
                   fields={fields}
-                  canManage={canManage}
+                  canManage={canEdit}
                   onDsChange={(patch) => setDs((prev: any) => ({ ...prev, ...patch }))}
                 />
               </div>
@@ -254,7 +275,7 @@ export default function DatasetDetail() {
               </thead>
               <tbody>
                 {fields.map((f, i) => {
-                  const editable = canManage && f.from === 'config';
+                  const editable = canEdit && f.from === 'config';
                   return (
                     <tr key={`${f.field}-${i}`} className="border-t">
                       <td className="px-3 py-2">
@@ -297,7 +318,7 @@ export default function DatasetDetail() {
                         {/* 可编辑条件与落库形状一致：config 项原样写、语义项靠 sql_column 生成
                             {field, maps_to} 行才写得进去。没 sql_column 的语义字段根本不在
                             field_config 里，此处给下拉就是"配了存不下"的空承诺 —— 直接说明原因。 */}
-                        {canManage && (f.from === 'config' || f.sql_column) ? (
+                        {canEdit && (f.from === 'config' || f.sql_column) ? (
                           <Select value={f.display_format || NO_FORMAT}
                             onValueChange={v => setFields(prev => prev.map((p, pi) =>
                               pi === i ? { ...p, display_format: v === NO_FORMAT ? '' : v } : p))}>
@@ -334,7 +355,7 @@ export default function DatasetDetail() {
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             {tr('k_fd5ab669c2')}</p>
-          {canManage && (
+          {canEdit && (
             <Button size="sm" className="mt-3" onClick={async () => {
               // 落库 field_config: config 项原样保存 + 语义字段的 SQL 列映射(maps_to)
               const cfg = fields
@@ -356,11 +377,11 @@ export default function DatasetDetail() {
 
         {/* ── 行级范围（ES 型不适用，面板内显式说明原因）── */}
         <TabsContent value="params" className="pt-3">
-          <ParamsPanel ds={ds} datasetId={datasetId} canManage={canManage} onSaved={() => load(true)} />
+          <ParamsPanel ds={ds} datasetId={datasetId} canManage={canEdit} onSaved={() => load(true)} />
         </TabsContent>
 
         <TabsContent value="scopes" className="pt-3">
-          <ScopesPanel datasetId={datasetId} fields={fields} canManage={canManage} ds={ds} />
+          <ScopesPanel datasetId={datasetId} fields={fields} canManage={canEdit} ds={ds} />
         </TabsContent>
 
         {/* ── 引用 ── */}
@@ -380,6 +401,17 @@ export default function DatasetDetail() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* 共享对话框：可见范围变更后重载详情（头部徽标与编辑权同源刷新） */}
+      {shareOpen && (
+        <ShareDatasetDialog
+          open
+          datasetId={datasetId}
+          datasetName={ds.name}
+          onClose={() => setShareOpen(false)}
+          onSaved={() => load(true)}
+        />
+      )}
     </div>
   );
 }
@@ -1098,21 +1130,27 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
         </div>
 
         <ul className="space-y-1">
-          {(g.targets || []).map((t: any) => (
-            <li key={t.var} className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="font-mono w-40 shrink-0">{t.var}</span>
-              <span className="w-32 shrink-0 text-muted-foreground">{ROLE_LABELS[t.role] || t.role}</span>
+          {(g.targets || []).map((tg: any) => (
+            <li key={tg.var} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-mono w-40 shrink-0">{tg.var}</span>
+              <span className="w-32 shrink-0 text-muted-foreground">{ROLE_LABELS[tg.role] || tg.role}</span>
+              {/* 入参默认值落在变量行：不留则人只能回正文里翻 */}
+              {tg.default !== '' && tg.default != null && (
+                <span className="text-[10px] text-muted-foreground">
+                  {`${t('k_d93919c37b')} ${String(tg.default)}`}
+                </span>
+              )}
               {canManage
                 ? <Input className="h-6 w-40 text-xs font-mono" list="adh-param-key-candidates"
-                    value={dashKeys[t.var] || ''} aria-label={tr('k_c635d7bc37', { p0: t.var })} placeholder={g.key}
-                    onChange={e => setDashKeys(v => ({ ...v, [t.var]: e.target.value }))} />
+                    value={dashKeys[tg.var] || ''} aria-label={tr('k_c635d7bc37', { p0: tg.var })} placeholder={g.key}
+                    onChange={e => setDashKeys(v => ({ ...v, [tg.var]: e.target.value }))} />
                 : <span className="font-mono text-muted-foreground">{g.key}</span>}
-              {!(dashKeys[t.var] || '').trim() && (
+              {!(dashKeys[tg.var] || '').trim() && (
                 <span className="text-[10px] text-muted-foreground">{tr('k_7a5442351a')}{' '}{g.key}</span>
               )}
               {canManage ? (
-                <Select value={domains[t.var] || 'none'} onValueChange={(v) => setDomains((prev) => ({ ...prev, [t.var]: v === 'none' ? '' : v }))}>
-                  <SelectTrigger className="h-6 w-36 text-xs" aria-label={tr('k_3c8d0fd3e6', { p0: t.var })}>
+                <Select value={domains[tg.var] || 'none'} onValueChange={(v) => setDomains((prev) => ({ ...prev, [tg.var]: v === 'none' ? '' : v }))}>
+                  <SelectTrigger className="h-6 w-36 text-xs" aria-label={tr('k_3c8d0fd3e6', { p0: tg.var })}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1120,7 +1158,7 @@ export function ParamsPanel({ ds, datasetId, canManage, onSaved }: {
                     <SelectItem value="site">{t("k_3650368926")}</SelectItem>
                   </SelectContent>
                 </Select>
-              ) : ((t.value_domain || '') === 'site' && (
+              ) : ((tg.value_domain || '') === 'site' && (
                 <Badge variant="secondary" className="text-[10px]">{t("k_3650368926")}</Badge>
               ))}
             </li>

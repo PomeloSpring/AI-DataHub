@@ -338,10 +338,17 @@ def list_session_files(workspace_id: int, conversation_id: int, user_id: int) ->
 
     本地产物缺失但云端有副本时先回落再列（用户看到的是“文件还在”，不是空面板）；
     两边都没有才返回空列表——那确实是“这个会话没有产物文件”。
+
+    **新建会话的首轮不是 404**：会话行在建会话时就落库了，但执行映射行（`adh_agent_sessions`）
+    要等首轮 claim 才写入。侧栏在这两个时刻之间拉清单，旧实现会抛“会话不存在或无权访问”
+    并把 404 红框端给用户（其实只是“还没有工作区/还没有文件”）。这里按 `allow_pending`
+    区分：会话存在但尚未起执行 → 空清单；会话不存在/不属本人 → 仍 404（不泄露他人会话）。
     """
     from backend.modules.mind.execution import session_cloud
     from backend.modules.mind.execution import session_workspace as sw
-    row = _session_row(workspace_id, conversation_id, user_id)
+    row = _session_row(workspace_id, conversation_id, user_id, allow_pending=True)
+    if not row:
+        return []
     if not session_cloud.ensure_local_workspace({**row, "user_id": user_id}):
         return []
     base = sw.workspace_base(create=False)
@@ -367,8 +374,16 @@ def list_session_files(workspace_id: int, conversation_id: int, user_id: int) ->
     return files
 
 
-def _session_row(workspace_id: int, conversation_id: int, user_id: int) -> dict:
-    """按 (会话, 属主, 空间) 取执行映射行（云端回落需要 session_key）。"""
+def _session_row(workspace_id: int, conversation_id: int, user_id: int,
+                 *, allow_pending: bool = False) -> dict:
+    """按 (会话, 属主, 空间) 取执行映射行（云端回落需要 session_key）。
+
+    `allow_pending=True` 时区分两种“查不到执行映射行”：
+    - 会话行存在（本人）→ 返回 {}：首轮还没 claim，工作区尚未建立，属于“暂时没有产物”，
+      不是“会话不存在”（新建会话侧栏一打开就报 404 的根因）；
+    - 会话行缺失 / 不属本人 / 已删除 → 仍然 404，不区分两者以免泄露他人会话存在性。
+    写路径（删除文件）保持严格：没有工作区就确实没有可操作的目标。
+    """
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
@@ -377,6 +392,12 @@ def _session_row(workspace_id: int, conversation_id: int, user_id: int) -> dict:
                 "WHERE conversation_id=%s AND user_id=%s AND workspace_id=%s",
                 (conversation_id, user_id, workspace_id))
             row = cur.fetchone()
+            if (not row or not row.get("session_key")) and allow_pending:
+                cur.execute(
+                    "SELECT id FROM adh_conversations WHERE id=%s AND user_id=%s",
+                    (conversation_id, user_id))
+                if cur.fetchone():
+                    return {}
     finally:
         conn.close()
     if not row or not row.get("session_key"):
