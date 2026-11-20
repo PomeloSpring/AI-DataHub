@@ -163,7 +163,7 @@ DIMENSIONS: list[dict] = [
      "aliases": [], "value_labels": None, "description": "事件小时（小时粒度，引擎内置事件时间）"},
 ]
 
-# 指标字典：formula 必须是可编译的单表聚合（retire_derived_pseudo_metrics 的教训——
+# 指标字典：formula 必须是可编译的单表聚合（伪指标退役时的教训——
 # 伪公式会被原样拼进 SELECT，"目录挂着、编译用不了"）。比率类只有同过滤集才登记。
 METRICS: list[dict] = [
     {"name": "应用使用事件数", "name_en": "app_usage_events", "agg_type": "COUNT",
