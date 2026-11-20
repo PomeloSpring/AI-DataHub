@@ -2,7 +2,8 @@
  * 看板管理页：标签过滤 + 看板列表/看板组合 Tab 拆分。
  *
  * 锁定：
- *  - 看板越来越多，除名称过滤外要能按「标签」过滤：筛选栏里一个独立标签下拉框，选项来自全部看板 tags 的去重并集；
+ *  - 看板越来越多，除名称过滤外要能按「标签」过滤：筛选栏里一个独立标签下拉框，选项来自服务端
+ *    `GET /dashboard/tags`（可见域 tags 去重并集）——清单改真分页后，前端只持有当前页，就地求并集会漏标签；
  *  - 标签编辑只影响管理页清单（无裸 id、不参与任何取数/权限口径）；
  *  - 看板组合不再与看板列表挤在同一屏：默认「看板列表」Tab 显示清单，切到「看板组合」才显示组合管理。
  */
@@ -27,14 +28,50 @@ const board = (id: number, name: string, tags: string[] = []): any => ({
   carousel_interval: 0, sort_order: id, created_at: '', updated_at: '',
 });
 
+/** 标签并集：服务端「可见域 tags 并集」接口的口径（分页后前端不再持有全量清单）。 */
+const tagUnion = (boards: any[]) => {
+  const found = new Set<string>();
+  boards.forEach((b) => (Array.isArray(b.tags) ? b.tags : []).forEach((t: string) => found.add(t)));
+  return [...found];
+};
+
+/**
+ * 服务端桩：清单接口带 page_size 时回信封（筛选/标签下推、total=过滤后行数），
+ * /dashboard/tags 回并集，/dashboard/{id} 回单板详情（导出用）。
+ */
+function serveBoards(boards: any[]) {
+  vi.mocked(client.get).mockImplementation(async (url: string) => {
+    if (url.startsWith('/dashboard/tags')) return { data: tagUnion(boards) } as any;
+    if (/^\/dashboard\/\d+$/.test(url)) {
+      const id = Number(url.slice('/dashboard/'.length));
+      return { data: boards.find((b) => b.id === id) ?? null } as any;
+    }
+    if (url.startsWith('/dashboard/')) {
+      const q = new URL(url, 'http://x').searchParams;
+      let list = boards;
+      const tagArg = q.get('tags');
+      if (tagArg) {
+        const want = tagArg.split(',');
+        list = list.filter((b) => want.some((w) => (Array.isArray(b.tags) ? b.tags : []).includes(w)));
+      }
+      const search = q.get('search');
+      if (search) list = list.filter((b) => `${b.name} ${b.description || ''}`.includes(search));
+      const status = q.get('status');
+      if (status) list = list.filter((b) => b.status === status);
+      const size = Number(q.get('page_size')) || 20;
+      const page = Number(q.get('page')) || 1;
+      return {
+        data: { items: list.slice((page - 1) * size, page * size), total: list.length, page, page_size: size },
+      } as any;
+    }
+    return { data: [] } as any;
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   useDashboardStore.getState().reset();
-  const boards = [board(1, '经营日报', ['经营', '日报']), board(2, '经营周报', ['经营']), board(3, '无标签看板')];
-  vi.mocked(client.get).mockImplementation(async (url: string) => {
-    if (url.startsWith('/dashboard/') && !url.includes('groups')) return { data: boards } as any;
-    return { data: [] } as any;
-  });
+  serveBoards([board(1, '经营日报', ['经营', '日报']), board(2, '经营周报', ['经营']), board(3, '无标签看板')]);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -85,14 +122,16 @@ describe('看板管理页标签过滤 + Tab 拆分', () => {
   });
 
   it('后端旧进程回 tags 为 JSON 字符串时也不崩（入 store 归一为数组）', async () => {
+    // 服务端 _clean_tags 对 JSON 文本列同样归一后回并集，前端拿到的候选始终是字符串数组
+    const rows = [
+      { ...board(1, '字符串标签看板'), tags: '["\u7ecf\u8425","\u65e5\u62a5"]' },  // JSON 文本列原样回字符串
+      { ...board(2, '空串标签'), tags: '[]' },
+      { ...board(3, '无 tags 字段') },                                            // tags 缺失
+    ];
     vi.mocked(client.get).mockImplementation(async (url: string) =>
-      url.startsWith('/dashboard/') && !url.includes('groups')
-        ? ({ data: [
-            { ...board(1, '字符串标签看板'), tags: '["\u7ecf\u8425","\u65e5\u62a5"]' },  // JSON 文本列原样回字符串
-            { ...board(2, '空串标签'), tags: '[]' },
-            { ...board(3, '无 tags 字段') },                                            // tags 缺失
-          ] } as any)
-        : ({ data: [] } as any));
+      url.startsWith('/dashboard/tags')
+        ? ({ data: ['经营', '日报'] } as any)
+        : ({ data: { items: rows, total: rows.length, page: 1, page_size: 20 } } as any));
     mount();
     await screen.findByText('字符串标签看板');
     // 归一后标签下拉正常生成选项（不再是 (d.tags||[]).forEach 报 not a function）
@@ -105,10 +144,7 @@ describe('看板管理页标签过滤 + Tab 拆分', () => {
   });
 
   it('设置弹窗可从「已有标签」点选加入，无需重复输入', async () => {
-    vi.mocked(client.get).mockImplementation(async (url: string) =>
-      url.startsWith('/dashboard/') && !url.includes('groups')
-        ? ({ data: [board(1, '经营日报', ['经营']), board(2, '待打标')] } as any)
-        : ({ data: [] } as any));
+    serveBoards([board(1, '经营日报', ['经营']), board(2, '待打标')]);
     mount();
     await screen.findByText('待打标');
     await userEvent.click(screen.getByRole('button', { name: '待打标 更多操作' }));
@@ -123,10 +159,7 @@ describe('看板管理页标签过滤 + Tab 拆分', () => {
   });
 
   it('卡片上展示看板标签（同类靠标签区分），超出 4 个折叠 +N', async () => {
-    vi.mocked(client.get).mockImplementation(async (url: string) =>
-      url.startsWith('/dashboard/') && !url.includes('groups')
-        ? ({ data: [board(1, '带标签看板', ['a', 'b', 'c', 'd', 'e'])] } as any)
-        : ({ data: [] } as any));
+    serveBoards([board(1, '带标签看板', ['a', 'b', 'c', 'd', 'e'])]);
     mount();
     await screen.findByText('带标签看板');
     // 卡内标签仍渲 #a（顶部改为下拉框，不再是芯片，故限定到卡片断言）

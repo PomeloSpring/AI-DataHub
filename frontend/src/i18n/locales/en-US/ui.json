@@ -4557,5 +4557,7 @@
   "k_5dc39da8cf": "English note (optional)",
   "k_464fbc58b4": "English body",
   "k_aab57a3547": "Invert selection",
-  "k_a04144e4d7": "Clear all"
+  "k_a04144e4d7": "Clear all",
+  "k_pd01a7f3c1": "Failed to load tag options; tag filtering is unavailable",
+  "k_pd02b8e4d2": "Failed to load dashboard details; export is unavailable, please retry"
 }

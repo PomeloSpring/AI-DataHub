@@ -633,3 +633,164 @@ describe('resetParams（看板参数重置的唯一口径）', () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 });
+
+describe('看板清单服务端真分页（store 侧）', () => {
+  const envelope = (ids: number[], total: number) => ({
+    items: ids.map((id) => makeDashboard({ id, name: `D${id}` })),
+    total,
+    page: 2,
+    page_size: 20,
+  });
+
+  beforeEach(() => {
+    useDashboardStore.setState({
+      dashboards: [], currentId: null, loading: false, error: null, favorites: [],
+      listMode: 'full', listTotal: 0, listPage: 1, listPageSize: 20, listFilters: {},
+      currentWorkspaceId: 0,
+    } as any);
+    vi.mocked(client.get).mockReset();
+    vi.mocked(client.post).mockReset();
+    window.localStorage.clear();
+  });
+
+  it('分页请求带 page/page_size 与筛选，总数渲染自服务端 total 而非页长', async () => {
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([3, 4], 46) } as any);
+
+    await useDashboardStore.getState().loadDashboardPage({
+      workspaceId: 3, page: 2, pageSize: 20,
+      filters: { search: ' 订单 ', status: 'enabled', tags: ['销售', '库存'], favoritesOnly: false },
+    });
+
+    const url = vi.mocked(client.get).mock.calls[0][0] as string;
+    expect(url).toContain('page=2');
+    expect(url).toContain('page_size=20');
+    expect(url).toContain('workspace_id=3');
+    expect(url).toContain('search=%E8%AE%A2%E5%8D%95');   // 关键词下推 SQL，不是前端 filter
+    expect(url).toContain('status=enabled');
+    expect(url).toContain('tags=%E9%94%80%E5%94%AE%2C%E5%BA%93%E5%AD%98');
+    expect(url).not.toContain('favorite_ids');
+    const s = useDashboardStore.getState();
+    expect(s.listMode).toBe('page');
+    expect(s.dashboards.map((d) => d.id)).toEqual([3, 4]);
+    expect(s.listTotal).toBe(46);                          // 共 46 条，不是本页 2 条
+    expect(s.loading).toBe(false);
+  });
+
+  it('翻页与改档位都重新请求，不在前端对全量切片', async () => {
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([1, 2], 46) } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 1, pageSize: 50 });
+    await useDashboardStore.getState().loadDashboardPage({ page: 3 });
+    const calls = vi.mocked(client.get).mock.calls.map((c) => c[0] as string);
+    expect(calls[0]).toContain('page=1');
+    expect(calls[0]).toContain('page_size=50');
+    expect(calls[1]).toContain('page=3');
+    expect(calls[1]).toContain('page_size=50');            // 档位沿用上次值，不静默回 20
+  });
+
+  it('末页删空 → 收敛到最后一个有效页重取，不停在空白页', async () => {
+    vi.mocked(client.get)
+      .mockResolvedValueOnce({ data: { items: [], total: 40, page: 3, page_size: 20 } } as any)
+      .mockResolvedValueOnce({ data: { items: [makeDashboard({ id: 41 })], total: 40, page: 2, page_size: 20 } } as any);
+
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 3, pageSize: 20 });
+
+    expect(client.get).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(client.get).mock.calls[1][0]).toContain('page=2');
+    const s = useDashboardStore.getState();
+    expect(s.listPage).toBe(2);
+    expect(s.dashboards).toHaveLength(1);
+  });
+
+  it('分页模式不自动把「当前看板」拽成本页第一块', async () => {
+    useDashboardStore.setState({ currentId: 99 } as any);
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([3, 4], 46) } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 2 });
+    expect(useDashboardStore.getState().currentId).toBe(99);
+  });
+
+  it('仅收藏且本地无收藏 → 不发请求直接空清单（不是静默降级）', async () => {
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, filters: { favoritesOnly: true } });
+    expect(client.get).not.toHaveBeenCalled();
+    const s = useDashboardStore.getState();
+    expect(s.dashboards).toEqual([]);
+    expect(s.listTotal).toBe(0);
+  });
+
+  it('仅收藏把本地收藏 id 作为过滤条件下发（交集由服务端与可见集算）', async () => {
+    useDashboardStore.setState({ favorites: [5, 6] } as any);
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([5], 1) } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, filters: { favoritesOnly: true } });
+    expect(vi.mocked(client.get).mock.calls[0][0]).toContain('favorite_ids=5%2C6');
+  });
+
+  it('reloadList 按 listMode 分派：分页态只重取当前页，全量态仍拿裸数组', async () => {
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([3], 46) } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 2 });
+    vi.mocked(client.get).mockClear();
+
+    await useDashboardStore.getState().reloadList(3);
+    expect(vi.mocked(client.get).mock.calls[0][0]).toContain('page_size=');
+
+    useDashboardStore.setState({ listMode: 'full' } as any);
+    vi.mocked(client.get).mockClear();
+    await useDashboardStore.getState().reloadList(3);
+    expect(vi.mocked(client.get).mock.calls[0][0]).not.toContain('page_size=');
+  });
+
+  it('信封形状不对（拿到裸数组）→ 显式报错并保留旧清单，不静默当空页', async () => {
+    useDashboardStore.setState({ currentWorkspaceId: 3, dashboards: [makeDashboard({ id: 1 })] } as any);
+    vi.mocked(client.get).mockResolvedValue({ data: [makeDashboard({ id: 2 })] } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3 });
+    const s = useDashboardStore.getState();
+    expect(s.error).toBeTruthy();
+    expect(s.dashboards.map((d) => d.id)).toEqual([1]);
+  });
+
+  it('过期响应丢弃：慢的第 1 页不得覆盖快的第 2 页', async () => {
+    useDashboardStore.setState({ listMode: 'page', listPage: 2, currentWorkspaceId: 3 } as any);
+    let resolveSlow: (v: any) => void = () => {};
+    vi.mocked(client.get)
+      .mockImplementationOnce(() => new Promise((r) => { resolveSlow = r; }) as any)
+      .mockResolvedValueOnce({ data: envelope([7, 8], 46) } as any);
+
+    const slow = useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 1 });
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 2 });
+    resolveSlow({ data: envelope([1, 2], 46) });
+    await slow;
+
+    const s = useDashboardStore.getState();
+    expect(s.dashboards.map((d) => d.id)).toEqual([7, 8]);
+    expect(s.listPage).toBe(2);
+  });
+
+  it('moveDashboard 打 /dashboard/move，成功重取当前页、被拒原样回传服务端原因', async () => {
+    vi.mocked(client.post).mockResolvedValue({ data: { moved: true } } as any);
+    const reload = vi.spyOn(useDashboardStore.getState(), 'reloadList').mockResolvedValue(undefined);
+    const out = await useDashboardStore.getState().moveDashboard(4, 1);
+    expect(out.moved).toBe(true);
+    expect(vi.mocked(client.post).mock.calls[0]).toEqual(['/dashboard/move', { dashboard_id: 4, direction: 1 }]);
+    expect(reload).toHaveBeenCalled();
+
+    vi.mocked(client.post).mockRejectedValue({ response: { data: { detail: '已在置顶区边界，无法继续上移' } } } as any);
+    const refused = await useDashboardStore.getState().moveDashboard(4, -1);
+    expect(refused).toEqual({ moved: false, message: '已在置顶区边界，无法继续上移' });
+  });
+
+  it('reset 把分页档位一并恢复默认（档位跨会话残留会把 totalPages 算成 1，翻页按钮看着失效）', async () => {
+    vi.mocked(client.get).mockResolvedValue({ data: envelope([1], 46) } as any);
+    await useDashboardStore.getState().loadDashboardPage({ workspaceId: 3, page: 1, pageSize: 100 });
+    expect(useDashboardStore.getState().listPageSize).toBe(100);
+    useDashboardStore.getState().reset();
+    const s = useDashboardStore.getState();
+    expect(s.listPageSize).toBe(20);
+    expect(s.listMode).toBe('full');
+    expect(s.listPage).toBe(1);
+    expect(s.listFilters).toEqual({});
+  });
+
+  it('标签候选走独立接口（分页后不能从当前页求并集）', async () => {    vi.mocked(client.get).mockResolvedValue({ data: ['订单', '库存'] } as any);
+    const tags = await useDashboardStore.getState().loadDashboardTags(3);
+    expect(vi.mocked(client.get).mock.calls[0][0]).toBe('/dashboard/tags?workspace_id=3');
+    expect(tags).toEqual(['订单', '库存']);
+  });
+});

@@ -160,8 +160,23 @@ function serverDetailOf(err: unknown): string {
   return String((err as any)?.response?.data?.detail || '');
 }
 
+/** 管理页清单筛选：全部下推服务端 SQL（前端不再持有全量，本地 filter 会让 total 与清单口径分裂） */
+export interface DashboardListFilters {
+  search?: string;
+  status?: string;
+  tags?: string[];
+  favoritesOnly?: boolean;
+}
+
 interface DashboardState {
   dashboards: Dashboard[];
+  /** 清单档位：full = 整份在手（编辑器切板/下钻选择器），page = 服务端真分页（系统配置-看板管理页） */
+  listMode: 'full' | 'page';
+  /** 分页档的服务端过滤后总数（计数与分页条都只能用它，不得用当前页长度充数） */
+  listTotal: number;
+  listPage: number;
+  listPageSize: number;
+  listFilters: DashboardListFilters;
   currentId: number | null;
   currentWorkspaceId: number;
   loading: boolean;
@@ -190,6 +205,14 @@ interface DashboardState {
 
   reset: () => void;
   loadDashboards: (workspaceId?: number) => Promise<void>;
+  /** 服务端真分页取当前页（筛选/搜索/页号/页大小都由参数下推，不在本地二次过滤） */
+  loadDashboardPage: (opts?: { workspaceId?: number; page?: number; pageSize?: number; filters?: DashboardListFilters }) => Promise<void>;
+  /** 写操作后的统一重取：按当前档位分派，管理页分页态不再拉全量 */
+  reloadList: (workspaceId?: number) => Promise<void>;
+  /** 标签候选（分页后前端不持有全量，无法就地求并集） */
+  loadDashboardTags: (workspaceId?: number) => Promise<string[]>;
+  /** 上移/下移：服务端在同口径排序里找相邻行交换 sort_order（跨页也成立） */
+  moveDashboard: (id: number, direction: -1 | 1) => Promise<{ moved: boolean; message?: string }>;
   setCurrent: (id: number | null) => void;
   createDashboard: (name: string, workspaceId?: number, extra?: { description?: string; i18n?: Record<string, Record<string, string>> }) => Promise<number>;
   updateDashboard: (id: number, data: Partial<Dashboard>, deferReload?: boolean) => Promise<void>;
@@ -200,7 +223,6 @@ interface DashboardState {
   updateChart: (dashboardId: number, chartId: number, data: Partial<DashboardChart>, deferReload?: boolean) => Promise<void>;
   deleteChart: (dashboardId: number, chartId: number, deferReload?: boolean) => Promise<void>;
   saveLayout: (dashboardId: number, layouts: { chart_id: number; position: any }[]) => Promise<void>;
-  reorderDashboards: (orders: { id: number; sort_order: number }[]) => Promise<void>;
   /** 宿主页面（看板浏览页 / 大屏）登记当前看板：图表重查询、参数栏、查询与导出控件都以 store 为唯一通道 */
   adoptDashboard: (dashboard: Dashboard) => void;
   setGlobalFilters: (filters: Record<string, any>) => void;
@@ -227,6 +249,7 @@ interface DashboardState {
 }
 
 let loadVersion = 0;
+let pageVersion = 0;
 let sessionVersion = 0;
 const refreshVersions = new Map<number, number>();
 
@@ -244,7 +267,7 @@ const toTags = (value: unknown): string[] => {
 };
 
 /** 接口返回的看板归一为 store 形状（历史字段 pageParams 藏在 filters 里，两处同一口径） */
-const normalizeDashboard = (d: Dashboard): Dashboard => ({
+export const normalizeDashboard = (d: Dashboard): Dashboard => ({
   ...d, filters: d.filters || {}, charts: d.charts || [],
   page_params: d.page_params || d.filters?.pageParams || [],
   tags: toTags(d.tags),
@@ -253,8 +276,16 @@ const normalizeDashboard = (d: Dashboard): Dashboard => ({
 /** 诊断文案前缀：优先业务名，不退化成裸 id（ui-resource-display.md） */
 const chartLabel = (chartId: number, name?: string) => (name ? `「${name}」` : `图表 ${chartId}`);
 
+/** 分页清单默认档位：与 PaginationBar 的 DEFAULT_PAGE_SIZE 同值，reset 时必须一并恢复（否则档位跨会话串味） */
+const DEFAULT_LIST_PAGE_SIZE = 20;
+
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboards: [],
+  listMode: 'full',
+  listTotal: 0,
+  listPage: 1,
+  listPageSize: DEFAULT_LIST_PAGE_SIZE,
+  listFilters: {},
   currentId: null,
   currentWorkspaceId: 0,
   loading: false,
@@ -280,8 +311,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   reset: () => {
     // 登出 / 切换工作空间：先终止未完成的图表查询，再推进会话版本
     chartQueryPool.cancelAll();
-    ++loadVersion; ++sessionVersion; refreshVersions.clear();
-    set({ dashboards: [], currentId: null, currentWorkspaceId: 0, loading: false, error: null,
+    ++loadVersion; ++pageVersion; ++sessionVersion; refreshVersions.clear();
+    set({ dashboards: [], listMode: 'full', listTotal: 0, listPage: 1, listPageSize: DEFAULT_LIST_PAGE_SIZE,
+      listFilters: {},
+      currentId: null, currentWorkspaceId: 0, loading: false, error: null,
       globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false,
       refreshingChartIds: new Set(), chartCache: {}, paramDiagnostics: {} });
   },
@@ -291,14 +324,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const wsId = workspaceId ?? get().currentWorkspaceId ?? 0;
     const version = ++loadVersion;
     if (wsId !== get().currentWorkspaceId) { set({ dashboards: [] }); get().setCurrent(null); }
-    set({ loading: true, error: null, currentWorkspaceId: wsId });
+    set({ loading: true, error: null, currentWorkspaceId: wsId, listMode: 'full' });
     try {
       const params = wsId ? `?workspace_id=${wsId}` : '';
       const { data } = await client.get(`/dashboard/${params}`);
       if (version !== loadVersion) return;
       if (!Array.isArray(data)) throw new Error('仪表盘接口格式错误');
       const dashboards = data.map((d: Dashboard) => normalizeDashboard(d));
-      set({ dashboards });
+      set({ dashboards, listTotal: dashboards.length });
       const state = get();
       if (!dashboards.some(d => d.id === state.currentId)) {
         const defaultDb = dashboards.find(d => d.is_default);
@@ -308,6 +341,72 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (version === loadVersion) set({ error: '看板加载失败，已保留本地已确认的数据，请重试' });
     } finally {
       if (version === loadVersion) set({ loading: false });
+    }
+  },
+
+  loadDashboardPage: async (opts = {}) => {
+    const wsId = opts.workspaceId ?? get().currentWorkspaceId ?? 0;
+    const filters = opts.filters ?? get().listFilters;
+    const pageSize = opts.pageSize ?? get().listPageSize;
+    const page = Math.max(1, opts.page ?? get().listPage);
+    const version = ++pageVersion;
+    if (wsId !== get().currentWorkspaceId) set({ dashboards: [] });
+    set({ listMode: 'page', loading: true, error: null, currentWorkspaceId: wsId,
+      listFilters: filters, listPageSize: pageSize, listPage: page });
+    // 仅收藏：收藏表是浏览器 localStorage（后端无表），本地一条都没有就是空清单，不必发请求
+    if (filters.favoritesOnly && !get().favorites.length) {
+      set({ dashboards: [], listTotal: 0, loading: false });
+      return;
+    }
+    const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (wsId) query.set('workspace_id', String(wsId));
+    if (filters.search?.trim()) query.set('search', filters.search.trim());
+    if (filters.status && filters.status !== 'all') query.set('status', filters.status);
+    if (filters.tags?.length) query.set('tags', filters.tags.join(','));
+    if (filters.favoritesOnly) query.set('favorite_ids', get().favorites.join(','));
+    try {
+      const { data } = await client.get(`/dashboard/?${query.toString()}`);
+      if (version !== pageVersion) return;
+      const envelope = data as unknown as { items?: Dashboard[]; total?: number };
+      if (!Array.isArray(envelope?.items)) throw new Error('仪表盘分页接口格式错误');
+      const total = Number(envelope.total) || 0;
+      const items = envelope.items!.map(normalizeDashboard);
+      const lastPage = Math.max(1, Math.ceil(total / pageSize));
+      // 当前页被删空（末页越界）→ 收敛到最后一个有效页重取，不停在空白页
+      if (!items.length && page > lastPage) {
+        await get().loadDashboardPage({ ...opts, page: lastPage });
+        return;
+      }
+      set({ dashboards: items, listTotal: total, listPage: Math.min(page, lastPage) });
+    } catch {
+      if (version === pageVersion) set({ error: '看板加载失败，已保留本地已确认的数据，请重试' });
+    } finally {
+      if (version === pageVersion) set({ loading: false });
+    }
+  },
+
+  reloadList: async (workspaceId?: number) => {
+    if (get().listMode === 'page') {
+      await get().loadDashboardPage(workspaceId !== undefined ? { workspaceId } : {});
+    } else {
+      await get().loadDashboards(workspaceId);
+    }
+  },
+
+  loadDashboardTags: async (workspaceId?: number) => {
+    const wsId = workspaceId ?? get().currentWorkspaceId ?? 0;
+    const { data } = await client.get(`/dashboard/tags${wsId ? `?workspace_id=${wsId}` : ''}`);
+    return Array.isArray(data) ? data.map(String) : [];
+  },
+
+  moveDashboard: async (id, direction) => {
+    try {
+      const { data } = await client.post('/dashboard/move', { dashboard_id: id, direction });
+      if (data?.moved) await get().reloadList();
+      return { moved: !!data?.moved };
+    } catch (e: any) {
+      // 边界/置顶区/权限拒绝都要原样到达用户（服务端 409/403 的 detail 即可读原因）
+      return { moved: false, message: e?.response?.data?.detail || e?.message || '看板移动失败' };
     }
   },
 
@@ -341,7 +440,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (extra?.i18n && Object.keys(extra.i18n).length) body.i18n = extra.i18n;
     const { data } = await client.post('/dashboard/', body);
     invalidateCatalogCache();
-    await get().loadDashboards(wsId);
+    await get().reloadList(wsId);
     get().setCurrent(data.id);
     return data.id;
   },
@@ -353,7 +452,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === id ? { ...d, ...updates, ...payload } : d) }));
     if (get().currentId === id && page_params !== undefined) get().setPageParams(page_params);
-    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
+    if (!deferReload) await get().reloadList(get().currentWorkspaceId);
   },
 
   deleteDashboard: async (id) => {
@@ -363,13 +462,13 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const remaining = state.dashboards.filter(d => d.id !== id);
     set({ dashboards: remaining });
     if (state.currentId === id) get().setCurrent(remaining[0]?.id ?? null);
-    await get().loadDashboards(get().currentWorkspaceId);
+    await get().reloadList(get().currentWorkspaceId);
   },
 
   copyDashboard: async (id) => {
     const { data } = await client.post(`/dashboard/${id}/copy`);
     invalidateCatalogCache();
-    await get().loadDashboards(get().currentWorkspaceId);
+    await get().reloadList(get().currentWorkspaceId);
     get().setCurrent(data.id);
     toast.success('仪表盘已拷贝');
   },
@@ -377,7 +476,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   setDefault: async (id) => {
     await client.put(`/dashboard/${id}`, { is_default: true });
     invalidateCatalogCache();
-    await get().loadDashboards(get().currentWorkspaceId);
+    await get().reloadList(get().currentWorkspaceId);
   },
 
   addChart: async (dashboardId, chart, deferReload = false) => {
@@ -387,7 +486,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error('新增图表未返回有效 ID');
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
       ? { ...d, charts: [...d.charts, { ...chart, id, dashboard_id: dashboardId } as DashboardChart] } : d) }));
-    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
+    if (!deferReload) await get().reloadList(get().currentWorkspaceId);
     return id;
   },
 
@@ -396,7 +495,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
       ? { ...d, charts: d.charts.map(c => c.id === chartId ? { ...c, ...data } : c) } : d) }));
-    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
+    if (!deferReload) await get().reloadList(get().currentWorkspaceId);
   },
 
   deleteChart: async (dashboardId, chartId, deferReload = false) => {
@@ -404,7 +503,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     invalidateCatalogCache();
     set(state => ({ dashboards: state.dashboards.map(d => d.id === dashboardId
       ? { ...d, charts: d.charts.filter(c => c.id !== chartId) } : d) }));
-    if (!deferReload) await get().loadDashboards(get().currentWorkspaceId);
+    if (!deferReload) await get().reloadList(get().currentWorkspaceId);
   },
 
   saveLayout: async (dashboardId, layouts) => {
@@ -422,12 +521,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         };
       }),
     }));
-  },
-
-  reorderDashboards: async (orders) => {
-    await client.post('/dashboard/reorder', { orders });
-    invalidateCatalogCache();
-    await get().loadDashboards(get().currentWorkspaceId);
   },
 
   adoptDashboard: (dashboard) => {
@@ -670,7 +763,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         await addChart(dashboardId, payload as Partial<DashboardChart>, true);
       }
     } finally {
-      await get().loadDashboards(get().currentWorkspaceId);
+      await get().reloadList(get().currentWorkspaceId);
     }
     return dashboardId;
   },

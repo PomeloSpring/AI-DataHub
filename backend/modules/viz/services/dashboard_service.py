@@ -923,6 +923,71 @@ def visible_dashboard_ids(user_id: int, user_role: str = "", workspace_id: int =
     return set(role_service.get_user_allowed_dashboards(user_id, workspace_id))
 
 
+# ── 看板清单唯一口径（全量清单 / 分页清单 / 总数 COUNT / 标签候选共用一份）────────
+#: 排序必须带唯一 tiebreaker：reorder/move 会把一批行写成同一个 updated_at，
+#: LIMIT/OFFSET 在并列行上会翻出重行或漏行（分页清单的隐形错数源）。
+_DASHBOARD_ORDER_BY = " ORDER BY is_default DESC, sort_order ASC, updated_at DESC, id DESC"
+#: 元数据清单每页硬上限（服务端说了算，与字模库/资讯分页同口径）
+_DASHBOARD_PAGE_SIZE_MAX = 200
+_DASHBOARD_PAGE_SIZE_DEFAULT = 20
+#: 清单响应需要的看板列（与 init.sql + tags/i18n/workspace 迁移对齐；少列会让
+#: _normalize_dashboard/_mark_editable/本地化静默拿到默认值）
+_DASHBOARD_LIST_COLS = ("id, name, description, layout, filters, params, tags, status, owner_id,"
+                        " is_public, is_default, carousel_interval, sort_order,"
+                        " created_at, updated_at, workspace_id, i18n")
+#: 分页清单的图表瘦列：缩略图只用 id/chart_type/config/position，卡片计数只用 chart_type，
+#: name/i18n 供标题本地化。sql_query/data_cache/semantic_query 属单看板详情载荷，
+#: 不得进清单（缓存正文就是这条响应最重的部分），也不得让瘦行流入编辑/取数路径。
+_CHART_SLIM_COLS = "id, dashboard_id, name, chart_type, config, position, i18n"
+#: 看板状态可筛选值（与前端 DASHBOARD_STATUS_MAP 同源，越界值直接拒）
+_DASHBOARD_STATUSES = ("designing", "enabled", "closed")
+
+
+def _like_pattern(value: str) -> str:
+    """搜索词转义 LIKE 元字符后包成包含式模式（未转义的 % _ 会变成通配符，误命中且无法排查）。"""
+    esc = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
+
+def _build_dashboard_filters(workspace_id: int = 0, visible: Optional[set] = None, *,
+                             search: str = "", status: str = "", tags=(),
+                             favorite_ids=()) -> tuple:
+    """把清单的全部筛选/搜索谓词下推成 (WHERE 片段, 参数)。
+
+    - visible=None = admin 全可见（不加 id IN）；空集由调用方先行 fail-closed 返回空清单；
+    - favorite_ids 是浏览器 localStorage 的收藏，只当**过滤条件**（不参与权限），
+      调用前必须已与可见集求交，服务端不信任前端递来的 id；
+    - tags 多选为 OR（命中任一标签即显示），用 JSON_CONTAINS 精确匹配数组元素，
+      不用 tags LIKE（子串会误命中，如 "订" 命中 "订单管理"）。
+    """
+    conds: list = []
+    params: list = []
+    if workspace_id:
+        conds.append("workspace_id = %s")
+        params.append(workspace_id)
+    if visible is not None:
+        conds.append("id IN (" + ",".join(["%s"] * len(visible)) + ")")
+        params.extend(sorted(int(i) for i in visible))
+    favs = sorted({int(i) for i in favorite_ids if str(i).strip() != ""})
+    if favs:
+        conds.append("id IN (" + ",".join(["%s"] * len(favs)) + ")")
+        params.extend(favs)
+    if search:
+        like = _like_pattern(search)
+        conds.append("(name LIKE %s OR description LIKE %s)")
+        params.extend([like, like])
+    if status:
+        if status not in _DASHBOARD_STATUSES:
+            raise ValueError(f"未知看板状态: {status}, 可选: {', '.join(_DASHBOARD_STATUSES)}")
+        conds.append("status = %s")
+        params.append(status)
+    cleaned = [str(t).strip() for t in tags if str(t).strip()]
+    if cleaned:
+        conds.append("(" + " OR ".join(["JSON_CONTAINS(COALESCE(tags, '[]'), %s)"] * len(cleaned)) + ")")
+        params.extend(json.dumps(t, ensure_ascii=False) for t in cleaned)
+    return (" WHERE " + " AND ".join(conds)) if conds else "", params
+
+
 def check_dashboard_visible(dashboard_id: int, user_id: int, user_role: str = "",
                             workspace_id: Optional[int] = None) -> bool:
     """单看板可见性裁决（查看链路唯一入口）。workspace_id 缺省时按看板归属解析。"""
@@ -1280,52 +1345,161 @@ class DashboardService:
 
     def _fetch_dashboards_from_db(self, user_id: int, workspace_id: int = 0,
                                   user_role: str = "") -> list:
-        """Fetch dashboards from database (角色可见集过滤, fail-closed)."""
+        """Fetch dashboards from database (角色可见集过滤, fail-closed).
+
+        这是「全量在手」那一档（编辑器切板、下钻链接选择器需要整份清单）；
+        带分页条的管理清单走 list_dashboards_page，两档共用同一份谓词与排序。
+        """
         visible = visible_dashboard_ids(user_id, user_role, workspace_id)
         if visible is not None and not visible:
             return []
+        where, params = _build_dashboard_filters(workspace_id, visible)
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
-                sql = "SELECT * FROM adh_dashboards"
-                params: list = []
-                conds = []
-                if workspace_id:
-                    conds.append("workspace_id = %s")
-                    params.append(workspace_id)
-                if visible is not None:
-                    marks = ",".join(["%s"] * len(visible))
-                    conds.append(f"id IN ({marks})")
-                    params.extend(sorted(visible))
-                if conds:
-                    sql += " WHERE " + " AND ".join(conds)
-                sql += " ORDER BY is_default DESC, sort_order ASC, updated_at DESC"
-                cur.execute(sql, params)
-                dashboards = cur.fetchall()
-                if not dashboards:
-                    return []
-
-                dash_ids = [d["id"] for d in dashboards]
-                placeholders = ",".join(["%s"] * len(dash_ids))
-                cur.execute(
-                    f"SELECT * FROM adh_charts WHERE dashboard_id IN ({placeholders}) ORDER BY id",
-                    dash_ids,
-                )
-                all_charts = cur.fetchall()
-
-                charts_map: dict = {}
-                for c in all_charts:
-                    _normalize_chart(c)
-                    charts_map.setdefault(c["dashboard_id"], []).append(c)
-
-                for d in dashboards:
-                    _normalize_dashboard(d)
-                    d["charts"] = charts_map.get(d["id"], [])
-                # editable 仅供前端隐藏写入口: 角色授予的可见权不含编辑权(写在 API 层再裁决一次)
-                _mark_editable(dashboards, user_id, user_role)
-                return _localize_dashboards(dashboards)
+                cur.execute("SELECT * FROM adh_dashboards" + where + _DASHBOARD_ORDER_BY, params)
+                return self._assemble_dashboards(cur, cur.fetchall(), user_id, user_role)
         finally:
             conn.close()
+
+    def list_dashboards_page(self, user_id: int, workspace_id: int = 0, user_role: str = "", *,
+                             search: str = "", status: str = "", tags=(), favorite_ids=(),
+                             page: int = 1, page_size: int = _DASHBOARD_PAGE_SIZE_DEFAULT) -> dict:
+        """服务端**真分页**看板清单：total 来自过滤后的 COUNT，当前页由 LIMIT/OFFSET 取。
+
+        筛选（search/status/tags/favorite_ids）全部下推 SQL，与全量清单共用
+        `_build_dashboard_filters` + `_DASHBOARD_ORDER_BY`（两份谓词必然漂移）；
+        偏移量由页号在服务端算出，不接受调用方递交 offset。
+        图表只为当前页的看板取瘦列（旧口径把每块板的全部 charts 连 sql_query/data_cache 一起回，
+        是这份响应最重的部分）。返回契约 {items,total,page,page_size} 与字模库/资讯分页同源。
+        """
+        page = max(1, int(page or 1))
+        page_size = min(_DASHBOARD_PAGE_SIZE_MAX, max(1, int(page_size or _DASHBOARD_PAGE_SIZE_DEFAULT)))
+        empty = {"items": [], "total": 0, "page": page, "page_size": page_size}
+        visible = visible_dashboard_ids(user_id, user_role, workspace_id)
+        if visible is not None and not visible:
+            return empty
+        favs: Optional[list] = None
+        if favorite_ids:
+            ids = {int(i) for i in favorite_ids if str(i).strip() != ""}
+            # 收藏只当过滤条件，且必须落在可见集内（fail-closed）：交集为空即空清单，不发查询
+            favs = sorted(ids & visible) if visible is not None else sorted(ids)
+            if not favs:
+                return empty
+        where, params = _build_dashboard_filters(workspace_id, visible, search=search,
+                                                 status=status, tags=tags, favorite_ids=favs or ())
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS total FROM adh_dashboards" + where, params)
+                total = int((cur.fetchone() or {}).get("total") or 0)
+                if not total:
+                    return empty
+                cur.execute("SELECT " + _DASHBOARD_LIST_COLS + " FROM adh_dashboards" + where
+                            + _DASHBOARD_ORDER_BY + " LIMIT %s OFFSET %s",
+                            list(params) + [page_size, (page - 1) * page_size])
+                return {"items": self._assemble_dashboards(cur, cur.fetchall(), user_id, user_role,
+                                                           chart_cols=_CHART_SLIM_COLS),
+                        "total": total, "page": page, "page_size": page_size}
+        finally:
+            conn.close()
+
+    def list_dashboard_tags(self, user_id: int, workspace_id: int = 0, user_role: str = "") -> list:
+        """管理页标签候选 = 可见域内全部看板 tags 的去重并集。
+
+        分页后前端不再持有全量清单，标签下拉不能再从当前页求并集（会随翻页抖动、且漏标签）。
+        """
+        visible = visible_dashboard_ids(user_id, user_role, workspace_id)
+        if visible is not None and not visible:
+            return []
+        where, params = _build_dashboard_filters(workspace_id, visible)
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT tags FROM adh_dashboards" + where, params)
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        found: set = set()
+        for row in rows:
+            found.update(_clean_tags(row.get("tags")))
+        return sorted(found)
+
+    def move_dashboard(self, user_id: int, dashboard_id: int, direction: int,
+                       workspace_id: int = 0, user_role: str = "") -> dict:
+        """上移/下移 = 与清单排序口径下的相邻看板**交换 sort_order**（服务端定位邻居，跨页也成立）。
+
+        旧「整份列表重排后回传全量 sort_order」在分页下不可用（前端只持有当前页）。
+        边界/置顶区不静默假成功：返回 moved=false + 可读原因，由前端提示。
+        写回显式钉住 updated_at（列是 ON UPDATE CURRENT_TIMESTAMP），否则移动会把看板
+        甩到「更新时间」排序的另一页，用户看到的顺序与操作不一致。
+        """
+        if int(direction) not in (-1, 1):
+            raise ValueError("direction 只能是 -1(上移) 或 1(下移)")
+        # 邻居按「这个用户看到的同一份清单」定位（含角色可见集），否则可能与一块它看不见的
+        # 看板交换 —— 移动后自己的清单纹丝不动，属静默无效操作。
+        visible = visible_dashboard_ids(user_id, user_role, workspace_id)
+        if visible is not None and not visible:
+            # 这块板根本不在他的清单里（角色未授权）：显式回不可见，不发 id IN () 的畸形 SQL
+            return {"moved": False, "reason": "not_found"}
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                where, params = _build_dashboard_filters(workspace_id, visible)
+                cur.execute("SELECT id, is_default, sort_order FROM adh_dashboards" + where
+                            + _DASHBOARD_ORDER_BY + " FOR UPDATE", params)
+                rows = cur.fetchall() or []
+                index = next((i for i, r in enumerate(rows) if int(r["id"]) == int(dashboard_id)), None)
+                if index is None:
+                    return {"moved": False, "reason": "not_found"}
+                target = index + int(direction)
+                if target < 0 or target >= len(rows):
+                    return {"moved": False, "reason": "boundary"}
+                if int(rows[target]["is_default"]) != int(rows[index]["is_default"]):
+                    return {"moved": False, "reason": "pinned_zone"}
+                cur_sort = int(rows[index]["sort_order"] or 0)
+                nbr_sort = int(rows[target]["sort_order"] or 0)
+                if cur_sort != nbr_sort:
+                    pairs = [(dashboard_id, nbr_sort), (rows[target]["id"], cur_sort)]
+                else:
+                    # 存量并列（老数据 sort_order 全为 0）时换值等于没换：按当前全序重编一次消解并列
+                    order = [int(r["id"]) for r in rows]
+                    order[index], order[target] = order[target], order[index]
+                    pairs = [(did, 1000 + rank) for rank, did in enumerate(order)]
+                for did, sort_order in pairs:
+                    cur.execute("UPDATE adh_dashboards SET sort_order=%s, updated_at=updated_at "
+                                "WHERE id=%s", (sort_order, int(did)))
+                conn.commit()
+        finally:
+            conn.close()
+        _invalidate_dashboard_cache(user_id)
+        _invalidate_dashboard_payload()
+        return {"moved": True, "reason": ""}
+
+    @staticmethod
+    def _assemble_dashboards(cur, dashboards: list, user_id: int, user_role: str = "", *,
+                             chart_cols: str = "*") -> list:
+        """给看板行挂图表 → 归一 → 标注可写性 → 本地化（全量与分页清单共用同一条后处理链）。
+
+        chart_cols=_CHART_SLIM_COLS 的瘦行**只允许出现在分页清单**里（渲染缩略图/计数用），
+        编辑与取数一律走单看板详情载荷，不得复用瘦行（否则 sql_query 等缺列静默变默认值）。
+        """
+        if not dashboards:
+            return []
+        dash_ids = [d["id"] for d in dashboards]
+        placeholders = ",".join(["%s"] * len(dash_ids))
+        cur.execute(f"SELECT {chart_cols} FROM adh_charts WHERE dashboard_id IN ({placeholders}) ORDER BY id",
+                    dash_ids)
+        charts_map: dict = {}
+        for c in cur.fetchall():
+            _normalize_chart(c)
+            charts_map.setdefault(c["dashboard_id"], []).append(c)
+        for d in dashboards:
+            _normalize_dashboard(d)
+            d["charts"] = charts_map.get(d["id"], [])
+        # editable 仅供前端隐藏写入口: 角色授予的可见权不含编辑权(写在 API 层再裁决一次)
+        _mark_editable(dashboards, user_id, user_role)
+        return _localize_dashboards(dashboards)
 
     def _fetch_dashboard_payload(self, dashboard_id: int) -> Optional[dict]:
         """单看板完整载荷(共享, 可缓存): 不含可写性标注, 不做可见性裁决。"""

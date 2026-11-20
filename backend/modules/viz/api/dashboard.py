@@ -22,10 +22,30 @@ from backend.modules.viz.services.dashboard_service import (
     chart_identity_from_user,
     reorder_groups,
     _invalidate_dashboard_payload,
+    _DASHBOARD_PAGE_SIZE_MAX,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+#: 移动被拒时给用户的可读原因（不是内部枚举，直接进前端提示）
+_MOVE_REASON_TEXT = {
+    "boundary": "已经在首尾，无法继续移动",
+    "pinned_zone": "默认看板（置顶区）与非置顶看板之间不能互换顺序",
+    "not_found": "看板不在当前工作空间的清单里",
+}
+
+
+def _split_csv(value: Optional[str]) -> list:
+    """逗号分隔的查询参数 → 去空去重的列表（tags / favorite_ids 共用，不各写一份解析）。"""
+    if not value:
+        return []
+    out: list = []
+    for part in str(value).split(","):
+        s = part.strip()
+        if s and s not in out:
+            out.append(s)
+    return out
 
 
 def _require_editable(dashboard_id: int, user: dict) -> None:
@@ -164,6 +184,12 @@ class ReorderRequest(BaseModel):
     orders: list[dict]
 
 
+class MoveRequest(BaseModel):
+    """上移/下移：-1 = 上移，1 = 下移（服务端在同口径排序里找相邻行交换 sort_order）。"""
+    dashboard_id: int
+    direction: int
+
+
 class SetVisibleRolesRequest(BaseModel):
     role_ids: list[int]
 
@@ -175,13 +201,77 @@ class SetVisibleRolesRequest(BaseModel):
 def list_dashboards_endpoint(
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
+    search: str = QueryParam(""),
+    status: Optional[str] = QueryParam(None),
+    tags: Optional[str] = QueryParam(None),
+    favorite_ids: Optional[str] = QueryParam(None),
+    page: int = QueryParam(1, ge=1),
+    page_size: Optional[int] = QueryParam(None, ge=1, le=_DASHBOARD_PAGE_SIZE_MAX),
 ):
-    """List dashboards (workspace scoped, 按角色可见集过滤)."""
+    """List dashboards (workspace scoped, 按角色可见集过滤).
+
+    两档**显式**返回形态（同一资源「管理清单要真分页、选择器要全量在手」）：
+    - 传 `page_size` → 信封 {items,total,page,page_size}，筛选/搜索/状态/标签全部下推 SQL，
+      `total` 是过滤后的 COUNT（系统配置-看板管理页用这档）；
+    - 不传 `page_size` → 裸数组全量，编辑器顶栏切板与图表下钻链接选择器需要整份清单，
+      这些面不挂分页条。
+    """
     try:
-        return dashboard_service.list_dashboards(
-            user["user_id"], workspace_id, user.get("role") or "")
+        if page_size is None:
+            return dashboard_service.list_dashboards(
+                user["user_id"], workspace_id, user.get("role") or "")
+        return dashboard_service.list_dashboards_page(
+            user["user_id"], workspace_id, user.get("role") or "",
+            search=search or "", status=(status or "").strip(),
+            tags=_split_csv(tags), favorite_ids=_split_csv(favorite_ids),
+            page=page, page_size=page_size)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception("Failed to list dashboards")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tags")
+def list_dashboard_tags_endpoint(
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """可见域内的看板标签并集（管理页标签候选；分页后前端不再持有全量，不能就地求并集）。
+
+    路由必须注册在 `GET /{dashboard_id}` 之前，否则 "tags" 会被当成看板 id 解析。
+    """
+    try:
+        return dashboard_service.list_dashboard_tags(
+            user["user_id"], workspace_id, user.get("role") or "")
+    except Exception as e:
+        logger.exception("Failed to list dashboard tags")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/move")
+def move_dashboard_endpoint(
+    req: MoveRequest,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """上移/下移：与清单排序口径下的相邻看板交换 sort_order（服务端定位，跨页也成立）。
+
+    同样必须注册在 `/{dashboard_id}` 系列路由之前。写权限沿用唯一裁决点 `_require_editable`。
+    """
+    try:
+        _require_editable(req.dashboard_id, user)
+        result = dashboard_service.move_dashboard(
+            user["user_id"], req.dashboard_id, req.direction, workspace_id, user.get("role") or "")
+        if not result.get("moved"):
+            raise HTTPException(status_code=409, detail=_MOVE_REASON_TEXT.get(result.get("reason"), "移动未完成"))
+        return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to move dashboard")
         raise HTTPException(status_code=500, detail=str(e))
 
 

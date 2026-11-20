@@ -69,10 +69,13 @@ beforeEach(() => {
   vi.mocked(client.get).mockImplementation(async url => {
     if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
     if (url === '/dashboard/groups') return { data: [] };
+    if (url.startsWith('/dashboard/tags')) return { data: ['经营'] };   // 标签候选：服务端可见域并集
     const m = /^\/dashboard\/(\d+)$/.exec(url);
     if (m) return { data: board(Number(m[1])) };
-    if (url.startsWith('/dashboard/')) return { data: [board(1, 'closed', true), board(2), board(3, 'enabled', true)] };
-    return { data: [] };
+    const boards = [board(1, 'closed', true), board(2), board(3, 'enabled', true)];
+    // 看板管理页走服务端真分页（带 page_size 回信封），编辑器/下钻选择器仍拿全量裸数组
+    if (url.includes('page_size=')) return { data: { items: boards, total: boards.length, page: 1, page_size: 20 } };
+    return { data: boards };
   });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null }); });
@@ -383,17 +386,20 @@ describe('工作空间数据看板 — 详情与仪表盘组维度', () => {
 
 describe('看板管理域与大屏播放', () => {
   it('看板管理页不再有轮播入口：只留单看板大屏播放，设置弹窗不留死输入口', async () => {
+    const rows = [board(1, 'closed', true), board(2, 'designing'), board(3), board(4)].map(d => ({ ...d, editable: true }));
     vi.mocked(client.get).mockImplementation(async url => {
       if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
       if (url === '/dashboard/groups') return { data: [] };
+      if (url.startsWith('/dashboard/tags')) return { data: ['经营'] };
       const m = /^\/dashboard\/(\d+)$/.exec(url);
       if (m) return { data: board(Number(m[1])) };
-      if (url.startsWith('/dashboard/')) return { data: [board(1, 'closed', true), board(2, 'designing'), board(3), board(4)].map(d => ({ ...d, editable: true })) };
+      if (url.startsWith('/dashboard/')) return { data: { items: rows, total: rows.length, page: 1, page_size: 20 } };
       return { data: [] };
     });
     routes('/system/dashboards');
     await screen.findByRole('button', { name: '预览 看板 3' });
-    expect(client.get).toHaveBeenCalledWith('/dashboard/');
+    // 清单是服务端真分页取第 1 页（不再是全量拉回浏览器切片）
+    expect(client.get).toHaveBeenCalledWith('/dashboard/?page=1&page_size=20');
     // 轮播入口已按需求移除（组轮播仍在工作空间「数据看板」的组合卡上，不在管理页）
     expect(screen.queryByRole('button', { name: '轮播' })).not.toBeInTheDocument();
     // 卡片「播放」仍进大屏，且大屏走响应式页面网格（按视口宽铺满 + 纵向滚动）
@@ -412,9 +418,10 @@ describe('看板管理域与大屏播放', () => {
     expect(within(dialog).getByText(/仅已启用看板允许播放/)).toBeInTheDocument();
   });
   it('看板管理页：角色授予的看板不提供编辑入口（仅属主/admin 可写）', async () => {
+    const rows = [{ ...board(21), editable: true }, { ...board(22), editable: false }];
     vi.mocked(client.get).mockImplementation(async url => {
       if (url === '/dashboard/groups') return { data: [] };
-      if (url.startsWith('/dashboard/')) return { data: [{ ...board(21), editable: true }, { ...board(22), editable: false }] };
+      if (url.startsWith('/dashboard/')) return { data: { items: rows, total: rows.length, page: 1, page_size: 20 } };
       return { data: [] };
     });
     routes('/system/dashboards');
@@ -454,6 +461,7 @@ describe('看板管理域与大屏播放', () => {
       if (url === '/dashboard/groups') return { data: [{ id: 3, name: '经营日报', description: '每日经营盘面', sort: 0, dashboard_ids: [21], role_ids: [5] }] };
       if (url === '/roles/') return { data: [{ id: 5, name: 'analyst', display_name: '数据分析师' }] };
       if (url === '/dashboard/') return { data: [board(21)] };
+      if (url.startsWith('/dashboard/?')) return { data: { items: [board(21)], total: 1, page: 1, page_size: 20 } };
       return { data: [] };
     });
     const { container } = routes('/system/dashboards');
