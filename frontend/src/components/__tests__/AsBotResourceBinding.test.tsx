@@ -46,22 +46,36 @@ function form(value: api.ScheduledTask | null = task) {
 }
 
 describe('AS-BOT 唯一资源绑定入口', () => {
-  it('工作空间统管页按用户展示空间与配额，成员/角色配置已退役', async () => {
+  it('工作空间统管页按用户分页展示配额，成员/角色配置已退役', async () => {
     vi.mocked(client.get).mockImplementation(async (url) => {
-      if (url === '/workspaces/quotas') return {
-        data: [{
-          user_id: 10, username: 'zhangsan', max_workspaces: 5, disk_quota_bytes: 5 * 1024 ** 3,
-          workspaces: [{ id: 3, name: '测试空间', is_default: 1, disk_usage_bytes: 1024 }],
-        }],
-      };
+      if (String(url).startsWith('/workspaces/quotas/')) {
+        return {
+          data: {
+            user_id: 10, username: 'zhangsan', max_workspaces: 5, disk_quota_bytes: 5 * 1024 ** 3,
+            workspaces: [{ id: 3, name: '测试空间', is_default: 1, disk_usage_bytes: 1024 }],
+          },
+        };
+      }
+      // 清单只带配额与单空间最大用量（逐空间明细在详情接口里算），契约 {items,total,page,page_size}
+      if (String(url).startsWith('/workspaces/quotas')) {
+        return {
+          data: {
+            items: [{ user_id: 10, username: 'zhangsan', max_workspaces: 5,
+                      disk_quota_bytes: 5 * 1024 ** 3, disk_usage_bytes: 1.2 * 1024 ** 3 }],
+            total: 1, page: 1, page_size: 20,
+          },
+        };
+      }
       return { data: [] };
     });
     render(<WorkspaceManager />);
     await screen.findByText('zhangsan');
-    // 空间卡片: 名称 + 默认标 + 磁盘用量条(双配额统管)
-    expect(screen.getByText('测试空间')).toBeInTheDocument();
-    expect(screen.getByText(/1\/5 个空间/)).toBeInTheDocument();
+    // 列表行: 每空间磁盘配额的进度条读数（已用 / 配额）+ 配额设置入口（总数来自服务端 total）
+    expect(screen.getByText('1.2 GB / 5.0 GB')).toBeInTheDocument();
     expect(screen.getByText('配额设置')).toBeInTheDocument();
+    // 明细（空间名 + 磁盘用量）收进详情，点开后才看得到
+    await userEvent.click(screen.getByText('详情'));
+    await screen.findByText('测试空间');
     // 成员/角色配置已退役(权限由用户角色裁决, 工作空间随用户走)
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(vi.mocked(client.get).mock.calls.some(([url]) => /knowledge-bases|mcp-servers|menu-tree/.test(String(url)))).toBe(false);

@@ -2074,7 +2074,10 @@ function UsersTab() {
       setUsers(items);
       setTotal(data.total || 0);
     } catch {
-      // ignore
+      // 失败必须显式：静默留空会被渲成「暂无用户」，把接口错误掩成空态
+      setUsers([]);
+      setTotal(0);
+      toast.error(tr('k_24ee20d23f'));
     } finally {
       setLoading(false);
     }
@@ -2315,7 +2318,6 @@ function UsersTab() {
           total={total}
           onChange={(p: number) => { setPage(p); loadUsers(p); }}
           onPageSizeChange={(n: number) => { setSize(n); setPage(1); loadUsers(1, n); }}
-          hideWhenSingle
           className="rounded-b-lg"
         />
       </div>

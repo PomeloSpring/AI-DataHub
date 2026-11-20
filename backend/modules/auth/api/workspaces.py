@@ -59,14 +59,37 @@ class SetWorkspaceQuotaRequest(BaseModel):
 
 
 @router.get("/quotas")
-def list_workspace_quotas(admin: dict = Depends(require_admin)):
-    """管理员统管: 全用户工作空间清单 + 双配额 + 每空间磁盘用量。"""
+def list_workspace_quotas(page: int = Query(1, ge=1),
+                          page_size: int = Query(20, ge=1, le=role_service._QUOTA_PAGE_SIZE_MAX),
+                          q: str = "",
+                          admin: dict = Depends(require_admin)):
+    """管理员统管: 按用户的服务端真分页清单（`{items,total,page,page_size}`）。
+
+    `disk_usage_bytes` = 该用户**单个空间的最大用量**（与"每空间配额"同口径才可比）；
+    逐空间明细见 `/quotas/{user_id}` 详情。
+    """
     from backend.modules.mind.execution.session_workspace import workspace_disk_usage
-    users = role_service.list_workspace_quotas()
-    for item in users:
-        for ws in item.get("workspaces", []):
-            ws["disk_usage_bytes"] = workspace_disk_usage(ws["id"], item["user_id"])
-    return users
+    result = role_service.list_workspace_quotas_page(page=page, page_size=page_size, q=q)
+    items = result["items"]
+    ws_ids = role_service.list_user_workspace_ids([i["user_id"] for i in items])
+    for item in items:
+        usage = [workspace_disk_usage(wid, item["user_id"]) for wid in ws_ids.get(item["user_id"], [])]
+        item["disk_usage_bytes"] = max(usage, default=0)
+    return result
+
+
+@router.get("/quotas/{user_id}")
+def get_workspace_quota_detail(user_id: int, admin: dict = Depends(require_admin)):
+    """统管详情: 单个用户的生效配额 + 空间清单 + 每空间磁盘用量。"""
+    from backend.modules.mind.execution.session_workspace import workspace_disk_usage
+    detail = role_service.get_user_workspace_quota_detail(user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    for ws in detail["workspaces"]:
+        ws["disk_usage_bytes"] = workspace_disk_usage(ws["id"], user_id)
+    # 与清单同一口径: 单空间最大用量（详情头部拿它跟"每空间配额"对照）
+    detail["disk_usage_bytes"] = max((ws["disk_usage_bytes"] for ws in detail["workspaces"]), default=0)
+    return detail
 
 
 @router.put("/quotas/{user_id}")

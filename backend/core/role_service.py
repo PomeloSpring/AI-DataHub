@@ -351,16 +351,30 @@ class RoleService:
         finally:
             conn.close()
 
+    @staticmethod
+    def _effective_quota(registered_max, registered_disk) -> dict:
+        """生效配额的唯一解析式：登记行是权威，无行取系统缺省（不是“不限制”）。
+
+        `disk_quota_bytes=0` 只可能来自**显式登记行**（管理员给该用户不设限的逃生口）；
+        缺省值不会算出 0，二者靠 `is_default` 区分。数字来源仍是 `default_workspace_quota()`。
+        """
+        if registered_max is not None or registered_disk is not None:
+            return {"max_workspaces": int(registered_max or 0),
+                    "disk_quota_bytes": int(registered_disk or 0),
+                    "is_default": False}
+        out = default_workspace_quota()
+        out["is_default"] = True
+        return out
+
     def get_user_workspace_quota(self, user_id: int) -> dict:
         """用户生效配额（**唯一裁决点**）：登记行为权威，无行时取系统缺省（不是“不限制”）。
 
         为什么只能有这一个口径：磁盘配额有两个门（建空间数、新建会话磁盘用量），历史上
         它们各读各的 —— 无行时一边按缺省拦、一边把空读成 0=不限，结果是管理员页显示
-        “每空间 5GB”而实际从不拦（配了没用）。管理员页、用量面板与拦截门均改走本函数。
+        “每空间 5GB”而实际从不拦（配了没用）。管理员页、用量面板与拦截门均走本函数，
+        解析式统一在 `_effective_quota`。
 
-        返回 `{max_workspaces, disk_quota_bytes, is_default}`：`disk_quota_bytes=0` 仅在
-        **显式登记行**里存在，含义是管理员给该用户不设限（逃生口）；缺省值不会算出 0
-        （配置项 `WORKSPACE_DISK_QUOTA_DEFAULT_BYTES` 给数字），二者靠 `is_default` 区分。
+        返回 `{max_workspaces, disk_quota_bytes, is_default}`。
         """
         conn = get_metadata_conn()
         try:
@@ -368,16 +382,10 @@ class RoleService:
                 cur.execute(
                     "SELECT max_workspaces, disk_quota_bytes FROM adh_user_workspace_quota WHERE user_id = %s",
                     (user_id,))
-                row = cur.fetchone()
+                row = cur.fetchone() or {}
         finally:
             conn.close()
-        if row:
-            return {"max_workspaces": int(row["max_workspaces"] or 0),
-                    "disk_quota_bytes": int(row["disk_quota_bytes"] or 0),
-                    "is_default": False}
-        out = default_workspace_quota()
-        out["is_default"] = True
-        return out
+        return self._effective_quota(row.get("max_workspaces"), row.get("disk_quota_bytes"))
 
     def count_user_workspaces(self, user_id: int) -> int:
         conn = get_metadata_conn()
@@ -403,41 +411,105 @@ class RoleService:
         finally:
             conn.close()
 
-    def list_workspace_quotas(self) -> list:
-        """管理员统管: 全用户 + 各自空间清单(磁盘用量由 API 层补充)。
+    # 统管清单的服务端每页硬上限（前端档位候选 20/50/100 不得越过这里）
+    _QUOTA_PAGE_SIZE_MAX = 100
+    # 排序唯一口径：u.id 是唯一主键，天然 tiebreaker，相邻页不重行/漏行
+    _QUOTA_ORDER_BY = " ORDER BY u.id"
 
-        展示值必须与拦截门同源：这里不再用 SQL COALESCE 写死缺省，而是取原始登记行、
-        无行时走 `default_workspace_quota()`，并随行下发 `quota_is_default` 供页面标“系统缺省”。
+    @staticmethod
+    def _quota_filters(q: str) -> tuple:
+        """统管清单的搜索谓词（COUNT 与当前页共用一份，不得各写一套导致口径漂移）。"""
+        keyword = (q or "").strip()
+        if not keyword:
+            return "", []
+        return " WHERE u.username LIKE %s", [f"%{keyword}%"]
+
+    def list_workspace_quotas_page(self, page: int = 1, page_size: int = 20,
+                                   q: str = "") -> dict:
+        """管理员统管: 按用户的**服务端真分页**清单。
+
+        行总数由 COUNT 得到、偏移量由页号算出（调用方不递 offset）、搜索下推 SQL。
+        每页只给配额与「该用户各空间的 id」，磁盘用量由 API 层按页内用户算
+        （递归扫盘不落在 SQL 服务层，也不得回到"全库每个空间都扫一遍"）。
+        返回契约 `{items,total,page,page_size}` 与字模库/内容清单同源。
         """
+        page = max(1, int(page or 1))
+        page_size = min(self._QUOTA_PAGE_SIZE_MAX, max(1, int(page_size or 20)))
+        where, params = self._quota_filters(q)
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS cnt FROM adh_users u" + where, params)
+                total = int((cur.fetchone() or {}).get("cnt", 0))
                 cur.execute(
                     """SELECT u.id AS user_id, u.username,
                               q.max_workspaces AS registered_max_workspaces,
                               q.disk_quota_bytes AS registered_disk_quota_bytes
                        FROM adh_users u
-                       LEFT JOIN adh_user_workspace_quota q ON q.user_id = u.id
-                       ORDER BY u.id""")
-                users = cur.fetchall()
-                default = default_workspace_quota()
-                for item in users:
-                    registered_max = item.pop("registered_max_workspaces", None)
-                    registered_disk = item.pop("registered_disk_quota_bytes", None)
-                    item["max_workspaces"] = (int(registered_max) if registered_max is not None
-                                             else default["max_workspaces"])
-                    item["disk_quota_bytes"] = (int(registered_disk) if registered_disk is not None
-                                                else default["disk_quota_bytes"])
-                    # 缺省=管理员未动过，页面要能分辨“这是系统缺省”与“有人显式配过”
-                    item["quota_is_default"] = registered_disk is None and registered_max is None
-                    cur.execute(
-                        "SELECT id, name, is_default FROM adh_workspaces "
-                        "WHERE owner_id = %s ORDER BY is_default DESC, id",
-                        (item["user_id"],))
-                    item["workspaces"] = cur.fetchall()
-            return users
+                       LEFT JOIN adh_user_workspace_quota q ON q.user_id = u.id"""
+                    + where + self._QUOTA_ORDER_BY + " LIMIT %s OFFSET %s",
+                    list(params) + [page_size, (page - 1) * page_size])
+                rows = cur.fetchall() or []
         finally:
             conn.close()
+        items = []
+        for row in rows:
+            effective = self._effective_quota(row.get("registered_max_workspaces"),
+                                              row.get("registered_disk_quota_bytes"))
+            items.append({"user_id": row["user_id"], "username": row["username"],
+                          "max_workspaces": effective["max_workspaces"],
+                          "disk_quota_bytes": effective["disk_quota_bytes"],
+                          # 前端字段名与 /disk-status 同口径（管理员页要能分辨"系统缺省"与"有人显式配过"）
+                          "quota_is_default": effective["is_default"]})
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def list_user_workspace_ids(self, user_ids: list) -> dict:
+        """按页内用户一次取回 `{user_id: [workspace_id, ...]}`（清单磁盘用量的输入）。
+
+        一次 IN 查询，不得逐用户各查一遍（N+1）。空入参不发 SQL。
+        """
+        ids = [int(u) for u in (user_ids or []) if u]
+        if not ids:
+            return {}
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT owner_id, id FROM adh_workspaces WHERE owner_id IN ("
+                    + ", ".join(["%s"] * len(ids)) + ")", ids)
+                rows = cur.fetchall() or []
+        finally:
+            conn.close()
+        grouped: dict = {}
+        for row in rows:
+            grouped.setdefault(int(row["owner_id"]), []).append(int(row["id"]))
+        return grouped
+
+    def get_user_workspace_quota_detail(self, user_id: int):
+        """统管详情: 单个用户的生效配额 + 空间清单（磁盘用量由 API 层补充）。
+
+        用户不存在返回 None —— 调用方给 404，不得回空清单冒充"该用户没有空间"。
+        """
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username FROM adh_users WHERE id = %s", (user_id,))
+                user = cur.fetchone()
+                if not user:
+                    return None
+                cur.execute(
+                    "SELECT id, name, is_default FROM adh_workspaces "
+                    "WHERE owner_id = %s ORDER BY is_default DESC, id",
+                    (user_id,))
+                workspaces = cur.fetchall() or []
+        finally:
+            conn.close()
+        effective = self.get_user_workspace_quota(user_id)
+        return {"user_id": int(user_id), "username": user["username"],
+                "max_workspaces": effective["max_workspaces"],
+                "disk_quota_bytes": effective["disk_quota_bytes"],
+                "quota_is_default": effective["is_default"],
+                "workspaces": workspaces}
 
     def get_user_effective_attributes(self, user_id: int, workspace_id: int) -> dict:
         """Get the merged attributes for a user from all their roles.

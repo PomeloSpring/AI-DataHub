@@ -4007,7 +4007,7 @@
   "k_26b4ea3cd1": "Failed to load user workspaces",
   "k_d655915298": "Quota must be a positive number",
   "k_d233c83ffd": "Quota saved",
-  "k_8783c25e4a": "A workspace is the user's personal space (it follows the user and is self-created); limit how many spaces each user may have and their disk quota here.",
+  "k_47e27a3014": "A workspace is the user's personal space (it follows the user); set the per-workspace disk quota and review usage here.",
   "k_1cad3698ac": "spaces",
   "k_2684e4ee00": "System default (not explicitly configured); new sessions are rejected at the limit",
   "k_dbd61ece7f": "Explicitly configured by an admin",
@@ -4558,6 +4558,11 @@
   "k_464fbc58b4": "English body",
   "k_aab57a3547": "Invert selection",
   "k_a04144e4d7": "Clear all",
+  "k_2d92e66133": "Disk quota per workspace",
+  "k_ce5d513dc7": "Workspace list —",
+  "k_8929cd2c27": "Failed to load workspace list",
+  "k_c6961d6f86": "Unlimited",
+  "k_24ee20d23f": "Failed to load user list",
   "k_pd01a7f3c1": "Failed to load tag options; tag filtering is unavailable",
   "k_pd02b8e4d2": "Failed to load dashboard details; export is unavailable, please retry"
 }

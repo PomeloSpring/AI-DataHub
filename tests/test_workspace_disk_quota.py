@@ -131,7 +131,7 @@ def test_disk_status_reports_same_effective_quota_as_gate(monkeypatch):
 
 
 def test_admin_quota_listing_marks_system_default(monkeypatch):
-    """管理员页显示的就是实际生效值：无行 → 缺省 + quota_is_default=True。"""
+    """统管清单显示的就是实际生效值：无行 → 缺省 + quota_is_default=True。"""
     users = [{"user_id": 1, "username": "a", "registered_max_workspaces": None,
               "registered_disk_quota_bytes": None},
              {"user_id": 2, "username": "b", "registered_max_workspaces": 7,
@@ -157,10 +157,15 @@ def test_admin_quota_listing_marks_system_default(monkeypatch):
         def execute(self, sql, params=None):
             if self._closed:
                 raise AssertionError("Cursor is closed —— 不得在 with 块外使用游标")
-            if "LEFT JOIN adh_user_workspace_quota" in sql:
+            if "COUNT(*) AS cnt" in sql:
+                self._rows = [{"cnt": len(users)}]
+            elif "LEFT JOIN adh_user_workspace_quota" in sql:
                 self._rows = [dict(u) for u in users]
             else:
                 self._rows = [{"id": 301, "name": "默认空间", "is_default": 1}]
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
 
         def fetchall(self):
             return self._rows
@@ -173,10 +178,11 @@ def test_admin_quota_listing_marks_system_default(monkeypatch):
             return None
 
     monkeypatch.setattr(role_module, "get_metadata_conn", lambda: _Conn())
-    out = role_service.list_workspace_quotas()
-    assert out[0]["disk_quota_bytes"] == config.WORKSPACE_DISK_QUOTA_DEFAULT_BYTES
-    assert out[0]["quota_is_default"] is True
-    assert out[1]["disk_quota_bytes"] == 88 * MB and out[1]["quota_is_default"] is False
+    out = role_service.list_workspace_quotas_page()
+    assert out["total"] == len(users)
+    assert out["items"][0]["disk_quota_bytes"] == config.WORKSPACE_DISK_QUOTA_DEFAULT_BYTES
+    assert out["items"][0]["quota_is_default"] is True
+    assert out["items"][1]["disk_quota_bytes"] == 88 * MB and out["items"][1]["quota_is_default"] is False
 
 
 # ── ④ 不得再长出第二个配额读法 / 第二套数字 ─────────────────────────
