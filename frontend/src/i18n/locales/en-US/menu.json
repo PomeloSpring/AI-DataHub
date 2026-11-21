@@ -7,7 +7,7 @@
     "assets": "Data Assets",
     "security": "Security",
     "quality": "Data Quality",
-    "sync": "Data Sync",
+    "sync": "Scheduled Materialization",
     "ai": "AI Configuration",
     "knowledge": "Knowledge",
     "visual": "Visualization",
@@ -33,6 +33,7 @@
     "playground": "SQL Playground",
     "datasets": "Datasets",
     "ontology": "Ontology Modeling",
+    "evolution": "Evolution Center",
     "scenario": "Analysis Scenarios",
     "metrics": "Metrics & Dimensions",
     "knowledgeGraph": "Knowledge Graph",
@@ -43,8 +44,8 @@
     "qualityRules": "Quality Rules",
     "lineage": "Data Lineage",
     "standards": "Data Standards",
-    "sync": "Sync Tasks",
-    "syncLogs": "Run Logs",
+    "sync": "Materialize Tasks",
+    "syncLogs": "Run Records",
     "udfs": "UDF Management"
   },
   "system": {
@@ -67,7 +68,6 @@
     "sandbox": "Sandbox",
     "observability": "LLM Observability",
     "eval": "Evaluation",
-    "evolution": "Evolution",
     "releaseNotes": "Release Notes",
     "settings": "System Settings"
   },

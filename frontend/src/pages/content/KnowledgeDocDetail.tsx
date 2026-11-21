@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, ChevronRight, FileText, FolderClosed, FolderOpen, Plus, RefreshCw,
   Save, ShieldAlert,
@@ -39,6 +39,10 @@ export default function KnowledgeDocDetail() {
   const navigate = useNavigate();
   const { kb } = useParams<{ kb: string }>();
   const baseName = kb ? decodeURIComponent(kb) : '';
+  // 深链：`?doc=<source_id>` 自动展开并选中该文档（供进化中心「更新知识库文档」与
+  // 内容中心互跳）。source_id 是云端的文档标识，不是本系统的内部 id。
+  const [searchParams] = useSearchParams();
+  const deepLinkDoc = searchParams.get('doc') || '';
 
   const { has } = useContentPerms();
   const canWrite = has('kbdoc:write');
@@ -112,6 +116,15 @@ export default function KnowledgeDocDetail() {
       setSaving(false);
     }
   };
+
+  // 深链只在首次进页时消费一次：之后用户点树里的其他文档不能被 URL 参数拽回去
+  const deepLinkConsumed = useRef(false);
+  useEffect(() => {
+    if (!deepLinkDoc || !tree || deepLinkConsumed.current) return;
+    const node = findNode(tree.nodes, deepLinkDoc);
+    deepLinkConsumed.current = true;
+    if (node && !node.is_dir) openDoc(node);
+  }, [tree, deepLinkDoc, openDoc]);
 
   /** 冲突（409）后的正确动作是重新加载别人的版本，不做"强行覆盖" */
   const reloadDoc = () => {

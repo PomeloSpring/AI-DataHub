@@ -2,6 +2,8 @@
 
 校验项（任一不过即显式报错并定位到节点，fail-loud）：
 - 结构：节点 key 唯一、边引用存在、无环、无悬空边；
+- materialize 节点：数据集/目标数据源/目标表齐全，写入模式合法；分区覆盖必带
+  日期参数与日期列，且数据集确实是 SQL 型并声明了该参数（否则运行期必报）；
 - sync 节点：源/目标数据源 name 可解析、表名非空、增量模式必带增量列；
 - sql_task 节点：SQL 只读单条（sql_guard.parse_query）、UDF 引用已注册且启用、
   目标写入配置完整；
@@ -15,8 +17,9 @@ import re
 
 logger = logging.getLogger(__name__)
 
-NODE_TYPES = ("sync", "sql_task", "control")
+NODE_TYPES = ("materialize", "sync", "sql_task", "control")
 WRITE_MODES = ("append", "overwrite")
+MATERIALIZE_WRITE_MODES = ("append", "overwrite", "partition_overwrite")
 SYNC_MODES = ("full", "incremental")
 CONTROL_ACTIONS = ("pass", "fail")
 
@@ -85,7 +88,9 @@ def validate_graph(graph: dict, check_datasources: bool = True,
         if ntype not in NODE_TYPES:
             raise DagValidationError(f"未知节点类型: {ntype}", key)
         config = node.get("config") or {}
-        if ntype == "sync":
+        if ntype == "materialize":
+            _validate_materialize_config(config, key, check_datasources)
+        elif ntype == "sync":
             _validate_sync_config(config, key, check_datasources, check_udfs)
         elif ntype == "sql_task":
             _validate_sql_config(config, key, check_datasources, check_udfs)
@@ -94,6 +99,110 @@ def validate_graph(graph: dict, check_datasources: bool = True,
                 raise DagValidationError(f"control 动作不合法: {config.get('action')}", key)
 
     return {"nodes": nodes, "edges": edges}
+
+
+def _int_or_default(value, default: int) -> int:
+    """只把"未配置"（None/空串）当作默认值；0 与负数一律报错。
+
+    早期写 `int(x or default)` 会把显式配成 0 的预算/批量/回看天数静默吃成默认值，
+    管理员以为任务被收紧，实际跑的是默认口径（no-silent-degradation §1）。
+    口径与执行期同源：直接复用 `materialize_runner.int_or_default`，不另写一份。
+    """
+    from backend.modules.flow.dag.materialize_runner import int_or_default
+
+    return int_or_default(value, default)
+
+
+def _validate_materialize_config(config: dict, key: str, check_datasources: bool) -> None:
+    """物化节点配置校验（保存/运行前同一口径，fail-loud 定位到节点）。"""
+    from backend.semantics.dataset_compiler import MATERIALIZE_MAX_LIMIT
+
+    dataset = str(config.get("dataset") or "").strip()
+    if not dataset:
+        raise DagValidationError("缺少数据集（须从数据集清单选择）", key)
+    target_ds = str(config.get("target_datasource") or "").strip()
+    if not target_ds:
+        raise DagValidationError("缺少目标数据源（须从数据源清单选择）", key)
+    if check_datasources:
+        _resolve_datasource(target_ds)
+    _validate_table_name(config.get("target_table", ""), "目标表名", key)
+
+    write_mode = str(config.get("write_mode") or "overwrite")
+    if write_mode not in MATERIALIZE_WRITE_MODES:
+        raise DagValidationError(f"物化写入模式不合法: {write_mode}", key)
+
+    try:
+        batch_size = _int_or_default(config.get("batch_size"), 1000)
+    except (TypeError, ValueError) as exc:
+        raise DagValidationError("批量写入行数必须为正整数", key) from exc
+    if not 1 <= batch_size <= 20000:
+        raise DagValidationError("批量写入行数须在 1~20000 之间", key)
+
+    budget = config.get("budget") or {}
+    try:
+        max_rows = _int_or_default(budget.get("max_rows"), 200000)
+        max_seconds = _int_or_default(budget.get("max_seconds"), 1800)
+    except (TypeError, ValueError) as exc:
+        raise DagValidationError("物化预算（行数/秒）必须为正整数", key) from exc
+    if not 1 <= max_rows <= MATERIALIZE_MAX_LIMIT:
+        raise DagValidationError(
+            f"行数预算须在 1~{MATERIALIZE_MAX_LIMIT} 之间", key)
+    if not 1 <= max_seconds <= 86400:
+        raise DagValidationError("超时预算须在 1~86400 秒之间", key)
+
+    ds = None
+    if check_datasources and dataset:
+        from backend.modules.viz.services.dataset_service import get_dataset_by_name
+        ds = get_dataset_by_name(dataset)
+        if not ds:
+            raise DagValidationError(f"数据集 '{dataset}' 不存在或已停用", key)
+        if not str(ds.get("sql_query") or "").strip():
+            raise DagValidationError(
+                f"数据集 '{dataset}' 是语义型（无执行 SQL），不支持物化；请改用 SQL 型数据集", key)
+
+    if write_mode == "partition_overwrite":
+        partition = config.get("partition") or {}
+        date_arg = str(partition.get("date_arg") or "").strip()
+        column = str(partition.get("column") or "").strip()
+        if not date_arg:
+            raise DagValidationError("分区覆盖必须指定日期参数名（数据集参数）", key)
+        _validate_table_name(column, "分区日期列名", key)
+        try:
+            lookback = _int_or_default(partition.get("lookback_days"), 1)
+        except (TypeError, ValueError) as exc:
+            raise DagValidationError("回看天数必须为正整数", key) from exc
+        if not 1 <= lookback <= 366:
+            raise DagValidationError("回看天数须在 1~366 之间", key)
+        if ds is not None:
+            declared = _declared_dataset_params(ds)
+            if date_arg not in declared:
+                raise DagValidationError(
+                    f"数据集 '{dataset}' 未声明参数 '{date_arg}'（已声明: "
+                    f"{sorted(declared) or '无'}），无法按日期增量物化", key)
+        if partition.get("target_partition"):
+            template = str(partition.get("target_partition"))
+            if "{yyyyMMdd}" not in template and "{yyyy-MM-dd}" not in template \
+                    and "{date}" not in template:
+                raise DagValidationError(
+                    "Doris 分区名模板须含日期占位（{yyyyMMdd} 或 {yyyy-MM-dd}）", key)
+
+
+def _declared_dataset_params(ds: dict) -> set[str]:
+    """数据集可传参数集（逻辑参数 key ∪ 模板变量名，与执行期同源）。
+
+    用 `param_summary` 而不是裸 `parse_variables`：后者只有模板变量名，
+    会把“多变量聚合为一个逻辑参数”的合法 key 误判为未声明。
+    """
+    from backend.semantics.param_plan import param_summary
+
+    names: set[str] = set()
+    for group in param_summary(ds) or []:
+        if group.get("key"):
+            names.add(str(group["key"]))
+        for target in group.get("vars") or []:
+            if target.get("var"):
+                names.add(str(target["var"]))
+    return names
 
 
 def _validate_sync_config(config: dict, key: str, check_datasources: bool,

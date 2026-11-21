@@ -194,6 +194,17 @@ def dag_to_sql(graph: dict) -> str:
                 where = f" WHERE {config['incremental_column']} > :watermark"
             lines.append(f"INSERT INTO `{config.get('target_table')}` "
                          f"SELECT * FROM `{config.get('source_table')}`{where};")
+        elif ntype == "materialize":
+            qualifier = f"{config['target_datasource']}." if config.get("target_datasource") else ""
+            lines.append(f"-- 物化: 数据集 {config.get('dataset', '')} → "
+                         f"{qualifier}{config.get('target_table', '')} "
+                         f"({config.get('write_mode', 'overwrite')})")
+            part = config.get("partition") or {}
+            if part:
+                lines.append(f"-- 分区: 列 {part.get('column', '')} / 日期参数 "
+                             f"{part.get('date_arg', '')} / 回看 {part.get('lookback_days', 1)} 天")
+            # 取数 SQL 由平台编译（物化执行器统一生成），导出脚本只保留口径描述
+            lines.append("-- 数据集取数 SQL 由平台编译；目标表须已存在（不隐式建表）")
         elif ntype == "control":
             lines.append(f"-- 控制节点: {config.get('action', 'pass')}")
         lines.append("")
@@ -266,12 +277,35 @@ def extract_dataflow(graph: dict) -> dict:
             entry["roles"].append(role)
         return tid
 
+    def ensure_dataset(name: str) -> str:
+        """物化来源是数据集（不是物理表）：单独节点 id，避免与同名表合并。"""
+        did = f"dataset:{name}"
+        if did not in nodes:
+            nodes[did] = {"id": did, "kind": "table", "label": f"数据集:{name}",
+                          "roles": ["source"]}
+        return did
+
     for node in (graph or {}).get("nodes") or []:
         key = str(node.get("key") or "")
         ntype = node.get("type")
         config = node.get("config") or {}
         if ntype == "control":
             continue  # 控制节点不属于数据流
+
+        if ntype == "materialize":
+            # 物化：数据集（源）→ 已登记目标表（写入）；无独立转换节点（编译在平台侧）
+            ds_name = str(config.get("dataset") or "")
+            input_ids = [ensure_dataset(ds_name)] if ds_name else []
+            target_ref = None
+            if config.get("target_table"):
+                target_ref = (f"{config.get('target_datasource') or ''}."
+                              f"{config['target_table']}")
+            target_id = (ensure_table(target_ref, config.get("target_datasource") or "",
+                                      "target") if target_ref else None)
+            for tid in input_ids:
+                if target_id:
+                    add_flow(tid, target_id, "物化")
+            continue
 
         source_ds = config.get("source_datasource") or ""
         transform_sql = (config.get("transform_sql") or config.get("sql") or "").strip()

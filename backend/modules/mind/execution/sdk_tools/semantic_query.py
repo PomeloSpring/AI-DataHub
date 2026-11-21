@@ -20,11 +20,25 @@ from typing import Annotated, Optional
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text, record_execute_error
 from backend.semantics.contract import (
     safe_warnings as _safe_warnings,
+    safe_unresolved as _safe_unresolved,
     safe_governance_notes as _safe_governance_notes,
     sanitize_execute_reason as _sanitize_execute_reason,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _origin_message_uuid() -> str:
+    """本回合消息标识，仅用于候选回链定位（与兜底落库同一口径）。
+
+    观测未开启时为空串——回链列允许为空（空=未知/非对话），不参与任何唯一性判定，
+    也绝不因拿不到它而影响本轮取数。
+    """
+    try:
+        from backend import observability
+        return str(observability.message_uuid() or "")[:64]
+    except Exception:  # noqa: BLE001 — 定位信息拿不到不影响取数
+        return ""
 
 _MAX_ROWS = 200
 # 单次工具调用的**行载荷字符预算**（含批量：各条均分，见 run_semantic_query）。
@@ -63,7 +77,11 @@ def unresolved_source_payload(ctx, object_key: str = "") -> dict:
     护栏 no-silent-degradation §1：错因要可诊断。旧文案只说“未确定数据源”，
     不告诉模型“聚合态要逐站带 site”这个具体动作，模型就自己去试错。
     文案只含站点/源的业务名与参数名，不含物理表/主机/id（护栏 §7）。
+
+    ``unresolved`` 里回 ``reason=no_source``：这是“没定源”，**不是**“没建模”，
+    因此不产生任何候选工单（D4），只让 Chat 能机器可读地说准是哪一类失败。
     """
+    gap = _safe_unresolved(reason="no_source", term=object_key, type="object") if object_key else []
     extra = getattr(ctx, "extra", None) or {}
     code = str(extra.get("site_code") or "").strip()
     from backend.core.site_service import get_site, is_aggregate_site
@@ -81,6 +99,7 @@ def unresolved_source_payload(ctx, object_key: str = "") -> dict:
                      "可查站点与源业务名见「数据源拓扑」段；不确定就问用户，不要猜名称；"
                      "不得据未命中绑定向用户回答“该站点暂无数据”。"),
             "retry_with": "datasource 或 site",
+            "unresolved": gap,
         }
     if code:
         return {
@@ -90,11 +109,13 @@ def unresolved_source_payload(ctx, object_key: str = "") -> dict:
             "hint": ("站点内多源时 datasource 更准（观测类源与业务库常在同一站点下）；"
                      "不归属任何站点的源（如云平台聚合仓）只能用 datasource；不确定就问用户，不要猜名称。"),
             "retry_with": "site 或 datasource",
+            "unresolved": gap,
         }
     return {
         "error": "当前会话未确定数据源，无法执行语义查询；请先在会话中选择一个已授权数据源后重试。",
         "hint": "可选站点/源业务名见「数据源拓扑」段（只回业务名与方言），或直接询问用户。",
         "retry_with": "datasource",
+        "unresolved": gap,
     }
 
 
@@ -180,6 +201,10 @@ def ambiguous_source_payload(object_key: str, candidates: list[dict]) -> dict:
                  "不确定就问用户，不要猜名称，也不要把多个源的结果相加。"),
         "retry_with": "datasource 或 site",
         "candidate_sources": names[:8],
+        # 歧义不是缺失：reason=no_source 且**不进候选队列**（D4），
+        # candidates 只放源业务名，供 Chat 直接问“查哪个源”。
+        "unresolved": _safe_unresolved(reason="no_source", term=object_key, type="object",
+                                       candidates=names),
     }
 
 
@@ -325,6 +350,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         return ({
             "error": f"object '{q.object}' 在本次生效数据源上未绑定到任何物理表",
             "warnings": bind_warnings,
+            # unbound = 对象建模了、但本数据源没有它的绑定（≠ 无数据、≠ 无权限），
+            # 这一支才允许进候选队列（binding_gap），D4 三分类不得混。
+            "unresolved": _safe_unresolved(reason="unbound", term=q.object, type="object"),
             "hint": "未绑定 ≠ 无数据：这表示该数据源/站点尚未为此对象生成业务本体或绑定物理表，"
                     "并非库里没有数据，严禁据此向用户回答'该站点暂无数据'。"
                     "先用 get_metrics 带上对象名/业务关键词看本目录实际有哪些对象（不支持空关键词全量列举；聚合态已按授权站点纳入业务本体），"
@@ -337,7 +365,12 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         # 使"会话绑在 A 站、单次查询指向 B 站"的逐站编排不被误拒（GLOBAL_SEMANTIC_LAYER_DESIGN §7/§8）。
         await asyncio.to_thread(validate_binding, ctx, binding, int(q.datasource_id or 0))
     except PermissionError as exc:
-        return ({"error": str(exc)}, True)
+        # forbidden 必须单独承载（旧实现只回裸 str(exc)，与“未建模”无法机器区分）：
+        # term 用已被调用方点名的对象名（不是库里搜出来的），因此不构成权限探测；
+        # 这一支**不进候选队列**，也绝不建议用户去建一个他本来就看不见的对象（D4）。
+        return ({"error": str(exc),
+                 "unresolved": _safe_unresolved(reason="forbidden", term=q.object, type="object")},
+                True)
 
     p = await asyncio.to_thread(plan, q, binding)
 
@@ -348,11 +381,20 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
     if _terms:
         try:
             from backend.modules.catalog.services.evolution_service import record_parse_fail_terms
+            # 回链只做定位：conversation_id 取服务端会话上下文（0=无会话），
+            # message_uuid 与兜底落库同源。两者都不进幂等键，不会因缺失而多建行。
             await asyncio.to_thread(record_parse_fail_terms,
-                                    int(q.datasource_id or 0), _terms, q.object)
+                                    int(q.datasource_id or 0), _terms, q.object,
+                                    int(((ctx.extra if ctx else None) or {})
+                                        .get("conversation_id") or 0),
+                                    _origin_message_uuid())
         except Exception as e:  # noqa: BLE001 — 旁路不阻断，但必须留可诊断痕迹
             logger.warning("[run_semantic_query] 未解析词未能落入进化候选队列（取数不受影响，"
                            "但本轮自进化信号已丢）: %s: %s", type(e).__name__, e)
+
+    # 本次的缺口（planner 产出，只做白名单裁剪）：三个下游分支共用同一份，
+    # 保证“失败也能说清是哪个词”在护栏拒绝/ 闸门拒绝/ 部分成功三条路上口径一致。
+    _gap = _safe_unresolved(p.provenance)
 
     # 护栏拒绝：planner 已经产出了空 SQL + warning。数据源对 LLM 是黑盒,
     # 这里只回声明式原因,不回 catalog_ref / provenance / 生成的 SQL。
@@ -360,6 +402,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         return ({
             "error": "语义层护栏拒绝了本次查询",
             "reason": _safe_warnings(p.warnings) or ["查询被安全护栏拦截,请调整意图后重试"],
+            # 被护栏拒但已解析出具体缺口时，必须把缺口一并交出：
+            # 否则 Chat 只能拿到一段自然语言，无法说准“哪个词没认出来”。
+            **({"unresolved": _gap} if _gap else {}),
             "guardrail": {
                 "query_mode": p.guardrail.query_mode,
                 "size_class": p.guardrail.size_class,
@@ -406,6 +451,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             ),
             "warnings": _safe_warnings(p.warnings, bind_warnings,
                                        [auto_source_note] if auto_source_note else []),
+            # 闸门/执行阶段失败也可能伴随未解析词（比如一维未解析导致 SQL 被拒），
+            # 同样是“缺口”，不得只在成功分支下发。
+            **({"unresolved": _gap} if _gap else {}),
             "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
             "error": _sanitize_execute_error(e, _effective_db_type(q.datasource_id)),
             "blocked_at": e.blocked_at,
@@ -446,6 +494,9 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         **_safe_governance_notes(result.applied_rls, result.masked_columns, **gov_kwargs),
         "warnings": _safe_warnings(p.warnings, bind_warnings,
                                    [auto_source_note] if auto_source_note else []),
+        # 部分成功：本次取数跑通了，但仍有词没认出来（比如过滤条件里的未建模维度被跳过）。
+        # 不把这块带回去，Chat 就会把一份“看起来完整”的结果当全量交付。
+        **({"unresolved": _gap} if _gap else {}),
         **{k: rows_result[k] for k in
            ("columns", "rows", "row_count", "execution_ms", "truncated") if k in rows_result},
     }

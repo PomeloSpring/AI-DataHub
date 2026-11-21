@@ -7,7 +7,7 @@
     "assets": "数据资产",
     "security": "数据安全配置",
     "quality": "数据质量",
-    "sync": "数据同步",
+    "sync": "定时物化",
     "ai": "AI 配置",
     "knowledge": "知识管理",
     "visual": "可视化配置",
@@ -33,6 +33,7 @@
     "playground": "SQL Playground",
     "datasets": "数据集",
     "ontology": "本体建模",
+    "evolution": "进化中心",
     "scenario": "分析场景",
     "metrics": "指标与维度",
     "knowledgeGraph": "关系图谱",
@@ -43,8 +44,8 @@
     "qualityRules": "质量规则",
     "lineage": "数据血缘",
     "standards": "数据标准",
-    "sync": "同步任务",
-    "syncLogs": "执行日志",
+    "sync": "物化任务",
+    "syncLogs": "运行记录",
     "udfs": "UDF 管理"
   },
   "system": {
@@ -67,7 +68,6 @@
     "sandbox": "沙箱管理",
     "observability": "LLM 可观测",
     "eval": "评测中心",
-    "evolution": "进化中心",
     "releaseNotes": "版本公告",
     "settings": "系统设置"
   },

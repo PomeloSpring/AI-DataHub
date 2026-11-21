@@ -157,6 +157,70 @@ def safe_warnings(*groups: list[str] | None) -> list[str]:
     return out
 
 
+#: ``unresolved[].reason`` 的白名单（数据契约，见 spec §5.1）。
+#: 前四项由 planner 产出；后三项是工具层对三类失败的**事实判定**（D4 三分类），
+#: 必须与 ``unbound/forbidden/no_source`` 一一对应，不得互相借用。
+UNRESOLVED_REASONS = (
+    "fuzzy_rejected", "unresolved", "not_found", "no_join_path",
+    "unbound", "forbidden", "no_source",
+)
+UNRESOLVED_TYPES = ("metric", "dimension", "object", "filter")
+_UNRESOLVED_MAX_ITEMS = 8
+_UNRESOLVED_MAX_TERM_CHARS = 64
+_UNRESOLVED_MAX_CANDIDATES = 8
+
+
+def safe_unresolved(provenance: dict | None = None, *, reason: str = "", term: str = "",
+                    type: str = "", candidates: list | None = None) -> list[dict]:
+    """把缺口归一到可下发的 ``unresolved[]``（护栏 §7：只留业务名）。
+
+    两个来源合流：
+
+    * ``provenance["unresolved_terms"]``：planner 已产出的结构化缺口（F1），
+      这里只做白名单/长度/去重裁剪，**不重算分类**（分类是 planner 的职责）；
+    * 单条显式构造：未定源/未绑定/无权三个分支没有 provenance，
+      由工具层按事实传入 ``reason``（``no_source``/``unbound``/``forbidden``）。
+
+    为什么必须有这一层而不是直接透传：provenance 里可能带有 planner 的内部字段
+    （resolution 档位、物理列名），而 ``candidates`` 是对 LLM 的**业务名清单**。
+    与 :func:`safe_warnings` 同一取向——白名单取值，越界即丢，不猜。
+    """
+    out: list[dict] = []
+
+    def _add(item_term, item_type, item_reason, item_cands) -> None:
+        t = str(item_term or "").strip()[:_UNRESOLVED_MAX_TERM_CHARS]
+        if not t:
+            return
+        r = str(item_reason or "").strip()
+        ty = str(item_type or "").strip()
+        cands: list[str] = []
+        for c in (item_cands or []):
+            cc = str(c or "").strip()[:_UNRESOLVED_MAX_TERM_CHARS]
+            if not cc or any(k in cc.lower() for k in LEAK_KEYWORDS):
+                continue
+            if cc not in cands:
+                cands.append(cc)
+        entry = {
+            "term": t,
+            # 非白名单值一律置空：宁可少一个字段，也不把内部枚举透出去
+            "type": ty if ty in UNRESOLVED_TYPES else "",
+            "reason": r if r in UNRESOLVED_REASONS else "unresolved",
+            "candidates": cands[:_UNRESOLVED_MAX_CANDIDATES],
+        }
+        if not any(x["term"] == t and x["reason"] == entry["reason"] for x in out):
+            out.append(entry)
+
+    for item in ((provenance or {}).get("unresolved_terms") or []):
+        if isinstance(item, dict):
+            _add(item.get("term"), item.get("type"), item.get("reason"),
+                 item.get("candidates"))
+        else:
+            _add(item, "", "", [])
+    if str(term or "").strip():
+        _add(term, type, reason, candidates)
+    return out[:_UNRESOLVED_MAX_ITEMS]
+
+
 def sanitize_execute_reason(reason: str, blocked_at: str = "", db_type: str = "") -> str:
     """执行阶段原始报错（可含 MySQL Access denied/IP）仅进服务端日志，对外回分类后的可操作文案。
 

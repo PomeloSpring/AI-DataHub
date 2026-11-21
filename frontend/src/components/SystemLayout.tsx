@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Database, FileText, BookOpen, Users, Brain, Bot, Settings, LogOut, Menu, Palette, UserCircle, X,
   ChevronLeft, ChevronRight, Clock, Bell, BarChart3, Shield, GitBranch, Eye, Activity, Server,
-  Sparkles, Waypoints, LayoutTemplate, FlaskConical, Dna, Megaphone, Compass
+  Sparkles, Waypoints, LayoutTemplate, FlaskConical, Megaphone, Compass
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -67,7 +67,8 @@ const SYSTEM_MENU_ITEMS = [
   { key: '/system/sandbox', icon: Server, labelKey: 'system.sandbox' },
   { key: '/system/observability', icon: Waypoints, labelKey: 'system.observability' },
   { key: '/system/eval', icon: FlaskConical, labelKey: 'system.eval' },
-  { key: '/system/evolution', icon: Dna, labelKey: 'system.evolution' },
+  /* 进化中心已迁入数据中台「数据资产」段（/data/evolution）：它是语义资产的生产/验收面，
+     不属于系统配置（AI 模板/凭据/运维域）。旧路由 /system/evolution 在 App.tsx 保留重定向。 */
   { section: 'section.system' },
   // 与迁移里的菜单登记同一位置(menu_key='system:release-notes', section='系统', sort=75)
   { key: '/system/release-notes', icon: Megaphone, labelKey: 'system.releaseNotes' },

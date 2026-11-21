@@ -719,6 +719,56 @@ def _submit_content_review(args):
                           "article:publish 未开放 AI 调用），请在「内容中心 → 内容管理」处理。"})
 
 
+#: 提议类工具禁收的内部标识键（LLM 拿不到这些 id，只能猜；security-guardrails §7）
+_PROPOSAL_REJECTED_KEYS = {"id", "kb_id", "source_id", "doc_id", "model_id",
+                           "object_id", "datasource_id", "workspace_id", "user_id",
+                           "scenario_id", "applied_ref"}
+
+
+def _create_knowledge_proposal(args):
+    """提交一条知识更新**提议**（只入进化中心待审队列，不直写任何资产）。
+
+    为什么不让 AI 直接改：知识库语料写入是 `kbdoc:write` 且 `ai_access=none`
+    （改语料等于改 AI 自己的知识，必须人负责）；本体改动要走两段式发布。
+    所以这里的可写边界就是“把话记下来 + 说清为什么”，落库由人在进化中心确认。
+    """
+    from backend.modules.catalog.services import knowledge_update_service as kus
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ident = _identity()
+    if not ident:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    ctx = get_execution_context()
+    rejected = sorted({str(k).lower() for k in (args or {})} & _PROPOSAL_REJECTED_KEYS)
+    if rejected:
+        return _text({"error": "这些字段不接受传入：" + ", ".join(rejected) + "。"
+                               "目标只用业务名（target_hint：知识库名/文档标题/场景标题/对象业务名），"
+                               "具体落到哪一行由人在进化中心用选择框确认"}, is_error=True)
+    try:
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "knowledge:manage", "提交知识更新提议")
+        out = kus.create_proposal(
+            source="chat",
+            target_type=str(args.get("target_type") or ""),
+            title=str(args.get("title") or ""),
+            content=str(args.get("content") or ""),
+            rationale=str(args.get("rationale") or ""),
+            target_hint=str(args.get("target_hint") or ""),
+            datasource_name=str(args.get("datasource") or ""),
+            origin_conversation_id=int((ctx.extra or {}).get("conversation_id") or 0),
+            origin_message_uuid=str((ctx.extra or {}).get("message_uuid") or ""))
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    return _text({"submitted": True, "status": out.get("status"),
+                  "target_type": args.get("target_type"),
+                  "title": str(args.get("title") or ""),
+                  "queue": "进化中心 → 知识更新（待人工确认）",
+                  "note": "已入待审队列，当前没有修改任何本体/知识库/场景。"
+                          "请在「进化中心 → 知识更新」逐条确认后再落库；"
+                          "不要向用户声称已经改好了。"})
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 惰性接入的两个壳工具 —— 按当前角色下发功能清单 / 派发到具体动作
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1005,6 +1055,542 @@ def _decision_brief(items, extra_errors=None):
     return out
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# 进化中心审批（Chat 内处置语义缺口与知识更新提议）—— 双闸
+#
+# 口径（用户拍板「双闸」）：
+#   * 能力面：能看审批队列 = ``evolution:read``；能执行处置 = ``evolution:manage``
+#     （两者的 ai_access 由 none 抬到 read/write，见
+#     docker/mysql/evolution_ai_review_migration.sql）；
+#   * 动作面：每个出口**仍按它本来所属域**的权限码裁决（与 HTTP 端点同一把尺、不扩权）：
+#       收编别名 / 转术语 / 驳回候选 → ``ontology:save``
+#       建指标/维度草稿            → ``metrics:manage``
+#       知识更新提议 标记/驳回      → ``knowledge:manage``
+#       立即执行归纳               → ``evolution:manage``
+#   两道闸都过才执行，少一道即拒且原因可解释（fail-closed）。
+#
+# 为什么可以给 AI：候选与提议的处置是**对既有事实的确认**（这个词是不是那个口径的别名、
+# 这条提议该不该收），落点仍是各域既有写入（本体草案/字典草稿/提议状态机），
+# 且 AI 改本体只落草案、发布仍需人；真正的标尺（eval:*）依旧 ai_access='none'。
+#
+# 标识口径（护栏 §7 + ui-resource-display §2）：入参只收**业务名**
+#   （候选的业务词 term / 对象的业务名或 key / 属性的业务名 / 提议标题 title /
+#   数据源业务名 datasource）；候选与提议在这里按业务名解析成内部行，
+#   内部 id 与物理列名（维度草稿的 target_column）既不下发也不让模型传。
+# decided_by 由服务端身份注入，绝不从入参取（护栏 §2）。
+# ═════════════════════════════════════════════════════════════════════════
+
+#: 审批类工具禁收的内部标识键（LLM 拿不到这些 id，只能猜；security-guardrails §7）
+_EVO_REJECTED_KEYS = {
+    "id", "candidate_id", "proposal_id", "datasource_id", "bound_object_key",
+    "object_key", "workspace_id", "user_id", "physical_table", "column_name",
+    "target_column", "status", "decision",
+}
+
+_EVO_KIND_LABELS = {
+    "new_metric": "待建指标", "new_dimension": "待建维度", "alias": "待收编别名",
+    "binding_gap": "绑定缺口（待复核）", "term": "待转术语",
+}
+
+
+def _evo_context():
+    """(ctx, actor)：身份与审核人只取服务端解析结果（护栏 §2）。"""
+    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
+
+    ctx = get_execution_context()
+    if ctx is None or int(getattr(ctx, "user_id", 0) or 0) <= 0:
+        return None, ""
+    ident = _identity()
+    if not ident:
+        return None, ""
+    return ctx, str(ident.get("username") or ident.get("user_id") or "")
+
+
+def _evo_gate(ctx, label: str) -> None:
+    """能力面闸：能进处置面才谈动作（动作面由各 handler 再按域码裁决）。"""
+    from backend.core.perm_link import require_write_perm
+
+    require_write_perm(int(getattr(ctx, "user_id", 0) or 0),
+                       int(getattr(ctx, "workspace_id", 0) or 0),
+                       "evolution:manage", label)
+
+
+def _evo_rejected(args) -> str:
+    """拒收内部标识入参（fail-loud，不是「传了但忽略」）。"""
+    hits = sorted({str(k).lower() for k in (args or {})} & _EVO_REJECTED_KEYS)
+    if not hits:
+        return ""
+    return ("这些字段不接受 AI 传值：" + ", ".join(hits) +
+            "。定位一律用业务名：候选用 term（业务词）、收编目标用 target（业务名）、"
+            "归属对象用 object（业务名或对象 key）、属性用 property（业务名）、"
+            "提议用 title（标题）、数据源用 datasource（业务名）；"
+            "内部 id、物理列名与状态字段由服务端解析/裁决。")
+
+
+def _evo_audit(ctx, action: str, target_type: str, detail: str,
+               target_id: int = 0, actor: str = "") -> None:
+    """审批留痕（best-effort：审计失败不影响主链路，但会落服务端日志）。"""
+    try:
+        from backend.common.auth import log_audit
+
+        log_audit(int(getattr(ctx, "user_id", 0) or 0), actor, action,
+                  target_type=target_type, target_id=int(target_id or 0),
+                  detail=detail, module="catalog")
+    except Exception as exc:  # noqa: BLE001 — 审计是旁路，不阻断处置
+        logger.warning("[evolution] 审计写入失败（不影响主链路）: %s", exc)
+
+
+def _evo_find_candidate(term: str = "", *, kind: str = "", datasource: str = "") -> dict:
+    """按业务词在**待处置**候选里定位一行（内部 id 只留在服务端）。"""
+    from backend.modules.catalog.services import evolution_service as evo
+
+    term = str(term or "").strip()
+    if not term:
+        raise ValueError("必须指明候选的业务词（term）；"
+                         "先调用 list_evolution_review_queue 取当前待办")
+    if kind and kind not in evo.KINDS:
+        raise ValueError(f"kind 不合法（{kind!r}），应为 {list(evo.KINDS)}")
+    rows = evo.list_candidates(status="pending", kind="",
+                              datasource_name=str(datasource or "").strip(), limit=500)
+    hits = [r for r in rows if str(r.get("term") or "").strip() == term]
+    if kind:
+        # kind 只用来在多条同词候选里缩小范围；传错 kind 不应把候选“藏掉”（那就是猜不中即报空）
+        narrowed = [r for r in hits if str(r.get("kind") or "") == kind]
+        hits = narrowed or hits
+    if not hits:
+        sample = sorted({str(r.get("term") or "") for r in rows if r.get("term")})[:12]
+        raise ValueError(
+            f"待处置候选里没有业务词 {term!r}（可能已处置、被驳回或写法不同）。"
+            f"当前待办示例：{sample or '（空）'}；先调用 list_evolution_review_queue 核对")
+    if len({str(r.get("datasource_name") or "") for r in hits}) > 1:
+        names = sorted({str(r.get("datasource_name") or "（全局）") for r in hits})
+        raise ValueError(f"业务词 {term!r} 在多个数据源都有待办（{names}），"
+                         "请用 datasource 指定数据源业务名后再处理")
+    return hits[0]
+
+
+def _evo_resolve_target(evo, target_type: str, target: str, datasource_name: str) -> str:
+    """把业务名解析成收编目标引用（字典行 name / 本体对象 key）。"""
+    if target_type not in ("metric", "dimension", "object"):
+        raise ValueError("target_type 必须是 metric|dimension|object（收编到指标/维度字典行或本体对象）")
+    if not target:
+        raise ValueError("必须指明收编目标（业务名）：metric/dimension 用字典名，object 用对象业务名")
+    options = evo.target_options(target_type=target_type, datasource_name=datasource_name)
+    hits = [o for o in options
+            if str(o.get("key") or "") == target or str(o.get("display_name") or "") == target]
+    if not hits:
+        names = [str(o.get("display_name") or o.get("key")) for o in options][:20]
+        raise ValueError(f"收编目标 {target!r} 不在可选清单里（只列在用口径与业务对象）。"
+                         f"可选：{names or '（空；object 类需候选带数据源归属）'}")
+    keys = {str(o.get("key") or "") for o in hits}
+    if len(keys) > 1:
+        raise ValueError(f"业务名 {target!r} 对应多个目标（{sorted(keys)}），请用更精确的名称")
+    return keys.pop()
+
+
+def _evo_resolve_object(evo, want: str, datasource_name: str) -> dict:
+    """把对象业务名（或 key）解析成 ``{key, display_name}``；查不到回可选清单。"""
+    if not datasource_name:
+        raise ValueError("该候选没有数据源归属，无法选择归属对象；请用 datasource 指定数据源业务名")
+    options = evo.object_options(datasource_name)
+    names = [str(o.get("display_name") or o.get("key")) for o in options][:20]
+    if not want:
+        raise ValueError(f"必须指明归属对象（业务名）。可选：{names or '（该数据源暂无可用对象）'}")
+    hits = [o for o in options
+            if str(o.get("key") or "") == want or str(o.get("display_name") or "") == want]
+    if not hits:
+        raise ValueError(f"归属对象 {want!r} 不在清单里。可选：{names or '（该数据源暂无可用对象）'}")
+    keys = {str(o.get("key") or "") for o in hits}
+    if len(keys) > 1:
+        raise ValueError(f"业务名 {want!r} 匹配到多个对象（{sorted(keys)}），请用对象 key 精确指定")
+    return hits[0]
+
+
+def _evo_resolve_property(evo, want: str, object_key: str, datasource_name: str) -> str:
+    """把**业务属性名**解析成规范属性名（物理列名不外露，也不需要模型传）。"""
+    options = evo.property_options(bound_object_key=object_key, datasource_name=datasource_name)
+    labels = [str(p.get("property") or "") for p in options][:20]
+    if not want:
+        raise ValueError(f"必须指明对象的业务属性名（property）。可选：{labels or '（空）'}")
+    hits = [p for p in options if str(p.get("property") or "") == want]
+    if not hits:
+        raise ValueError(f"对象属性 {want!r} 不在清单里（只认业务属性名）。可选：{labels or '（空）'}")
+    return str(hits[0]["property"])
+
+
+def _evo_find_proposal(title: str, target_type: str = "") -> dict:
+    """按标题在**待审**提议里定位一条（不暴露内部 id）。"""
+    from backend.modules.catalog.services import knowledge_update_service as kus
+
+    title = str(title or "").strip()
+    if not title:
+        raise ValueError("必须指明提议标题（title，与清单里的一字不差）")
+    if target_type and target_type not in kus.TARGET_TYPES:
+        raise ValueError(f"target_type 不合法（{target_type!r}），应为 {list(kus.TARGET_TYPES)}")
+    payload = kus.list_proposals(status="pending", target_type=target_type, limit=500)
+    items = payload.get("items") or []
+    hits = [p for p in items if str(p.get("title") or "").strip() == title]
+    if not hits:
+        sample = [str(p.get("title") or "") for p in items][:12]
+        raise ValueError(f"待审提议里没有标题 {title!r}。当前待审示例：{sample or '（空）'}")
+    if len(hits) > 1:
+        types = sorted({str(p.get("target_type") or "") for p in hits})
+        raise ValueError(f"标题 {title!r} 有多条待审提议（落点：{types}），请用 target_type 指定")
+    return hits[0]
+
+
+def _evo_candidate_view(cand: dict) -> dict:
+    """候选 AI 投影：只回业务词与处置建议，不含内部 id（建议本身已由服务端重算）。"""
+    from backend.modules.catalog.services import evolution_service as evo
+
+    try:
+        suggestion = evo.suggest_action(cand)
+    except ValueError as exc:
+        suggestion = {"error": _err(exc)}
+    created = cand.get("created_at")
+    return {
+        "term": cand.get("term"),
+        "kind": cand.get("kind"),
+        "kind_label": _EVO_KIND_LABELS.get(str(cand.get("kind") or ""), ""),
+        "source": cand.get("source"),
+        "datasource": cand.get("datasource_name") or "（全局）",
+        "hit_count": int(cand.get("hit_count") or 0),
+        "created_at": (created.strftime("%Y-%m-%d %H:%M")
+                       if hasattr(created, "strftime") else str(created or "")),
+        "suggestion": suggestion,
+    }
+
+
+def _list_evolution_review_queue(args):
+    """列出进化中心待办（待处置候选 + 待审知识更新提议），只读。"""
+    from backend.modules.catalog.services import evolution_service as evo
+    from backend.modules.catalog.services import knowledge_update_service as kus
+
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    kind = str(args.get("kind") or "").strip()
+    datasource = str(args.get("datasource") or "").strip()
+    try:
+        limit = _limit(args, default=30, cap=100)
+        if kind and kind not in evo.KINDS:
+            raise ValueError(f"kind 不合法（{kind!r}），应为 {list(evo.KINDS)}")
+        rows = evo.list_candidates(status="pending", kind=kind,
+                                  datasource_name=datasource, limit=limit)
+        proposal_payload = kus.list_proposals(status="pending", limit=min(limit, 50))
+        overview = evo.overview()
+    except ValueError as exc:
+        return _text({"error": _err(exc)}, is_error=True)
+    proposals = proposal_payload.get("items") or []
+    return _text({
+        "candidates": [_evo_candidate_view(c) for c in rows],
+        "candidate_counts": overview.get("pending_by_kind") or {},
+        "proposals": [{
+            "title": p.get("title"),
+            "target_type": p.get("target_type"),
+            "target_hint": p.get("target_hint") or "",
+            "source": p.get("source"),
+            "datasource": p.get("datasource_name") or "",
+            "created_at": p.get("created_at") or "",
+            "rationale": str(p.get("rationale") or "")[:300],
+        } for p in proposals],
+        "proposal_counts": proposal_payload.get("counts") or {},
+        "how_to_act": (
+            "候选：收编别名 adopt_evolution_alias(term,target_type,target)；"
+            "转术语 move_evolution_to_term(term,description)；"
+            "驳回 reject_evolution_candidate(term)；"
+            "建指标草稿 create_metric_from_evolution(term,object,formula)；"
+            "建维度草稿 create_dimension_from_evolution(term,object,property)。"
+            "提议：先在各域真正落库，再 mark_evolution_proposal_done(title,applied_ref)；"
+            "驳回 reject_evolution_proposal(title,note)。"),
+        "note": ("这里只有待处置项；term/title 必须与清单里的业务名一字不差，"
+                 "不得批量臆测、不得替用户挑目标。收编目标与对象/属性必须来自清单，"
+                 "查不到就把可选清单原样给用户，不猜。驳回类动作先征得用户确认。"),
+    })
+
+
+def _adopt_evolution_alias(args):
+    """把候选的业务词收编为既有字典行/本体对象的别名（双闸：evolution:manage + ontology:save）。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "收编别名")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "ontology:save", "收编别名")
+        cand = _evo_find_candidate(str(args.get("term") or ""),
+                                  datasource=str(args.get("datasource") or ""))
+        ds_name = str(cand.get("datasource_name") or "").strip()
+        target_type = str(args.get("target_type") or "").strip()
+        ref = _evo_resolve_target(evo, target_type,
+                                 str(args.get("target") or "").strip(), ds_name)
+        result = evo.adopt_alias(
+            term=str(cand.get("term") or ""), target_type=target_type, target_ref=ref,
+            datasource_id=(evo.datasource_id_by_name(ds_name) if ds_name else 0),
+            decided_by=actor, candidate_id=int(cand["id"]))
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    if not result.get("success"):
+        # 目标缺行不是失败，是「该走另一个出口」：如实回指引，不假装已收编
+        return _text({"adopted": False, "term": cand.get("term"),
+                      "reason": result.get("reason"),
+                      "next_action": result.get("next_action"),
+                      "message": result.get("message")})
+    _evo_audit(ctx, "evolution.alias.adopt", "evolution_candidate",
+               f"{cand.get('term')} → {target_type}:{ref}", int(cand["id"]), actor)
+    return _text({"adopted": True, "term": cand.get("term"),
+                  "target_type": target_type, "target": ref,
+                  "note": "已把该词收编为目标的别名，候选转为已处置；"
+                          "本体对象别名落的是草案，发布仍需人在本体建模页执行。"})
+
+
+def _move_evolution_to_term(args):
+    """把候选转入按数据源分桶的业务术语缓冲区（双闸：evolution:manage + ontology:save）。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "术语维护")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "ontology:save", "术语维护")
+        cand = _evo_find_candidate(str(args.get("term") or ""),
+                                  datasource=str(args.get("datasource") or ""))
+        out = evo.to_business_term(
+            term=str(cand.get("term") or ""),
+            datasource_name=str(cand.get("datasource_name") or "").strip(),
+            decided_by=actor, candidate_id=int(cand["id"]),
+            description=str(args.get("description") or ""))
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "evolution.candidate.to_term", "business_term",
+               f"{cand.get('term')}（{cand.get('datasource_name') or '全局'}）",
+               int(cand["id"]), actor)
+    return _text({"moved": True, "term": out.get("term"),
+                  "datasource": cand.get("datasource_name") or "（全局）",
+                  "created": bool(out.get("created")),
+                  "message": out.get("message")})
+
+
+def _reject_evolution_candidate(args):
+    """驳回候选（不删行：反复被驳的信号本身是数据）。双闸：evolution:manage + ontology:save。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "驳回进化候选")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "ontology:save", "别名审核")
+        cand = _evo_find_candidate(str(args.get("term") or ""),
+                                  kind=str(args.get("kind") or "").strip(),
+                                  datasource=str(args.get("datasource") or ""))
+        evo.reject_candidate(candidate_id=int(cand["id"]), decided_by=actor)
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "evolution.candidate.reject", "evolution_candidate",
+               str(cand.get("term") or ""), int(cand["id"]), actor)
+    return _text({"rejected": True, "term": cand.get("term"),
+                  "note": "已驳回并留痕（不删行）；若用户认为驳回错了，需到下一条新证据里重新提出。"})
+
+
+def _create_metric_from_evolution(args):
+    """从候选建指标草稿（双闸：evolution:manage + metrics:manage）。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "从进化候选建指标草稿")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "metrics:manage", "从进化候选建指标草稿")
+        cand = _evo_find_candidate(str(args.get("term") or ""),
+                                  datasource=str(args.get("datasource") or ""))
+        ds_name = str(cand.get("datasource_name") or "").strip()
+        obj = _evo_resolve_object(evo, str(args.get("object") or "").strip(), ds_name)
+        out = evo.create_metric_draft(
+            term=str(cand.get("term") or ""), bound_object_key=obj["key"],
+            datasource_name=ds_name,
+            display_name=str(args.get("display_name") or ""),
+            agg_type=str(args.get("agg_type") or "COUNT"),
+            formula=str(args.get("formula") or ""),
+            unit=str(args.get("unit") or ""),
+            description=str(args.get("description") or ""),
+            decided_by=actor, candidate_id=int(cand["id"]))
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "evolution.metric_draft", "metric",
+               f"{cand.get('term')} → 对象 {obj.get('display_name')}", 0, actor)
+    return _text({"created": True, "metric": out.get("name"),
+                  "is_active": out.get("is_active"),
+                  "needs_completion": out.get("needs_completion") or [],
+                  "message": out.get("message"),
+                  "note": "草稿未启用：语义层不会广告它。补齐口径后需在指标中心启用，"
+                          "不得向用户声称指标已生效。"})
+
+
+def _create_dimension_from_evolution(args):
+    """从候选建维度草稿（双闸：evolution:manage + metrics:manage；物理列由服务端映射）。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "从进化候选建维度草稿")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "metrics:manage", "从进化候选建维度草稿")
+        cand = _evo_find_candidate(str(args.get("term") or ""),
+                                  datasource=str(args.get("datasource") or ""))
+        ds_name = str(cand.get("datasource_name") or "").strip()
+        obj = _evo_resolve_object(evo, str(args.get("object") or "").strip(), ds_name)
+        prop = _evo_resolve_property(evo, str(args.get("property") or "").strip(),
+                                    obj["key"], ds_name)
+        out = evo.create_dimension_draft(
+            term=str(cand.get("term") or ""), bound_object_key=obj["key"],
+            datasource_name=ds_name, property_name=prop,
+            display_name=str(args.get("display_name") or ""),
+            category=str(args.get("category") or "属性"),
+            description=str(args.get("description") or ""),
+            decided_by=actor, candidate_id=int(cand["id"]))
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "evolution.dimension_draft", "dimension",
+               f"{cand.get('term')} → {obj.get('display_name')}.{prop}", 0, actor)
+    # target_column 是物理列名：不外露（护栏 §7），这里只回业务属性名
+    return _text({"created": True, "dimension": out.get("name"),
+                  "object": obj.get("display_name"), "property": prop,
+                  "message": out.get("message")})
+
+
+def _mark_evolution_proposal_done(args):
+    """把知识更新提议标记为已处理（双闸：evolution:manage + knowledge:manage）。
+
+    必须带 ``applied_ref``：提议只是备忘录，先在各域**真正落库**再回写落点业务名，
+    否则「标记已处理」就是一句谎话（no-silent-degradation §1）。
+    """
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import knowledge_update_service as kus
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "标记知识更新已处理")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "knowledge:manage", "标记知识更新已处理")
+        applied_ref = str(args.get("applied_ref") or "").strip()
+        if not applied_ref:
+            raise ValueError("applied_ref 必填：须先在目标域（知识库文档/分析场景/本体对象）"
+                             "真正落库，再回写落点业务名；没有落库不得标记已处理")
+        proposal = _evo_find_proposal(str(args.get("title") or "").strip(),
+                                     str(args.get("target_type") or "").strip())
+        result = kus.mark_applied(int(proposal["id"]), applied_ref, actor)
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "knowledge_proposal.applied", "knowledge_update_proposal",
+               f"落点：{applied_ref}｜changed={result.get('changed')}",
+               int(proposal["id"]), actor)
+    return _text({"marked": bool(result.get("changed")),
+                  "title": proposal.get("title"),
+                  "status": result.get("status"),
+                  "applied_ref": applied_ref,
+                  "message": result.get("message") or "已标记为已处理（留痕不删行）。"})
+
+
+def _reject_evolution_proposal(args):
+    """驳回知识更新提议（必须给理由）。双闸：evolution:manage + knowledge:manage。"""
+    from backend.core.perm_link import require_write_perm
+    from backend.modules.catalog.services import knowledge_update_service as kus
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "驳回知识更新提议")
+        require_write_perm(int(ctx.user_id or 0), int(ctx.workspace_id or 0),
+                           "knowledge:manage", "驳回知识更新提议")
+        note = str(args.get("note") or "").strip()
+        if not note:
+            raise ValueError("驳回必须说明理由（note）：被驳的信号本身是数据，无理由驳回无法审计")
+        proposal = _evo_find_proposal(str(args.get("title") or "").strip(),
+                                     str(args.get("target_type") or "").strip())
+        result = kus.reject_proposal(int(proposal["id"]), actor, note)
+    except (PermissionError, ValueError) as e:
+        return _text({"error": _err(e)}, is_error=True)
+    _evo_audit(ctx, "knowledge_proposal.reject", "knowledge_update_proposal",
+               f"理由：{note}｜changed={result.get('changed')}", int(proposal["id"]), actor)
+    return _text({"rejected": bool(result.get("changed")),
+                  "title": proposal.get("title"),
+                  "status": result.get("status"),
+                  "message": result.get("message") or "已驳回并留痕（不删行）。"})
+
+
+def _run_evolution_digest(args):
+    """立即执行一轮进化归纳（只过能力面 evolution:manage，与 HTTP /digest 同码）。"""
+    from backend.modules.catalog.services import evolution_service as evo
+
+    ctx, actor = _evo_context()
+    if ctx is None:
+        return _text({"error": "无法确认调用者身份"}, is_error=True)
+    bad = _evo_rejected(args)
+    if bad:
+        return _text({"error": bad}, is_error=True)
+    try:
+        _evo_gate(ctx, "执行进化归纳")
+        out = evo.run_digest()
+    except PermissionError as e:
+        return _text({"error": str(e)}, is_error=True)
+    except Exception as exc:  # noqa: BLE001 — 失败必须显式暴露，不吞成「没有新待办」
+        logger.exception("[evolution] Chat 触发归纳失败")
+        return _text({"error": f"归纳未完成：{type(exc).__name__}: {exc}"}, is_error=True)
+    _evo_audit(ctx, "evolution.digest.run", "evolution_candidate",
+               str(out.get("summary") or "")[:500], 0, actor)
+    try:
+        from backend.common import system_jobs
+
+        system_jobs.record_run("evolution_digest", "success",
+                               str(out.get("summary") or "")[:500])
+    except Exception as exc:  # noqa: BLE001 — 运行记录是旁路，不阻断返回
+        logger.warning("[evolution] 归纳运行记录写入失败: %s", exc)
+    return _text({"summary": out.get("summary"),
+                  "pending_by_kind": out.get("pending_by_kind") or {},
+                  "feedback": out.get("feedback") or {},
+                  "recheck": out.get("recheck") or {},
+                  "verification": out.get("verification") or {},
+                  "note": "归纳已完成并落运行记录；「没有新待办」与「作业失败」是两件事，"
+                          "失败时本工具会显式报错，不得把失败说成没有发现。"})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1266,6 +1852,189 @@ FUNCTION_ACTION_SPECS: dict[str, dict] = {
             "slug": {"type": "string", "description": "条目业务标识"}},
             "required": ["slug"]},
         "handler": _submit_content_review,
+    },
+    "knowledge_proposal.create": {
+        "tool_name": "create_knowledge_proposal",
+        "label": "提交知识更新提议",
+        "description": "把用户在对话里给出的业务知识纠正/补充（口径说明、文档要补的一段、"
+                       "某类分析的做法、对象说明或别名）提交到**进化中心待审队列**。"
+                       "这只是提议：**不会立即修改本体、知识库或分析场景**，需要人到"
+                       "「进化中心 → 知识更新」逐条确认后才落库；不要向用户声称已经改好了。"
+                       "target_type 选落点：kb_doc=知识库文档正文、scenario=分析场景、"
+                       "ontology_object=本体对象说明/别名。target_hint 只给**业务名**"
+                       "（知识库名或文档标题 / 场景标题 / 对象业务名），不传任何内部 id。"
+                       "用户没明确说清落点时可省略或问一句，不要自己编内部标识。",
+        "perm_code": "knowledge:manage", "object_key": "knowledge_proposal", "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "target_type": {"type": "string", "enum": ["kb_doc", "scenario", "ontology_object"],
+                            "description": "落点域：知识库文档 / 分析场景 / 本体对象"},
+            "title": {"type": "string", "description": "标题（文档标题、场景标题或对象业务名）"},
+            "content": {"type": "string",
+                        "description": "建议的正文/说明（Markdown；对象类可写一段业务描述）"},
+            "rationale": {"type": "string",
+                          "description": "为什么提这条（用户纠正了什么、口径依据），供人工判断"},
+            "target_hint": {"type": "string",
+                            "description": "目标业务名提示（知识库名/文档标题/场景标题/对象业务名）；不要传 id"},
+            "datasource": {"type": "string",
+                           "description": "所属数据源业务名（仅本体对象类需要，其它可空）"}},
+            "required": ["target_type", "title"]},
+        "handler": _create_knowledge_proposal,
+    },
+    # ── 进化中心审批（双闸：evolution:manage + 各出口原本所属域码）──────────
+    # 候选/提议是「对既有事实的确认」，处置落点仍是各域既有写入（本体草案 / 字典草稿 /
+    # 提议状态机）；eval:* 仍不接 AI（评价 AI 的标尺不能由 AI 自己写）。
+    "evolution_queue.list": {
+        "tool_name": "list_evolution_review_queue",
+        "label": "查看进化中心待办",
+        "description": "列出进化中心的**待处置**项：语义缺口候选（缺别名/待建指标/待建维度/"
+                       "待转术语/绑定缺口，带服务端重算的处置建议与置信度）与待审知识更新提议"
+                       "（标题/落点域/理由）。只回业务词与建议，不含内部 id。处置前先调它拿准业务名。",
+        "perm_code": "evolution:read", "object_key": "alias_suggestion", "read_only": True,
+        "schema": {"type": "object", "properties": {
+            "kind": {"type": "string",
+                     "enum": ["new_metric", "new_dimension", "alias", "binding_gap", "term"],
+                     "description": "只看某一类候选（缺省全部）"},
+            "datasource": {"type": "string",
+                           "description": "数据源业务名（缺省全部；多源同名时用来限定）"},
+            "limit": {"type": "integer", "description": "候选返回条数上限，默认 30，最大 100"}},
+            "required": []},
+        "handler": _list_evolution_review_queue,
+    },
+    "evolution_candidate.adopt": {
+        "tool_name": "adopt_evolution_alias",
+        "label": "收编别名（审批候选）",
+        "description": "把一个候选的业务词收编为**既有**指标/维度字典行或本体对象的别名，"
+                       "候选转为已处置。target_type=metric|dimension 时 target 填字典名，"
+                       "=object 时填对象业务名；目标必须来自 list_evolution_review_queue 或"
+                       "清单里的在用口径（不得手造）。目标不存在时不报错而回「下一步出口」指引"
+                       "（new_metric/new_dimension），照实转述给用户，不得说成已收编。"
+                       "本体对象别名落的是草案，发布仍需人操作。",
+        "perm_code": "evolution:manage", "object_key": "alias_suggestion",
+        "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "term": {"type": "string", "description": "候选的业务词（与清单一字不差）"},
+            "target_type": {"type": "string", "enum": ["metric", "dimension", "object"],
+                            "description": "收编到指标字典/维度字典/本体对象"},
+            "target": {"type": "string", "description": "目标业务名（字典名或对象业务名）"},
+            "datasource": {"type": "string",
+                           "description": "数据源业务名（多源同名候选时用来限定）"}},
+            "required": ["term", "target_type", "target"]},
+        "handler": _adopt_evolution_alias,
+    },
+    "evolution_candidate.to_term": {
+        "tool_name": "move_evolution_to_term",
+        "label": "候选转业务术语",
+        "description": "把候选转入按数据源分桶的业务术语缓冲区（尚未绑定任何对象/字典的纯黑话）。"
+                       "已存在的同源同词不会重复建（created=false）。后续映射到对象/字典仍需人在页面确认。",
+        "perm_code": "evolution:manage", "object_key": "business_term", "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "term": {"type": "string", "description": "候选的业务词（与清单一字不差）"},
+            "datasource": {"type": "string", "description": "数据源业务名（多源同名时限定）"},
+            "description": {"type": "string", "description": "术语说明（可选）"}},
+            "required": ["term"]},
+        "handler": _move_evolution_to_term,
+    },
+    "evolution_candidate.reject": {
+        "tool_name": "reject_evolution_candidate",
+        "label": "驳回进化候选",
+        "description": "驳回一条候选（不删行，留痕才能看出这类信号被反复判为无效）。"
+                       "驳回前必须先征得用户确认；仅在确实不成立（不是真实业务问法/已有正确叫法）时用。",
+        "perm_code": "evolution:manage", "object_key": "alias_suggestion",
+        "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "term": {"type": "string", "description": "候选的业务词（与清单一字不差）"},
+            "kind": {"type": "string",
+                     "enum": ["new_metric", "new_dimension", "alias", "binding_gap", "term"],
+                     "description": "同类多词时用来缩小范围（可选）"},
+            "datasource": {"type": "string", "description": "数据源业务名（多源同名时限定）"}},
+            "required": ["term"]},
+        "handler": _reject_evolution_candidate,
+    },
+    "evolution_metric.create": {
+        "tool_name": "create_metric_from_evolution",
+        "label": "从候选建指标草稿",
+        "description": "把候选建成本体对象上的指标草稿（is_active=0，未启用）。object 必须是"
+                       "该数据源下已存在的业务对象（可用业务名或对象 key）；口径（formula）缺省"
+                       "时返回 needs_completion=['formula']，必须如实告知用户“草稿已建但缺公式、"
+                       "未启用”，不得声称指标已可用。",
+        "perm_code": "evolution:manage", "object_key": "metric", "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "term": {"type": "string", "description": "候选的业务词（与清单一字不差）"},
+            "object": {"type": "string", "description": "归属对象：业务名或对象 key"},
+            "formula": {"type": "string",
+                        "description": "指标公式/口径（如 COUNT(id)、SUM(amount)）；缺省则草稿缺口径"},
+            "agg_type": {"type": "string",
+                         "description": "聚合方式（COUNT/SUM/AVG/MIN/MAX/COUNT_DISTINCT，缺省 COUNT）"},
+            "unit": {"type": "string", "description": "单位（可选）"},
+            "display_name": {"type": "string", "description": "业务显示名（缺省用候选词）"},
+            "description": {"type": "string", "description": "口径说明（可选）"},
+            "datasource": {"type": "string", "description": "数据源业务名（多源同名时限定）"}},
+            "required": ["term", "object"]},
+        "handler": _create_metric_from_evolution,
+    },
+    "evolution_dimension.create": {
+        "tool_name": "create_dimension_from_evolution",
+        "label": "从候选建维度草稿",
+        "description": "把候选建成本体对象属性上的维度草稿。object 用归属对象业务名，"
+                       "property 用对象主表上的**业务属性名**（来自清单；物理列名由服务端映射，"
+                       "不得传也不回显）。属性名查不到时回可选业务属性清单，照实转述。",
+        "perm_code": "evolution:manage", "object_key": "dimension", "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "term": {"type": "string", "description": "候选的业务词（与清单一字不差）"},
+            "object": {"type": "string", "description": "归属对象：业务名或对象 key"},
+            "property": {"type": "string", "description": "对象主表上的业务属性名（不是物理列名）"},
+            "display_name": {"type": "string", "description": "业务显示名（缺省用候选词）"},
+            "category": {"type": "string", "description": "维度分类（缺省「属性」）"},
+            "description": {"type": "string", "description": "口径说明（可选）"},
+            "datasource": {"type": "string", "description": "数据源业务名（多源同名时限定）"}},
+            "required": ["term", "object", "property"]},
+        "handler": _create_dimension_from_evolution,
+    },
+    "evolution_proposal.applied": {
+        "tool_name": "mark_evolution_proposal_done",
+        "label": "标记知识更新已处理",
+        "description": "把一条**待审**知识更新提议标记为已处理。提议只是备忘录：必须先在目标域"
+                       "（知识库文档/分析场景/本体对象）真正落库，再回写落点业务名（applied_ref）；"
+                       "没有落库不得标记。非待处理状态不会覆盖既有结论（marked=false 并回当前状态）。",
+        "perm_code": "evolution:manage", "object_key": "knowledge_proposal",
+        "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "提议标题（与清单一字不差）"},
+            "applied_ref": {"type": "string",
+                            "description": "落点业务名（如「知识库名 · 文档标题」/场景标题/对象业务名）"},
+            "target_type": {"type": "string",
+                            "enum": ["kb_doc", "scenario", "ontology_object"],
+                            "description": "落点域（同名多条时用来指定）"}},
+            "required": ["title", "applied_ref"]},
+        "handler": _mark_evolution_proposal_done,
+    },
+    "evolution_proposal.reject": {
+        "tool_name": "reject_evolution_proposal",
+        "label": "驳回知识更新提议",
+        "description": "驳回一条待审知识更新提议，必须给出理由（note，会落审计）。不删行；"
+                       "驳回前先征得用户确认，并说明“被驳的信号本身是数据”。"
+                       "只有待处理状态可以驳回，已处置行不会被改回去。",
+        "perm_code": "evolution:manage", "object_key": "knowledge_proposal",
+        "read_only": False,
+        "schema": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "提议标题（与清单一字不差）"},
+            "note": {"type": "string", "description": "驳回理由（必填，会落审计）"},
+            "target_type": {"type": "string",
+                            "enum": ["kb_doc", "scenario", "ontology_object"],
+                            "description": "落点域（同名多条时用来指定）"}},
+            "required": ["title", "note"]},
+        "handler": _reject_evolution_proposal,
+    },
+    "evolution_digest.run": {
+        "tool_name": "run_evolution_digest",
+        "label": "立即执行进化归纳",
+        "description": "立即跑一轮进化归纳（反馈→候选、候选复核、闭环复查），不等次日定时作业。"
+                       "返回本轮汇总与待办分布。归纳失败会显式报错（可能耗时较长），"
+                       "不得把「没有新待办」与「作业失败」混为一谈。",
+        "perm_code": "evolution:manage", "object_key": "alias_suggestion",
+        "read_only": False,
+        "schema": {"type": "object", "properties": {}, "required": []},
+        "handler": _run_evolution_digest,
     },
     "decision.list": {
         "tool_name": "list_decision_trees",

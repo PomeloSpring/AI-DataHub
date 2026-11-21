@@ -30,7 +30,7 @@ vi.mock('@/api/metrics', () => ({
  *    JSON 只作折叠附录（旧「查看草案」弹窗不得复活）；
  * 4. 发布/丢弃都由服务端草案状态驱动，动作后重拉真值（不出现点了没反应、标记还在）；
  * 5. 无 ontology:publish 权限不渲染发布入口（不给死开关）；基线失效/草案损坏必须禁用并说明；
- * 6. 建模待办是**页内页签**（左栏「跨模型」分区），点击只切画布、不跳独立路由。
+ * 6. 进化中心是**页内页签**（左栏「跨模型」分区，2026-11-21 替换原「建模待办」），点击只切画布、不跳独立路由。
  */
 
 const EFF_DOC = {
@@ -131,6 +131,18 @@ function mockApi() {
       return { data: { ...MODEL, json_content: JSON.stringify(state.effective) } } as any;
     }
     if (url === '/catalog/ontology/generate/tasks') return { data: { items: [] } } as any;
+    // 进化中心（页内页签）挂载即拉候选/大盘/提议；缺分支会让面板进错误态
+    if (url === '/evolution/candidates') return { data: { items: [] } } as any;
+    if (url === '/evolution/proposals') return { data: { items: [] } } as any;
+    if (url === '/evolution/overview') {
+      return {
+        data: {
+          pending_by_kind: {}, pending_by_source: {}, outcome: {},
+          feedback: { up: 0, down: 0, pending_negative: 0 },
+          reasons: [], kinds: [], sources: [],
+        },
+      } as any;
+    }
     return { data: [] } as any;
   });
   vi.mocked(client.post).mockImplementation(async (url: string) => {
@@ -171,7 +183,6 @@ function renderPage() {
     <MemoryRouter initialEntries={['/data/ontology']}>
       <Routes>
         <Route path="/data/ontology" element={<OntologyModeling />} />
-        <Route path="/data/asset-pool" element={<div>建模待办工作台（已下线）</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -364,13 +375,15 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.getByRole('button', { name: /新建对象/ })).toBeTruthy();
   });
 
-  it('建模待办在建模页内实现：点左侧入口只切画布，不跳 /data/asset-pool（外部菜单已下线）', async () => {
+  it('进化中心并入建模页：点左侧入口只切画布，不跳独立路由', async () => {
     renderPage();
-    // 未选模型也必须可达（跨模型清单），所以入口是 tab 而不是 link
-    const entry = await screen.findByRole('tab', { name: /建模待办（未归属资产）/ });
+    // 未选模型也必须可达（跨模型视图），所以入口是 tab 而不是 link
+    const entry = await screen.findByRole('tab', { name: /进化中心/ });
     await userEvent.click(entry);
-    // 画布就地渲染待办面板（mock 的资产池为空 → 显空态），路由页未被跳转
-    expect(await screen.findByText('语义层没有待办缺口')).toBeTruthy();
-    expect(screen.queryByText('建模待办工作台（已下线）')).toBeNull();
+    // 画布就地渲染进化中心：候选分诊 + 字典待办（原建模待办内容）在同一页
+    expect(await screen.findByRole('tab', { name: '待建' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '字典待办' })).toBeTruthy();
+    // 旧入口（/data/asset-pool 独立页）已不存在，页内渲染不依赖任何旧路由
+    expect(screen.queryByText('建模待办')).toBeNull();
   });
 });

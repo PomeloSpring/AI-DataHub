@@ -288,7 +288,8 @@ def classify_term(term: str, *, hint_type: str = "", candidates: list | None = N
 def upsert_candidate(*, term: str, kind: str, source: str, datasource_name: str = "",
                      object_hint: str = "", target_ref: str = "", target_type: str = "",
                      classify_reason: str = "", evidence: dict | None = None,
-                     delta_hits: int = 1) -> int:
+                     delta_hits: int = 1, origin_conversation_id: int = 0,
+                     origin_message_uuid: str = "") -> int:
     if kind not in KINDS:
         raise ValueError(f"kind 不合法（未知候选类型 {kind!r}），应为 {list(KINDS)}")
     if source not in SOURCES:
@@ -303,38 +304,66 @@ def upsert_candidate(*, term: str, kind: str, source: str, datasource_name: str 
     rows = _q("SELECT id, status, hit_count FROM adh_evolution_candidates "
               "WHERE term=%s AND datasource_name=%s AND kind=%s",
               (t, _clean(datasource_name, 128), kind))
-    payload = json.dumps(evidence or {}, ensure_ascii=False, default=str)
+    # 会话回链：列存**首次**来源（见 UPDATE 的 IF 不覆盖），evidence 记**最近一次**
+    # （`last_origin` 随 JSON_MERGE_PATCH 顶层键被刷新）。两者分工："是哪来的"看列，
+    # "最后一次在哪问的"看 evidence。两个都不传（脚本/评测批次）= 0/空串。
+    conv_id = int(origin_conversation_id or 0)
+    msg_uuid = _clean(origin_message_uuid, 64)
+    _ev = dict(evidence or {})
+    if conv_id or msg_uuid:
+        _ev["last_origin"] = {"conversation_id": conv_id, "message_uuid": msg_uuid}
+    payload = json.dumps(_ev, ensure_ascii=False, default=str)
     if rows:
         cur = rows[0]
-        # 已人工处置过的候选不再被作业改写状态，只累加证据与命中数
+        # 已人工处置过的候选不再被作业改写状态，只累加证据与命中数。
+        #
+        # 三条口径（每条都是踩过的坑，别改回去）：
+        # 1. **占位符必须与实参一对一**：曾出现 SQL 10 个 %s / 实参 13 个（多了 3 个 payload），
+        #    每次同词重击都抛 `TypeError: not all arguments converted`，被调用方 catch 成
+        #    warning ⇒ **hit_count 从未累加过**（现网 83% 恒为 1 就是这么来的，不是“人换问法了”）。
+        # 2. **填空≠覆盖**：旧写法 `IF(col='' OR %s='', %s, col)` 在新值为空时会把已有值
+        #    清掉（条件成立 → 取新值=空）。改为“仅当前为空才填”。
+        # 3. **evidence 必须合并**：人工复核会把 `triage`/`probe` 写进 evidence，而自动信号
+        #    只带 `candidates/reason/authoritative_hits`；直接覆盖会冲掉人工结论。
+        #    JSON_MERGE_PATCH 顶层键覆盖、未提及的键（triage/probe）保留。
+        # 4. **回链只填不改**：`origin_conversation_id` 记首次出现的会话（`IF(col=0, …)`），
+        #    后续同词在别的会话被撞不覆盖——否则“这个词最早从哪来”会被冲掉。
         _w("UPDATE adh_evolution_candidates SET hit_count = hit_count + %s, "
-           "evidence = %s, target_ref = IF(target_ref='' OR %s='', %s, target_ref), "
-           "target_type = IF(target_type='' OR %s='', %s, target_type), "
-           "object_hint = IF(object_hint='' OR %s='', %s, object_hint), "
+           "evidence = JSON_MERGE_PATCH(COALESCE(evidence, JSON_OBJECT()), "
+           "CAST(%s AS JSON)), "
+           "target_ref = IF(target_ref='', %s, target_ref), "
+           "target_type = IF(target_type='', %s, target_type), "
+           "object_hint = IF(object_hint='', %s, object_hint), "
+           "origin_conversation_id = IF(origin_conversation_id=0, %s, origin_conversation_id), "
+           "origin_message_uuid = IF(origin_message_uuid='', %s, origin_message_uuid), "
            "classify_reason = %s WHERE id = %s",
            (max(int(delta_hits or 1), 1), payload,
-            target_ref, target_ref, payload,
-            target_type, target_type, payload,
-            object_hint, object_hint, payload,
-            classify_reason, int(cur["id"])))
+            _clean(target_ref, 128), _clean(target_type, 32), _clean(object_hint, 128),
+            conv_id, msg_uuid, classify_reason[:512], int(cur["id"])))
         return int(cur["id"])
     _w("INSERT INTO adh_evolution_candidates (term, kind, source, datasource_name, "
-       "object_hint, target_ref, target_type, classify_reason, evidence, hit_count, status) "
-       "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending')",
+       "object_hint, target_ref, target_type, classify_reason, evidence, hit_count, status, "
+       "origin_conversation_id, origin_message_uuid) "
+       "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s)",
        (t, kind, source, _clean(datasource_name, 128), _clean(object_hint, 128),
         _clean(target_ref, 128), _clean(target_type, 32), classify_reason[:512],
-        payload, max(int(delta_hits or 1), 1)))
+        payload, max(int(delta_hits or 1), 1), conv_id, msg_uuid))
     new = _q("SELECT id FROM adh_evolution_candidates WHERE term=%s "
              "AND datasource_name=%s AND kind=%s", (t, _clean(datasource_name, 128), kind))
     return int(new[0]["id"]) if new else 0
 
 
 def record_parse_fail_terms(datasource_id: int, terms: list[dict],
-                            object_ref: str = "") -> int:
+                            object_ref: str = "", conversation_id: int = 0,
+                            message_uuid: str = "") -> int:
     """语义解析失败词落入候选队列（原 alias_suggestion.record_unresolved_terms 的继任）。
 
     只存业务词与候选，不存物理列/SQL。失败必须可见：这里不吞异常，
     调用方（取数主链路）自行决定旁路容错边界。
+
+    `conversation_id` / `message_uuid` 只是**回链定位**（0/空串 = 非对话来源，如脚本、
+    评测批次）。消息标识用 `observability.message_uuid()`（与兜底落库同一口径），
+    不新造 id；观测未开启时为空串，不影响去重（幂等键仍是 term+ds+kind）。
     """
     recorded = 0
     ds_name = datasource_name_by_id(datasource_id)
@@ -357,7 +386,8 @@ def record_parse_fail_terms(datasource_id: int, terms: list[dict],
                       # binding_gap 要能修，就得知道字典行现在绑在哪张表、哪个对象；
                       # 该字段仅 admin 可见（evolution:read, ai_access='none'）
                       "authoritative_hits": cls.get("hit_detail") or []},
-            delta_hits=1)
+            delta_hits=1, origin_conversation_id=int(conversation_id or 0),
+            origin_message_uuid=message_uuid or "")
         recorded += 1
     if recorded:
         logger.info("[evolution] 解析失败词落入候选 %d 条 ds=%s", recorded, ds_name or "-")
@@ -454,9 +484,16 @@ def recheck_candidates(*, object_probe_limit: int = 60, expire_days: int = 45) -
             still_open += 1
 
     # 长期不再命中且无人处理的 → 过期（不是删，也不是当已修好）
+    #
+    # 判据用 `created_at` 而**不是** `updated_at`：本列的 `ON UPDATE CURRENT_TIMESTAMP`
+    # 会被上面 `still_open` 分支的 `SET last_checked_at=NOW()` 连带刷新，
+    # 于是“探针天天跑 → 计时天天归零” → 带 object_hint 的条目永远到不了 45 天
+    # （实测活证：`rum_event`/事件时间 created 23 天、updated 3 天）。
+    # 语义上也该用 created_at：“自首次出现至今未再被撞（hit_count=1）”才是“不再出现”的定义，
+    # 而 updated_at 只回答“这行多久没被写过”。
     exp_rows = _q(
         "SELECT id FROM adh_evolution_candidates WHERE status='pending' "
-        "AND hit_count = 1 AND updated_at < DATE_SUB(NOW(), INTERVAL %s DAY)",
+        "AND hit_count = 1 AND created_at < DATE_SUB(NOW(), INTERVAL %s DAY)",
         (int(expire_days),))
     for r in exp_rows:
         _w("UPDATE adh_evolution_candidates SET status='expired', last_checked_at=NOW() "
@@ -883,6 +920,116 @@ def get_candidate(candidate_id: int) -> dict | None:
     return r
 
 
+# ── 处置建议（P2：审核面「建议」列 + 一键采纳）────────────────
+
+# D7 分档：queue 决定进哪个页签，tier 决定行内建议。
+# * queue=build   → 「待建」：新增语义行 / 收编别名 / 术语缓冲，都是"把词接进语义层"；
+# * queue=binding → 「核绑定」：词已建档但取数不可达，问题不是"要不要建"。
+# 把 binding_gap 混在待建里是历史缺陷（占现网 71% 却长期无人处置——它该由探针自己走）。
+KIND_QUEUE = {"alias": "build", "term": "build", "new_metric": "build",
+              "new_dimension": "build", "binding_gap": "binding"}
+
+# 排序权重 = 处置成本（越低越前）：alias 一键 > term 批量 > 新建要选对象与列 > 核绑定排查。
+# 第一排序键必须是 kind 而不是 hit_count：处置成本不随热度变化，且 P1.5 之前
+# hit_count 恒为 1，只按热度排等于按 id 排（把可一键的 alias 压到需排查的后面）。
+KIND_WEIGHT = {"alias": 0, "term": 1, "new_metric": 2, "new_dimension": 2,
+               "binding_gap": 3}
+
+# new_metric/new_dimension 的「推荐建」门槛（D7）：命中 1 次先标「待观察」，不置顶。
+RECOMMEND_HITS = 2
+
+# 队列排序（kind 权重 → hit_count DESC → created_at ASC → id 兜底）。
+# 末尾 id 是**唯一 tiebreaker**：created_at 同秒的行（批量归纳常见）没有它会让
+# LIMIT/OFFSET 相邻页重行/漏行（list-pagination §2）。权重直接由 KIND_WEIGHT 生成，
+# 不在这里另写一份数字，避免两套口径漂移。
+_QUEUE_ORDER_BY = ("ORDER BY CASE kind "
+                   + " ".join(f"WHEN '{k}' THEN {w}" for k, w in KIND_WEIGHT.items())
+                   + " ELSE 9 END, hit_count DESC, created_at ASC, id ASC")
+
+
+def _tier_basis(tier: str, hits: int) -> str:
+    """档位判定依据（随建议一起回给页面与审计，避免"建议"变成黑盒）。"""
+    if tier == "verify":
+        return "字典行已建档但取数不可达，属绑定问题（D7 归「核绑定」），不占「待建」位置"
+    if tier == "recommend":
+        return (f"新增语义行需人手选对象与列；已命中 {hits} 次"
+                f"（≥{RECOMMEND_HITS}）标「推荐建」（D7）")
+    if tier == "observe":
+        return (f"新增语义行需人手选对象与列；仅命中 {hits} 次"
+                f"（<{RECOMMEND_HITS}）先标「待观察」，不置顶（D7）")
+    return "只加叫法/进术语缓冲区不改口径，命中 1 次即可处置（D7）"
+
+
+def suggest_action(candidate: dict) -> dict:
+    """给一条候选的处置建议：`{suggested_kind, queue, tier, confidence, basis, prefilled}`。
+
+    判据**唯一**复用 `classify_term`（R7：审核面不得长出第二套分类器）。
+    用候选当前字段（term / target_type / evidence.candidates / evidence.reason）重算一次：
+    落库 kind 是"当时"的结论，语义资产会被改（字典行改名、对象重绑），
+    建议必须按**现在**的事实给；两者不一致时显式标 `drift` + `confidence=low`，
+    由人复核，而不是拿旧结论冒充建议（no-silent-degradation §1）。
+
+    `queue`/`tier` 只是把 classify 结果映射到 D7 的处置队列，不新增判定维度。
+    """
+    term = _clean(candidate.get("term"))
+    db_kind = _clean(candidate.get("kind"), 32)
+    if db_kind not in KINDS:
+        raise ValueError(f"候选 kind 不合法（{db_kind!r}），应为 {list(KINDS)}")
+    evidence = candidate.get("evidence") or {}
+    if isinstance(evidence, str):
+        evidence = _loads(evidence, {})
+    hits = max(int(candidate.get("hit_count") or 1), 1)
+
+    classify = classify_term(
+        term,
+        hint_type=_clean(candidate.get("target_type")
+                         or evidence.get("planner_type"), 32),
+        candidates=[str(x) for x in (evidence.get("candidates") or [])],
+        origin=_clean(candidate.get("source"), 32) or "parse_fail",
+        feedback_reason=_clean(evidence.get("reason"), 64),
+        datasource_name=_clean(candidate.get("datasource_name"), 128),
+    )
+    suggested_kind = str(classify.get("kind") or db_kind)
+    ambiguous = bool(classify.get("ambiguous"))
+    drift = suggested_kind != db_kind
+
+    queue = KIND_QUEUE.get(suggested_kind, "build")
+    if suggested_kind == "binding_gap":
+        tier = "verify"
+    elif suggested_kind in ("new_metric", "new_dimension"):
+        tier = "recommend" if hits >= RECOMMEND_HITS else "observe"
+    else:                       # alias / term：只加叫法或进缓冲区，不新增口径
+        tier = "act"
+
+    # 预填只给"不需要判断"的字段：目标字典行（classify 已定位时）、显示名、聚合方式。
+    # 对象/物理属性/公式**一律不预填**——那是新建口径的核心判断，预填等于替人做主。
+    prefilled: dict = {}
+    if suggested_kind == "alias":
+        prefilled["target_type"] = _clean(classify.get("target_type")
+                                          or candidate.get("target_type"), 32)
+        # 歧义（多个归属方）时不给目标：让人从候选里选，不替他挑一个
+        prefilled["target_ref"] = "" if ambiguous else _clean(classify.get("target_ref"), 128)
+    elif suggested_kind == "new_metric":
+        prefilled["display_name"] = term
+        prefilled["agg_type"] = "COUNT"
+    elif suggested_kind == "new_dimension":
+        prefilled["display_name"] = term
+    elif suggested_kind == "term":
+        prefilled["description"] = f"自进化候选「{term}」命中 {hits} 次，转入术语缓冲区"
+
+    confidence = "low" if drift else ("medium" if ambiguous else "high")
+    basis = _tier_basis(tier, hits)
+    if drift:
+        basis += (f"；注意：落库分类为 {db_kind}，按当前证据重算为 {suggested_kind}，"
+                  "建议按重算给，请人工复核")
+    return {"suggested_kind": suggested_kind, "queue": queue, "tier": tier,
+            "confidence": confidence, "ambiguous": ambiguous, "drift": drift,
+            "hit_count": hits, "prefilled": prefilled,
+            "suggested_refs": [str(x) for x in (classify.get("suggested_refs") or [])][:6],
+            "basis": basis,
+            "classify_reason": _clean(classify.get("classify_reason"), 512)}
+
+
 def list_candidates(*, status: str = "pending", kind: str = "", source: str = "",
                     datasource_name: str = "", limit: int = 200) -> list[dict]:
     cond, params = [], []
@@ -900,11 +1047,40 @@ def list_candidates(*, status: str = "pending", kind: str = "", source: str = ""
         params.append(datasource_name)
     where = ("WHERE " + " AND ".join(cond)) if cond else ""
     params.append(int(limit))
+    # 排序口径见 _QUEUE_ORDER_BY（D7：kind 权重优先，热度只作次级）。
     rows = _q(f"SELECT * FROM adh_evolution_candidates {where} "
-              f"ORDER BY hit_count DESC, updated_at DESC LIMIT %s", tuple(params))
+              f"{_QUEUE_ORDER_BY} LIMIT %s", tuple(params))
     for r in rows:
         r["evidence"] = _loads(r.get("evidence"), {})
     return rows
+
+
+def target_options(*, target_type: str, datasource_name: str = "") -> list[dict]:
+    """别名收编的目标清单（既有字典行/本体对象）：显示业务名，value 用 name/key。
+
+    为什么需要它：收编目标属"本系统已有资源"，只能从清单里选（ui-resource-display §2）；
+    让人手输字典名既容易输错，也会造出"填了不存在的目标"这种假动作。
+    只回 `is_active=1` 的行：退役行不能被新别名挂上（否则别名指向不可用口径）。
+    """
+    t = _clean(target_type, 32)
+    if t == "object":
+        return [{"key": o["key"], "display_name": o["display_name"]}
+                for o in object_options(datasource_name)]
+    table = {"metric": "adh_metrics", "dimension": "adh_dimensions"}.get(t)
+    if not table:
+        raise ValueError(f"target_type 不合法（{t!r}），应为 metric|dimension|object")
+    # 字典表只有 name/name_en（没有 display_name 列）：字典的 name 本身就是业务权威名，
+    # 直接当显示名用；`key` 与收编写入的 target_ref 同源（都是 name）。
+    sql = f"SELECT name FROM {table} WHERE is_active = 1"
+    params: list = []
+    ds_id = datasource_id_by_name(datasource_name) if datasource_name else 0
+    if ds_id:
+        # 本源 + 全局(ds=0)：跨源字典行不能被收编到本站别名上（串味）
+        sql += " AND (datasource_id = %s OR datasource_id = 0)"
+        params.append(ds_id)
+    sql += " ORDER BY name"
+    return [{"key": r["name"], "display_name": _clean(r["name"])}
+            for r in _q(sql, tuple(params))]
 
 
 def object_options(datasource_name: str) -> list[dict]:

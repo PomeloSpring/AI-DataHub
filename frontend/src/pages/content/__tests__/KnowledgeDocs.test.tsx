@@ -168,6 +168,16 @@ describe('知识库文档 — 详情页：目录树与只提交修改部分', ()
     expect(screen.getByText(/内容与云端一致，无需提交/)).toBeInTheDocument();
   });
 
+  it('深链 ?doc=<source_id> 进页即展开该文档（进化中心「更新知识库文档」跳转用）', async () => {
+    grant(['kbdoc:read', 'kbdoc:write']);
+    // 不点树：URL 里带着 source_id 就要直接进编辑区，否则从进化中心跳过来还得自己找那篇
+    renderRoutes(`/content/kb-docs/${NB}?doc=s1`);
+    await waitFor(() => expect(client.get).toHaveBeenCalledWith(
+      `/content/knowledge-bases/${NB}/documents/s1`));
+    expect(await screen.findByLabelText('编辑文档正文')).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/站点全景/)).toBeInTheDocument();
+  });
+
   it('改动后提交只 PUT 当前这一篇，并带打开时的基线哈希', async () => {
     grant(['kbdoc:read', 'kbdoc:write']);
     vi.mocked(client.put).mockResolvedValue({

@@ -73,6 +73,11 @@ SECRET_BOUND_NONE_PERMS = frozenset({
     "settings:manage", "settings:read", "system:settings",
     # 注入面：系统提示词 / 技能提示词
     "prompt:manage", "prompt:read", "skill:manage", "skill:read",
+    # 数据工程域（同步 / DAG / UDF / 定时物化）：作业影响面是一批下游，LLM 无从
+    # 核验对错，属人专属运维动作（data-sync-engineering §2；配置侧 ai_access 同为 none，
+    # 本清单是代码层硬上界 —— 下一批迁移或别的环境把口子抬回去也仍被 cap 住）
+    "sync:read", "sync:manage", "sync:execute", "sync-logs:read",
+    "dag:read", "dag:manage", "udf:read", "udf:manage",
 })
 
 # 上限 read：可见但禁止一切写（涉密域的"只读可见"边界）。
@@ -102,6 +107,16 @@ PERM_GATED_ACTION_PERMS = frozenset({
     "ontology:generate", "ontology:save", "ontology:publish",
     "ontology:create", "ontology:activate", "ontology:import",
     "dashboard:manage", "dataset:manage", "scheduled:manage", "article:manage",
+    # 知识更新提议：执行期 require_write_perm("knowledge:manage") 真把关（与 article:manage
+    # 同为双通道码 —— ai_action_key 已登记，通道判定以功能动作为准）
+    "knowledge:manage",
+    # 进化中心审批（Chat 内处置）：双闸的第一道（能否进处置面）。
+    # 动作面仍按各出口原本所属域码裁决（ontology:save / metrics:manage / knowledge:manage），
+    # 因此这里只登记能力面码本身，不把“能审批”扩大成“能改任一域”。
+    "evolution:manage",
+    # 进化候选建指标/维度草稿：执行期 require_write_perm("metrics:manage") 真把关
+    # （HTTP 端点一直是这一把尺，AI 通道沿用，不另造判断）。
+    "metrics:manage",
 })
 
 AI_CHANNEL_FUNCTION_ACTION = "function_action"

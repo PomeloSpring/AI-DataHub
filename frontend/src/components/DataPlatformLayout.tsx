@@ -51,6 +51,9 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/datasets', icon: Layers, labelKey: 'data.datasets' },
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
   { key: '/data/ontology', icon: Boxes, labelKey: 'data.ontology' },
+  /* 进化中心（2026-11-21 拍板）：已并入「本体建模」页的 evolution 页签（替换原「建模待办」位置）。
+     侧栏不再单列；菜单登记同步下线，权限码 menu_key 改挂 data:ontology，
+     见 docker/mysql/evolution_center_merge_migration.sql。 */
   /* 建模待办已并入「本体建模」的左侧「跨模型」分区（页内页签），不再占侧栏菜单位；
      菜单/权限点登记同批退出，见 docker/mysql/asset_pool_retire_migration.sql */
   /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：

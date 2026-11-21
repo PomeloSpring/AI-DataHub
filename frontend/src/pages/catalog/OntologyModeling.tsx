@@ -38,7 +38,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/lib/toast';
 import {
-  Activity, Archive, BookMarked, BookOpen, CheckCircle2, FileText, GitCompare, History, Inbox,
+  Activity, Archive, BookMarked, BookOpen, CheckCircle2, Dna, FileText, GitCompare, History,
   Layers, LayoutGrid, Loader2, MapPin, Pencil, Plus, RefreshCw, ScrollText, Share2, Sparkles,
   Tags, Trash2, Undo2, Upload, Zap,
 } from 'lucide-react';
@@ -46,7 +46,7 @@ import OntologyWorkbench, { type WbRailSection, type WbTray } from './OntologyWo
 import CanonicalDocPanel from './CanonicalDocPanel';
 import ObjectHubTab, { type HubObject, type InspTab } from './ObjectHubTab';
 import ModelHealthTab from './ModelHealthTab';
-import AssetPoolWorkbench from './AssetPoolWorkbench';
+import EvolutionCenter from './EvolutionCenter';
 import { normalizeDocObjects, showsM234, showsSiteScope, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import ModelDraftReview from './ModelDraftReview';
 import GraphRebuildButton from './GraphRebuildButton';
@@ -219,7 +219,10 @@ export default function OntologyModeling() {
   const [draftJson, setDraftJson] = useState('');
   /** 工作区当前展示哪一份正文：生效版（线上只读）/ 草案（可编辑） */
   const [viewMode, setViewMode] = useState<'live' | 'draft'>('live');
-  const [tab, setTab] = useState('hub');
+  // 深链：/data/ontology?tab=evolution（旧 /data/evolution 的重定向落点）
+  const [tab, setTab] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('tab') || 'hub'; } catch { return 'hub'; }
+  });
   // 内联新建对象行：点「＋ 新建对象」在画布顶部就地展开（不再弹居中对话框）
   const [creatingObject, setCreatingObject] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -606,9 +609,9 @@ export default function OntologyModeling() {
       setTab('health');
       return;
     }
-    if (k === 'todo') {
-      // 建模待办：**跨模型**缺口（源本体里未收编的资产），与体检不是同一份清单
-      setTab('todo');
+    if (k === 'evolution') {
+      // 进化中心（原「建模待办」位置，2026-11-21 拍板）：候选分诊 + 知识更新 + 字典待办
+      setTab('evolution');
       return;
     }
     // 关系图谱不跳外层菜单：它就在本页画布里（跟随当前模型，切模型即换图）
@@ -617,15 +620,20 @@ export default function OntologyModeling() {
 
   // 选中态与可见性守卫：草案丢弃/形态切换后，失效的页签回落到对象视图；
   // 还没选模型时落在「全部模型」总览 —— 模型名是入口（按名字选，不按 id 选），不另造左侧模型列表。
-  // 建模待办是跨模型清单，未选模型时也必须可达（优先于其它回落）
-  const activeTab = tab === 'todo' ? 'todo'
+  // 进化中心是跨模型视图，未选模型时也必须可达（优先于其它回落）；无 evolution:read 回落总览
+  const canViewEvolution = hasPerm('evolution:read');
+  const activeTab = tab === 'evolution' ? (canViewEvolution ? 'evolution' : 'models')
     : !model ? 'models'
       : (tab === 'changes' && !draftPending) || (tab === 'sites' && !siteScope) ? 'hub' : tab;
 
-  // 跨模型入口（全部模型 / 建模待办）：未选模型时也必须可达
+  // 跨模型入口（全部模型 / 进化中心）：未选模型时也必须可达
   const crossItems: WbRailSection['items'] = [
     { key: 'models', label: t('k_688facc5f5'), icon: <LayoutGrid className="h-3.5 w-3.5" />, count: models.length },
-    { key: 'todo', label: t('k_0f31c91cb2'), icon: <Inbox className="h-3.5 w-3.5" />, count: poolTotal, warn: true, title: t('k_dedd34b637') },
+    // 入口显隐按权限码：没 evolution:read 就不渲染这个页签（不造点了必 403 的死入口）
+    ...(canViewEvolution ? [{
+      key: 'evolution', label: t('k_849e449611'), icon: <Dna className="h-3.5 w-3.5" />,
+      count: poolTotal, warn: true,
+    }] : []),
   ];
 
   // 体检问题数：由体检页签上报（本页签未挂载时保留上一次的值，切模型时清零重算）
@@ -738,7 +746,7 @@ export default function OntologyModeling() {
     </>
   );
 
-  const canvasHead = activeTab === 'todo' ? null
+  const canvasHead = activeTab === 'evolution' ? null
     : activeTab === 'health' ? headTitle(t('k_6dca588fdc'), healthCount || undefined, t('k_3e9ea37e19'))
     : activeTab === 'hub' ? hubHead
     : activeTab === 'graph' ? headTitle(t('k_2ea6798094'), undefined, t('k_bbd833b001'))
@@ -801,10 +809,10 @@ export default function OntologyModeling() {
         draftStates={draftStates} modelKind={model!.kind} viewMode={viewMode}
         onLocate={locateFromHealth} onSummary={setHealthCount} />
     </div>
-  ) : activeTab === 'todo' ? (
-    // 建模待办：跨模型缺口（未归属字典行 + 解析回流候选）就地分诊，不跳独立页
+  ) : activeTab === 'evolution' ? (
+    // 进化中心（含字典待办）：候选分诊 / 知识更新 / 历史大盘就地处理，不跳独立页（2026-11-21 拍板并入）
     <div className="h-full overflow-auto p-2">
-      <AssetPoolWorkbench onChanged={refreshPool} onOpenModel={() => setTab('hub')} />
+      <EvolutionCenter embedded onOpenModel={() => setTab('hub')} />
     </div>
   ) : activeTab === 'models' ? (
     <div className="h-full overflow-auto p-3">{modelGrid}</div>

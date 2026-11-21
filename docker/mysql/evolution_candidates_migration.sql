@@ -83,18 +83,23 @@ CREATE TABLE IF NOT EXISTS adh_evolution_candidates (
   classify_reason VARCHAR(512) NOT NULL DEFAULT '' COMMENT '为什么判成该 kind（planner 结构化 type / 命中候选 / 用户所选原因），可审计',
   evidence        JSON COMMENT '证据：问句样本/trace_id/hit 次数/候选清单；禁含物理表列与 SQL',
   hit_count       INT NOT NULL DEFAULT 1 COMMENT '同词重复出现次数（去重累加，排序依据）',
-  status          ENUM('pending','converted','rejected','stale','verified') NOT NULL DEFAULT 'pending'
-                  COMMENT 'converted=已执行出口动作; verified=转成的评测用例已通过; stale=转出去了但用例仍失败',
+  status          ENUM('pending','converted','rejected','stale','verified','expired') NOT NULL DEFAULT 'pending'
+                  COMMENT 'converted=已执行出口动作; verified=转成的评测用例已通过; stale=转出去了但用例仍失败; expired=长期不再命中由作业关单（≠ 人工 rejected）',
   converted_ref   VARCHAR(128) NOT NULL DEFAULT '' COMMENT '产出物标识：字典行业务名 / 评测用例 case_key',
   converted_kind  VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '产出物类型：metric|dimension|alias|term|eval_case',
   decided_by      VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '审核人（服务端注入，不信任请求体）',
   decided_at      DATETIME NULL,
   last_checked_at DATETIME NULL COMMENT '最近一次由归纳作业回填 verified/stale 的时间',
+  origin_conversation_id BIGINT NOT NULL DEFAULT 0
+                  COMMENT '首次出现的对话会话 id（0=非对话来源，如脚本/评测批次）；不扩 source 枚举表达场景',
+  origin_message_uuid VARCHAR(64) NOT NULL DEFAULT ''
+                  COMMENT '首次出现那轮的消息标识（observability.message_uuid；空=未知/非对话）',
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_evo_term (term, datasource_name, kind),
   INDEX idx_evo_status (status, hit_count),
-  INDEX idx_evo_converted (converted_kind, converted_ref)
+  INDEX idx_evo_converted (converted_kind, converted_ref),
+  INDEX idx_evo_origin (origin_conversation_id, origin_message_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自进化候选（反馈/解析失败/脚本归纳出的语义资产待办）';
 
 -- ----------------------------------------------------------------------------

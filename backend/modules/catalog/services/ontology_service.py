@@ -1902,6 +1902,104 @@ def get_draft_content(model_id: int) -> dict:
     }
 
 
+#: 对象标量白名单（进化中心「更新本体对象」通道只允许改这三个字段）
+OBJECT_SCALAR_FIELDS = ("display_name", "description", "aliases")
+
+
+def merge_object_scalars(model_id: int, object_key: str, patch: dict,
+                         created_by: str = "") -> dict:
+    """按 key 合并**已有对象**的标量字段，落草案（两段式第一段，不级联、不生效）。
+
+    为什么不走 `save_draft`：保存生效内容会立即级联（重展开对象/重建图谱/同步知识库），
+    而这里改的是一句业务说明或一个别名 —— 必须让人在「发布」那步显式确认并持有
+    `ontology:publish`，否则一个手滑就改了线上口径（as-bot-system-waker §2 两段式）。
+
+    边界（宁缺勿错）：
+    * 只改 ``display_name`` / ``description`` / ``aliases``，**不新增对象**、
+      不碰 ``properties`` / ``links`` / 其它对象（按 key 替换单字段，结构上写不坏全量）；
+    * `aliases` 取并集（大小写不敏感去重），不删既有别名 —— 删别名属建模决策，
+      请去本体建模页改；
+    * 系统能力本体（kind='system'）直接拒：它由声明目录 + refresh 脚本维护，
+      界面改完下次刷新会被覆盖，给了入口就是骗人。
+    """
+    key = str(object_key or "").strip()
+    if not key:
+        raise ValueError("object_key 必填")
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    if str(model.get("kind") or "") == "system":
+        raise ValueError("系统能力本体由声明目录维护（system_ontology_catalog.py + "
+                         "refresh_system_ontology.py），界面改动会被下次刷新覆盖；"
+                         "请改声明目录后重跑刷新脚本")
+    if str(model.get("status") or "") == "archived":
+        raise ValueError("已归档模型不可编辑；如需修改请先在版本管理中回滚激活")
+
+    base = get_draft(model_id).get("draft") or model.get("json_content") or "{}"
+    try:
+        doc = json.loads(base)
+    except ValueError as e:
+        raise ValueError(f"模型正文不是合法 JSON：{e}")
+    if not isinstance(doc, dict):
+        raise ValueError("模型正文必须是对象")
+    objects = doc.get("objects") or []
+    if not isinstance(objects, list):
+        raise ValueError("模型正文 objects 必须是数组")
+    idx = next((i for i, o in enumerate(objects)
+                if isinstance(o, dict)
+                and str(o.get("key") or "").strip().lower() == key.lower()), None)
+    if idx is None:
+        raise ValueError(f"对象「{key}」不在模型里：本通道只更新已有对象；"
+                         "要新增对象请去「本体建模」页面")
+
+    obj = dict(objects[idx])
+    changed: list[str] = []
+    if patch.get("display_name") is not None:
+        name = str(patch.get("display_name") or "").strip()
+        if not name:
+            raise ValueError("显示名不能改成空（对象必须有业务名）")
+        if name != str(obj.get("display_name") or ""):
+            obj["display_name"] = name
+            changed.append("display_name")
+    if patch.get("description") is not None:
+        desc = str(patch.get("description") or "").strip()
+        if desc != str(obj.get("description") or ""):
+            obj["description"] = desc
+            changed.append("description")
+    if patch.get("aliases") is not None:
+        raw = patch.get("aliases") or []
+        if isinstance(raw, str):
+            raw = raw.replace("，", ",").split(",")
+        merged = [str(a).strip() for a in (obj.get("aliases") or []) if str(a).strip()]
+        seen = {a.lower() for a in merged}
+        added: list[str] = []
+        for a in raw:
+            name = str(a or "").strip()
+            if name and name.lower() not in seen:
+                merged.append(name)
+                seen.add(name.lower())
+                added.append(name)
+        if added:
+            obj["aliases"] = merged
+            changed.append("aliases")
+    if not changed:
+        return {"mode": "unchanged", "key": key, "model_id": model_id,
+                "model_name": model.get("name") or "", "changed_fields": [],
+                "draft_pending": bool(get_draft(model_id).get("has_draft")),
+                "note": "提交的值与当前一致，未写草案"}
+
+    objects[idx] = obj
+    doc["objects"] = objects
+    save_draft_only(model_id, json.dumps(doc, ensure_ascii=False), created_by=created_by)
+    logger.info("[ontology] merge_object_scalars model=%s key=%s fields=%s by=%s",
+                model_id, key, changed, created_by)
+    return {"mode": "updated", "key": key, "model_id": model_id,
+            "model_name": model.get("name") or "", "changed_fields": changed,
+            "draft_pending": True,
+            "note": "已存为草案（未生效）：对象表/图谱/知识库都不会变；"
+                    "需在「本体建模」或用发布入口执行 publish 才级联生效"}
+
+
 def _doc_objects_by_key(raw: str) -> dict:
     """JSON 正文 → {对象身份键: 对象}；解析失败回空 dict（调用方按“无差异”处理并出告警）。"""
     try:

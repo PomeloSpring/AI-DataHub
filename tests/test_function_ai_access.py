@@ -423,6 +423,54 @@ def test_registry_matches_db_ai_action_keys():
     assert not mismatch, f"perm_code 不一致: {mismatch}"
 
 
+def test_knowledge_proposal_mirrors_db_and_takes_stricter_level():
+    """`knowledge_proposal.create` 的 DB 镜像 + 级别取更严者。
+
+    为什么在全局集合一致性之外再单锁一条：这条动作的语义是「只提议、不直写资产」，
+    一旦被人改成 `read_only=True` 或调到 read 级别，Chat 里就多出一个“看起来能改
+    知识库”的假动作；反过来若只靠只读级别也拦不住写 —— 两种错都得在此拦下。
+    """
+    spec = function_tools.FUNCTION_ACTION_SPECS["knowledge_proposal.create"]
+    assert spec["perm_code"] == "knowledge:manage"
+    assert spec["read_only"] is False, "提议会落库，它不是读动作"
+
+    conn = _db_conn()
+    if conn is None:
+        pytest.skip("元数据库不可用，跳过 DB 镜像断言")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT ai_access, ai_action_key FROM adh_perm_registry "
+                        "WHERE perm_code='knowledge:manage'")
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    assert row, "knowledge:manage 未登记，提议工具在角色页会无从归类"
+    db_level, raw_keys = row[0], str(row[1] or "")
+    keys = {k.strip() for k in raw_keys.split(",") if k.strip()}
+    assert "knowledge_proposal.create" in keys, (
+        f"DB ai_action_key 未镜像该动作（现为 {raw_keys!r}）—— 角色页会把它显示成"
+        "「配了级别但无消费方」的空开关")
+
+    # 级别取更严者：DB 配 write 也抬不过涉密硬上界；write 才放行这个写动作
+    effective = perm_link.cap_level("knowledge:manage", db_level)
+    for configured in ("none", "read", "write"):
+        allowed, denied = perm_link.resolve_function_actions(
+            {"knowledge_proposal.create": spec},
+            {"knowledge:manage": {"ai_access": configured, "label": "知识管理",
+                                 "ai_note": ""}})
+        capped = perm_link.cap_level("knowledge:manage", configured)
+        if capped == perm_link.AI_LEVEL_WRITE:
+            assert allowed == {"knowledge_proposal.create": perm_link.AI_LEVEL_WRITE}
+        else:
+            assert not allowed, f"级别 {configured} 不该放行写动作"
+            reason = denied["knowledge_proposal.create"]
+            if capped == perm_link.AI_LEVEL_NONE:
+                assert "未开放给 AI" in reason
+            else:
+                assert "是写操作" in reason and "只读" in reason
+    assert effective in perm_link.AI_LEVELS
+
+
 def test_db_levels_respect_secret_bounds():
     """DB 里的 ai_access 不得高于代码层硬上界（否则配置就是误导）。"""
     conn = _db_conn()
@@ -437,6 +485,34 @@ def test_db_levels_respect_secret_bounds():
     over = [(code, level) for code, level in rows
             if perm_link.cap_level(code, level) != perm_link.normalize_level(level)]
     assert not over, f"以下权限点的 DB 级别高于涉密硬上界: {over}"
+
+
+# 数据工程域（同步 / DAG / UDF / 定时物化）：AI 零接入（data-sync-engineering §2）。
+# 四道门缺一即违规：不进功能工具、不作为 AI 动作裁决码、代码层 cap 恒 none、通道如实标 none。
+DATA_ENGINEERING_PERMS = (
+    "sync:read", "sync:manage", "sync:execute", "sync-logs:read",
+    "dag:read", "dag:manage", "udf:read", "udf:manage",
+)
+
+
+def test_data_engineering_perms_are_never_ai_callable():
+    """数据工程域的有效级别必为 none（配置抬不上去），且不得被广告成已接入。"""
+    for code in DATA_ENGINEERING_PERMS:
+        # 无论 DB 配成什么（含 write / read / 空），有效级别恒为 none
+        for configured in (perm_link.AI_LEVEL_WRITE, perm_link.AI_LEVEL_READ, "", None):
+            assert perm_link.cap_level(code, configured) == perm_link.AI_LEVEL_NONE, (code, configured)
+        # 无消费方：不得出现在按码把关清单里（进了就是"勾了能生效"的空承诺）
+        assert code not in perm_link.PERM_GATED_ACTION_PERMS, code
+        # 通道如实标 none，角色页才能标注"不接 AI"
+        assert perm_link.ai_channel(code, "") == perm_link.AI_CHANNEL_NONE, code
+
+
+def test_data_engineering_perms_not_registered_as_function_tools():
+    """数据工程域不得登记为 AI 功能工具（作业影响面是一批下游，LLM 无从核验对错）。"""
+    offenders = [f"{action}->{spec.get('perm_code')}"
+                 for action, spec in function_tools.FUNCTION_ACTION_SPECS.items()
+                 if str(spec.get("perm_code") or "") in DATA_ENGINEERING_PERMS]
+    assert not offenders, f"数据工程域不得登记为 AI 功能工具: {offenders}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

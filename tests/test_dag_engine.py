@@ -95,6 +95,87 @@ def test_validate_accepts_diamond():
     assert validate_graph(graph, check_datasources=False)["nodes"]
 
 
+# ── 物化节点校验（保存/运行前 fail-loud，不留到执行期才炸） ──────────
+
+def _materialize(**config):
+    base = {"dataset": "订单明细", "target_datasource": "dw",
+            "target_table": "dwd_order_detail", "write_mode": "overwrite"}
+    base.update(config)
+    return {"key": "m1", "type": "materialize", "config": base}
+
+
+def test_validate_materialize_requires_dataset_and_target():
+    for missing, hint in (("dataset", "缺少数据集"), ("target_datasource", "缺少目标数据源"),
+                          ("target_table", "目标表名")):
+        node = _materialize(**{missing: ""})
+        with pytest.raises(DagValidationError, match=hint):
+            validate_graph({"nodes": [node], "edges": []}, check_datasources=False)
+
+
+def test_validate_materialize_rejects_bad_mode_and_budget():
+    # 写入模式只允许三档（sync 的 full/incremental 不得混入物化）
+    with pytest.raises(DagValidationError, match="写入模式不合法"):
+        validate_graph({"nodes": [_materialize(write_mode="incremental")], "edges": []},
+                       check_datasources=False)
+    # 预算越界即拒：行数上限不得超过编译器硬顶，秒数不得超一天
+    with pytest.raises(DagValidationError, match="行数预算"):
+        validate_graph({"nodes": [_materialize(budget={"max_rows": 10 ** 9})],
+                        "edges": []}, check_datasources=False)
+    with pytest.raises(DagValidationError, match="超时预算"):
+        validate_graph({"nodes": [_materialize(budget={"max_seconds": 0})],
+                        "edges": []}, check_datasources=False)
+    with pytest.raises(DagValidationError, match="批量写入行数"):
+        validate_graph({"nodes": [_materialize(batch_size=50000)], "edges": []},
+                       check_datasources=False)
+
+
+def test_validate_materialize_partition_requires_date_arg_and_column():
+    base = _materialize(write_mode="partition_overwrite")
+    with pytest.raises(DagValidationError, match="日期参数名"):
+        validate_graph({"nodes": [base], "edges": []}, check_datasources=False)
+    node = _materialize(write_mode="partition_overwrite",
+                        partition={"date_arg": "dt", "column": ""})
+    with pytest.raises(DagValidationError, match="分区日期列名"):
+        validate_graph({"nodes": [node], "edges": []}, check_datasources=False)
+    # Doris 分区名模板必须带日期占位，否则每天都写同一个分区（错数）
+    node = _materialize(write_mode="partition_overwrite",
+                        partition={"date_arg": "dt", "column": "dt",
+                                   "target_partition": "pstatic"})
+    with pytest.raises(DagValidationError, match="日期占位"):
+        validate_graph({"nodes": [node], "edges": []}, check_datasources=False)
+
+
+def test_validate_materialize_partition_accepts_full_config():
+    node = _materialize(write_mode="partition_overwrite",
+                        partition={"date_arg": "dt", "column": "dt",
+                                   "target_partition": "p{yyyyMMdd}", "lookback_days": 3},
+                        budget={"max_rows": 100000, "max_seconds": 600}, batch_size=2000)
+    assert validate_graph({"nodes": [node], "edges": []}, check_datasources=False)["nodes"]
+
+
+# ── 节点结果摘要（落 result_json 前必须脱敏：不落 SQL/凭据/列明细） ──
+
+def test_result_summary_whitelists_only_platform_metrics():
+    summary = dag_executor._result_summary({
+        "dataset": "订单明细", "target": "dw.dwd_order_detail",
+        "write_mode": "partition_overwrite",
+        "partitions": [{"date": "2026-11-21", "rows_written": 10, "reconciled": True}],
+        "reconciled": True, "strategy": "rename_swap",
+        "budget": {"max_rows": 100}, "columns": ["id", "amount", "secret"],
+        # 以下均不得外泄（护栏 §7）
+        "sql": "SELECT * FROM secret_table", "password": "p@ss",
+        "host": "10.0.0.1", "rows": [{"id": 1}],
+    })
+    assert summary["dataset"] == "订单明细"
+    assert summary["reconciled"] is True
+    assert summary["strategy"] == "rename_swap"
+    assert summary["partitions"][0]["date"] == "2026-11-21"
+    # 列清单只回数量，不回列名
+    assert summary["column_count"] == 3
+    for leaked in ("sql", "password", "host", "rows", "columns"):
+        assert leaked not in summary, leaked
+
+
 # ── 规划器 ────────────────────────────────────────────────────────
 
 
@@ -137,6 +218,7 @@ class FakeDagService:
         self.finished_runs = []
         self.node_runs = []
         self.finished_nodes = []
+        self.node_results = []
         self.skipped = []
         self.attempts = {}
 
@@ -170,8 +252,10 @@ class FakeDagService:
         return self.claim_node_ok
 
     def finish_node_run(self, node_run_id, status, rows_read=0, rows_written=0,
-                        elapsed_ms=0, error_code="", error_message=""):
+                        elapsed_ms=0, error_code="", error_message="", result=None):
         self.finished_nodes.append((node_run_id, status, error_code, error_message))
+        # 结果摘要（物化分区/对账/写入策略）也要能断言：执行日志页靠它展示
+        self.node_results.append(result)
         return True
 
     def skip_node_run(self, run_id, key, ntype, reason, attempt=1):

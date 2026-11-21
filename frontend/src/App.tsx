@@ -75,7 +75,6 @@ import RoleManagement from './pages/admin/RoleManagement';
 import SandboxManagement from './pages/admin/SandboxManagement';
 import Observability from './pages/admin/Observability';
 import EvalManagement from './pages/admin/EvalManagement';
-import EvolutionCenter from './pages/admin/EvolutionCenter';
 import AnalysisScenarios from './pages/catalog/AnalysisScenarios';
 import Monitoring from './pages/admin/Monitoring';
 import TaskMonitor from './pages/admin/TaskMonitor';
@@ -174,6 +173,9 @@ export default function App() {
           <Route path="datasources" element={<Admin embeddedTab="datasources" />} />
           <Route path="tables" element={<Admin embeddedTab="metadata" />} />
           <Route path="ontology" element={<OntologyModeling />} />
+          {/* 进化中心已并入「本体建模」页（2026-11-21 拍板：进化中心放到本体建模里，替换建模待办），
+              侧栏不再单列入口；旧地址保留重定向兼容书签，落点是建模页的 evolution 页签 */}
+          <Route path="evolution" element={<Navigate to="/data/ontology?tab=evolution" replace />} />
           {/* 建模待办不再是独立页：它作为「本体建模」页左侧「跨模型」分区的页内页签渲染
               （用户 2026-11-19：建模待办不要跳转了，直接在建模页里实现），
               路由与侧栏菜单、菜单/权限点登记同批退出。 */}
@@ -265,7 +267,8 @@ export default function App() {
           <Route path="sandbox" element={<SandboxManagement />} />
           <Route path="observability" element={<Observability />} />
           <Route path="eval" element={<EvalManagement />} />
-          <Route path="evolution" element={<EvolutionCenter />} />
+          {/* 进化中心已并入「本体建模」页（建模页内 evolution 页签），旧地址重定向兼容书签 */}
+          <Route path="evolution" element={<Navigate to="/data/ontology?tab=evolution" replace />} />
           {/* 旧地址重定向: 书签与外部链接不能凭空 404 */}
           <Route path="knowledge-management" element={<Navigate to="/data/scenario" replace />} />
           <Route path="dashboards" element={<Dashboard />} />

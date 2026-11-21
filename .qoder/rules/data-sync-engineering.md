@@ -70,13 +70,29 @@ description: 数据工程域（数据同步/DAG/UDF/定时物化）属人专属�
 - 本域新功能验收判据**必须包含**两条：① 落地行数与源侧对账相等；② 未登记的源/表被显式拒绝。"跑通了"不算验收。
 
 ## 9. 规则生效状态（诚实记账，未完成项不得当作已存在）
-截至本规则写入时，以下三项**尚未执行**，属于本规范的待落地尾部（与代码/迁移同批完成，不单独漂在文档里）：
-1. **迁移并应用**：新写 `docker/mysql/sync_dag_ai_access_none_migration.sql`，把 `sync:read`/`sync:manage`/`sync:execute`/`sync-logs:read`/`dag:read`/`dag:manage`/`udf:*` 的
-   `ai_access` 钉为 `none`、`ai_action_key` 置空、`ai_note` 写原因（现状：`perm_ai_access_migration.sql` 把 `sync:manage`/`sync:execute` 配成了 **`write`**、`sync:read`/`sync-logs:read` 配成了 **`read`**，`dag:*` 靠默认值逃过了逐项分类）；幂等可重跑，**并应用到当前库**后核验。
-2. **代码层 cap**：`backend/core/perm_link.py: SECRET_BOUND_NONE_PERMS` 增加上述权限码。
-3. **回归断言**：`tests/test_function_ai_access.py` 新增“本域有效级别必为 none 且不得列入 `PERM_GATED_ACTION_PERMS`” 用例；角色页（`ai_channel`）对这些码如实标注“不接 AI”。
+### 9.1 已落地（2026-11-21）
+本域形态已收窄为**本项目自用的定时物化**：来源=数据集（SQL 型）、目标=平台已登记数据源表（不隐式建表）、
+执行=DAG 引擎（单步物化=单节点 `materialize` DAG，多步编排仍在 DAG 编辑器），运行记录=`adh_dag_runs`/`adh_dag_node_runs`。
+配套代码：`backend/modules/flow/dag/materialize_runner.py`（预算即拒/分区回看/逐日原子提交）、
+`target_writer.write_dataframe_atomic`（staging+原子切换+目标侧 COUNT 对账）、`dag_service.finish_node_run(result=…)`
+（节点结果摘要落 `result_json`，`_result_summary` 白名单脱敏）。
 
-→ 三项完成前，本规则 §2 的约束靠评审执行；完成后由代码与用例把门。
+1. **迁移并应用**：`docker/mysql/materialize_scope_migration.sql` 已把 `sync:read`/`sync:manage`/`sync:execute`/`sync-logs:read`/
+   `dag:read`/`dag:manage`/`udf:*` 的 `ai_access` 钉为 `none`、`ai_action_key` 置空、`ai_note` 写原因，并已应用到当前库核验。
+2. **代码层 cap**：`backend/core/perm_link.py: SECRET_BOUND_NONE_PERMS` 已含上述权限码（配置抬不上去）。
+3. **回归断言**：`tests/test_function_ai_access.py::test_data_engineering_perms_are_never_ai_callable` /
+   `…_not_registered_as_function_tools` 已把门；`tests/test_materialize_runner.py`、`tests/test_dag_engine.py`（物化校验器/结果摘要脱敏）、
+   `tests/test_capability_perm_bindings.py::test_materialize_pages_are_covered_by_their_menu_codes` 锁接口落点。
+
+### 9.2 收窄时暴露的口径缺陷（已修，防复发）
+- **菜单 key 必须以侧栏 `toMenuKey(routeKey)` 为真值**：`/data/sync/logs` → `data:sync/logs`。
+  `data:sync-logs` 是已退役的 `is_active=0` 旧行，改它等于没改（角色页仍显示旧 section/label，`ai_access` 还停在 `read`）。
+- **页面换通道必须同批改 `api_pattern`**：任务页从 `/api/sync/*` 改读 `/api/dag/workflows*`、运行记录页改读 `/api/dag/runs*`，
+  菜单码不变但接口落点必须跟着改，否则「菜单看得见、点进去 403」（menu-permission-sync §2-4）。
+- **`0` 不是“未配置”**：预算/批量/回看天数用 `int(x or default)` 会把显式 0 静默吃成默认口径；
+  统一走 `materialize_runner.int_or_default`（None/空串才默认，0/负数报 `BUDGET_INVALID`/`CONFIG_INVALID`）。
+
+→ 前述三项已由代码与用例把门，§2 不再依赖评审兜底。
 
 ## 10. 与相邻规则的关系
 - 取数口与审计基线：`security-guardrails.md` §1（本域边界已在该节 §1 末条声明）、§5（`LIMIT` 语义划界）、§9（审计分列）、§12（反模式）。

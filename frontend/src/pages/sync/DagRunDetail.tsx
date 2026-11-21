@@ -39,6 +39,20 @@ function StatusBadge({ status }: { status: string | null }) {
   return <Badge variant="outline" className={conf.className}>{conf.label}</Badge>;
 }
 
+// 节点类型显示为业务名（不把 materialize/sql_task 这类内部枚举直接抛给用户）
+const NODE_TYPE_LABEL: Record<string, string> = {
+  materialize: tr('k_979c3cfe21'),
+  sync: tr('k_e88ab5ba61'),
+  sql_task: tr('k_c250192752'),
+  control: tr('k_34e47d7e3e'),
+};
+
+const WRITE_MODE_LABEL: Record<string, string> = {
+  overwrite: tr('k_8cd94a9232'),
+  append: tr('k_b64615865c'),
+  partition_overwrite: tr('k_83dbc5deef'),
+};
+
 function fmtTime(value?: string | null): string {
   return value ? String(value).replace('T', ' ').slice(0, 19) : '—';
 }
@@ -69,6 +83,7 @@ export default function DagRunDetail() {
   const [nodeRuns, setNodeRuns] = useState<DagNodeRun[]>([]);
   const [graph, setGraph] = useState<{ nodes: any[]; edges: { from: string; to: string }[] }>({ nodes: [], edges: [] });
   const [errorDetail, setErrorDetail] = useState<DagNodeRun | null>(null);
+  const [resultDetail, setResultDetail] = useState<DagNodeRun | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const load = async () => {
@@ -250,7 +265,7 @@ export default function DagRunDetail() {
             ) : nodeRuns.map(nr => (
               <TableRow key={nr.id}>
                 <TableCell className="font-medium">{nr.node_key}</TableCell>
-                <TableCell className="text-muted-foreground">{nr.node_type}</TableCell>
+                <TableCell className="text-muted-foreground">{NODE_TYPE_LABEL[nr.node_type] || nr.node_type}</TableCell>
                 <TableCell><StatusBadge status={nr.status} /></TableCell>
                 <TableCell>{nr.attempt}</TableCell>
                 <TableCell>{nr.rows_read}</TableCell>
@@ -258,15 +273,58 @@ export default function DagRunDetail() {
                 <TableCell>{nr.elapsed_ms != null ? `${nr.elapsed_ms}ms` : '—'}</TableCell>
                 <TableCell className="text-xs">{fmtTime(nr.finished_at)}</TableCell>
                 <TableCell className="text-right">
-                  {nr.error_message ? (
-                    <Button variant="ghost" size="sm" className="text-red-500" onClick={() => setErrorDetail(nr)}>{t("k_8b0f6c2374")}</Button>
-                  ) : '—'}
+                  <div className="flex justify-end gap-1">
+                    {nr.result_json && Object.keys(nr.result_json).length > 0 && (
+                      <Button variant="ghost" size="sm" onClick={() => setResultDetail(nr)}>{tr('k_7388cb5ee9')}</Button>
+                    )}
+                    {nr.error_message && (
+                      <Button variant="ghost" size="sm" className="text-red-500" onClick={() => setErrorDetail(nr)}>{t("k_8b0f6c2374")}</Button>
+                    )}
+                    {!nr.error_message && !(nr.result_json && Object.keys(nr.result_json).length > 0) && '—'}
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
+
+      {/* 物化结果（平台自产摘要：分区 / 对账 / 写入策略，不含数据行与生成 SQL） */}
+      <Dialog open={!!resultDetail} onOpenChange={() => setResultDetail(null)}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{tr('k_7388cb5ee9')}{' '}{resultDetail?.node_key}</DialogTitle>
+          </DialogHeader>
+          {resultDetail?.result_json && (
+            <div className="space-y-2 text-sm">
+              {[
+                [tr('k_fc2b4735c3'), resultDetail.result_json.dataset || '—'],
+                [tr('k_442be9c497'), resultDetail.result_json.target || '—'],
+                [tr('k_244d6de40f'),
+                  WRITE_MODE_LABEL[String(resultDetail.result_json.write_mode)]
+                  || resultDetail.result_json.write_mode || '—'],
+                [tr('k_66c260d88c'), (resultDetail.result_json.partitions || []).join('、') || '—'],
+                [tr('k_7e1ed047d6'), resultDetail.result_json.strategy || '—'],
+                [tr('k_b7ef6de9b3'), resultDetail.result_json.budget?.max_rows != null
+                  ? String(resultDetail.result_json.budget.max_rows) : '—'],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="flex gap-2">
+                  <span className="text-muted-foreground shrink-0">{label}</span>
+                  <span className="break-all">{value}</span>
+                </div>
+              ))}
+              <div className="flex gap-2 items-center">
+                <span className="text-muted-foreground">{tr('k_53d880a916')}</span>
+                <Badge variant="outline" className={resultDetail.result_json.reconciled
+                  ? 'bg-green-500/10 text-green-500 border-green-500/20'
+                  : 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'}>
+                  {resultDetail.result_json.reconciled ? tr('k_53d880a916') : tr('k_13c008c635')}
+                </Badge>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!errorDetail} onOpenChange={() => setErrorDetail(null)}>
         <DialogContent>

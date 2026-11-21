@@ -35,6 +35,9 @@ from backend.semantics.sql_params import (
 INNER_LIMIT = 5000
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 2000
+# 物化（数据工程通道）上限：交互式取数的 200/2000 是"给人看"的预算，物化是"给表写"的预算。
+# 两者不得互相借用：物化必须由调用方显式给出行数预算，本模块只做硬上界防呆。
+MATERIALIZE_MAX_LIMIT = 5_000_000
 
 # 过滤算子白名单（与语义层 intent filters 对齐）：比较类走符号表，其余单独渲染
 _FILTER_SYMBOLS = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
@@ -204,12 +207,12 @@ def _render_condition(lhs: str, op: str, value: Any, values: Any) -> Optional[st
     return f"{lhs} {sym} {literal(value)}"
 
 
-def _clamp_limit(raw: Any) -> int:
+def _clamp_limit(raw: Any, upper: int = MAX_LIMIT) -> int:
     try:
         n = int(raw) if raw not in (None, "") else DEFAULT_LIMIT
     except (TypeError, ValueError):
         n = DEFAULT_LIMIT
-    return max(1, min(n, MAX_LIMIT))
+    return max(1, min(n, max(1, int(upper))))
 
 
 def _is_aggregate_expr(expr: Any) -> bool:
@@ -217,14 +220,14 @@ def _is_aggregate_expr(expr: Any) -> bool:
     return bool(_AGG_CALL_RE.search(str(expr or "")))
 
 
-def _flat_detail_sql(rendered: str, limit: Any) -> str:
+def _flat_detail_sql(rendered: str, limit: Any, upper: int = MAX_LIMIT) -> str:
     """明细形状且不套子查询时的正文 + 行数上限。
 
     包裹形态 `SELECT * FROM (body) LIMIT n` 在 Presto 类端点上对 `WITH` 开头的正文
     不合法，所以这里不套壳：把外层 limit 与正文自带的尾部 LIMIT 取小值合一，
     与包裹版的行数上限语义完全一致（不会多给也不会少给）。
     """
-    n = _clamp_limit(limit)
+    n = _clamp_limit(limit, upper)
     body = rendered.rstrip().rstrip(";").rstrip()
     m = _TRAILING_LIMIT_RE.search(body)
     if not m:
@@ -244,11 +247,20 @@ def compile_dataset(
     limit: Any = None,
     time_grain: Optional[str] = None,
     db_type: str = "mysql",
+    inner_limit: Optional[int] = None,
+    max_limit: Optional[int] = None,
 ) -> CompiledDataset:
     """把 SQL 数据集编译成一条可执行查询。非法输入抛 `DatasetCompileError`（fail-loud）。
 
     ds: adh_datasets 行（需含 sql_query / variables / sql_bodies / field_config）。
+
+    inner_limit / max_limit 只服务**物化（数据工程通道）**：
+    - `inner_limit` 覆盖内层保底 LIMIT（`0` = 不补，由外层预算 LIMIT 兜）；
+    - `max_limit` 覆盖交互式 MAX_LIMIT 上界（物化按调用方显式预算，硬上界
+      MATERIALIZE_MAX_LIMIT 防呆）。
+    交互式调用方不传这两个参数，行为完全不变（200 默认 / 2000 上限）。
     """
+    upper = max(1, min(int(max_limit), MATERIALIZE_MAX_LIMIT)) if max_limit else MAX_LIMIT
     family = sem_dialect.family_of(db_type)
     engine = sem_dialect.engine_of(db_type)
     out = CompiledDataset(fields=[])
@@ -271,9 +283,12 @@ def compile_dataset(
     if errors:
         raise DatasetCompileError("；".join(errors[:5]))
 
-    # 内层保底 LIMIT（正文自己没写 LIMIT 时补，避免外层聚合前拉全表）
-    if "limit" not in rendered.lower():
-        rendered = f"{rendered.rstrip().rstrip(';')} LIMIT {INNER_LIMIT}"
+    # 内层保底 LIMIT（正文自己没写 LIMIT 时补，避免外层聚合前拉全表）。
+    # 物化通道显式传 inner_limit=0 表示"按外层预算取全量"——不补保底，绝不能让
+    # 5000 行保底把物化结果静默截断（那是错数，不是限流）。
+    effective_inner = INNER_LIMIT if inner_limit is None else int(inner_limit)
+    if effective_inner > 0 and "limit" not in rendered.lower():
+        rendered = f"{rendered.rstrip().rstrip(';')} LIMIT {effective_inner}"
 
     mdl = _FieldMDL(ds.get("field_config"), family)
     inner = f"(\n{rendered}\n) AS _ds_base"
@@ -354,12 +369,12 @@ def compile_dataset(
                 parts.append(f"GROUP BY {', '.join(group_by)}")
             if order_by:
                 parts.append(f"ORDER BY {order_by}")
-            parts.append(f"LIMIT {_clamp_limit(limit)}")
+            parts.append(f"LIMIT {_clamp_limit(limit, upper)}")
             out.sql = "\n".join(parts)
         else:
             out.warnings.append("数据集字段声明上未解析出任何维度/度量, 回落明细形状")
-            out.sql = (_flat_detail_sql(rendered, limit) if flat_detail
-                       else f"SELECT * FROM {inner}" + f" LIMIT {_clamp_limit(limit)}")
+            out.sql = (_flat_detail_sql(rendered, limit, upper) if flat_detail
+                       else f"SELECT * FROM {inner}" + f" LIMIT {_clamp_limit(limit, upper)}")
     else:
         if not mdl.empty and not (dimensions or measures):
             out.warnings.append("数据集未声明维度/度量, 返回明细行（要聚合请传 dimensions/measures）")
@@ -369,10 +384,10 @@ def compile_dataset(
                 "聚合形状由正文决定, 请在字段定义里声明维度/度量")
         where = _where_from(mdl, filters, out) if not mdl.empty else None
         if flat_detail and where is None and not order:
-            out.sql = _flat_detail_sql(rendered, limit)
+            out.sql = _flat_detail_sql(rendered, limit, upper)
         else:
             out.sql = f"SELECT * FROM {inner}" + (f"\nWHERE {where}" if where else "") \
-                + f"\nLIMIT {_clamp_limit(limit)}"
+                + f"\nLIMIT {_clamp_limit(limit, upper)}"
 
     out.resolved_tables = _touched(rendered, family, out)
     return out

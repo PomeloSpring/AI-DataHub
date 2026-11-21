@@ -27,12 +27,14 @@ import {
 } from '@/api/dag';
 import { udfApi, type Udf } from '@/api/udf';
 import { DatasourceSelect } from './DatasourceSelect';
+import { DatasetSelect, useMaterializableDatasets } from './DatasetSelect';
 import DagDataflowView from './DagDataflowView';
 import { useTranslation } from 'react-i18next';
 
 // ── 自定义节点 ──────────────────────────────────────────────────
 const TYPE_LABEL: Record<string, string> = {
-  sync: tr('k_e88ab5ba61'), sql_task: tr('k_c250192752'), control: tr('k_34e47d7e3e'),
+  materialize: tr('k_979c3cfe21'), sync: tr('k_e88ab5ba61'),
+  sql_task: tr('k_c250192752'), control: tr('k_34e47d7e3e'),
 };
 
 function DagTaskNode({ data, selected }: NodeProps) {
@@ -93,6 +95,9 @@ function layoutGraph(graph: DagGraph): Node[] {
 }
 
 function nodeHint(n: DagNode): string {
+  if (n.type === 'materialize') {
+    return `${n.config.dataset || ''} → ${n.config.target_table || ''}`;
+  }
   if (n.type === 'sync') return `${n.config.source_table || ''} → ${n.config.target_table || ''}`;
   if (n.type === 'sql_task') return n.config.target?.table ? `→ ${n.config.target.table}` : tr('k_711363c424');
   return n.config.action === 'fail' ? tr('k_ff24cedd52') : tr('k_dcc4233255');
@@ -114,6 +119,106 @@ function toGraph(rfNodes: Node[], rfEdges: Edge[], existing: DagGraph): DagGraph
   };
 }
 
+// ── 物化节点配置（数据集 → 已登记目标表；分区/预算/批量） ──────────
+function MaterializeConfigPanel({ config, set }: { config: any; set: (patch: any) => void }) {
+  const datasets = useMaterializableDatasets();
+  const params = datasets.find(d => d.name === config.dataset)?.params || [];
+  const partition = config.partition || {};
+  const budget = config.budget || {};
+  const setPartition = (patch: any) => set({ partition: { ...partition, ...patch } });
+  const setBudget = (patch: any) => set({ budget: { ...budget, ...patch } });
+  const toNum = (v: string) => (v.trim() && Number.isFinite(Number(v)) ? Number(v) : undefined);
+
+  return (
+    <>
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">{t("k_fc2b4735c3")}</label>
+        <div className="mt-1">
+          <DatasetSelect value={config.dataset} datasets={datasets}
+            onChange={v => set({ dataset: v, partition: { ...partition, date_arg: '' } })} />
+        </div>
+      </div>
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">{t("k_6daeb016b3")}</label>
+        <div className="mt-1"><DatasourceSelect value={config.target_datasource} onChange={v => set({ target_datasource: v })} /></div>
+      </div>
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">{t("k_442be9c497")}</label>
+        <Input className="mt-1" value={config.target_table || ''} onChange={e => set({ target_table: e.target.value })} />
+      </div>
+      <div>
+        <label className="text-xs font-medium text-muted-foreground">{t("k_244d6de40f")}</label>
+        <Select value={config.write_mode || 'partition_overwrite'}
+          onValueChange={v => set({
+            write_mode: v,
+            partition: v === 'partition_overwrite' ? partition : undefined,
+          })}>
+          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="partition_overwrite">{t("k_83dbc5deef")}</SelectItem>
+            <SelectItem value="overwrite">{t("k_8cd94a9232")}</SelectItem>
+            <SelectItem value="append">{t("k_b64615865c")}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {config.write_mode === 'partition_overwrite' && (
+        <div className="border rounded-lg p-2 space-y-2">
+          <div className="text-xs font-medium">{tr('k_de6418afb3')}</div>
+          <div>
+            <label className="text-xs text-muted-foreground">{tr('k_6ee8f215b6')}</label>
+            <Select value={partition.date_arg || ''} onValueChange={v => setPartition({ date_arg: v })}>
+              <SelectTrigger className="mt-1"><SelectValue placeholder={tr('k_f4bf86975d')} /></SelectTrigger>
+              <SelectContent>
+                {params.length === 0 && <SelectItem value="__none__" disabled>{tr('k_73fc81271d')}</SelectItem>}
+                {params.map(p => (
+                  <SelectItem key={p.key} value={p.key}>{p.label || p.key}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">{tr('k_a4d4228a94')}</label>
+            <Input className="mt-1" value={partition.column || ''} onChange={e => setPartition({ column: e.target.value })} />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">{tr('k_94ec865db6')}</label>
+            <Input className="mt-1" placeholder="p{yyyyMMdd}" value={partition.target_partition || ''}
+              onChange={e => setPartition({ target_partition: e.target.value })} />
+            <p className="text-[10px] text-muted-foreground mt-1">{tr('k_aa9be99c63')}</p>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">{tr('k_56f5690c96')}</label>
+            <Input className="mt-1" type="number" min={1} max={366} placeholder="1"
+              value={partition.lookback_days ?? ''}
+              onChange={e => setPartition({ lookback_days: toNum(e.target.value) })} />
+          </div>
+        </div>
+      )}
+
+      <div className="border rounded-lg p-2 space-y-2">
+        <div className="text-xs font-medium">{tr('k_e2462800c6')}</div>
+        <div>
+          <label className="text-xs text-muted-foreground">{tr('k_b7ef6de9b3')}</label>
+          <Input className="mt-1" type="number" min={1} value={budget.max_rows ?? ''}
+            onChange={e => setBudget({ max_rows: toNum(e.target.value) })} />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">{tr('k_10225ebef2')}</label>
+          <Input className="mt-1" type="number" min={1} value={budget.max_seconds ?? ''}
+            onChange={e => setBudget({ max_seconds: toNum(e.target.value) })} />
+        </div>
+        <div>
+          <label className="text-xs text-muted-foreground">{tr('k_3d2f6e5259')}</label>
+          <Input className="mt-1" type="number" min={1} max={20000} value={config.batch_size ?? ''}
+            onChange={e => set({ batch_size: toNum(e.target.value) })} />
+        </div>
+        <p className="text-[10px] text-muted-foreground">{tr('k_56634acc0a')}</p>
+      </div>
+    </>
+  );
+}
+
 // ── 节点配置面板 ────────────────────────────────────────────────
 function NodeConfigPanel({
   node, udfs, onChange,
@@ -127,6 +232,10 @@ function NodeConfigPanel({
         <label className="text-xs font-medium text-muted-foreground">{t("k_3de90b4272")}</label>
         <Input className="mt-1" value={node.name || ''} onChange={e => onChange({ ...config, __name: e.target.value })} />
       </div>
+
+      {node.type === 'materialize' && (
+        <MaterializeConfigPanel config={config} set={set} />
+      )}
 
       {node.type === 'sync' && (
         <>
@@ -426,6 +535,8 @@ export default function DagEditor() {
         {/* Left: node palette */}
         <div className="w-[180px] border-r p-3 space-y-2">
           <p className="text-xs font-medium text-muted-foreground">{t("k_e840cd6f1e")}</p>
+          <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('materialize')}>
+            <Plus className="w-3.5 h-3.5 mr-1" />{tr('k_979c3cfe21')}</Button>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('sync')}>
             <Plus className="w-3.5 h-3.5 mr-1" />{tr('k_95753ea661')}</Button>
           <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => addNode('sql_task')}>

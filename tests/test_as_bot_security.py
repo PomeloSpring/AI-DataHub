@@ -1376,6 +1376,42 @@ def test_tool_error_branches_all_pass_outbound_guard():
         f"compat.guarded 第 {offenders} 行把动态错误文本未经 assert_no_sensitive 下发，会泄露物理结构")
 
 
+def test_knowledge_proposal_errors_pass_outbound_guard(monkeypatch):
+    """知识更新提议工具的错误分支必须能安全下发（护栏 §7）。
+
+    提议工具是 LLM 唯一能主动“写企业知识”的入口，它的错误一旦原样回显
+    （驱动报错里的物理列名/表名），模型就能借失败信息探 schema。本用例证明
+    这个工具的结果确实经出站守卫：干净的错误原样通过，含结构信息的被拒。
+    """
+    from backend.common.auth import resolve_execution_owner  # noqa: F401
+    from backend.core import perm_link
+    from backend.modules.catalog.services import knowledge_update_service as kus
+    from backend.modules.mind.execution import function_tools, outbound_guard
+    from backend.modules.mind.execution.sdk_tools import context as sdk_context
+
+    monkeypatch.setattr(
+        sdk_context, "get_execution_context",
+        lambda: SimpleNamespace(user_id=2, workspace_id=3, extra={}))
+    monkeypatch.setattr(function_tools, "_identity", lambda: {"user_id": 2})
+    monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
+
+    # 1) 干净的业务错误：原样下发（不把“能解释给用户”的建议也当成敏感信息 吞掉）
+    monkeypatch.setattr(kus, "create_proposal", lambda **k: (_ for _ in ()).throw(
+        ValueError("target_type 不合法，应为 ['kb_doc', 'scenario', 'ontology_object']")))
+    clean = function_tools._create_knowledge_proposal({"target_type": "x", "title": "t"})
+    assert clean.get("isError") is True
+    assert outbound_guard.assert_no_sensitive(clean) is clean
+
+    # 2) 驱动报错（含物理结构）：守卫必须拒发，不得把原文交给模型
+    monkeypatch.setattr(kus, "create_proposal", lambda **k: (_ for _ in ()).throw(
+        ValueError("Unknown column 'kw_title' in 'field list'")))
+    leaky = function_tools._create_knowledge_proposal({"target_type": "kb_doc", "title": "t"})
+    guarded = outbound_guard.assert_no_sensitive(leaky)
+    assert guarded.get("isError") is True
+    assert "raw_db_error" in guarded["content"][0]["text"]
+    assert "kw_title" not in guarded["content"][0]["text"]
+
+
 def test_vis_component_projection_strips_credential_keys():
     """字模下发视图必须剥掉凭据键（地图瓦片字模的 apiKey 曾让整条结果被出站守卫拒发）。
 

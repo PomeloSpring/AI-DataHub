@@ -108,11 +108,24 @@ def test_content_reads_are_marked_read_only():
 # ── 2. 边界：发布/审核/语料写没有任何 AI 工具可走 ─────────────────────────────
 
 def test_no_ai_tool_can_publish_archive_or_review():
-    """工具面上不得出现发布/下架/审核/语料写动作（换工具绕过是这类设计最常见的破口）。"""
-    names = " ".join(ft.FUNCTION_ACTION_SPECS).lower() + " " + " ".join(
-        s["tool_name"] for s in ft.FUNCTION_ACTION_SPECS.values()).lower()
+    """内容工具面上不得出现发布/下架/审核/语料写动作（换工具绕过是这类设计最常见的破口）。
+
+    ``reject`` 这一条只对**内容动作**禁（内容审核没有 AI 工具可走）。进化中心的
+    “驳回候选/驳回提议”是另一个域的处置（evolution:manage + ontology:save/knowledge:manage
+    双闸，见 tests/test_evolution_chat_review.py），不是内容审核，不能因字面同名而被当绕过。
+    """
+    content = [k for k, s in ft.FUNCTION_ACTION_SPECS.items()
+               if s["perm_code"] == "article:manage"]
+    assert content, "内容动作清单为空，断言失去意义"
+    content_names = " ".join(content).lower() + " " + " ".join(
+        ft.FUNCTION_ACTION_SPECS[k]["tool_name"] for k in content).lower()
     for banned in ("publish", "archive", "approve", "reject", "withdraw", "waive"):
-        assert banned not in names, f"出现了不该开放给 AI 的内容动作关键词: {banned}"
+        assert banned not in content_names, f"内容工具面出现了发布/审核类动作: {banned}"
+    # 全局：发布/归档/审核这几个词在任何域都不应作为 AI 动作出现
+    all_names = " ".join(ft.FUNCTION_ACTION_SPECS).lower() + " " + " ".join(
+        s["tool_name"] for s in ft.FUNCTION_ACTION_SPECS.values()).lower()
+    for banned in ("publish", "archive", "approve", "withdraw", "waive"):
+        assert banned not in all_names, f"出现了不该开放给 AI 的动作关键词: {banned}"
 
 
 def test_review_and_publish_perms_are_not_ai_callable():

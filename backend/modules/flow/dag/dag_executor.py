@@ -44,6 +44,27 @@ def _public_error(exc: Exception) -> tuple:
     return "NODE_FAILED", _EXEC_FAIL_HINT
 
 
+_RESULT_KEEP_KEYS = (
+    "dataset", "target", "write_mode", "partitions", "reconciled", "strategy",
+    "budget", "quality", "data_product", "udf_versions",
+)
+
+
+def _result_summary(result: dict) -> dict:
+    """节点结果摘要（落 adh_dag_node_runs.result_json 供执行日志展示）。
+
+    白名单取字段：只留平台自产的结构化指标（分区/对账/策略/预算/质量），
+    不落数据行、列明细、生成 SQL 与凭据（护栏 §7）；列名清单只回数量。
+    """
+    if not isinstance(result, dict):
+        return {}
+    summary = {k: result[k] for k in _RESULT_KEEP_KEYS if result.get(k) not in (None, "", [], {})}
+    columns = result.get("columns")
+    if isinstance(columns, list) and columns:
+        summary["column_count"] = len(columns)
+    return summary
+
+
 def _resolve_owner(workflow: dict) -> dict:
     owner_id = int(workflow.get("owner_id") or 0)
     if owner_id <= 0:
@@ -183,7 +204,7 @@ def _execute_node_with_retry(run_id: int, workflow_id: int, node: dict,
             dag_service.finish_node_run(
                 node_run_id, "success",
                 rows_read=node_stats["rows_read"], rows_written=node_stats["rows_written"],
-                elapsed_ms=elapsed_ms)
+                elapsed_ms=elapsed_ms, result=_result_summary(result))
             return "success", node_stats
         except RunStopped:
             dag_service.finish_node_run(node_run_id, "cancelled",

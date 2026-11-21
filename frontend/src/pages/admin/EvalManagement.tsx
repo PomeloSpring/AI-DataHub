@@ -164,7 +164,8 @@ export default function EvalManagement() {
         <h1 className="text-lg font-semibold">{t("k_7ef657c48e")}</h1>
         <Badge variant="outline" className="text-[10px]">{t('k_df39a57c25')}</Badge>
         <div className="flex-1" />
-        <Link to="/system/evolution">
+        {/* 进化中心已迁至数据中台「数据资产」段（语义资产的生产面，不属系统配置）；入口保留以便从评测失败跳到候选 */}
+        <Link to="/data/evolution">
           <Button variant="outline" size="sm">
             <Dna className="h-3.5 w-3.5 mr-1" />{t('k_849e449611')}
           </Button>

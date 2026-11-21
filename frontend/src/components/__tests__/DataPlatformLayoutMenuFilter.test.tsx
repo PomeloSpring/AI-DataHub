@@ -93,7 +93,23 @@ describe('数据中台侧栏按菜单码显隐', () => {
     renderLayout();
     expect(screen.getByText('决策建议')).toBeInTheDocument();
     expect(screen.getByText('关系图谱')).toBeInTheDocument();
+    // 进化中心已并入「本体建模」页内页签（2026-11-21，evolution_center_merge_migration.sql），
+    // 侧栏不得再出现这个入口（否则一处入口在侧栏、一处在页内，人要在两处找）
+    expect(screen.queryByText('进化中心')).not.toBeInTheDocument();
     // 「建模待办」已并入「本体建模」页内页签（用户 2026-11-19），侧栏不得再出现这个入口
     expect(screen.queryByText('建模待办')).not.toBeInTheDocument();
+  });
+
+  it('进化中心不再是侧栏入口：只授 evolution:read 时侧栏不出现（入口在本体建模页内）', () => {
+    usePermissionStore.setState({
+      loaded: true, unrestricted: false,
+      allowedMenus: ['data:datasets', 'data:ontology', 'data:metrics'],
+      perms: ['evolution:read'],
+    });
+    renderLayout();
+    const nav = screen.getByRole('navigation', { name: '数据中台导航' });
+    const labels = within(nav).getAllByRole('button').map(b => b.textContent?.trim()).filter(Boolean);
+    expect(labels).toEqual(['数据集', '本体建模', '指标与维度']);
+    expect(within(nav).queryByText('进化中心')).not.toBeInTheDocument();
   });
 });

@@ -123,6 +123,48 @@ def test_new_codes_are_narrow_and_active(conn):
         assert r["api_method"] == method, f"{code} 的 api_method 漂移: {r['api_method']!r}"
 
 
+def test_materialize_pages_are_covered_by_their_menu_codes(conn):
+    """定时物化两页的接口落点必须被各自的菜单码覆盖（否则“看得见菜单、点进去 403”）。
+
+    历史缺口：页面从 `/api/sync/*` 改读 `/api/dag/*` 后，菜单仍是 sync:* / sync-logs:read，
+    而这两组码只绑了 `/api/sync*` → 非 admin 角色进去就 403。
+    """
+    # 菜单真值 key 必须是侧栏 toMenuKey('/data/sync/logs') 的结果（不是退役的 data:sync-logs）
+    menus = {r["menu_key"]: r for r in _rows(
+        conn, "SELECT menu_key, perm_code, ai_access, label FROM adh_menu_registry "
+              "WHERE menu_key IN ('data:sync','data:sync/logs','data:udfs')")}
+    assert set(menus) == {"data:sync", "data:sync/logs", "data:udfs"}, sorted(menus)
+    assert menus["data:sync/logs"]["label"] == "运行记录"
+    for key, row in menus.items():
+        assert row["perm_code"], f"{key} 未挂权限码（角色页渲染不出）"
+        assert row["ai_access"] == "none", f"{key} 属数据工程域，菜单侧 AI 默认级别必须为 none"
+
+    # 页面实际调用的接口：物化任务（读写/执行）+ 运行记录（只读）
+    task_read = [("GET", "/api/dag/workflows"), ("GET", "/api/dag/workflows/12"),
+                 ("GET", "/api/dag/workflows/12/runs")]
+    task_write = [("POST", "/api/dag/workflows"), ("PUT", "/api/dag/workflows/12"),
+                  ("DELETE", "/api/dag/workflows/12")]
+    task_exec = [("POST", "/api/dag/workflows/12/run"), ("POST", "/api/dag/runs/9/retry")]
+    logs_read = [("GET", "/api/dag/runs"), ("GET", "/api/dag/runs/9"),
+                 ("GET", "/api/dag/workflows")]
+
+    for method, path in task_read:
+        assert "sync:read" in _owners(conn, method, path), f"{method} {path} 未被 sync:read 覆盖"
+    for method, path in task_write:
+        assert "sync:manage" in _owners(conn, method, path), f"{method} {path} 未被 sync:manage 覆盖"
+    for method, path in task_exec:
+        assert "sync:execute" in _owners(conn, method, path), f"{method} {path} 未被 sync:execute 覆盖"
+    for method, path in logs_read:
+        assert "sync-logs:read" in _owners(conn, method, path), f"{method} {path} 未被 sync-logs:read 覆盖"
+
+    # 不扩权：没有 sync:read 的角色不应因本批变更凭空获得运行记录权限
+    have_read = {r["role_id"] for r in _rows(
+        conn, "SELECT role_id FROM adh_role_perms WHERE perm_code='sync:read'")}
+    have_logs = {r["role_id"] for r in _rows(
+        conn, "SELECT role_id FROM adh_role_perms WHERE perm_code='sync-logs:read'")}
+    assert have_read <= have_logs, f"已见物化任务却看不到运行记录的角色: {sorted(have_read - have_logs)}"
+
+
 def test_patch_toggles_are_writable_by_manage_codes(conn):
     # 启停是 PATCH：方法集漏 PATCH 时，持 manage 码的角色点开关恒 403
     for code in ("scheduled:manage", "sync:manage"):

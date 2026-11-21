@@ -44,7 +44,12 @@ def _dataflow_summary(graph: dict) -> str:
     sources, targets = [], []
     for node in (graph or {}).get("nodes") or []:
         config = node.get("config") or {}
-        if node.get("type") == "sync":
+        if node.get("type") == "materialize":
+            if config.get("dataset"):
+                sources.append(str(config["dataset"]))
+            if config.get("target_datasource") and config.get("target_table"):
+                targets.append(f"{config['target_datasource']}.{config['target_table']}")
+        elif node.get("type") == "sync":
             if config.get("source_datasource") and config.get("source_table"):
                 sources.append(f"{config['source_datasource']}.{config['source_table']}")
             if config.get("target_datasource") and config.get("target_table"):
@@ -290,12 +295,19 @@ class DagService:
 
     def finish_node_run(self, node_run_id: int, status: str, rows_read: int = 0,
                         rows_written: int = 0, elapsed_ms: int = 0,
-                        error_code: str = "", error_message: str = "") -> bool:
+                        error_code: str = "", error_message: str = "",
+                        result: Optional[dict] = None) -> bool:
+        """落节点终态；result 为可审计的执行结果摘要（物化分区/对账/写入策略）。
+
+        result 只存平台自己产出的结构化摘要（不含数据行、凭据、生成 SQL），
+        供执行日志页展示“写了哪些分区、是否对账通过”，不当成功判定依据。
+        """
         return execute_write(
             "UPDATE adh_dag_node_runs SET status=%s, rows_read=%s, rows_written=%s, "
-            " elapsed_ms=%s, error_code=%s, error_message=%s, finished_at=%s "
+            " elapsed_ms=%s, error_code=%s, error_message=%s, result_json=%s, finished_at=%s "
             "WHERE id=%s AND status='running'",
             (status, rows_read, rows_written, elapsed_ms, error_code, error_message,
+             json.dumps(result, ensure_ascii=False) if result else None,
              _now(), node_run_id)) == 1
 
     def skip_node_run(self, run_id: int, node_key: str, node_type: str,
@@ -315,6 +327,7 @@ class DagService:
             (run_id,)) or []
         for row in rows:
             row["node_config"] = _json_loads(row.get("node_config")) or {}
+            row["result_json"] = _json_loads(row.get("result_json")) or {}
         return rows
 
     def latest_node_status(self, run_id: int) -> dict:

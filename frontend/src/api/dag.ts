@@ -2,6 +2,17 @@ import client from './client';
 
 // ── 类型 ────────────────────────────────────────────────────────
 export interface DagNodeConfig {
+  // materialize 节点（定时物化主形态：数据集 → 已登记目标表）
+  dataset?: string;
+  site?: string;
+  args?: Record<string, string>;
+  partition?: {
+    column?: string;
+    date_arg?: string;
+    target_partition?: string;
+    lookback_days?: number;
+  };
+  budget?: { max_rows?: number; max_seconds?: number };
   // sync 节点
   source_datasource?: string;
   source_table?: string;
@@ -9,7 +20,7 @@ export interface DagNodeConfig {
   target_table?: string;
   sync_mode?: 'full' | 'incremental';
   incremental_column?: string;
-  write_mode?: 'append' | 'overwrite';
+  write_mode?: 'append' | 'overwrite' | 'partition_overwrite';
   batch_size?: number;
   // sql_task 节点
   sql?: string;
@@ -24,7 +35,7 @@ export interface DagNodeConfig {
 export interface DagNode {
   key: string;
   name?: string;
-  type: 'sync' | 'sql_task' | 'control';
+  type: 'materialize' | 'sync' | 'sql_task' | 'control';
   config: DagNodeConfig;
 }
 
@@ -73,6 +84,8 @@ export interface DagNodeRun {
   elapsed_ms: number | null;
   error_code?: string;
   error_message?: string;
+  /** 执行结果摘要（物化：dataset/target/partitions/reconciled/strategy/budget） */
+  result_json?: Record<string, any>;
   started_at?: string | null;
   finished_at?: string | null;
 }

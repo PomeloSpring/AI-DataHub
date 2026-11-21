@@ -1,11 +1,14 @@
-"""DAG 节点执行器 — sync / sql_task / control 三类节点的执行核心。
+"""DAG 节点执行器 — materialize / sync / sql_task / control 四类节点的执行核心。
 
 共同契约：
-- run_node(node, context) -> {"rows_read": int, "rows_written": int}
+- run_node(node, context) -> {"rows_read": int, "rows_written": int, ...}
 - 失败一律抛异常（由 dag_executor 统一记 error_code/脱敏错误），
   不得返回假成功（no-silent-degradation）；
-- 取数一律走 governed_federated_read（统一治理入口，护栏 §1）；
+- 取数一律走统一治理入口（护栏 §1）；
 - 写目标走 target_writer（数据工程写入通道，不返回数据行、不经 LLM）。
+
+materialize 节点（定时物化的主形态）：数据集 → 已登记目标表，执行核心在
+`materialize_runner`（预结算、分区增量、原子切换、目标侧对账）。
 
 context（由 dag_executor 注入）：
 {
@@ -35,6 +38,13 @@ class NodeExecutionError(RuntimeError):
 def run_node(node: dict, context: dict) -> dict:
     ntype = node.get("type")
     config = node.get("config") or {}
+    if ntype == "materialize":
+        from backend.modules.flow.dag.materialize_runner import MaterializeError, run_materialize_node
+        try:
+            return run_materialize_node(config, context)
+        except MaterializeError as exc:
+            # 统一抛 NodeExecutionError：执行器只认这一族错误码，避免 error_code 丢失
+            raise NodeExecutionError(str(exc), exc.error_code) from exc
     if ntype == "sync":
         return run_sync_node(config, context)
     if ntype == "sql_task":
