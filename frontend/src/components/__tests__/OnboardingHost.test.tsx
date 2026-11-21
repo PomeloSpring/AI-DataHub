@@ -71,6 +71,21 @@ describe('取数时机', () => {
     await read();
     expect(vi.mocked(client.get).mock.calls.map(c => c[0])).toEqual(['/release-notes', '/release-notes/state']);
   });
+
+  it('状态拉取失败不当成"首次登录"：不自动弹欢迎，失败不静默', async () => {
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/release-notes') return { data: { items: [NOTE()], latest_version: '1.1.0' } } as any;
+      throw new Error('服务不可用');
+    });
+    renderHost('/ws/7/chat');
+    await read();
+    await new Promise(r => setTimeout(r, 20));
+    // 空 states 与"从未处理过引导"不可区分: 不能拿失败弹"首次登录"
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(useGuideStore.getState().welcomeOpen).toBe(false);
+    // 失败原因仍显式暴露给顶栏公告按钮/面板
+    expect(useGuideStore.getState().error).toContain('服务不可用');
+  });
 });
 
 describe('首次登录', () => {
