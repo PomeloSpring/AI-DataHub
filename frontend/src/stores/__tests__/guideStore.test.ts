@@ -158,6 +158,23 @@ describe('selectAutoPrompt(自动弹出唯一口径)', () => {
     expect(prompt?.notes.map(n => n.version)).toEqual(['1.1.0']);
   });
 
+  it('从公告面板读过更新(只有 note 行、无 guide:welcome) → 不再当首次登录弹', () => {
+    // 历史缺陷: 读公告只写 note:<ver>，缺 welcome 行被当成首次登录，重启/刷新再弹一遍
+    expect(selectAutoPrompt({
+      notes: NOTES,
+      states: { [noteKey('1.1.0')]: { status: 'read' } },
+    })).toBeNull();
+  });
+
+  it('无 guide:welcome 但有待读重大版本 → 按升级弹(不是首次登录)', () => {
+    const prompt = selectAutoPrompt({
+      notes: NOTES,
+      states: { [noteKey('1.0.0')]: { status: 'read' } },
+    });
+    expect(prompt?.reason).toBe('upgrade');
+    expect(prompt?.notes.map(n => n.version)).toEqual(['1.1.0']);
+  });
+
   it('已看过欢迎 + 有未读重大版本 → 按升级弹', () => {
     const prompt = selectAutoPrompt({
       notes: NOTES,

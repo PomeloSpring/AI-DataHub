@@ -51,15 +51,23 @@ export function selectUnreadNotes(s: { notes: ReleaseNote[]; states: Record<stri
 /**
  * 自动弹出判定(唯一口径):
  *   - 命中全局静音(guide:all) → 永不自动弹，只剩手动入口;
- *   - 没有 guide:welcome → 首次登录，弹欢迎总览;
+ *   - 服务端**一条状态都没有**(真正首次使用) → 首次登录，弹欢迎总览;
  *   - 有未读重大版本 → 升级，弹欢迎总览(顶部显示亮点)。
+ *
+ * 「首次登录」的判据是"与服务端引导/公告状态从未打过交道"，而不是"缺 guide:welcome 这一行"。
+ * 历史缺陷: 用户从顶栏公告面板读更新只会写 ``note:<ver>`` 已读(见 ReleaseNotesButton 的
+ * markAllNotesRead)，不写 guide:welcome；若按"缺 welcome 行"判首次登录，则这类用户下次
+ * 刷新/重启会被当成首次登录再弹一遍「欢迎使用 AI-DataHub」——与升级无关的骚扰。
+ * 已有任何状态行 = 已接触过引导/公告，交回升级口径(有未读重大版本才弹)。
  */
 export function selectAutoPrompt(
   s: { notes: ReleaseNote[]; states: Record<string, GuideStateItem> },
 ): { reason: 'first' | 'upgrade'; notes: ReleaseNote[] } | null {
   if (s.states[GUIDE_ALL_KEY]) return null;
   const unreadMajor = selectUnreadNotes(s).filter(n => n.is_major);
-  if (!s.states[GUIDE_WELCOME_KEY]) return { reason: 'first', notes: unreadMajor };
+  const welcomed = !!s.states[GUIDE_WELCOME_KEY];
+  const engaged = Object.keys(s.states).length > 0;
+  if (!welcomed && !engaged) return { reason: 'first', notes: unreadMajor };
   if (unreadMajor.length) return { reason: 'upgrade', notes: unreadMajor };
   return null;
 }

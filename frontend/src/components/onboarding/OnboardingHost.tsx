@@ -18,6 +18,10 @@ import type { ReleaseNote } from '@/api/releaseNotes';
  *
  * 自动弹每次会话只判定一次(autoFired): 关闭失败已有 toast 显式暴露, 不在这里反复骚扰用户。
  * 手动入口(用户菜单/公告面板)不经过本组件的判定, 因此静音标记只压制自动弹, 压不住手动重看。
+ *
+ * 状态拉取**失败**时不判定: 拿不到服务端状态时的空 states 与"用户从未处理过引导"不可区分,
+ * 按空状态弹首次欢迎就是把失败伪装成"首次登录"(no-silent-degradation)。失败由顶栏公告按钮
+ * 转告警态 + 面板内可重试承载, 重试成功后会按真实状态重新判定。
  */
 
 /** 这些路由不弹引导: 登录页无身份; 大屏/分享报告/编辑器是消费态页面, 覆盖一层向导只会碍事 */
@@ -32,6 +36,7 @@ export default function OnboardingHost() {
   const notes = useGuideStore(s => s.notes);
   const states = useGuideStore(s => s.states);
   const loaded = useGuideStore(s => s.loaded);
+  const loadError = useGuideStore(s => s.error);
   const load = useGuideStore(s => s.load);
   const activeGuide = useGuideStore(s => s.activeGuide);
   const welcomeOpen = useGuideStore(s => s.welcomeOpen);
@@ -53,7 +58,7 @@ export default function OnboardingHost() {
 
   // 判定只在状态真变化时发生(load 每会话一次); autoFired 保证本次登录只骚扰一遍
   useEffect(() => {
-    if (!token || !loaded || autoFired.current || !auto) return;
+    if (!token || !loaded || loadError || autoFired.current || !auto) return;
     if (welcomeOpen || activeGuide) return;   // 用户已手动打开: 不覆盖它的内容快照
     if (NO_AUTO_PATHS.some(p => location.pathname.startsWith(p))) return;
     // 只讲当前页面: 本页无引导内容时只剩公告可看, 两者都没有就不弹
@@ -62,7 +67,7 @@ export default function OnboardingHost() {
     autoFired.current = true;
     setUpgradeNotes(auto.notes);
     requestWelcome();
-  }, [auto, token, loaded, location.pathname, hereGuide, welcomeOpen, activeGuide, requestWelcome]);
+  }, [auto, token, loaded, loadError, location.pathname, hereGuide, welcomeOpen, activeGuide, requestWelcome]);
 
   if (!token) return null;
 
