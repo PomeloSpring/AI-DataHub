@@ -99,6 +99,9 @@ jieba.cache
 /scripts/
 # pytest tmp artifacts
 pytest-of-*/
+# Oxigraph/RocksDB 运行态存储（docker-compose.oxigraph.yml 挂载 ./oxigraph-data）：随服务启停与
+# 日志轮转不断变化，不入库（历史快照已从版本库移除）。带路径钉住，避免裸目录名命中别处同名目录。
+/oxigraph-data/
 .qoder/plan
 .qoder/plans
 .qoder/repowiki
