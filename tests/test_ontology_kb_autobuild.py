@@ -158,3 +158,49 @@ def test_unbound_notebook_fails_loud(monkeypatch):
     nb, err = oks.ensure_notebook({"id": 9, "name": "x", "cfg": {}})
     assert nb is None and "未绑定" in err
     assert calls["create"] == 0
+
+
+# ── 名称来源双源：绑定库是否接收语义层文档（has_semantic_kb） ─────────────
+
+
+def _patch_kbs(monkeypatch, rows):
+    from backend.common import db
+
+    monkeypatch.setattr(db, "execute_query", lambda sql, params=(): list(rows))
+
+
+@pytest.mark.parametrize("kbs,sync_ids,expected", [
+    ([4], {4}, True),
+    ([4], set(), False),        # 绑了库但没开 sync_ontology
+    ([4, 5], {5}, True),        # 多项里任一开启即可
+    ([], set(), False),         # 未绑任何库
+])
+def test_has_semantic_kb_requires_sync_ontology(monkeypatch, kbs, sync_ids, expected):
+    """「绑了知识库」≠「有语义层文档」：只认 sync_ontology=true 且 notebook 真实的 qmind 库。"""
+    _patch_kbs(monkeypatch, [
+        {"id": i, "source_config": json.dumps(
+            {"notebook_id": f"nb-{i}", "sync_ontology": i in sync_ids})} for i in kbs])
+    assert oks.has_semantic_kb(kbs) is expected
+
+
+def test_has_semantic_kb_excludes_system_notebook(monkeypatch):
+    """notebook 占位（system）或缺失的库不接收上云文档，不算名称来源。"""
+    _patch_kbs(monkeypatch, [
+        {"id": 4, "source_config": json.dumps(
+            {"notebook_id": "system", "sync_ontology": True})},
+        {"id": 5, "source_config": json.dumps({"sync_ontology": True})},
+    ])
+    assert oks.has_semantic_kb([4, 5]) is False
+
+
+def test_has_semantic_kb_propagates_query_failure(monkeypatch):
+    """查询失败不得静默当成「没有」（fail-loud）：调用方需要区分未绑定与判不出。"""
+    from backend.common import db
+
+    def _boom(sql, params=()):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "execute_query", _boom)
+    with pytest.raises(RuntimeError, match="db down"):
+        oks.has_semantic_kb([4])
+

@@ -614,7 +614,7 @@ export function ObjectTagsTab({ objects }: { objects: { key: string; display_nam
   );
 }
 
-/** 图谱/知识库同步状态徽章（「关系图谱」页与「数据建模」工具栏共用，只读 30s 轮询）。
+/** 图谱/知识库同步状态徽章（本体建模工具栏，只读 30s 轮询）。
  *
  * 口径全来自服务端 /sync-status：比对哪张命名图由 graph_target_for_model 定，
  * 目标知识库清单由 sync_targets_for_model 定。徽章只负责把“比对的是什么 / 同步到哪”说人话：

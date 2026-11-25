@@ -226,14 +226,21 @@ def test_prompt_size_guardrail_multi_skill_role():
 
 
 def test_safety_sections_never_dropped_by_slimming():
-    """瘦身不得动安全强约束与语义层权威划分（no-silent-degradation / 护栏 §7）。"""
+    """瘦身不得动安全强约束与语义层名称来源口径（no-silent-degradation / 护栏 §7）。
+
+    2026-11-25 口径迁移：名称从「get_metrics 实时目录唯一权威」改为双源（知识库语义层文档
+    + 实时目录），目录降为「最终裁决者但非必经步骤」。历史缺陷：硬口径导致模型每轮先调目录，
+    在知识库已给出 dict_candidates 时白花一次工具往返；知识库是检索主路（不建向量索引）。
+    """
     skills, caps = _fat_case()
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer",
                                    skills=skills, capabilities=caps, question="趋势")
     for must in ("## 数据源黑盒（强约束）", "## 敏感数据合规（强约束，不可协商）",
-                 "## 数据查询规范", "get_metrics` 实时目录为唯一权威",
-                 "# 数据可视化输出约定"):
+                 "## 数据查询规范", "名称来源（两处，不必都查）",
+                 "实时目录是最终裁决者", "# 数据可视化输出约定"):
         assert must in prompt, f"强约束段缺失: {must}"
+    # 旧硬口径不得回归：知识与目录双源是唯一口径，模型不再被要求每轮先调目录
+    assert "实时目录为唯一权威" not in prompt
 
 
 def test_shipped_skills_declare_loading_contract():

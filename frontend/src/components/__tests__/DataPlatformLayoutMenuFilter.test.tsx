@@ -4,8 +4,9 @@
 // * 显隐一律走 `menuAccess.allowed(toMenuKey(path))` + `pruneEmptySections`，
 //   不允许页面自己再写一套"我看得到吗"的判断；
 // * 角色页的菜单分组/名称/顺序必须与实际导航逐项一致 —— 所以这里同时锁
-//   「决策建议」在「数据资产」段内的位置（与 adh_menu_registry 的 sort=9 对齐），
-//   段名口径见 docker/mysql/data_assets_section_migration.sql。
+//   「决策建议」在「数据资产」段内的位置（与 adh_menu_registry 的 sort=8 对齐），
+//   段名口径见 docker/mysql/data_assets_section_migration.sql，
+//   「关系图谱」下线口径见 docker/mysql/knowledge_graph_page_retire_migration.sql。
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -32,7 +33,6 @@ function renderLayout(path = '/data/metrics') {
         <Routes>
           <Route path="/data" element={<DataPlatformLayout />}>
             <Route path="metrics" element={<div>页面：指标与维度</div>} />
-            <Route path="knowledge-graph" element={<div>页面：关系图谱</div>} />
             <Route path="decisions" element={<div>页面：决策树配置</div>} />
           </Route>
         </Routes>
@@ -50,12 +50,12 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-const CATALOG = ['data:metrics', 'data:knowledge-graph', 'data:decisions'];
+const CATALOG = ['data:metrics', 'data:decisions'];
 
 describe('数据中台侧栏按菜单码显隐', () => {
   it('未授权 data:decisions 时不出现「决策建议」（菜单码就是唯一真值源）', () => {
     usePermissionStore.setState({
-      loaded: true, unrestricted: false, allowedMenus: ['data:metrics', 'data:knowledge-graph'], perms: [],
+      loaded: true, unrestricted: false, allowedMenus: ['data:metrics'], perms: [],
     });
     renderLayout();
     expect(screen.getByText('指标与维度')).toBeInTheDocument();
@@ -67,7 +67,7 @@ describe('数据中台侧栏按菜单码显隐', () => {
     renderLayout();
     const nav = screen.getByRole('navigation', { name: '数据中台导航' });
     const labels = within(nav).getAllByRole('button').map(b => b.textContent?.trim()).filter(Boolean);
-    expect(labels).toEqual(['指标与维度', '关系图谱', '决策建议']);
+    expect(labels).toEqual(['指标与维度', '决策建议']);
     fireEvent.click(within(nav).getByText('决策建议').closest('button')!);
     expect(screen.getByTestId('path')).toHaveTextContent('/data/decisions');
   });
@@ -92,7 +92,9 @@ describe('数据中台侧栏按菜单码显隐', () => {
     usePermissionStore.setState({ loaded: true, unrestricted: true, allowedMenus: null, perms: null });
     renderLayout();
     expect(screen.getByText('决策建议')).toBeInTheDocument();
-    expect(screen.getByText('关系图谱')).toBeInTheDocument();
+    // 关系图谱已并入「本体建模」的 graph 页签（2026-11-25，knowledge_graph_page_retire_migration.sql），
+    // 侧栏不得再出现这个入口（否则一处入口在侧栏、一处在页内，人要在两处找）
+    expect(screen.queryByText('关系图谱')).not.toBeInTheDocument();
     // 进化中心已并入「本体建模」页内页签（2026-11-21，evolution_center_merge_migration.sql），
     // 侧栏不得再出现这个入口（否则一处入口在侧栏、一处在页内，人要在两处找）
     expect(screen.queryByText('进化中心')).not.toBeInTheDocument();

@@ -55,7 +55,6 @@ import QualityOverview from './pages/quality/QualityOverview';
 import QualityRules from './pages/quality/QualityRules';
 import LineageGraph from './pages/lineage/LineageGraph';
 import OntologyModeling from './pages/catalog/OntologyModeling';
-import OntologyGraphView from './pages/catalog/OntologyGraphView';
 import MetricsCenter from './pages/catalog/MetricsCenter';
 import TagsManager from './pages/catalog/TagsManager';
 import Glossary from './pages/catalog/Glossary';
@@ -202,8 +201,9 @@ export default function App() {
           <Route path="sync/dag/:workflowId" element={<DagEditor />} />
           <Route path="sync/dag-runs/:runId" element={<DagRunDetail />} />
           <Route path="udfs" element={<UdfManagement />} />
-          {/* 本体图谱: 语义层关系只读视图(图谱+结构化投影), 独立模型选择器 */}
-          <Route path="knowledge-graph" element={<OntologyGraphView />} />
+          {/* 本体图谱已并入「本体建模」的 graph 页签（含图谱生成/同步知识库/文档投影），
+              独立的「关系图谱」页下线；旧地址重定向兼容书签 */}
+          <Route path="knowledge-graph" element={<Navigate to="/data/ontology" replace />} />
           {/* 决策建议（配置面）: 决策树是引用指标/维度字典的口径资产, 与本体建模同族, 故在数据中台 */}
           <Route path="decisions" element={<DecisionTreeConfig />} />
           <Route path="playground" element={<Playground />} />

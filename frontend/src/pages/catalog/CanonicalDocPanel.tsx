@@ -6,7 +6,8 @@
  *   → 服务端 hydrate 字典口径后渲染；读的是**当前生效版**，草案正文在「变更对比」里看。
  *   服务端对该只读投影做进程内缓存（正文/字典变动即失效），响应带 `cached` 标记，这里如实显示。
  * SPARQL 档：打的是同一份事实源的 RDF 投影（`POST /graph/query`，命名图按 kind 分图），
- *   本面板只放行查询类语句（SELECT/ASK/CONSTRUCT/DESCRIBE），写入/更新回关系图谱页的完整控制台。
+ *   本面板只放行查询类语句（SELECT/ASK/CONSTRUCT/DESCRIBE），写入/更新不在界面开口子
+ *   （重建命名图走工具栏的「图谱生成」按钮）。
  * 边界：纯只读，不提供编辑/保存（唯一编辑源仍是 canonical doc 的保存草案链路）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -44,7 +45,7 @@ function namedGraphDs(kind?: string, datasourceId?: number): number {
   return ds === -1 ? -1 : ds;
 }
 
-/** 只读面板只放行查询类语句：UPDATE/INSERT 之类回关系图谱页的完整控制台，不在这里开口子。 */
+/** 只读面板只放行查询类语句：UPDATE/INSERT 之类不在界面开口子，图的重建走「图谱生成」。 */
 function isReadOnlySparql(q: string): boolean {
   const body = q
     .split('\n')
@@ -70,7 +71,7 @@ export default function CanonicalDocPanel({ open, onOpenChange, modelId, modelNa
   draftCount?: number;
   /** 对象清单（定位对象下拉）：展示业务名，定位用 key */
   objectOptions?: { key: string; name?: string }[];
-  /** 「在关系图谱页打开」：本页图谱已内嵌，回调交给调用方切页签并关闭本面板 */
+  /** 「切到图谱页签」：本页图谱已内嵌，回调交给调用方切页签并关闭本面板 */
   onOpenGraph?: () => void;
   /** 「草案 · N 项」：草案正文不在此渲染，跳「变更对比」 */
   onOpenDraft?: () => void;

@@ -1,7 +1,7 @@
 # 大屏设计模板参考
 
-模板给出"典型图表组合 + 语义意图骨架"。`object`/`metrics`/`dimensions` 名称必须先用
-`knowledge_search`/`get_metrics` 在真实本体中确认存在后再套用;不可臆造字段。取数一律走
+模板给出"典型图表组合 + 语义意图骨架"。`object`/`metrics`/`dimensions` 名称必须来自
+知识库语义层文档（`knowledge_search`）或 `get_metrics` 实时目录，确认在真实本体中存在后再套用；不可臆造字段。取数一律走
 `query` 声明式意图,**不写 SQL**。
 
 ## 经营驾驶舱

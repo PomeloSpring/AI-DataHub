@@ -120,11 +120,10 @@ def _prop_view(prop) -> dict | None:
 # ── 工具 handler(SDK 无关) ─────────────────────────────────────
 
 async def get_metrics(args):
-    """对象级语义目录: 每个本体对象可用的指标/维度(含别名与枚举业务标签)。
+    """对象级语义目录：L1 按 keyword 做条目级检索（topK + 每对象计数），L2 按 object 下钻取全量。
 
     只暴露字典层信息(name/aliases/unit/枚举标签), 不回显 target_table 等物理细节。
-    `keyword` **必填**且可一次带多个词：空关键词会把整层字典一次性下发并被运行时截断
-    （见 KEYWORD_REQUIRED_HINT），命中对象仍回该对象全量口径。
+    `keyword` **必填**（空关键词=整层字典会被运行时截断，见 KEYWORD_REQUIRED_HINT）。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
 
@@ -146,7 +145,8 @@ async def get_metrics(args):
                 return _text({"error": "当前会话未确定数据源，无法加载语义目录；请先在会话中选择一个已授权数据源后重试。"},
                              is_error=True)
         keywords = metric_keywords(args)
-        if not keywords:
+        object_arg = str(args.get("object") or args.get("object_key") or "").strip()
+        if not keywords and not object_arg:
             # 空关键词=整层字典（见 KEYWORD_REQUIRED_HINT 的历史缺陷说明）：显式拒，不静默回全量
             return _text({"error": KEYWORD_REQUIRED_HINT}, is_error=True)
         metrics = await asyncio.to_thread(_get_metrics, ds_id)
@@ -160,45 +160,65 @@ async def get_metrics(args):
             all_tables, tables_by_object = set(), {}
         blocked: list[dict] = []
 
-        def _match(row):
-            hay = {str(row.get("name") or ""), str(row.get("name_en") or "")}
-            hay |= {str(a) for a in (row.get("aliases") or [])}
-            low = {h.lower() for h in hay if h}
-            return any(kw in h for kw in keywords for h in low)
+        # 两档语义（与生产路径 scoped_metadata.get_metrics 同口径）：
+        #   L1 keyword → 条目级 BM25/子串排序取 topK，只回命中条目 + 每对象全量计数；
+        #   L2 object  → 该对象全量（显式下钻）。
+        # 两个历史缺陷：子集冒充全量（1783069459337）与泛词整对象补全被截断（1783069459352）。
+        rows_all: list[dict] = []
+        for m in metrics:
+            rows_all.append({**m, "kind": "metric", "object": m.get("bound_object_key") or ""})
+        for d in dims:
+            rows_all.append({**d, "kind": "dimension", "object": d.get("bound_object_key") or ""})
+        totals: dict[str, dict] = {}
+        for r in rows_all:
+            b = totals.setdefault(r["object"], {"metric_total": 0, "dimension_total": 0})
+            b["metric_total" if r["kind"] == "metric" else "dimension_total"] += 1
+
+        object_want = object_arg
+        try:
+            top_k = max(5, min(30, int(args.get("top_k") or 12)))
+        except (TypeError, ValueError):
+            top_k = 12
+        if object_want:
+            picked_rows = [r for r in rows_all if r["object"] == object_want]
+            if not picked_rows:
+                return _text({"error": f"对象 {object_want} 下没有已登记的指标/维度；"
+                                       "先用 keyword 检索确认对象名。"}, is_error=True)
+            search_meta = {"engine": "object", "top_k": top_k,
+                           "matched_total": len(picked_rows), "truncated": False}
+            mode = "object_full"
+        else:
+            from backend.modules.mind.rag import dict_index
+            ranked = dict_index.rank(rows_all, keywords, top_k=top_k)
+            picked_rows = [rows_all[h["idx"]] for h in ranked["hits"]]
+            search_meta = {"engine": ranked["engine"], "top_k": top_k,
+                           "matched_total": ranked["matched_total"],
+                           "truncated": ranked["truncated"]}
+            mode = "keyword_search"
 
         objects: dict[str, dict] = {}
-
-        def bucket(key: str) -> dict:
-            return objects.setdefault(key or "(未绑定对象)",
-                                      {"object": key or "", "metrics": [], "dimensions": []})
-
-        for m in metrics:
-            if not _match(m):
-                continue
+        for r in picked_rows:
             reason = dict_unavailable_reason(
-                m, binding_scope_for(m, all_tables, tables_by_object), kind="metric")
+                r, binding_scope_for(r, all_tables, tables_by_object), kind=r["kind"])
             if reason:
-                blocked.append({"name": m["name"], "kind": "metric", "reason": reason})
+                blocked.append({"name": r["name"], "kind": r["kind"], "reason": reason})
                 continue
-            row = {"name": m["name"], "aliases": m.get("aliases") or [],
-                   "unit": m.get("unit") or "", "description": _sanitize_dict_desc(m.get("description") or "")}
-            bucket(m.get("bound_object_key")).setdefault("metrics", []).append(row)
-        for d in dims:
-            if not _match(d):
-                continue
-            reason = dict_unavailable_reason(
-                d, binding_scope_for(d, all_tables, tables_by_object), kind="dimension")
-            if reason:
-                blocked.append({"name": d["name"], "kind": "dimension", "reason": reason})
-                continue
-            bucket(d.get("bound_object_key")).setdefault("dimensions", []).append({
-                "name": d["name"], "aliases": d.get("aliases") or [],
-                "is_time": (d.get("category") or "") == "时间",
-                "enum": d.get("value_labels") or {},
-                "description": _sanitize_dict_desc(d.get("description") or ""),
-            })
-        # 排掉 keyword 未命中的空桶
-        items = [v for v in objects.values() if v["metrics"] or v["dimensions"]]
+            key = r["object"]
+            bucket_row = objects.setdefault(key or "(未绑定对象)", {
+                "object": key or "", "metrics": [], "dimensions": [],
+                **totals.get(key, {})})
+            if r["kind"] == "metric":
+                bucket_row["metrics"].append({
+                    "name": r["name"], "aliases": r.get("aliases") or [],
+                    "unit": r.get("unit") or "",
+                    "description": _sanitize_dict_desc(r.get("description") or "")})
+            else:
+                bucket_row["dimensions"].append({
+                    "name": r["name"], "aliases": r.get("aliases") or [],
+                    "is_time": (r.get("category") or "") == "时间",
+                    "enum": r.get("value_labels") or {},
+                    "description": _sanitize_dict_desc(r.get("description") or "")})
+        items = list(objects.values())
         # C2: 对象关系上下文（Oxigraph/SPARQL）——让 LLM 看到对象间真实关系；
         # 物理 join 表达式不外泄（护栏 §7）；图不可用显式降级标注，不静默。
         relations: list[dict] = []
@@ -224,7 +244,12 @@ async def get_metrics(args):
         # 取数路径（carrier）已下线：同一概念的跨源取数统一由 LLM 按站点逐站编排
         # （见下方 deployments + usage）；跨源去重合计口径不在目录层提供，需由知识库文档定义。
         out = {"objects": items, "total": len(items), "relations": relations,
-               "deployments": deployments,
+               "deployments": deployments, "mode": mode, "search": search_meta,
+               "keyword_note": (
+                   "只回命中条目（BM25+子串排序取前 {n} 条），不是对象全量；每对象带 "
+                   "metric_total/dimension_total，truncated=true 表示还有命中未下发。"
+                   "看某对象全量：get_metrics(object=\"<object>\")。"
+                   "未出现的对象=名称/英文名/别名/枚举业务名不含这些词，不代表平台没有。").format(n=top_k),
                "usage": "dimensions/metrics 直接复制此处 name 或其 aliases; 按天/月趋势选 is_time=true 的维度并配 time_grain; "
                         "enum 字段列出码值→业务名, filter 可传业务名也可传码值, 结果自动显示业务名; "
                         "问题里给出具体机构/企业名（某技工所、某医院、某客户）时，用同名或近似名的**名称类维度**"
@@ -245,7 +270,8 @@ async def get_metrics(args):
                 "unavailable 内的指标/维度在字典中已登记但当前无法取数（原因见 reason）："
                 "不得当作可查口径向用户承诺，也不得自行替换成别的指标作答；"
                 "用户问到时应说明该口径尚未完成物理绑定/待修复。")
-        return _text(out)
+        # 单次下发预算：泛词命中十几个对象时显式降级（见 fit_metrics_payload）
+        return _text(fit_metrics_payload(out))
     except Exception as e:
         logger.error("get_metrics error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -295,6 +321,103 @@ KEYWORD_REQUIRED_HINT = (
     "多个概念一次带齐（逗号分隔或 JSON 数组，如 \"页面浏览量,渠道\"），不要拆成多轮。"
     "命中对象会回该对象的**全量**口径；结果里没有某对象=它的名称/别名/枚举业务名不含这些词，"
     "**不代表平台没有该口径**，可换更贴近业务的词再查一次，或 ask_user 让用户点名要看什么。")
+
+
+# ── get_metrics 输出预算（2026-11-25 拍板）────────────────────────────
+# 会话 1783069459352 实测：keyword="leads,lead,request demo,表单提交,官网,渠道,广告,案例"
+# 命中 15 个对象，`命中即整对象补全` 后一次下发 70,598 字符 → agent 运行时判「输出过大」
+# 整份落盘换成文件指针（该文件在会话沙箱外、读不回来），模型手里等于**零目录**，
+# 随后把「没查到」说成「平台没有线索对象」——静默残缺结果又一次变成了错结论。
+# keyword 必填只挡住了「空词=整层字典」，挡不住「一堆泛词=十几个对象的全量口径」。
+# 预算按**下发口径**（紧凑 JSON）度量；超预算逐级降级并显式声明丢了什么、下一步怎么拿。
+_MAX_METRICS_PAYLOAD_CHARS = 20000
+# 降级档里每个对象最多带多少个名称（逐档收紧，直到收进预算）
+_METRICS_INDEX_NAME_STEPS = (8, 4, 2, 0)
+
+
+def _compact_chars(payload) -> int:
+    """按下发口径（紧凑 JSON，见 compat.make_tool 的 json.dumps）度量体积。
+
+    indent 后的字符数不代表真实下发量：同一份目录 indent=2 时 115,896 字符，
+    紧凑下发是 70,598 —— 按 indent 定预算等于没设防（同 run_semantic_query 的口径）。
+    """
+    return len(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _entry_names(rows: list) -> list:
+    """只留名称（+ 直命中标记）：剥 aliases/description/enum/unit 这些「解释性字段」。"""
+    out: list = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        item = {"name": r.get("name")}
+        if "matched_by_keyword" in r:
+            item["matched_by_keyword"] = bool(r.get("matched_by_keyword"))
+        out.append(item)
+    return out
+
+
+def _budget_view(out: dict, objects: list, level: str) -> dict:
+    """构造降级视图：**只动 objects 明细，其余字段（keywords/note/unavailable…）原样保留**。"""
+    view = dict(out)
+    view["objects"] = objects
+    view["budget_level"] = level
+    view["_budget_note"] = (
+        "目录超出单次返回预算（紧凑 JSON 上限 {budget} 字符），已按 level={level} 降级下发："
+        "**命中的对象清单是全的，缺的只是明细**——某对象没有明细不代表它没有 口径。"
+        "要看完整口径：get_metrics(object=\"<object>\") 取该对象全量（不必再猜关键词）；"
+        "要换角度重排：调整 keyword 或 top_k。").format(
+            budget=_MAX_METRICS_PAYLOAD_CHARS, level=level)
+    return view
+
+
+def fit_metrics_payload(out: dict, budget: int = _MAX_METRICS_PAYLOAD_CHARS) -> dict:
+    """把 get_metrics 目录收进单次下发预算，降级必须显式（no-silent-degradation §1）。
+
+    为什么要有预算：`命中即整对象补全` 的语义是对的（子集不得冒充全量，见上面
+    keyword_note），但泛词一次传 8 个就会命中十几个对象、每个对象回全量口径。
+    运行时截断对模型是**静默**的（只剩一个读不回来的文件指针），所以必须在工具侧兜住。
+
+    三档降级（每档都带 budget_level + _budget_note，说明丢了什么、怎么拿回来）：
+    - full  ：预算内，原样（缺省路径，口径零变化）
+    - names ：只留 name（+matched_by_keyword），剥 aliases/description/enum/unit
+    - index ：只留对象与口径数量 + 每对象前 N 个名称（N 逐档收紧到 0）
+    任何一档都**不得把对象从清单里删掉**：删对象 = 半本目录，模型会据此断言「平台没有」。
+    """
+    if not isinstance(out, dict):
+        return out
+    if _compact_chars(out) <= budget:
+        return out
+
+    objects = out.get("objects") or []
+    names = _budget_view(out, [
+        {"object": o.get("object"),
+         "metrics": _entry_names(o.get("metrics")),
+         "dimensions": _entry_names(o.get("dimensions"))}
+        for o in objects], "names")
+    if _compact_chars(names) <= budget:
+        return names
+
+    for step in _METRICS_INDEX_NAME_STEPS:
+        rows: list = []
+        for o in objects:
+            ms = _entry_names(o.get("metrics"))
+            ds = _entry_names(o.get("dimensions"))
+            row = {
+                "object": o.get("object"),
+                "metrics": len(ms), "dimensions": len(ds),
+                "metric_names": [m.get("name") for m in ms[:step]],
+                "dimension_names": [d.get("name") for d in ds[:step]],
+            }
+            if len(ms) > step:
+                row["metric_names_truncated"] = f"该对象共 {len(ms)} 个指标，此处只列前 {step} 个"
+            if len(ds) > step:
+                row["dimension_names_truncated"] = f"该对象共 {len(ds)} 个维度，此处只列前 {step} 个"
+            rows.append(row)
+        index = _budget_view(out, rows, "index")
+        if len(rows) == 0 or _compact_chars(index) <= budget:
+            return index
+    return index
 
 
 def metric_keywords(args: dict) -> list[str]:
@@ -446,6 +569,44 @@ def _attach_graph_relations(result: dict) -> dict:
                 "graph_degraded": f"关系展开不可用(知识图谱): {e}"}
 
 
+def _attach_dict_candidates(result: dict, question: str, ds_id: int) -> dict:
+    """把知识库命中的对象拿到字典里做**名称校验**（候选而非裁决）。
+
+    为什么要这一步：知识库适合判断“这问题属于哪个域/对象”，但它本身不是名称权威
+    （文档可能 doc_stale，且只能拿到 chunk 片段）。让模型凭 chunk 猜指标名，
+    planner 解析失败后会退到 execute_sql 或直接断言“平台没有”。这里用问题词在
+    **KB 命中对象内**做一次精确字面匹配，把可直接用的口径名列出来；命中不了就
+    明确引导去 get_metrics，而不是让模型自己编。
+    """
+    keys = result.get("hit_object_keys") or []
+    if not keys:
+        return result
+    try:
+        from backend.modules.mind.rag import dict_index
+        terms = dict_index.extract_terms(question)
+        if not terms:
+            return {**result, "dict_candidates": [], "dict_verify": "no_terms"}
+        scoped = dict_index.search(terms, datasource_id=ds_id,
+                                   allowed_keys=set(keys), top_k=8)
+        cands = [{k: h.get(k) for k in
+                  ("object", "kind", "name", "name_en", "aliases", "enum_labels", "matched_by")}
+                 for h in scoped.get("hits") or []]
+        out = {**result, "dict_candidates": cands,
+               "dict_verify": "ok" if cands else "empty"}
+        if not cands:
+            out["dict_note"] = (
+                "知识库命中的对象里，问题字面没有直接匹配到已登记口径名。"
+                "可换业务同义词再检索一次，或先用 get_metrics(keyword=...) 确认名称；不要凭文档片段自造。")
+        if result.get("doc_stale") is True:
+            out["dict_warning"] = (
+                "知识库文档落后于当前本体（doc_stale=true）：上面 dict_candidates 已与字典核对，"
+                "可用；但文档里的口径解释可能过期，以 get_metrics 与字典为准。")
+        return out
+    except Exception as e:  # noqa: BLE001 — 校验是增强，失败必须可见（不得静默当“已验证”）
+        logger.warning("[knowledge_search] 字典候选校验失败: %s", e)
+        return {**result, "dict_candidates": [], "dict_verify": f"failed: {e}"}
+
+
 def _retrieve_and_enrich(question: str, ds_id: int, bound_kb_ids, system_scope_flag: bool) -> dict:
     """单问题：多源知识检索 + 增强链（业务本体路由 / 图关系 / 行为路径）整体**同步**执行。
 
@@ -466,8 +627,8 @@ def _retrieve_and_enrich(question: str, ds_id: int, bound_kb_ids, system_scope_f
     retrieval_ms = int((time.perf_counter() - t0) * 1000)
     source = _classify_retrieval_source(result.get("rag_source"), result.get("count") or 0)
     return _attach_paths(
-        _attach_graph_relations(_attach_routes(
-            {**result, "retrieval_source": source, "retrieval_ms": retrieval_ms})),
+        _attach_graph_relations(_attach_dict_candidates(_attach_routes(
+            {**result, "retrieval_source": source, "retrieval_ms": retrieval_ms}), question, ds_id)),
         keywords=_split_multi(question))
 
 
@@ -626,19 +787,25 @@ TOOL_SPECS = [
     {
         "name": "get_metrics",
         "description": (
-            "指标定义检索：对象级语义目录（字典层）已登记的可用名称，是 object/metric/dimension 命名的唯一权威。"
-            "指标/维度名只能从这里原文复制（name 或任一 alias 都合法，系统自动解析别名），"
-            "不要凭术语表、SQL 结果或常识推断、改写或另造；目录里没有的名称一律不得使用。"
+            "指标定义检索：对象级语义目录（字典层）已登记的可用名称，是 object/metric/dimension 命名的**最终裁决者**（不止于工具）。"
+            "但**它不是每次取数的必经步骤**：知识库的平台语义层文档（knowledge_search 返回的 dict_candidates）"
+            "同样含对象/指标/维度/别名/枚举，那里已给出可用名称且未标 doc_stale 时可直接取数，不必再调本工具。"
+            "需要它兜底的情形：检索无命中/dict_verify=empty、doc_stale=true（文档落后于本体）、或要某对象的完整口径清单。"
+            "指标/维度名只能从本目录或平台语义层文档原文复制（name 或任一 alias 都合法，系统自动解析别名），"
+            "不要凭术语表、SQL 结果或常识推断、改写或另造；目录与平台语义层文档都没有的名称一律不得使用。"
             "趋势用 is_time=true 的维度并配 time_grain；enum 给出枚举码值→业务名，filter 两种写法都可；"
             "relations 列出对象间关联；dimensions/metrics 的 name/aliases/unit/口径以本目录返回为准。"
-            "**keyword 必填**：空关键词的全量列举已取消（整层字典 60KB+ 会被运行时判「输出过大」截断，"
-            "目录反而看不全）。问题里已有业务词就直接带上查，不必先绕知识库；只有不知道该用什么词时，"
-            "才先用 knowledge_search / 技能细则定词。多个概念用逗号分隔或 JSON 数组一次带齐，别拆成多轮。"
-            "命中对象返回该对象的**全量**口径；某对象没出现只代表它的名称/别名不含这些词，不代表平台没有。"
+            "**keyword 必填**：空关键词的全量列举已取消（整层字典 60KB+ 会被运行时判「输出过大」截断）。"
+            "多个概念用逗号分隔或 JSON 数组一次带齐。**只回命中条目**（BM25+子串排序取 topK），"
+            "每个对象附 metric_total/dimension_total（该对象一共多少条）；要取某对象全量口径用 object=\"<object>\"。"
         ),
-        "schema": {"keyword": Annotated[str,
-                     "指标/维度/对象的业务关键词（必填）。多个概念一次带齐：逗号分隔或 JSON 数组，"
-                     "如「订单,成交额」；留空会被拒，不做全量列举"]},
+        "schema": {"keyword": Annotated[Optional[str],
+                     "指标/维度/对象的业务关键词（与 object 二选一）。多个概念一次带齐："
+                     "逗号分隔或 JSON 数组，如「订单,成交额」；两者都空会被拒，不做全量列举"],
+                   "object": Annotated[Optional[str],
+                     "对象 key（下钻）：取该对象**全量**指标/维度，替代过去靠命中隐式获得的整对象补全"],
+                   "top_k": Annotated[Optional[int],
+                     "命中条目上限（5~30，默认 12）；泛词命中太多时上调，要精确时下调"]},
         "handler": get_metrics,
     },
     {
@@ -678,11 +845,15 @@ TOOL_SPECS = [
             "多个问法在一次调用内**并发**检索，因此不要把候选问法拆成多次调用逐个试探——"
             "一次就把所有同义措辞（如“官网域名/中国站网址/访问入口”）全传进去。 "
             "每条结果带 `knowledge_base`/`corpus_origin`：`platform_synced` 可作口径解释与建模上下文，"
-            "`external` 只作背景与资料事实，**不得**拿它当指标/维度名称权威（名称以 get_metrics 为准）；"
+            "`external` 只作背景与资料事实，**不得**拿它当指标/维度名称权威（名称以平台语义层文档与 get_metrics 为准）；"
             "引用结论时照 `citations` 里的标题说出处。 "
             "When hit_object_keys is returned, prefer copying those keys verbatim as the "
             "`object` of run_semantic_query (they are the KB-recognized ontology objects; verify "
             "names still exist in get_metrics if doc_stale=true). "
+            "`dict_candidates` 是 KB 命中对象下**已与字典核对**的指标/维度名（含 kind/别名/枚举业务名），"
+            "可直接用作 run_semantic_query 的 object/metrics/dimensions；`dict_verify=empty` 表示问题"
+            "字面没接上已登记口径，发查询前先用 get_metrics(keyword=...) 确认名称，不得自造；"
+            "`dict_warning` 出现时表示文档落后于本体，名称以 dict_candidates/get_metrics 为准。 "
             "无命中时回退本地元数据检索（BM25 + graph），并在 `sources`/`degraded` 里如实标注；"
             "部分库未能检索时会带原因返回，不得把“没问到”当成“库里没有”。 "
             "仅用于业务本体/口径建模上下文；系统运营/用量/活跃类问题（如“近N天有多少人用 chat”）"

@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   Database, FileText, Settings, LogOut, Menu, Palette, UserCircle, X, ChevronLeft, ChevronRight,
   GitBranch, RefreshCw, Activity, Shield, ShieldCheck, Ruler, Brain, Boxes, Terminal, Layers,
-  FunctionSquare, Network, BarChart3, Compass, Workflow, Signpost
+  FunctionSquare, BarChart3, Compass, Workflow, Signpost
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -45,8 +45,8 @@ const DATA_PLATFORM_MENU_ITEMS = [
   { key: '/data/playground', icon: Terminal, labelKey: 'data.playground' },
   /* 数据资产段：接进来之后形成/维护的资产（上一段「数据源」是“把数据接进来”）。
      段内顺序按「浏览型资产在前、配置型资产在后」：数据集 → 本体建模 → 指标与维度
-     → 关系图谱 → 分析场景 → 决策建议；与 adh_menu_registry 的 section/sort 逐项一致
-     （data_assets_section_migration.sql）。 */
+     → 分析场景 → 决策建议；与 adh_menu_registry 的 section/sort 逐项一致
+     （knowledge_graph_page_retire_migration.sql）。 */
   { section: 'section.assets' },
   { key: '/data/datasets', icon: Layers, labelKey: 'data.datasets' },
   /* 菜单文案与 adh_menu_registry.label 同步（三者一个名字）：旧值「数据建模」与库内「本体工作区」飘移 */
@@ -59,7 +59,9 @@ const DATA_PLATFORM_MENU_ITEMS = [
   /* SQL 示例对已下线（与数据集重合），菜单登记与权限点同批退出：
      见 docker/mysql/sql_pairs_retire_migration.sql 与 App.tsx 的路由注释 */
   { key: '/data/metrics', icon: BarChart3, labelKey: 'data.metrics' },
-  { key: '/data/knowledge-graph', icon: Network, labelKey: 'data.knowledgeGraph' },
+  /* 关系图谱（2026-11-25 拍板）：图已是「本体建模」的 graph 页签，同步知识库/图谱生成
+     也收到建模页工具栏；独立页下线，菜单/权限点登记同批退出
+     （见 docker/mysql/knowledge_graph_page_retire_migration.sql 与 App.tsx 路由注释） */
   /* 分析场景(原「快速路径」, 系统配置迁入): 会改变 AI 取数行为的语料资产 */
   { key: '/data/scenario', icon: Workflow, labelKey: 'data.scenario' },
   /* 决策建议（配置面）：条件引用指标/维度字典，本质是口径资产，与本段的

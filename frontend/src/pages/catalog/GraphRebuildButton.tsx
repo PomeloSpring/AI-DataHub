@@ -1,5 +1,5 @@
 /**
- * 图谱重建按钮（「关系图谱」独立页与「本体建模」工作台共用同一实现）。
+ * 图谱重建按钮（「本体建模」工作台工具栏；原「关系图谱」独立页已下线，与它共用同一实现）。
  *
  * 为什么抽出来：重建的作用域口径必须与**看图**口径同源——
  *   system → 系统图 ds:-1、business → 跨源聚合大图 ds:0、source/其它 → 本源图 ds:N。
@@ -23,7 +23,7 @@ export type GraphScope = {
   kind: string;
 };
 
-/** 重建作用域：与 ModelGraphTab / OntologyGraphView 的看图口径保持一致。 */
+/** 重建作用域：与 ModelGraphTab 的看图口径保持一致。 */
 export function graphScopeForModel(kind?: string, datasourceId?: number): GraphScope {
   const ds = Number(datasourceId || 0);
   if (kind === 'system') return { datasource_id: 0, system_scope: true, kind };

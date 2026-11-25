@@ -6,6 +6,7 @@ SQL 定时任务归数据中台的「数据同步」（adh_sync_tasks.schedule_c
 executor 里那条分支已删除，本文件也不再为它保留用例。
 """
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -40,6 +41,7 @@ def scheduled_as_bot(monkeypatch):
                         "mcp_server_ids": [], "models": [],
                         "tools": {"mcp": {"semantic": ["get_metrics", "run_semantic_query"]}}},
              "sources": [8], "kbs": [4], "enabled": True, "sites": [], "queries": [],
+             "kb_semantic": set(),
              "server": {"id": 9, "name": "srv", "transport": "sse", "url": "http://test.invalid",
                         "tools_config": [{"name": "propose_semantic_intent"}]},
              "layer": {"id": 4, "status": "active", "is_default": 1,
@@ -54,8 +56,11 @@ def scheduled_as_bot(monkeypatch):
             return copy.deepcopy(state["server"])
         if "adh_knowledge_bases" in sql:
             assert "workspace_ids" not in sql
-            # kb_type 是绑定校验的必读列（未接入检索通道的类型绑了也拒）
-            return [{"id": i, "name": f"kb-{i}", "kb_type": "qmind"} for i in params if i in state["kbs"]]
+            # kb_type 是绑定校验的必读列；source_config 是「名称来源双源」判定（sync_ontology）
+            return [{"id": i, "name": f"kb-{i}", "kb_type": "qmind",
+                     "source_config": json.dumps({"notebook_id": f"nb-{i}",
+                                                  "sync_ontology": i in state["kb_semantic"]})}
+                    for i in params if i in state["kbs"]]
         raise AssertionError(sql)
 
     monkeypatch.setattr(db, "execute_query", query)
@@ -218,13 +223,60 @@ def test_no_authorized_datasource_fails_loud(scheduled_as_bot):
     assert exc.value.code == "SOURCE_REQUIRED"
 
 
-def test_semantic_tools_are_mandatory(scheduled_as_bot):
-    """产不出可校验数字的配置不该长出任务：目录 + 语义查询缺一不可。"""
+def test_semantic_query_is_mandatory(scheduled_as_bot):
+    """产不出可校验数字的配置不该长出任务：声明式取数不可缺。
+
+    名称来源自 2026-11-25 起是双源（知识库语义层文档 / get_metrics 实时目录），
+    所以这里只锁「缺 run_semantic_query 必拒」，名称源缺失归下一条用例。
+    """
     from backend.modules.mind.execution import scheduled_analysis as sa
+
     scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"] = ["get_metrics"]
     with pytest.raises(sa.ScheduledScopeError) as exc:
         sa.load_profile({}, IDENTITY)
     assert exc.value.code == "TOOL_NOT_ALLOWED"
+    assert "run_semantic_query" in str(exc.value)
+
+
+def test_name_source_can_be_semantic_kb_without_get_metrics(scheduled_as_bot):
+    """名称来源双源：绑了接收语义层文档的知识库，可以不授权 get_metrics。"""
+    from backend.modules.mind.execution import scheduled_analysis as sa
+
+    scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"] = ["run_semantic_query"]
+    scheduled_as_bot["as_bot"]["knowledge_base_ids"] = [4]
+    scheduled_as_bot["kb_semantic"] = {4}
+    profile = sa.load_profile({}, IDENTITY)
+    assert SEMANTIC_QUERY in profile["tools"]
+
+
+def test_no_name_source_at_all_fails_loud(scheduled_as_bot):
+    """既无 get_metrics、绑定库也不接收语义层文档 → 无人值守只能猜名称，必须拒。"""
+    from backend.modules.mind.execution import scheduled_analysis as sa
+
+    scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"] = ["run_semantic_query"]
+    scheduled_as_bot["as_bot"]["knowledge_base_ids"] = [4]
+    scheduled_as_bot["kb_semantic"] = set()      # 绑了库但没开 sync_ontology
+    with pytest.raises(sa.ScheduledScopeError) as exc:
+        sa.load_profile({}, IDENTITY)
+    assert exc.value.code == "TOOL_NOT_ALLOWED"
+    assert "sync_ontology" in str(exc.value)
+
+
+def test_name_source_kb_check_failure_is_not_silently_allowed(scheduled_as_bot, monkeypatch):
+    """KB 是否含语义层文档判不出来时不得静默放行（fail-loud）。"""
+    from backend.modules.mind.execution import scheduled_analysis as sa
+    from backend.modules.catalog.services import ontology_kb_sync
+
+    scheduled_as_bot["as_bot"]["tools"]["mcp"]["semantic"] = ["run_semantic_query"]
+    scheduled_as_bot["as_bot"]["knowledge_base_ids"] = [4]
+
+    def _boom(ids):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ontology_kb_sync, "has_semantic_kb", _boom)
+    with pytest.raises(sa.ScheduledScopeError) as exc:
+        sa.load_profile({}, IDENTITY)
+    assert exc.value.code == "NAME_SOURCE_UNVERIFIED"
 
 
 def test_stopped_execution_layer_is_refused(scheduled_as_bot):

@@ -875,20 +875,34 @@ def test_design_tools_absent_from_asbot_editor_catalog():
 
 # ── 提示词/渲染契约：必须出图 ─────────────────────────────────────────
 
-def test_render_chart_section_forces_chart_over_bare_table():
+def test_render_chart_section_gates_chart_by_question_shape():
+    """出图是回答形态的一种，不是交付门槛。
+
+    2026-11-25 用户反馈：旧措辞（"取到能画的数据就必须出图 / ≥2 个类别一律出图"）
+    逼着模型为凑图去补取数、拆维度，把简单问题复杂化。
+    """
     cc = importlib.import_module("backend.modules.mind.execution.chart_contract")
     section = cc.RENDER_CHART_SECTION
-    assert "必须" in section and "render_chart" in section
-    assert "≥2 个类别一律出图" in section
-    assert "不得" in section and "只贴" in section
-    assert "不豁免图表" in section
+    # 先判要不要图，并点名不必出图的题型
+    assert "先判这题要不要图" in section
+    assert "是非判断" in section and "不必出图" in section
+    # 旧的“必须出图”死板措辞不得回归
+    assert "必须出图" not in section
+    assert "一律出图" not in section
+    assert "不豁免图表" not in section
+    # 反向也要锁：结果本身就是可比较形状时，不许只用文字打发
+    assert "不要只用文字打发" in section
+    # 最关键：禁止为凑图而加工数据（新增维度/拆粒度/再取一次数）
+    assert "禁止为出图加工数据" in section
+    assert "不得为了让结果" in section
 
 
-def test_orchestration_rules_do_not_excuse_numeric_questions_from_charts():
+def test_orchestration_rules_do_not_force_charts_for_fact_questions():
     pc = importlib.import_module("backend.modules.mind.execution.prompt_composer")
     rules = pc.TOOL_ORCHESTRATION_RULES
-    assert "数值结果照" in rules                 # 事实型只收叙述长度，数值必须出图
-    assert "不列表格（数值结果照" in rules        # 旧措辞“不列表格、”不再裸露
+    assert "是非判断/单事实核对不必出图" in rules
+    assert "数值结果照" not in rules      # 无条件出图的旧措辞不得回归
+    assert "需要时图表" in rules           # 分析型的图表也不是固定配置
 
 
 def test_screen_direct_rules_replace_design_rules():

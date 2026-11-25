@@ -97,7 +97,7 @@ TARGET_LABELS = {
 # 下一个问法仍会串。文案只出现业务名与对象 key，不写物理表名/列名（描述会随上云文档下发，护栏 §7）。
 DOMAIN_EDGE = (
     "本域只覆盖桌面客户端遥测（宿主产品 ScanPro / AS Connect 客户端）；"
-    "Web 端（官网/H5 与 AS Connect 平台网页）的前端体验与页面内点击在另一模型「ARMS RUM 观测本体」"
+    "Web 端（官网/H5 与 AS Connect 平台网页）的前端体验与页面内点击在另一模型「官网可观测本体」"
     "（对象 rum_event），两者不得混用——同一个 App 名在桌面客户端与平台网页里各记一条，不得相加。"
 )
 
@@ -186,7 +186,10 @@ METRICS: list[dict] = [
 ]
 
 # ── G1：ARMS 侧命名收窄（只改业务名与分界说明，不动指标名——指标名被看板/技能/云端文档引用）──
-ARMS_MODEL_NAME = "ARMS RUM 观测本体"
+# 2026-11-25 模型改名：「ARMS RUM 观测本体」→「官网可观测本体」（与新建的「官网业务本体」配对）。
+# 旧名只作只读兜底（未改名环境仍能定位模型），不改写库里的 name。
+ARMS_MODEL_NAME = "官网可观测本体"
+ARMS_MODEL_NAME_LEGACY = "ARMS RUM 观测本体"
 ARMS_OBJECT_KEY = "rum_event"
 # 2026-11-17 修正：RUM 通道并不只承载官网/H5——AS Connect 等平台网页页面的访问与「点开三方 App」
 # 也记在同一条 RUM 通道上（内容中心《2026年度联耀三方集成 App 网页端入口点击分析》的数据就来自这里）。
@@ -498,12 +501,16 @@ def narrow_arms_naming(apply: bool) -> None:
     指标名不动（被看板/技能/云端文档引用，改名爆炸半径大于收益）；分域由
     对象业务名 + 两侧描述互指完成，新域的业务名里不出现 "RUM"。
     """
-    row = execute_query("SELECT id, status, json_content FROM adh_ontology_models "
-                        "WHERE name = %s AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
-                        (ARMS_MODEL_NAME,), fetchone=True)
+    row = execute_query("SELECT id, status, name, json_content FROM adh_ontology_models "
+                        "WHERE name IN (%s, %s) AND status = 'active' "
+                        "ORDER BY (name = %s) DESC, updated_at DESC LIMIT 1",
+                        (ARMS_MODEL_NAME, ARMS_MODEL_NAME_LEGACY, ARMS_MODEL_NAME), fetchone=True)
     if not row:
-        _log(f"[arms][warn] 未找到 active 模型「{ARMS_MODEL_NAME}」，跳过命名分域")
+        _log(f"[arms][warn] 未找到 active 模型「{ARMS_MODEL_NAME}」（含旧名兜底），跳过命名分域")
         return
+    if row["name"] != ARMS_MODEL_NAME:
+        _log(f"[arms][warn] 模型 {row['id']} 仍是旧名「{row['name']}」，仅按旧名定位、不改名；"
+             "请跑 build_official_website_ontology.py --only rename-arms 完成改名")
     doc = json.loads(row["json_content"] or "{}")
     obj = next((o for o in doc.get("objects") or [] if o.get("key") == ARMS_OBJECT_KEY), None)
     if not obj:

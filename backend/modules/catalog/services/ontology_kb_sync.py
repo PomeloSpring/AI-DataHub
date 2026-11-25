@@ -247,6 +247,42 @@ def sync_targets_for_model(model: dict | None) -> list[dict]:
     return []
 
 
+def has_semantic_kb(kb_ids) -> bool:
+    """给定 AS-BOT 绑定的知识库 id，判断其中是否有**接收语义层文档**的库。
+
+    名称来源是双源（知识库语义层文档 / get_metrics 实时目录），二者其一即可。
+    但「绑了任意知识库」不等于「有语义层文档」：只有 `source_config.sync_ontology`
+    为真的 qmind 库才随本体发布接收上云文档。判错会让无人值守链路在「没有名称依据」
+    的状态下取数（只能猜名称），所以这里按同步目标同口径判定。
+
+    查询失败向上抛（fail-loud）：无法确认时不得静默当成「有」或「没有」。
+    """
+    ids: list[int] = []
+    for kid in kb_ids or []:
+        try:
+            kid = int(kid)
+        except (TypeError, ValueError):
+            continue
+        if kid not in ids:
+            ids.append(kid)
+    if not ids:
+        return False
+    from backend.common.db import execute_query
+
+    placeholders = ", ".join(["%s"] * len(ids))
+    rows = execute_query(
+        f"SELECT id, source_config FROM adh_knowledge_bases "
+        f"WHERE id IN ({placeholders}) AND kb_type='qmind' AND status='active'",
+        tuple(ids),
+    ) or []
+    for r in rows:
+        cfg = _parse_cfg(r.get("source_config"))
+        nb = cfg.get("notebook_id")
+        if cfg.get("sync_ontology") and nb and nb != "system":
+            return True
+    return False
+
+
 def resolve_kb_target(kb_id: int) -> dict | None:
     """按 id 解析**用户手动指定**的同步目标库: {id, name, notebook_id}。
 
@@ -474,6 +510,51 @@ def _version_header(model: dict) -> str:
     )
 
 
+def _load_dict_dimensions(datasource_id: int = 0) -> dict:
+    """把字典维度（adh_dimensions）按 bound_object_key 分组，供 to_cloud_md 渲染。
+
+    为什么必须传：此前只同步了指标，维度在云端知识库完全没有投影——用户问
+    “按渠道/按站点”时 KB 只能回答“没有该维度”，而字典里其实有。维度是业务侧
+    最高频的 group-by 面，缺失比指标缺失更容易引起“平台没建”的误判。
+
+    只取「名称/英文名/别名/层级/时间标记/枚举业务名」四类：不出 target_column（物理列）。
+    取数失败返回空 dict（不阻断同步主链路），但日志可见，不静默。
+    """
+    try:
+        from backend.common.db import execute_query
+        scope = " AND datasource_id IN (%s, 0)" if datasource_id else ""
+        params = (datasource_id,) if datasource_id else ()
+        rows = execute_query(
+            "SELECT name, name_en, aliases, description, category, hierarchy, level, "
+            "value_labels, certified, bound_object_key "
+            f"FROM adh_dimensions WHERE is_active = 1 AND COALESCE(bound_object_key,'') <> ''{scope}",
+            params) or []
+    except Exception as e:  # noqa: BLE001 — 不阻断同步主链路
+        logger.warning("[OntoSync] load dict dimensions failed: %s", e)
+        return {}
+    out: dict = {}
+    for r in rows:
+        labels = r.get("value_labels")
+        if isinstance(labels, str):
+            try:
+                labels = json.loads(labels)
+            except Exception:  # noqa: BLE001 — 脏 JSON 当无枚举
+                labels = {}
+        out.setdefault(str(r.get("bound_object_key") or ""), []).append({
+            "name": r.get("name") or "",
+            "name_en": r.get("name_en") or "",
+            "aliases": _parse_alias(r.get("aliases")),
+            "description": r.get("description") or "",
+            "category": r.get("category") or "",
+            "hierarchy": r.get("hierarchy") or "",
+            "level": r.get("level") or "",
+            "certified": bool(r.get("certified")),
+            "is_time": (r.get("category") or "") == "时间",
+            "value_labels": labels if isinstance(labels, dict) else {},
+        })
+    return out
+
+
 def _render_cloud_doc(model: dict) -> str:
     """从 canonical json_content 渲染白名单脱敏文档 + 版本戳头。
 
@@ -481,6 +562,8 @@ def _render_cloud_doc(model: dict) -> str:
     """
     from backend.modules.catalog.services.ontology_service import to_cloud_md
     dict_metrics = _load_dict_metrics(int(model.get("datasource_id") or 0))
+    dict_dimensions = _load_dict_dimensions(int(model.get("datasource_id") or 0))
+    business_terms = _load_business_terms(int(model.get("datasource_id") or 0))
 
     raw = model.get("json_content") or ""
     if not raw.strip():
@@ -492,7 +575,8 @@ def _render_cloud_doc(model: dict) -> str:
                        model.get("id"), e)
         return ""
     body = to_cloud_md(doc, dataset_vars_fn=_make_dataset_vars_resolver(),
-                       dict_metrics=dict_metrics)
+                       dict_metrics=dict_metrics, dict_dimensions=dict_dimensions,
+                       business_terms=business_terms)
     if not body.strip():
         return ""
     return _version_header(model) + body
@@ -620,6 +704,56 @@ def trigger_sync_async(model_id: int):
     threading.Thread(target=_run, daemon=True, name=f"onto-kb-sync-{model_id}").start()
 
 
+# 字典层变更→重推的节流（同一进程 60s 内只排一次）：字典页批量改/全量导入会
+# 逐行调写入口，不节流就是几百次串行 CLI 上传。
+_DICT_SYNC_LOCK = None
+_DICT_SYNC_LAST: dict = {}
+_DICT_SYNC_GAP_SEC = 60
+
+
+def trigger_sync_for_dict_change(datasource_id: int = 0):
+    """字典层（指标/维度/别名/枚举）变更后重推受影响模型（异步、串行、去重、节流）。
+
+    为什么需要：知识库是检索主路（不建向量索引），字典行就是它的内容来源。
+    此前只有本体发布/手动端点会推，字典页改完口径云端文档不动——
+    knowledge_search 仍按旧别名/旧描述命中，用户拿到过期口径。
+
+    datasource_id=0（当前全部字典行都是 0 = 跨源共用）时推全部 active 模型；
+    非 0 时只推该源的 active 模型。节流窗口内的后续变更合并进下一次推送。
+    """
+    import threading
+    global _DICT_SYNC_LOCK
+    if _DICT_SYNC_LOCK is None:
+        _DICT_SYNC_LOCK = threading.Lock()
+    ds = int(datasource_id or 0)
+    now = time.time()
+    with _DICT_SYNC_LOCK:
+        last = _DICT_SYNC_LAST.get(ds, 0)
+        if now - last < _DICT_SYNC_GAP_SEC:
+            return   # 已在窗口内，合并到已排的那一轮
+        _DICT_SYNC_LAST[ds] = now
+
+    def _run():
+        try:
+            from backend.common.db import execute_query
+            if ds > 0:
+                rows = execute_query(
+                    "SELECT id FROM adh_ontology_models WHERE status='active' AND datasource_id=%s",
+                    (ds,)) or []
+            else:
+                rows = execute_query(
+                    "SELECT id FROM adh_ontology_models WHERE status='active'") or []
+            for r in rows:
+                try:
+                    sync_model_to_qmind(int(r["id"]))
+                except Exception as e:  # noqa: BLE001 — 单个模型失败不影响其余
+                    logger.error("[OntoSync] dict-change resync model=%s failed: %s", r.get("id"), e)
+        except Exception as e:  # noqa: BLE001
+            logger.error("[OntoSync] dict-change resync failed: %s", e)
+
+    threading.Thread(target=_run, daemon=True, name="onto-kb-sync-dict").start()
+
+
 # ── 同步水位线与定时对账 (T9) ─────────────────────────────────────
 
 def _write_state(model_id, datasource_id, notebook_id, version, status, error=""):
@@ -710,6 +844,53 @@ def start_reconciler(interval_sec: int = 600):
     threading.Thread(target=_loop, daemon=True, name="onto-kb-reconcile").start()
 
 
+def _parse_alias(value) -> list:
+    """字典 aliases 归一（JSON 数组 / 逗号分隔字符串 / None）为 list。"""
+    if isinstance(value, (list, tuple)):
+        return [str(a).strip() for a in value if str(a).strip()]
+    if isinstance(value, str) and value.strip():
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(a).strip() for a in parsed if str(a).strip()]
+            except Exception:  # noqa: BLE001 — 脏 JSON 退回逗号切分
+                pass
+        return [a.strip() for a in raw.split(",") if a.strip()]
+    return []
+
+
+def _load_business_terms(datasource_id: int = 0) -> list:
+    """取业务黑话术语（adh_business_terms）供 to_cloud_md 渲染「业务术语」段。
+
+    为什么必须传：知识库是用户口语词的第一检索面，而术语表正是**尚未收编成
+    对象/字典的纯业务黑话**（ontology-modeling §5 的缓冲区）。不传的话，
+    用户用黑话/简称提问时云端文档里根本不存在这个词，检索必然落空。
+
+    只取 term_cn / term_en / term_aliases / description：
+    calculation 可能是含物理列的表达式（如 `COUNT(DISTINCT serial_number)`）、
+    target_table/target_column 是物理定位，三者一律不上云（护栏 §7）。
+    取数失败返回空 list（不阻断同步主链路），但日志可见，不静默。
+    """
+    try:
+        from backend.common.db import execute_query
+        scope = " AND datasource_id IN (%s, 0)" if datasource_id else ""
+        params = (datasource_id,) if datasource_id else ()
+        rows = execute_query(
+            "SELECT term_cn, term_en, term_aliases, description "
+            f"FROM adh_business_terms WHERE is_active = 1{scope} "
+            "ORDER BY usage_count DESC",
+            params) or []
+    except Exception as e:  # noqa: BLE001 — 不阻断同步主链路
+        logger.warning("[OntoSync] load business terms failed: %s", e)
+        return []
+    return [{"term_cn": r.get("term_cn") or "",
+             "term_en": r.get("term_en") or "",
+             "term_aliases": r.get("term_aliases") or "",
+             "description": r.get("description") or ""} for r in rows]
+
+
 def _load_dict_metrics(datasource_id: int = 0) -> dict:
     """把字典口径指标（adh_metrics）按 bound_object_key 分组，供 to_cloud_md 渲染。
 
@@ -717,15 +898,20 @@ def _load_dict_metrics(datasource_id: int = 0) -> dict:
     canonical 的 objects[].metrics 是**派生计算字段**（is_active 这类），不是口径。
     不传的话 to_cloud_md 只能渲染派生字段，认证就没有出口。
 
-    取数失败返回空 dict（渲染时只出派生字段段，不阻断同步主链路），
-    但**不静默**：调用方日志可见。
+    只取「名称/英文名/别名/单位/聚合/分类/描述/认证/责任人」：不出 target_table、
+    target_column、formula（口径计算式可能含物理列）。取数失败返回空 dict
+    （不阻断同步主链路），但日志可见，不静默。
+
+    为什么别名必须上云（2026-11-25）：改用知识库替代向量检索后，用户口语词
+    （PV/GMV/活跃设备）只能在文档文字上命中；只出规范名等于把检索入口堵死。
     """
     try:
         from backend.common.db import execute_query
         scope = " AND datasource_id IN (%s, 0)" if datasource_id else ""
         params = (datasource_id,) if datasource_id else ()
         rows = execute_query(
-            "SELECT name, description, certified, owner, bound_object_key "
+            "SELECT name, name_en, aliases, unit, agg_type, category, description, "
+            "certified, owner, bound_object_key "
             f"FROM adh_metrics WHERE is_active = 1 AND COALESCE(bound_object_key,'') <> ''{scope}",
             params) or []
     except Exception as e:  # noqa: BLE001 — 不阻断同步主链路
@@ -735,6 +921,11 @@ def _load_dict_metrics(datasource_id: int = 0) -> dict:
     for r in rows:
         out.setdefault(str(r.get("bound_object_key") or ""), []).append({
             "name": r.get("name") or "",
+            "name_en": r.get("name_en") or "",
+            "aliases": _parse_alias(r.get("aliases")),
+            "unit": r.get("unit") or "",
+            "agg_type": r.get("agg_type") or "",
+            "category": r.get("category") or "",
             "description": r.get("description") or "",
             "certified": bool(r.get("certified")),
             "owner": r.get("owner") or "",

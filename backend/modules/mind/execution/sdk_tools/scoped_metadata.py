@@ -3,7 +3,8 @@ import json
 
 from backend.common.db import execute_query
 from backend.modules.mind.execution.sdk_tools.semantic_tools import (
-    KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, metric_keywords,
+    KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, fit_metrics_payload,
+    metric_keywords,
 )
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
@@ -115,7 +116,8 @@ def execute(name, args, ctx, resource_scope=None):
         # 29 对象 / 180 指标 / 230 维度 = 63,226 字符），被运行时判「输出过大」截断成文件指针，
         # 模型拿到的是半本目录。拦在取本体清单与字典之前：空关键词不发任何 SQL，文案与字典层同源。
         keywords = metric_keywords(args)
-        if not keywords:
+        object_arg = str(args.get("object") or args.get("object_key") or "").strip()
+        if not keywords and not object_arg:
             raise PermissionError(KEYWORD_REQUIRED_HINT)
     rows = _fetch_visible_models(require_active=(name != "get_ontology_model"))
     requested = int(args.get("model_id") or 0)
@@ -135,26 +137,17 @@ def execute(name, args, ctx, resource_scope=None):
         for row in rows:
             doc = json.loads(row["json_content"]) if isinstance(row["json_content"], str) else row["json_content"]
             allowed_keys.update(o.get("key") for o in (doc or {}).get("objects", []))
-        def _kw_hay(entry: dict) -> set[str]:
-            """关键词命中面：名称/英文名/别名 + 枚举业务名。
-
-            不得把整条 JSON 当干草堆（description 里的口径文字会意外命中，
-            模型据此以为命中的是同一个概念）。
-            """
-            hay = {str(entry.get("name") or ""), str(entry.get("name_en") or "")}
-            hay |= {str(a) for a in (entry.get("aliases") or [])}
-            labels = entry.get("enum") or entry.get("value_labels") or {}
-            if isinstance(labels, dict):
-                hay |= {str(v) for v in labels.values()}
-            return {h.lower() for h in hay if h}
-
-        def _kw_hit(entry: dict) -> bool:
-            return any(kw in h for kw in keywords for h in _kw_hay(entry))
-
-        entries_all: dict[str, list] = {}
-        for table, fields, category in (("adh_metrics", "name,name_en,aliases,description,unit", "metrics"),
-                                        ("adh_dimensions", "name,name_en,aliases,description,value_labels,category", "dimensions")):
-            bucket_rows: list = []
+        # ── 两档语义（发现层不再整对象全量下发）────────────────────────
+        # L1 keyword → 条目级检索（BM25 + 子串加权），只回命中条目 + 每对象全量计数；
+        # L2 object  → 该对象全量口径（显式下钻出口）。
+        # 两个历史缺陷被这一改动同时堵住：① 子集冒充全量（会话 1783069459337：只回名称含
+        # “订单”的 3 个维度，模型断言对象没有「接单技工所」）；② 泛词整对象补全
+        # （会话 1783069459352：15 对象 = 70,598 字符被运行时截断成读不回来的文件指针）。
+        # *_total 让模型看见“还有哪些没下发”，object 下钻让它能自己取全。
+        object_want = object_arg
+        loaded: list[dict] = []
+        for table, fields, kind in (("adh_metrics", "name,name_en,aliases,description,unit", "metric"),
+                                    ("adh_dimensions", "name,name_en,aliases,description,value_labels,category", "dimension")):
             for entry in execute_query(
                     f"SELECT bound_object_key,{fields} FROM {table} WHERE {dict_condition} AND is_active=1",
                     dict_params):
@@ -167,32 +160,67 @@ def execute(name, args, ctx, resource_scope=None):
                 # 字典口径脱敏：description 可能含物理列引用（护栏 §7）
                 if entry.get("description"):
                     entry["description"] = _sanitize_dict_desc(entry["description"])
-                if category == "dimensions":
+                if kind == "dimension":
                     entry["enum"] = entry.pop("value_labels", None) or {}
                     entry["is_time"] = entry.pop("category", "") == "时间"
-                bucket_rows.append((key, entry))
-            entries_all[category] = bucket_rows
-        # keyword 语义：**命中即整对象补全**（keyword 必填之后仍是唯一形态）。历史缺陷（会话 1783069459337）：
-        # keyword="订单" 只回名称含“订单”的 3 个维度，模型把子集当对象全量，断言“订单只有 4 个维度、
-        # 没有接单方字段”，反复判定“无法按时代天使查订单”——而该对象实有 13 个维度
-        # （含「接单技工所」）与 55 个属性。子集不得冒充全量（no-silent-degradation）。
-        hit_keys = {key for bucket_rows in entries_all.values() for key, entry in bucket_rows if _kw_hit(entry)}
+                loaded.append({"object": key, "kind": kind, **entry})
+
+        totals: dict[str, dict] = {}
+        for r in loaded:
+            bucket = totals.setdefault(r["object"], {"metric_total": 0, "dimension_total": 0})
+            bucket["metric_total" if r["kind"] == "metric" else "dimension_total"] += 1
+
+        def _obj_row(key: str, picked: list) -> dict:
+            return {"object": key,
+                    "metrics": [x for x in picked if x["kind"] == "metric"],
+                    "dimensions": [x for x in picked if x["kind"] == "dimension"],
+                    **totals.get(key, {})}
+
+        if object_want:
+            if object_want not in allowed_keys:
+                raise PermissionError(
+                    f"对象 {object_want} 不在当前 AS-BOT 资源域（可用 keyword 检索确认对象名）")
+            picked = [r for r in loaded if r["object"] == object_want]
+            if not picked:
+                raise PermissionError(
+                    f"对象 {object_want} 下没有已登记且有业务名的指标/维度（先确认字段已建模）")
+            out = {"objects": [_obj_row(object_want, picked)], "total": 1,
+                   "keywords": keywords, "mode": "object_full"}
+            out["keyword_note"] = "object 模式：返回该对象的**全量**指标/维度（不是子集）。"
+            return _scope_note(fit_metrics_payload(out))
+
+        from backend.modules.mind.rag import dict_index
+        try:
+            top_k = max(5, min(30, int(args.get("top_k") or 12)))
+        except (TypeError, ValueError):
+            top_k = 12
+        ranked = dict_index.rank(loaded, keywords, top_k=top_k)
         objects: dict[str, dict] = {}
-        for category, bucket_rows in entries_all.items():
-            for key, entry in bucket_rows:
-                matched = _kw_hit(entry)
-                if not matched and key not in hit_keys:
-                    continue
-                row = dict(entry)
-                row["matched_by_keyword"] = matched
-                objects.setdefault(key, {"object": key, "metrics": [], "dimensions": []})[category].append(row)
-        out = {"objects": list(objects.values()), "total": len(objects), "keywords": keywords}
+        for hit in ranked["hits"]:
+            row = loaded[hit["idx"]]
+            entry = {k: v for k, v in row.items() if k not in ("object", "kind")}
+            entry["matched_by_keyword"] = True
+            entry["match"] = hit["match"]
+            entry["score"] = hit["score"]
+            target = objects.setdefault(row["object"], {
+                "object": row["object"], "metrics": [], "dimensions": [],
+                **totals.get(row["object"], {})})
+            target["metrics" if row["kind"] == "metric" else "dimensions"].append(entry)
+        out = {
+            "objects": list(objects.values()),
+            "total": len(objects),
+            "keywords": keywords,
+            "search": {"engine": ranked["engine"], "top_k": top_k,
+                       "matched_total": ranked["matched_total"],
+                       "truncated": ranked["truncated"],
+                       "entries_total": ranked["entries_total"]},
+        }
         out["keyword_note"] = (
-            "keywords 只决定“哪些对象被命中”：命中对象的指标/维度是**该对象全量**"
-            "（matched_by_keyword=true 为词直命中，false 为同对象其余口径，同样可查）。"
-            "未出现在结果里的对象=其对象名/别名/枚举业务名不含这些词，不代表平台没有该口径；"
-            "要看某对象的完整口径就用它自己的对象名作 keyword，多个概念一次带齐（不空传、也不逐词多轮）。")
-        return _scope_note(out)
+            "只回命中条目（BM25+子串排序取前 {n} 条），不是对象全量；每个对象带 "
+            "metric_total/dimension_total（该对象一共多少条），truncated=true 表示还有命中未下发。"
+            "要看某对象全量：get_metrics(object=\"<object>\")；要换角度再排：调整 keyword 或 top_k。"
+            "未出现的对象=名称/英文名/别名/枚举业务名不含这些词，不代表平台没有该口径。").format(n=top_k)
+        return _scope_note(fit_metrics_payload(out))
     models, candidates = [], []
     keyword = str(args.get("query") or args.get("keyword") or args.get("table_name") or "").strip().lower()
     object_key_want = str(args.get("object_key") or args.get("key") or "").strip()

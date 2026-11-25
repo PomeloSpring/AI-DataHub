@@ -332,8 +332,11 @@ class TestColumnPolicyCompiledIntoSlsSql:
         # SELECT 与 GROUP BY 用同一份脱敏表达式（按脱敏值分组，不泄露 distinct 个数）
         masked = 'CASE WHEN LENGTH(CAST("net.ip" AS VARCHAR)) <= 4'
         assert masked in select_part and masked in group_part
-        # 取尾必须 RIGHT：SUBSTR(x,-2) 在 SLS 不报错但返回整串（探针取证）= 不脱敏
-        assert "RIGHT(CAST(\"net.ip\" AS VARCHAR), 2)" in select_part
+        # 取尾必须用正下标 SUBSTR + GREATEST：`SUBSTR(x,-2)` 在部分 SLS 端点不报错但返回整串
+        # （= 不脱敏）；`LEFT`/`RIGHT` 在真实查询里未注册（2026-11-25 带 FROM 取证）
+        assert 'SUBSTR(CAST("net.ip" AS VARCHAR), GREATEST(LENGTH(CAST("net.ip" AS VARCHAR)) - 1, 1), 2)' in select_part
+        for banned in ('RIGHT(', 'LEFT(', 'REPEAT('):
+            assert banned not in select_part, banned
         assert "SUBSTR(CAST(\"net.ip\" AS VARCHAR), -" not in p.sql
 
     def test_probe_tuned_time_predicate_is_not_rewritten(self, patched):
@@ -373,7 +376,8 @@ class TestColumnPolicyCompiledIntoSlsSql:
         p = plan(self._q(user_id=42, workspace_id=7), _binding())
         assert calls and calls[0]["user_id"] == 42 and calls[0]["workspace_id"] == 7
         assert calls[0]["table_names"] == ["logstore-rum"]
-        assert 'SUBSTR(MD5(CAST("net.ip" AS VARCHAR)), 1, 16)' in p.sql
+        # hash 走 TO_UTF8（MD5 在 SLS 只收 varbinary，直接传 varchar 整条查询失败）
+        assert 'SUBSTR(MD5(TO_UTF8(CAST("net.ip" AS VARCHAR))), 1, 16)' in p.sql
         # provenance 留诊断痕迹（不下发 LLM/前端）
         assert p.provenance["column_policies_applied"] == {"net.ip": "hash"}
 

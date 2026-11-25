@@ -50,6 +50,7 @@ import EvolutionCenter from './EvolutionCenter';
 import { normalizeDocObjects, showsM234, showsSiteScope, type NormalizeDocObjectsResult } from '@/lib/ontologyObjects';
 import ModelDraftReview from './ModelDraftReview';
 import GraphRebuildButton from './GraphRebuildButton';
+import KbSyncButton from './KbSyncButton';
 import Glossary from './Glossary';
 import { ModelActionsTab, ModelGraphTab, ModelRulesTab, ModelScenariosTab, ModelSitesTab, ObjectTagsTab, SyncBadges } from './ModelAssetTabs';
 import { metricsApi } from '@/api/metrics';
@@ -115,7 +116,7 @@ export default function OntologyModeling() {
   const [yamlDir, setYamlDir] = useState('ontology');
   const [importing, setImporting] = useState(false);
 
-  // ── 归档可见（手动同步知识库已移到「关系图谱」页，与图谱/知识库状态同屏）──
+  // ── 归档可见（手动同步知识库就在本页工具栏，与图谱/知识库状态徽章同屏）──
   const [showArchived, setShowArchived] = useState(false);
 
   const handleImportYaml = async () => {
@@ -229,7 +230,7 @@ export default function OntologyModeling() {
   /** 撤销草案：确认弹窗收在页面一处，托盘与「变更对比」都只负责发起（不各造一套实现） */
   const [discardOpen, setDiscardOpen] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  /** 图谱重建计数：重建后据此重挂图面板并重取状态徽章（否则「需重建」还挂着，图仍是旧的） */
+  /** 图谱重建 / 知识库同步计数：据此重挂图面板并重取同步徽章（否则「需重建 / 待同步」还挂着，图仍是旧的） */
   const [graphTick, setGraphTick] = useState(0);
   const draftPending = !!draftStatus?.has_draft;
 
@@ -418,7 +419,7 @@ export default function OntologyModeling() {
       // 发布改变了生效版：重拉模型正文（否则对象列表停在发布前的旧数量）与草案状态，并回生效版视图
       await loadModel(model.id);
       // 文案必须与级联真做的事一致：发布刷新对象表/部署绑定/口径字典/图谱；知识库不在这条链上
-      // （由后台 kb_sync_reconcile 周期重推，或在本页「关系图谱」手动同步）。以前写成
+      // （由后台 kb_sync_reconcile 周期重推，或在本页工具栏手动「同步知识库」）。以前写成
       // "知识库已级联刷新"，徽章却还是"待同步"——假承诺会让人以为同步坏了。
       const assets = data?.semantic_assets;
       const created = (assets?.metrics_created?.length || 0) + (assets?.dimensions_created?.length || 0);
@@ -517,8 +518,7 @@ export default function OntologyModeling() {
     }
   };
 
-  // ── 手动同步知识库与图谱重建均在「关系图谱」页（派生重建与状态回显同屏），
-  //    本页只保留状态徽章与保存/激活的自动级联。
+  // ── 派生重建动作（图谱生成 / 同步知识库）就放在状态徽章旁：同看同建一处，做完立刻回显。
 
   const handleDelete = async () => {
     if (!model) return;
@@ -1006,6 +1006,11 @@ export default function OntologyModeling() {
             {model && (
               <GraphRebuildButton kind={model.kind} datasourceId={model.datasource_id ?? undefined}
                 className="h-8" onRebuilt={() => setGraphTick((v) => v + 1)} />
+            )}
+            {/* 同步知识库与图谱生成同屏：徽章说「待同步」，这里给处置（kb:manage 把关、仅生效模型可点） */}
+            {model && (
+              <KbSyncButton modelId={model.id} active={model.status === 'active'}
+                onSynced={() => setGraphTick((v) => v + 1)} />
             )}
           </>
         )}

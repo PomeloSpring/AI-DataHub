@@ -143,7 +143,7 @@ description_en: "Build and edit dashboard/screen layouts: charts are materialize
 
 不要直接生成。先摸清平台有哪些数据,再给方向选项:
 
-1. `get_metrics`（keyword 必填）了解已建模的业务对象与指标，名称拿不准时才用 `knowledge_search` 定词;必要时 `list_datasources` 看数据源。
+1. 名称先看知识库语义层文档（`knowledge_search` 返回的 `dict_candidates`），没命中或 `doc_stale` 时才用 `get_metrics`（keyword 必填）补实时目录；必要时 `list_datasources` 看数据源。
 2. 基于可用数据,在正文用编号给用户 3~5 个方向,例如:
    1) 经营驾驶舱 — 收入/订单/利润等核心 KPI 总览 2) 用户增长 — DAU/MAU/留存/转化 3) 销售看板 — 区域/产品/客户 4) 生产运营 — 产能/良率/OEE。
 3. 停下等待用户选择,进入场景 B。
@@ -159,7 +159,7 @@ description_en: "Build and edit dashboard/screen layouts: charts are materialize
 口径无歧义、且是单站单屏时,不必走这一步,直接建。确认结论要落进 `create_data_screen` 的 `name`(如「今年案例数量总览 · 全球 5 站」),让资产名自述形态。
 
 **B1. 探数与建模口径**
-- 用 `knowledge_search`/`get_metrics` 确定每图的 `object`、`metrics`、`dimensions`。
+- 名称从「知识库语义层文档或 `get_metrics` 实时目录」确定每图的 `object`、`metrics`、`dimensions`（两处不必都查）。
 - 指标/维度名从目录原文复制(系统自动解析别名);时间趋势用 `is_time` 维度 + `time_grain` 或 `time_window`(如 `"7d"`/`"24h"`/`"1w"`/`"1M"`,不要手算绝对日期)。
 - 目标对象未在本体绑定 → 如实告知并建议先做本体建模,**不要猜表名/字段**。
 

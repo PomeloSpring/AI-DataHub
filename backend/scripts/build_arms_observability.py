@@ -25,6 +25,13 @@ OWNER_ID = 1778154925          # 数据源 owner（create_dataset 记录 owner_i
 DATASET_NAME = "arms_rum_observability"
 OBJECT_KEY = "rum_event"
 
+# 2026-11-25 改名：本模型与新建的「官网业务本体」（t_help_center* 业务表，主源 prd-cn）配对，
+# 改名为「官网可观测本体」。旧名仅作**只读兜底**（未改名环境仍能刷新既有模型）；
+# 命中旧名时不在此直改 name（会绕过 save_draft 的版本族同步），显式告警并指引走
+# `build_official_website_ontology.py --only rename-arms`。
+ARMS_MODEL_NAME = "官网可观测本体"
+ARMS_MODEL_NAME_LEGACY = "ARMS RUM 观测本体"
+
 # ── SLS 预制 SQL 正文（每行一条 RUM 事件；env=prod 默认；相对时间窗 ${days} 天）──
 # 带点/连字符的物理字段用双引号显式处理；时间桶用 date_trunc 预聚为普通维度列
 # （语义层 role=time + time_grain 会套 to_char，SLS 不支持，故正文里先算好）。
@@ -433,11 +440,17 @@ def _ensure_model(ds_id: int) -> int:
     now = ontology_service._now()
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, kind FROM adh_ontology_models WHERE name=%s AND datasource_id=%s",
-                        ("ARMS RUM 观测本体", ds_id))
+            cur.execute(
+                "SELECT id, kind, name FROM adh_ontology_models WHERE name IN (%s, %s) AND datasource_id=%s "
+                "ORDER BY (name=%s) DESC LIMIT 1",
+                (ARMS_MODEL_NAME, ARMS_MODEL_NAME_LEGACY, ds_id, ARMS_MODEL_NAME))
             row = cur.fetchone()
             if row:
                 model_id = int(row["id"])
+                if row["name"] != ARMS_MODEL_NAME:
+                    print(f"[model][warn] 模型 {model_id} 仍是旧名「{row['name']}」，"
+                          f"本次只刷新 doc 不改名；请跑 build_official_website_ontology.py "
+                          f"--only rename-arms 完成改名（避免绕过版本族同步）")
                 # 确保 kind=business（源本体退役）并刷新 canonical doc
                 cur.execute(
                     "UPDATE adh_ontology_models SET kind='business', json_content=%s, yaml_content=%s, "
@@ -452,7 +465,7 @@ def _ensure_model(ds_id: int) -> int:
                     "(id, datasource_id, name, kind, domain, status, json_content, yaml_content, md_content, "
                     "object_count, created_by, created_at, updated_at) "
                     "VALUES (%s,%s,%s,'business',%s,'draft',%s,%s,%s,1,%s,%s,%s)",
-                    (model_id, ds_id, "ARMS RUM 观测本体", doc["domain"], json_content,
+                    (model_id, ds_id, ARMS_MODEL_NAME, doc["domain"], json_content,
                      ontology_service.to_yaml(doc), ontology_service.to_md(doc),
                      str(OWNER_ID), now, now))
                 conn.commit()

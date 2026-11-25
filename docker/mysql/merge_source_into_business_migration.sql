@@ -48,4 +48,4 @@ UPDATE adh_ontology_models
 --   SELECT kind, COUNT(*) c FROM adh_ontology_models GROUP BY kind;
 -- 被合并模型的 deploy_sites 生效情况（ARMS 观测本体→cn 单站；数据仓库模型主源未站点化→NULL）：
 --   SELECT id, name, datasource_id, deploy_sites FROM adh_ontology_models
---    WHERE name IN ('ARMS RUM 观测本体', '数据仓库模型');
+--    WHERE name IN ('官网可观测本体', '数据仓库模型');

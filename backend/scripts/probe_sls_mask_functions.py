@@ -1,33 +1,37 @@
 """SLS(PG 协议/Presto) 端点的**脱敏函数可用性探针** —— 为 gates 注入列级安全策略取证。
 
-背景：语义主路的列级 mask 过去靠执行后按 DataFrame 列名匹配
-（`query_executor` -> `enforcer.apply_post_processing`），而 planner 把投影别名换成
-业务名/SLS ASCII 槽位（`o0/o1…`），列名对不上 → mask 静默不生效。修复方向是把策略
-**编译进下推 SQL**（`rls.apply_column_restriction`），因此必须先确认 SLS 端点认哪些
-函数 —— 本仓纪律是「探针实证」（见 planner.py 的 SLS 时间变体注释），不猜方言函数。
+## 为什么需要它
 
-安全性：只跑常量表达式（无 FROM 业务表），不取任何业务明细行。
+列级 mask 要编译进下推 SQL（`rls.apply_column_restriction`），必须先确认 SLS 端点认哪些函数。
+本仓纪律是「探针实证」，不猜方言函数。
 
-用法：
-    venv/bin/python -m backend.scripts.probe_sls_mask_functions [datasource_id]
+## 必须带真实 FROM（2026-11-25 缺陷根因）
 
-第一轮实测结论（ds=1793178243857 arms-prd-en，2026-10-30）：
-  OK   CONCAT / CAST(x AS VARCHAR) / LENGTH / CHAR_LENGTH / LEFT / RIGHT /
-       SUBSTR(x,1,n) / REPEAT / GREATEST / CASE WHEN / 常量 SELECT（无需 FROM）
-       MD5(varchar) -> 32 位十六进制字符串（可直接 SUBSTR 截 16 位当 hash）
-  ERR  to_utf8 / VARBINARY / SHA2(x,256) / TO_HEX / HEX / SHA1 / SHA256(varchar)
-       -> 原生 Presto 哈希写法在本端点不存在，hash 只能用 MD5
-  陷阱 SUBSTR(x, -2) **不报错但返回整串** -> 负数下标不支持，
-       拿它做"尾保留"partial mask 等于不脱敏（实测返回 20**********203.160.101.44）
+早期版本只跑 `SELECT REPEAT('*', 3)` 这类**无 FROM 的常量 SELECT**，走的是常量折叠路径：
+`LEFT` / `RIGHT` / `REPEAT` / `MD5(varchar)` 全部返回 OK。但真实查询里它们分别报
+`Function left not registered` / `Expected: repeat(double, integer)` / `Expected: md5(varbinary)`，
+于是任何投影到 partial 列的查询整条失败（用户侧显示「取数未完成」）。
+所以本探针从 catalog 取一张真实表 + 一列，所有表达式都套 `FROM <表> LIMIT 1` 执行；
+SELECT 只取派生值、不选原始列，不落业务明细。
 
-落地的三条 SLS 表达式（均已实机 OK，与 security/masking.py 的 _SLS 分支同源）：
-  partial -> 20**********44        hash -> a94443fc4bc1f456        null -> NULL
+## 用法
+
+    venv/bin/python -m backend.scripts.probe_sls_mask_functions [datasource_id] [table] [column]
+
+缺省自动挑该源 catalog 里第一张表的第一列；挑不到直接报错（不退回常量探针，
+那正是本脚本要防的假阳性）。
+
+## 边界
+
+- 只读：`LIMIT 1` 的派生投影，不写库、不下发原始列值；
+- 目标表达式**从 `masking.mask_expr` 同源取**，实现改了探针自动跟着验，不存在两处漂移；
+- 退出码非 0 = 有目标表达式在真实查询里失败，必须先修 `masking` 再上线。
 """
 from __future__ import annotations
 
 import sys
 
-# (探针名, 常量表达式)
+# (探针名, 表达式) —— 全部在真实表上下文执行；这里只说明“函数是否存在/参数类型是否合”
 PROBES: list[tuple[str, str]] = [
     ("select_const", "1"),
     ("concat", "CONCAT('ab', 'c')"),
@@ -39,36 +43,49 @@ PROBES: list[tuple[str, str]] = [
     ("greatest", "GREATEST(1, 2)"),
     ("left_fn", "LEFT('abcdef', 2)"),
     ("right_fn", "RIGHT('abcdef', 2)"),
-    ("char_length", "CHAR_LENGTH('abcdef')"),
-    # hash 候选：SLS PG 端点函数系与原生 Presto 有差异，逐个取证
-    ("md5", "MD5('abc')"),
-    ("md5_cast", "MD5(CAST('abc' AS VARCHAR))"),
-    ("to_hex_md5", "TO_HEX(MD5('abc'))"),
-    ("hex_md5", "HEX(MD5('abc'))"),
-    ("sha256", "SHA256('abc')"),
-    ("substr_sha256", "SUBSTR(SHA256('abc'), 1, 16)"),
-    ("sha1", "SHA1('abc')"),
+    ("lpad_empty", "LPAD('', 5, '*')"),
+    ("to_utf8_md5", "SUBSTR(MD5(TO_UTF8('abc')), 1, 16)"),
+    ("md5_varchar", "MD5(CAST('abc' AS VARCHAR))"),
 ]
 
-# 最终要落地的表达式（与 security/masking.py 的 SLS 分支保持一致）
-_IP = "CAST('203.160.101.44' AS VARCHAR)"
-TARGETS: list[tuple[str, str]] = [
-    ("sls_partial",
-     f"CASE WHEN LENGTH({_IP}) <= 4 THEN REPEAT('*', LENGTH({_IP})) "
-     f"ELSE CONCAT(LEFT({_IP}, 2), REPEAT('*', GREATEST(LENGTH({_IP}) - 4, 0)), "
-     f"RIGHT({_IP}, 2)) END"),
-    ("sls_short", "CASE WHEN LENGTH('ab') <= 4 THEN REPEAT('*', LENGTH('ab')) ELSE 'x' END"),
-    ("sls_hash", f"SUBSTR(MD5({_IP}), 1, 16)"),
-    ("sls_null", "CAST(NULL AS VARCHAR)"),
-    # 列改写走 sqlglot AST 重渲染，会把手写文法改成同义形式（now() -> CURRENT_TIMESTAMP、
-    # 函数名大写、INTERVAL 单位大写）—— 这些重写后形状必须在 SLS 上取证，否则是拿主链路赌解析器。
-    ("rt_to_unixtime_current", "TO_UNIXTIME(CURRENT_TIMESTAMP - INTERVAL '7 DAYS')"),
-    ("rt_date_format_upper", "DATE_FORMAT(FROM_UNIXTIME(1730000000), '%Y-%m-%d')"),
-]
+
+def _targets(column: str) -> list[tuple[str, str]]:
+    """最终落地的表达式：直接取 `masking.mask_expr` 的产物（同源，不手抄）。"""
+    from backend.semantics.security.masking import mask_expr
+
+    col = f'CAST("{column}" AS VARCHAR)'
+    short = f'SUBSTR({col}, 1, 2)'   # 走 partial 的“长度<=4 全打星”分支
+    return [
+        ("sls_partial", mask_expr(col, "partial", "postgres", "sls")),
+        ("sls_partial_short", mask_expr(short, "partial", "postgres", "sls")),
+        ("sls_hash", mask_expr(col, "hash", "postgres", "sls")),
+        ("sls_null", mask_expr(col, "null", "postgres", "sls")),
+    ]
+
+
+def _resolve_table(ds_id: int, table: str, column: str) -> tuple[str, str]:
+    """表/列缺省值从 catalog 取；取不到就报错（不允许无 FROM 的常量探针）。"""
+    from backend.common.db import execute_query
+
+    table = table or str((execute_query(
+        "SELECT table_name FROM adh_table_info WHERE datasource_id=%s AND is_active=1 "
+        "ORDER BY table_name LIMIT 1", (ds_id,)) or [{}])[0].get("table_name") or "")
+    if not table:
+        raise SystemExit(f"[probe] 数据源 {ds_id} 在 catalog 里没有可用的表：请显式传 table 参数"
+                         "（无 FROM 的常量探针会假阳性，不作为取证依据）")
+    column = column or str((execute_query(
+        "SELECT column_name FROM adh_column_metadata WHERE datasource_id=%s AND table_name=%s "
+        "AND is_active=1 ORDER BY id LIMIT 1", (ds_id, table)) or [{}])[0].get("column_name") or "")
+    if not column:
+        raise SystemExit(f"[probe] 表 {table} 在 catalog 里没有可用列：请显式传 column 参数")
+    return table, column
 
 
 def main() -> int:
     ds_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    table = sys.argv[2] if len(sys.argv) > 2 else ""
+    column = sys.argv[3] if len(sys.argv) > 3 else ""
+
     from backend.common.db import execute_query, get_datasource_by_id
     from backend.semantics.execution.connectors.sls import SlsConnector
 
@@ -77,23 +94,28 @@ def main() -> int:
         hit = execute_query("SELECT id FROM adh_datasources WHERE db_type='sls' ORDER BY id LIMIT 1")
         ds_id = int((hit or [{}])[0].get("id") or 0)
         row = get_datasource_by_id(ds_id)
-    print(f"[probe] SLS datasource_id={ds_id} name={row.get('name') if row else '?'}")
+    table, column = _resolve_table(ds_id, table, column)
+    print(f"[probe] SLS datasource_id={ds_id} name={(row or {}).get('name')} "
+          f"table={table} column={column}")
 
     connector = SlsConnector(ds_id)
-    target_names = {name for name, _ in TARGETS}
+    targets = _targets(column)
+    target_names = {name for name, _ in targets}
 
     def run(expr: str) -> tuple[bool, str]:
+        # 关键：带 FROM —— 函数注册与参数类型检查只在真实查询计划里暴露
+        sql = f'SELECT {expr} AS probe_value FROM "{table}" LIMIT 1'
         try:
-            table = connector.execute_pushdown(f"SELECT {expr} AS probe_value", max_rows=1)
-            vals = (table.to_pydict().get("probe_value") or [])
+            result = connector.execute_pushdown(sql, max_rows=1)
+            vals = (result.to_pydict().get("probe_value") or [])
             return True, str(vals[0] if vals else "")
         except Exception as exc:  # noqa: BLE001 — 探针就是要收集失败原因
-            return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+            return False, f"{type(exc).__name__}: {str(exc)[:140]}"
 
     failed = []
-    for name, expr in PROBES + TARGETS:
+    for name, expr in PROBES + targets:
         ok, detail = run(expr)
-        print(f"  {'OK ' if ok else 'ERR'} {name:17s} {expr[:56]:56s} -> {detail[:70]}")
+        print(f"  {'OK ' if ok else 'ERR'} {name:17s} {expr[:58]:58s} -> {detail[:80]}")
         if not ok and name in target_names:
             failed.append(name)
     print(f"[probe] 目标表达式失败: {failed or '无（SLS 可用）'}")

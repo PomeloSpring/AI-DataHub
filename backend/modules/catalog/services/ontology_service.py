@@ -1178,7 +1178,25 @@ def _cert_label(entry: dict = None) -> str:
     return "[已认证]" if (entry or {}).get("certified") else "[草稿]"
 
 
-def _cloud_object_md(obj: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> str:
+def _aka_text(entry: dict) -> str:
+    """渲染英文名与别名（「（又称: a、b）」）。
+
+    为什么必须上云：知识库是用户口语词的第一检索面，规范名之外的别名/英文名
+    才是命中入口。此前云端文档只有规范名，用户问「PV / GMV / 活跃设备」时
+    检索不到对应口径（2026-11-25：改用知识库替代向量检索，别名缺失即检索断链）。
+    """
+    alias = entry.get("aliases") or []
+    if isinstance(alias, str):
+        alias = [a.strip() for a in alias.split(",") if a.strip()]
+    names = [str(a).strip() for a in alias if str(a).strip()]
+    en = str(entry.get("name_en") or "").strip()
+    if en and en not in names:
+        names.append(en)
+    return f"（又称: {'、'.join(names)}）" if names else ""
+
+
+def _cloud_object_md(obj: dict, dataset_vars_fn=None, dict_metrics: dict = None,
+                     dict_dimensions: dict = None) -> str:
     """单个对象的对外 MD 段(白名单渲染, 不含物理标识)。"""
     lines = [f"## 业务对象: {obj.get('display_name', obj.get('key', ''))} ({obj.get('key', '')})"]
     aliases = obj.get("aliases") or []
@@ -1281,11 +1299,36 @@ def _cloud_object_md(obj: dict, dataset_vars_fn=None, dict_metrics: dict = None)
         lines.append("")
         lines.append("### 指标（业务口径）")
         for e in dict_ms:
-            seg = f"- {e.get('name', '')} {_cert_label(e)}"
+            seg = f"- {e.get('name', '')} {_cert_label(e)}{_aka_text(e)}"
+            if e.get("unit") or e.get("agg_type"):
+                bits = [str(x) for x in (e.get("unit"), e.get("agg_type")) if x]
+                seg += f" 单位/聚合: {'/'.join(bits)}"
             if e.get("description"):
                 seg += f"（{e['description']}）"
             if e.get("owner"):
                 seg += f" 责任人: {e['owner']}"
+            lines.append(seg)
+
+    # ── 维度（字典层）──────────────────────────────────────────────
+    # 与指标同源：adh_dimensions 按 bound_object_key 分组，由调用方查库传入。
+    # 枚举只出「码值→业务名」的业务名（filter 可直接用业务名），不出物理列/公式。
+    dict_ds = (dict_dimensions or {}).get(str(obj.get("key") or "")) or []
+    if dict_ds:
+        lines.append("")
+        lines.append("### 维度（业务口径）")
+        for e in dict_ds:
+            seg = f"- {e.get('name', '')}{_aka_text(e)}"
+            if e.get("hierarchy") or e.get("level"):
+                bits = [str(x) for x in (e.get("hierarchy"), e.get("level")) if x]
+                seg += f"（层级: {'/'.join(bits)}）"
+            if e.get("is_time"):
+                seg += "（时间维度，趋势需配时间粒度）"
+            labels = e.get("value_labels") or {}
+            if isinstance(labels, dict) and labels:
+                seg += "；枚举: " + "; ".join(
+                    f"{k}:{v}" for k, v in sorted(labels.items(), key=lambda kv: str(kv[0])))
+            if e.get("description"):
+                seg += f"（{e['description']}）"
             lines.append(seg)
 
     # ── 行为（M2）：只渲染 label/effect，params_schema 不上云（含参数细节）──
@@ -1419,13 +1462,17 @@ def _cloud_flow_md(flow, action_labels: dict, rule_statements: dict) -> list[str
     return out
 
 
-def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> str:
+def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None,
+                dict_dimensions: dict = None, business_terms: list = None) -> str:
     """把 canonical 本体 doc 渲染为可安全上云的业务语义文档(白名单)。
 
-    dict_metrics: {object_key: [{name, description, certified, owner}]}，
-    字典层口径指标（adh_metrics 按 bound_object_key 分组），由调用方查库后传入。
-    不传时「指标（业务口径）」段为空，只渲染对象级派生字段——宁可少说，
-    也不把派生字段冒充成权威口径。
+    dict_metrics: {object_key: [{name, name_en, aliases, unit, agg_type, description,
+    certified, owner}]}，字典层口径指标（adh_metrics 按 bound_object_key 分组），由调用方查库后传入。
+    dict_dimensions: {object_key: [{name, name_en, aliases, category, hierarchy, level,
+    is_time, value_labels, description}]}，字典层维度（adh_dimensions 同上）——不传时「维度（业务口径）」段为空。
+    business_terms: [{term_cn, term_en, term_aliases, description}]，业务黑话术语（adh_business_terms）——
+    只出术语与别名/描述，calculation（可能是含物理列的表达式）与 target_column 一律不上云。
+    不传时对应段为空，只渲染对象级派生字段——宁可少说，也不把派生字段冒充成权威口径。
     """
     parts = [f"# 本体模型: {doc.get('domain', '')}"]
     if doc.get("description"):
@@ -1434,8 +1481,30 @@ def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> s
     parts.append("")
     parts.append(_CLOUD_STRIP_NOTICE)
     parts.append("")
+    # ── 业务术语（口语入口）：术语名 + 别名/英文 + 描述 ──
+    # 为什么置前：用户口语词（黑话/简称）命中靠这一段，放在对象段之后容易被
+    # 规范化名称挤掉检索名次。calculation 可能含物理列表达式，不上云（护栏 §7）。
+    terms = [t for t in (business_terms or []) if str((t or {}).get("term_cn") or "").strip()]
+    if terms:
+        parts.append("### 业务术语（口语与别名）")
+        for t in terms:
+            seg = f"- {str(t.get('term_cn')).strip()}"
+            aka: list[str] = []
+            alias = t.get("term_aliases") or []
+            if isinstance(alias, str):
+                alias = [a.strip() for a in alias.split(",") if a.strip()]
+            aka.extend(str(a).strip() for a in alias if str(a).strip())
+            en = str(t.get("term_en") or "").strip()
+            if en and en not in aka:
+                aka.append(en)
+            if aka:
+                seg += f"（又称: {'、'.join(aka)}）"
+            if t.get("description"):
+                seg += f"：{t['description']}"
+            parts.append(seg)
+        parts.append("")
     for obj in doc.get("objects", []):
-        parts.append(_cloud_object_md(obj, dataset_vars_fn, dict_metrics))
+        parts.append(_cloud_object_md(obj, dataset_vars_fn, dict_metrics, dict_dimensions))
         parts.append("")
     # ── M3 规则：只出 statement（人话），enforcement 不上云（可能含过滤表达式/物理列）──
     rules = doc.get("rules") or []
@@ -1875,6 +1944,22 @@ def _doc_fingerprint(json_content: str) -> str:
     """生效内容指纹：发布时校验草案基线是否仍匹配（防覆盖他人改动）。"""
     import hashlib
     return hashlib.md5(str(json_content or "").encode("utf-8")).hexdigest()
+
+
+def _trigger_kb_sync(model_id: int) -> None:
+    """生效版落库/激活后触发知识库同步（延迟导入，避 免与 ontology_kb_sync 循环）。
+
+    为什么不依赖对账作业：`kb_sync_reconcile` 是人工可暂停的内置任务（目前
+    is_active=0），暂停后语义层改动就再也不会自动上云；而知识库现在是检索主路，
+    不能按旁路对待。这里做的是**同批触发**，对账作业退为跨进程兼底。
+    失败不回滚已生效正文：同步结果落 `adh_ontology_kb_sync_state`（success/failed +
+    错因），可从模型头的同步徽章与 reconcile 查到，不是静默丢失。
+    """
+    try:
+        from backend.modules.catalog.services.ontology_kb_sync import trigger_sync_async
+        trigger_sync_async(int(model_id))
+    except Exception as e:  # noqa: BLE001 — 同步启动失败不得毁掉已保存/已激活的正文
+        logger.warning("[ontology] model %s 知识库同步未能启动: %s", model_id, e)
 
 
 def save_draft_only(model_id: int, json_content: str, name: str = None,
@@ -2683,6 +2768,12 @@ def save_draft(model_id: int, json_content: str, name: str = None,
             "dimensions_merged": assets.get("dimensions_merged") or [],
             "blocked": (assets.get("conflicts") or []) + (assets.get("failed") or []),
         }
+    # 知识库级联（2026-11-25）：上云文档是检索主路（不再另建向量索引）。此前只有手动
+    # 端点和 is_active=0 的对账作业会推，本体/字典改完知识库仍是旧口径（联耀业务本体
+    # 曾滞后 7 天 → knowledge_search 长期 doc_stale，模型只能回退 get_metrics）。
+    # 异步推、失败落水位线（adh_ontology_kb_sync_state）可查，不回滚已保存正文。
+    if model["status"] == "active":
+        _trigger_kb_sync(model_id)
     return updated
 
 
@@ -3768,6 +3859,9 @@ def activate(model_id: int) -> dict:
     sync_enums_to_dimensions(doc, datasource_id, _table_of_object(model_id, datasource_id))
 
     logger.info("[ontology] activated model %s: %d objects written", model_id, count)
+    # 激活是「对外可查」的唯一开关，知识库文档必须与生效版本同批上线；
+    # 否则新激活的本体在 knowledge_search 里根本不存在（同上，异步 + 水位线）。
+    _trigger_kb_sync(model_id)
     return get_model(model_id)
 
 

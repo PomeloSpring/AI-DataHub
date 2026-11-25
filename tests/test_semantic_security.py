@@ -40,17 +40,32 @@ def test_mask_expr_by_dialect():
 
 
 def test_mask_expr_sls_uses_probed_functions_only():
-    """SLS(PG 协议/Presto 子集) 分支：函数写法以实机探针为凭（scripts/probe_sls_mask_functions.py）。
+    """SLS(PG 协议/Presto 子集) 分支：函数写法以**带 FROM 的实机探针**为凭。
 
-    两条都是“看起来更自然但 SLS 上不成立/会泄露”的写法，必须钉住：
-      × `SUBSTR(x, -2)` 不报错但返回整串 → 拿它取尾 = 不脱敏；
-      × 原生 Presto 哈希 `to_hex(md5(to_utf8(x)))` / `sha2(x,256)` 在本端点不存在。
+    早探针用无 FROM 的常量 SELECT，走了常量折叠路径，把 `LEFT`/`RIGHT`/`REPEAT`/
+    `MD5(varchar)` 全判成可用；真实查询里它们分别报 `Function left not registered` /
+    `Expected: repeat(double, integer)` / `Expected: md5(varbinary)`——任何投影到
+    partial 列的查询整条失败。下面钉住真实查询可用的写法：
+      × `LEFT` / `RIGHT` 未注册 → 取子串只用三参 `SUBSTR`；
+      × `REPEAT('*', n)` 第一参须 double、星号数会与长度脱钩 → 用 `LPAD('', n, '*')`；
+      × `SUBSTR(x, -2)` 不报错但返回整串 → 取尾用 `SUBSTR(x, GREATEST(LENGTH(x)-1, 1), 2)`；
+      × `MD5(varchar)` 须 varbinary → `MD5(TO_UTF8(cast))`。
     """
+    col = 'CAST("net.ip" AS VARCHAR)'
+    length = f"LENGTH({col})"
+    expected_partial = (
+        f"CASE WHEN {length} <= 4 THEN LPAD('', {length}, '*') "
+        f"ELSE CONCAT(SUBSTR({col}, 1, 2), "
+        f"SUBSTR(LPAD('', {length}, '*'), 1, GREATEST({length} - 4, 0)), "
+        f"SUBSTR({col}, GREATEST({length} - 1, 1), 2)) END"
+    )
     partial = mask_expr('"net.ip"', "partial", "postgres", "sls")
-    assert partial == _partial_case('CAST("net.ip" AS VARCHAR)', "LENGTH")
-    assert "SUBSTR(CAST" not in partial and "RIGHT(" in partial
+    assert partial == expected_partial
+    # 禁用函数/写法一个都不能回来（回归时最容易被“顺手简化”带回常量探针的结论）
+    for banned in ("LEFT(", "RIGHT(", "REPEAT(", "SUBSTR(" + col + ", -"):
+        assert banned not in partial, banned
     assert mask_expr('"net.ip"', "hash", "postgres", "sls") \
-        == "SUBSTR(MD5(CAST(\"net.ip\" AS VARCHAR)), 1, 16)"
+        == f"SUBSTR(MD5(TO_UTF8({col})), 1, 16)"
     assert mask_expr('"net.ip"', "null", "postgres", "sls") == "NULL"
     # 族键 postgres 不等于引擎 sls：不传 engine 时仍出 PG 写法（不得串味）
     assert mask_expr('"net.ip"', "hash", "postgres") == 'MD5(CAST("net.ip" AS TEXT))'

@@ -84,6 +84,29 @@ def test_time_function_metric_is_accepted(monkeypatch):
     assert "close_time" in str(e.value)
 
 
+def test_percentile_metric_is_accepted(monkeypatch):
+    """分位/离散度口径（approx_percentile/percentile/stddev）不得被当成不存在的列拒登。
+
+    历史缺陷：_SQL_NON_COLUMN 只排了 SQL 关键字与聚合/日期函数，SLS 的
+    `approx_percentile(costTime, 0.95)` 这类「接口 P95 耗时」口径一律登记不上
+    （慢接口阈值整类指标缺失），审计还会把它误报成错口径。
+    白名单只排函数名，真错列仍必须拒。
+    """
+    monkeypatch.setattr(
+        "backend.modules.catalog.services.metrics_service._object_property_columns",
+        lambda key: (key, ["costtime", "businesstype", "responsparam"]),
+    )
+    _require_formula_matches_object(
+        "platform_request_log",
+        "approx_percentile(CASE WHEN businessType = 'SERVER' THEN costTime END, 0.95)")
+    _require_formula_matches_object("platform_request_log", "percentile(costTime, 0.99)")
+    _require_formula_matches_object("platform_request_log", "stddev(costTime)")
+    # 分位函数白名单不放宽列校验：latency 不在对象上，照旧拒
+    with pytest.raises(ValueError) as e:
+        _require_formula_matches_object("platform_request_log", "percentile(latency, 0.95)")
+    assert "latency" in str(e.value)
+
+
 def test_metric_bound_object_without_columns_is_rejected(monkeypatch):
     """归属对象无已登记物理列时不能静默放行（否则校验形同虚设）。"""
     monkeypatch.setattr(

@@ -116,8 +116,17 @@ _VALUE_RES: tuple[tuple[str, re.Pattern], ...] = (
     ("generated_sql", re.compile(
         r"(?is)(?<![0-9A-Za-z_])(?:select|with)\b[\s\S]{0,400}?\bfrom\s+[`\"']?"
         r"\w+[_.]\w+[`\"']?")),
+    # 报错栈：只拦**能据此推断服务端实现/依赖库结构**的堆栈（服务端源码路径、
+    # site-packages 里的驱动栈）。模型在会话沙箱里跑**自己写的**脚本报错
+    # （`File "<stdin>"` / `File "<string>"` / `/workspace/x.py`）属正常调试信号，
+    # 不含任何配置面信息：整条拒发会让它既不知道真因也无从自纠（2026-11-25 会话
+    # c1a3b8a3：get_metrics 超限落盘后用 bash 去读，文件不存在 → FileNotFoundError
+    # 被当敏感信息拒发，模型只能放弃 → 答非所问）。
+    # 仍拦：`.../backend/...py`、`site-packages/`、`dist-packages/` 这类路径；
+    # 驱动错误签名（含物理表/列名）另由下面的 raw_db_error 兜底。
     ("error_stack", re.compile(
-        r"Traceback \(most recent call last\)|\bFile \"[^\"]+\.py\", line \d+")),
+        r"Traceback \(most recent call last\)[\s\S]{0,4000}?File \"[^\"]*?"
+        r"(?:/backend/|(?<=[\"'])backend/|site-packages/|dist-packages/|/lib/python\d)")),
     # 数据库/驱动原始报错：天然携带物理表名/列名/SQL 片段（历史缺陷：catalog 旧列名
     # 报错 `(1054, "Unknown column 'metric_name' in 'field list'")` 被直接下发给 LLM）。
     # 只匹配驱动错误的固定签名，不匹配裸表名，避免误杀“请先对表 X 执行元数据同步”这类可操作提示。

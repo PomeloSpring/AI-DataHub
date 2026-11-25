@@ -11,13 +11,19 @@ partial 与结果侧 `permission_enforcer._partial_mask` 同口径：保首尾�
 
 engine 维度（同族不同实现的函数差异）：SLS 的 PG 协议端点是 **Presto 系函数子集**，
 原生 PG/MySQL 写法在那儿不是报错就是静默错数，故按 engine 单开一支。
-函数可用性由实机探针取证：`backend/scripts/probe_sls_mask_functions.py`
-（2026-10-30 @ arms-prd-en）——
-  OK   LEFT / RIGHT / LENGTH / CHAR_LENGTH / CONCAT / REPEAT / GREATEST / CASE /
-       CAST(x AS VARCHAR) / MD5(varchar)
-  ERR  to_utf8 / VARBINARY / SHA2(x,256) / TO_HEX / HEX / SHA1 / SHA256(varchar)
-  陷阱 `SUBSTR(x, -2)` **不报错但返回整串**（负数下标不支持）→ 取尾一律用 RIGHT，
-       否则 partial mask 会把原值整串带出去（等于不脱敏）。
+函数可用性由实机探针取证：`backend/scripts/probe_sls_mask_functions.py`。
+**探针必须带真实 FROM**（2026-11-25 教训）：早期探针用无 FROM 的常量 SELECT
+（`SELECT REPEAT('*', 3)`）走的是常量折叠路径，`LEFT`/`RIGHT`/`REPEAT`/`MD5(varchar)`
+全部“OK”，但真实查询里逐个失效——任何查询投影到 partial 列就整条失败
+（`Function left not registered` / `Expected: repeat(double, integer)` /
+`Expected: md5(varbinary)`）。真实表上的结论（prd-sls-cn @ logstash_cn）：
+  OK   LENGTH / CONCAT / SUBSTR(s, start, len) / GREATEST / CASE / LPAD('', n, '*') /
+       CAST(x AS VARCHAR) / TO_UTF8(x) / MD5(varbinary)
+  ERR  LEFT / RIGHT（未注册）/ REPEAT（第一参须 double，且星号数会与长度脱钩）/
+       MD5(varchar)（须 varbinary）/ VARBINARY→VARCHAR 转换（Cannot cast）/
+       SHA2 / TO_HEX / HEX / SHA1
+  陷阱 `SUBSTR(x, -2)` **不报错但返回整串**（负数下标不支持）→ 取尾一律用
+       `SUBSTR(x, GREATEST(LENGTH(x)-1, 1), 2)`，否则 partial mask 会把原值整串带出去。
 """
 
 from __future__ import annotations
@@ -46,13 +52,32 @@ def _es_partial_case(col_text: str) -> str:
     )
 
 
+def _sls_partial_case(col_text: str) -> str:
+    """SLS 真实查询下的 partial：保首尾各 2、中间补**等长**星号（长度<=4 全打星）。
+
+    不复用 `_partial_case` 的原因（2026-11-25 带 FROM 实测，见模块 docstring）：
+    `LEFT`/`RIGHT` 未注册；`REPEAT('*', n)` 的第一参必须是 double，`CAST(n AS INTEGER)`
+    也救不回。改用 `LPAD('', n, '*')` 生成与隐藏段等长的星号串，口径与结果侧
+    `permission_enforcer._partial_mask` 一致（星号数 = 隐藏字符数）。
+    短值分支单独给 `LPAD('', n, '*')`：`'ab'` → `'**'`（同样是全打星，不泄露长度）。
+    """
+    length = f"LENGTH({col_text})"
+    return (
+        f"CASE WHEN {length} <= 4 THEN LPAD('', {length}, '*') "
+        f"ELSE CONCAT(SUBSTR({col_text}, 1, 2), "
+        f"SUBSTR(LPAD('', {length}, '*'), 1, GREATEST({length} - 4, 0)), "
+        f"SUBSTR({col_text}, GREATEST({length} - 1, 1), 2)) END"
+    )
+
+
 def _partial_case(col_text: str, len_fn: str = "LENGTH") -> str:
     """首尾各保 2 字符、中间打星（长度<=4 全打星）—— 与结果侧 _partial_mask 一致。
 
     入参 `col_text` 已是文本型表达式（各分支负责先 CAST），故此处只依赖
-    LEFT/RIGHT/REPEAT/CONCAT/GREATEST + `len_fn`，这组在 mysql / pg / sls 都取证通过。
+    LEFT/RIGHT/REPEAT/CONCAT/GREATEST + `len_fn`，这组在 mysql / pg 取证通过
+    （SLS 不用本函数：LEFT/RIGHT 未注册、REPEAT 签名不符，见 `_sls_partial_case`）。
     `len_fn`：mysql 要 `CHAR_LENGTH`（`LENGTH` 在 MySQL 是**字节**数，中文会多打星），
-    pg/sls 用 `LENGTH`（SLS 实测 OK）。
+    pg 用 `LENGTH`。
     """
     return (
         f"CASE WHEN {len_fn}({col_text}) <= 4 THEN REPEAT('*', {len_fn}({col_text})) "
@@ -84,13 +109,16 @@ def mask_expr(column_sql: str, mask_type: str, dialect: str = "mysql",
         raise ValueError(f"未知 mask 类型 {mask_type!r}（fail-loud，不得静默放行原列）")
 
     if is_sls:
-        # SLS(Presto 子集)：CAST 到 VARCHAR、哈希只能 MD5、取尾只能 RIGHT（见模块 docstring）
+        # SLS(Presto 子集)：CAST 到 VARCHAR、哈希走 TO_UTF8+MD5、取子串只用三参 SUBSTR。
+        # 不用 LEFT/RIGHT/REPEAT：真实查询里前两个未注册、REPEAT 第一参须 double
+        # （2026-11-25 实测，详见模块 docstring 的探针结论）。
         if kind in ("null", "full", "block"):
             return "NULL"
+        text = f"CAST({col} AS VARCHAR)"
         if kind == "hash":
-            return f"SUBSTR(MD5(CAST({col} AS VARCHAR)), 1, 16)"
+            return f"SUBSTR(MD5(TO_UTF8({text})), 1, 16)"
         if kind == "partial":
-            return _partial_case(f"CAST({col} AS VARCHAR)", "LENGTH")
+            return _sls_partial_case(text)
         raise ValueError(f"未知 mask 类型 {mask_type!r}（fail-loud，不得静默放行原列）")
 
     if kind in ("null", "full", "block"):

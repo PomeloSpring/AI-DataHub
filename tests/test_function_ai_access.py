@@ -185,7 +185,11 @@ def _tool_result(text):
     ("mysql://user:pass@db/x", "credential_in_url"),
     ("SELECT * FROM adh_reports", "generated_sql"),
     ("physical_table = adh_reports", "legacy_leak"),
-    ("Traceback (most recent call last):", "error_stack"),
+    # 报错栈只拦能反推服务端/依赖库结构的那些（见下方沙箱堆栈放行用例）
+    ('Traceback (most recent call last):\n  File "/srv/adh/backend/modules/x.py", line 12, in f',
+     "error_stack"),
+    ('Traceback (most recent call last):\n  File "/usr/lib/python3.11/site-packages/pymysql/cursors.py",'
+     ' line 148, in execute', "error_stack"),
     # 驱动原始报错天然带物理列/表名（历史缺陷：catalog 旧列名报错直接下发 LLM）
     ('(1054, "Unknown column \'metric_name\' in \'field list\'")', "raw_db_error"),
     ('''pymysql.err.ProgrammingError: (1146, "Table 'adh2.adh_orders' doesn't exist")''',
@@ -208,6 +212,13 @@ def test_outbound_guard_detects_leaks(text, expected):
     # 业务敏感列（客户端 IP）不被出站层误杀：能不能下发由 adh_sensitive_fields 裁决
     '{"rows":[{"客户端IP":"47.103.50.8","页面浏览量":20}]}',
     '{"rows":[{"客户端IP":"20***"}]}',
+    # 模型在会话沙箱里跑自己写的脚本报错，是自纠错信号而非配置面泄露：
+    # 2026-11-25 会话 c1a3b8a3 事故（读落盘文件失败 → FileNotFoundError 被整条拒发）
+    '{"stdout":"","stderr":"ls: cannot access x\\nTraceback (most recent call last):\\n'
+    '  File \\"<stdin>\\", line 2, in <module>\\nFileNotFoundError: [Errno 2]"}',
+    'Traceback (most recent call last):\n  File "/workspace/gen_case_html.py", line 93, in <module>\n'
+    'ValueError: unsupported format character',
+    'Traceback (most recent call last):\n  File "<string>", line 3\nFileNotFoundError: x',
 ])
 def test_outbound_guard_no_false_positive_on_normal_output(text):
     """时间戳/散文不能被误杀，否则正常取数结果全被判失败。"""

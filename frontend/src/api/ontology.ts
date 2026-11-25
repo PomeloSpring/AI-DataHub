@@ -255,7 +255,7 @@ export const ontologyApi = {
     client.put<OntologyModel & { draft_pending?: boolean; note?: string }>(
       `/catalog/ontology/models/${id}/draft`, { json_content: jsonContent, name }),
   /** 发布草案：生效 + 级联（重展开对象/登记部署绑定/收编口径字典/重建图谱），需 ontology:publish；
-   *  知识库不在本请求内同步，由后台对账重推（关系图谱页可手动同步） */
+   *  知识库不在本请求内同步，由后台对账重推（本体建模工具栏可手动「同步知识库」） */
   publishDraft: (id: number) =>
     client.post<{
       success: boolean; object_count?: number;

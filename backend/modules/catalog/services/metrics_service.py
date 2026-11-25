@@ -19,6 +19,22 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _sync_kb_after_dict_write(datasource_id=0) -> None:
+    """字典行增删改后重推知识库（延迟导入，避免与 ontology_kb_sync 循环）。
+
+    知识库是检索主路（不建向量索引），字典层的指标/维度名称、别名、枚举就是
+    它的内容来源。此前字典页改完口径云端文档不动——knowledge_search 继续按旧别名/
+    旧描述命中，用户拿到过期口径。异步 + 节流（见 trigger_sync_for_dict_change），
+    失败落 `adh_ontology_kb_sync_state`，不回滚已落库的字典行。
+    """
+    try:
+        from backend.modules.catalog.services.ontology_kb_sync import (
+            trigger_sync_for_dict_change)
+        trigger_sync_for_dict_change(int(datasource_id or 0))
+    except Exception as e:  # noqa: BLE001 — 同步启动失败不得抛回写入口
+        logger.warning("[metrics] 字典变更后的知识库同步未启动: %s", e)
+
+
 # 前端表单字段 ↔ adh_metrics 真实列的映射(页面用 name/display_name/category/…,
 # 语义层 mdl_compiler/run_semantic_query 读的是 name(中文名)/name_en/formula/agg_type)
 #
@@ -599,6 +615,7 @@ def create_metric(data: dict) -> dict:
                 ),
             )
 
+    _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return {"id": row_id, "success": True}
 
 
@@ -654,6 +671,10 @@ _SQL_NON_COLUMN = {
     "substring", "length", "char_length", "locate", "instr", "trim", "lower", "upper",
     "floor", "ceil", "ceiling", "power", "sqrt", "mod", "regexp", "xor", "if",
     "isnull", "json_extract", "json_unquote",
+    # 分位/离散度函数同理：P95/P99 耗时、慢接口阈值一类口径（SLS/Presto 用 approx_percentile、
+    # ES 用 percentile）漏登记会被当成「引用了不存在的列」拒绝，慢接口指标一律登记不上。
+    "approx_percentile", "percentile", "quantiles", "quantile", "approx_distinct",
+    "stddev", "stddev_pop", "variance", "var_pop",
 }
 
 
@@ -825,6 +846,7 @@ def update_metric(metric_id: int, data: dict) -> bool:
 
             cur.execute(f"UPDATE adh_metrics SET {', '.join(fields)} WHERE id = %s", params)
 
+    _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return True
 
 
@@ -839,13 +861,16 @@ def delete_metric(metric_id: int) -> bool:
     """
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM adh_metrics WHERE id = %s", (metric_id,))
-            if not cur.fetchone():
+            cur.execute("SELECT id, datasource_id FROM adh_metrics WHERE id = %s", (metric_id,))
+            row = cur.fetchone()
+            if not row:
                 return False
 
             cur.execute("DELETE FROM adh_metric_dimensions WHERE metric_id = %s", (metric_id,))
             cur.execute("DELETE FROM adh_metrics WHERE id = %s", (metric_id,))
 
+    # 删除也要上云：文档里残留的旧指标会让 knowledge_search 继续命中不存在口径。
+    _sync_kb_after_dict_write((row or {}).get("datasource_id") or 0)
     return True
 
 
@@ -1222,6 +1247,7 @@ def create_dimension(data: dict) -> dict:
                     owner_role or None,
                 ),
             )
+    _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return {"id": row_id, "success": True}
 
 
@@ -1319,6 +1345,7 @@ def update_dimension(dim_id: int, data: dict) -> bool:
             params.append(dim_id)
             cur.execute(f"UPDATE adh_dimensions SET {', '.join(fields)} WHERE id = %s", params)
 
+    _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return True
 
 
@@ -1328,17 +1355,19 @@ def delete_dimension(dim_id: int) -> bool:
     """删除维度字典行及其指标关系行(与 delete_metric 同口径的物理删除)。
 
     字典行是引用方(bound_object_key 指向对象), 删除不产生悬空引用;
-    图谱/知识库里的残留由各自下次重建对账。
+    图谱残留由下次重建对账, 知识库文档在本函数末尾主动重推（不依赖对账作业）。
     """
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM adh_dimensions WHERE id = %s", (dim_id,))
-            if not cur.fetchone():
+            cur.execute("SELECT id, datasource_id FROM adh_dimensions WHERE id = %s", (dim_id,))
+            row = cur.fetchone()
+            if not row:
                 return False
 
             cur.execute("DELETE FROM adh_metric_dimensions WHERE dimension_id = %s", (dim_id,))
             cur.execute("DELETE FROM adh_dimensions WHERE id = %s", (dim_id,))
 
+    _sync_kb_after_dict_write((row or {}).get("datasource_id") or 0)
     return True
 
 

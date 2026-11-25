@@ -41,8 +41,10 @@ CLARIFICATION_QUALIFIED = f"mcp__datahub_scheduled__{CLARIFICATION_TOOL}"
 # - 外部 MCP 意图服务：需要会话级安全初始化（external_servers 只在交互回合准备）。
 UNATTENDED_SKIP_REASON = "无人值守链路不启用会话工作区文件/命令执行与外部 MCP 工具"
 
-# 定时分析必须能查目录并做声明式取数，否则产不出可校验的数字（与旧链路同口径）。
-REQUIRED_TOOLS = {"get_metrics", "run_semantic_query"}
+# 定时分析必须能做声明式取数；名称来源是双源（知识库语义层文档 / get_metrics 实时目录），
+# 二者至少要有其一，否则无人值守没有名称依据只能猜名称。
+REQUIRED_TOOLS = {"run_semantic_query"}
+NAME_SOURCE_TOOLS = {"get_metrics"}
 
 
 class ScheduledScopeError(PermissionError):
@@ -228,9 +230,25 @@ def load_profile(config, identity) -> dict:
         raise ScheduledScopeError("任务属主的角色没有已授权数据源，无法无人值守取数；"
                                   "请联系管理员配置角色数据源授权", "SOURCE_REQUIRED")
     short_names = {str(name).rsplit("__", 1)[-1] for name in policy.allowed}
-    if not REQUIRED_TOOLS <= short_names:
-        raise ScheduledScopeError("定时分析需要角色 AS-BOT 授权语义目录（get_metrics）与"
-                                  "语义查询（run_semantic_query）", "TOOL_NOT_ALLOWED")
+    missing = REQUIRED_TOOLS - short_names
+    if missing:
+        raise ScheduledScopeError("定时分析需要角色 AS-BOT 授权语义查询（run_semantic_query）",
+                                  "TOOL_NOT_ALLOWED")
+    if not (NAME_SOURCE_TOOLS & short_names):
+        # 没授权实时目录时，必须确认绑定的知识库真在接收语义层文档；否则无名称依据。
+        # 判定失败不静默放行（fail-loud）：宁可拒任务，也不让无人值守去猜名称。
+        try:
+            from backend.modules.catalog.services.ontology_kb_sync import has_semantic_kb
+            has_kb_names = has_semantic_kb(policy.as_bot.get("knowledge_base_ids") or [])
+        except Exception as exc:  # noqa: BLE001
+            raise ScheduledScopeError(
+                f"无法确认绑定的知识库是否含语义层文档（{exc}），定时分析不在名称不确定下运行",
+                "NAME_SOURCE_UNVERIFIED") from exc
+        if not has_kb_names:
+            raise ScheduledScopeError(
+                "定时分析需要名称依据：角色 AS-BOT 授权指标定义检索（get_metrics），"
+                "或把绑定的知识库设为同步本体语义层（source_config.sync_ontology）",
+                "TOOL_NOT_ALLOWED")
 
     profile = _profile(ctx, policy, layer["backend"])
     profile["sources"] = sources
@@ -262,7 +280,8 @@ SCHEDULED_GUIDANCE = (
     "能力与可查数据范围由任务属主的角色决定：你看不到也不需要知道数据源标识；"
     "取数一律用业务名（对象/指标/维度）与站点业务名。\n"
     "作业要求：\n"
-    "① 先看实时目录（get_metrics），名称以目录为准；相对日期用 time_window，不要手算绝对日期；\n"
+    "① 名称来自知识库语义层文档（knowledge_search 的 dict_candidates）或实时目录（get_metrics），"
+    "二者其一即可，实时目录是最终裁决；相对日期用 time_window，不要手算绝对日期；\n"
     "② 取数走 run_semantic_query（声明式意图，禁止 SQL 字段）；需要未建模形状时用 execute_sql"
     "（只读 SELECT，服务端治理后才执行）；\n"
     "③ 本轮不执行业务或配置的写动作（本体/指标字典/看板/资产归档等）：定时任务只做分析与产出报表，"

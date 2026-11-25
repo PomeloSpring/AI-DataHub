@@ -9,8 +9,10 @@ planner 按 `target_table = 对象绑定物理表` 加载字典。两套口径�
 本文件锁定：
 1. `dict_unavailable_reason` 的裁决口径（与 planner 的加载条件一一对应，不误伤可编译行）；
 2. `binding_scope_for` 的保守回退（查不到绑定 ≠ 不可用）；
-3. `get_metrics` 把不可编译项放进 `unavailable`（带原因、带使用约束），不进可用清单；
-4. 对外文案不含物理表名（护栏 §7）。
+3. `get_metrics` 把不可编译项放进 `unavailable`（带原因、带使用约束），不进可用 清单；
+4. 对外文案不含物理表名（护栏 §7）；
+5. `get_metrics` 单次下发体积受预算约束，超预算显式降级但**不得删对象**（会话 1783069459352：八个泛词
+   命中 15 个对象 = 70,598 字符，被运行时静默换成读不回来的文件指针，模型据此断言"平台没有线索对象"）。
 """
 import asyncio
 import json
@@ -175,3 +177,113 @@ def test_get_metrics_output_never_leaks_physical_names(monkeypatch):
     text = json.dumps(payload, ensure_ascii=False)
     for leak in ("secret_table", "other_table", "logstore-rum", "view.url", "target_table"):
         assert leak not in text
+
+
+class TestGetMetricsOutputBudget:
+    """单次下发预算：泛词命中十几个对象的全量口径会被运行时静默截断成半本目录。
+
+    会话 1783069459352：keyword 八个泛词 → 15 个对象 = 70,598 字符 → agent 运行时
+    整份落盘换成文件指针（且在会话沙箱外读不回）→ 模型手里零目录 → 回答"平台没建
+    线索对象"。所以体积必须由工具自己兜，且降级不得删对象（删对象 = 半本目录）。
+    """
+
+    @staticmethod
+    def _wide_catalog(objects=12, per_object=20):
+        metrics, dims = [], []
+        i = 0
+        for n in range(objects):
+            for j in range(per_object):
+                i += 1
+                metrics.append({
+                    "id": i, "name": f"对象{n}指标{j}", "name_en": f"o{n}_metric_{j}",
+                    "bound_object_key": f"obj{n}", "target_table": "logstore-rum",
+                    "target_column": "", "formula": f"COUNT(x{i}.id)", "formula_dsl": "",
+                    "aliases": [f"m{n}_{j}", f"别名{n}{j}"],
+                    "description": "口径说明：排除已删除记录，按会话去重后统计", "unit": "个",
+                })
+                dims.append({
+                    "id": i, "name": f"对象{n}维度{j}", "name_en": f"o{n}_dim_{j}",
+                    "bound_object_key": f"obj{n}", "target_table": "logstore-rum",
+                    "target_column": f"view.col{i}", "category": "文本",
+                    "formula": "", "formula_dsl": "",
+                    "aliases": [f"d{n}_{j}"],
+                    "value_labels": {"0": "甲类", "1": "乙类", "2": "丙类"},
+                    "description": "枚举业务含义说明，供业务方直接解读",
+                })
+        return metrics, dims
+
+    def test_keyword_mode_stays_within_budget_by_topk(self, monkeypatch):
+        """条目级 topK 取代整对象补全：泛词最坏情况也不再触发运行时截断。
+
+        历史事故（1783069459352）：命中 15 对象 → 整对象补全 70,598 字符 → 运行时
+        整份落盘成读不回来的文件指针。现在发现层按条目下发，体积上限由 top_k 决定。
+        """
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+            _compact_chars, _MAX_METRICS_PAYLOAD_CHARS,
+        )
+
+        metrics, dims = self._wide_catalog()
+        payload = _run_get_metrics(monkeypatch, metrics, dims,
+                                   args={"keyword": "对象", "top_k": 30})
+        assert _compact_chars(payload) <= _MAX_METRICS_PAYLOAD_CHARS
+        assert payload["search"]["truncated"] is True
+        assert payload["search"]["matched_total"] == len(metrics) + len(dims)
+        # 只回命中条目，但每对象必须带全量计数（子集不冒充全量）
+        assert all(o["metric_total"] == 20 for o in payload["objects"])
+        assert sum(len(o["metrics"]) + len(o["dimensions"]) for o in payload["objects"]) == 30
+
+    def test_budget_guard_is_second_line_and_keeps_every_object(self):
+        """object 下钻（全量）仍可能超预算：fit_metrics_payload 是二道防线，且不删对象。"""
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+            _compact_chars, fit_metrics_payload, _MAX_METRICS_PAYLOAD_CHARS,
+        )
+
+        out = {"objects": [
+            {"object": f"obj{i}", "metric_total": 50, "dimension_total": 0,
+             "metrics": [{"name": f"指标{i}_{j}", "aliases": [f"别名{i}_{j}"],
+                          "description": "口径说明" * 20} for j in range(50)],
+             "dimensions": []} for i in range(30)], "total": 30}
+        fitted = fit_metrics_payload(out)
+        assert _compact_chars(fitted) <= _MAX_METRICS_PAYLOAD_CHARS
+        assert len(fitted["objects"]) == 30          # 不得删对象
+        assert fitted["budget_level"] in ("names", "index")
+        assert "get_metrics" in (fitted.get("_budget_note") or "")
+
+    def test_within_budget_payload_is_untouched(self, monkeypatch):
+        """预算内零变化：既有口径（含 aliases/description/enum）不得被预热性降级。"""
+        payload = _run_get_metrics(monkeypatch, [METRIC_OK], [DIM_OK])
+        assert "budget_level" not in payload and "_budget_note" not in payload
+        assert payload["objects"][0]["metrics"][0]["name"] == "页面浏览量"
+
+    def test_index_level_keeps_counts_and_marks_truncation(self):
+        """预算再小也只删明细、不删对象；每个对象标出总数量与已列名称数。"""
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+            _compact_chars, fit_metrics_payload,
+        )
+
+        metrics, dims = self._wide_catalog(objects=6, per_object=10)
+        objects: list = []
+        for row in metrics:
+            objects.append({"object": row["bound_object_key"], "metrics": [], "dimensions": []})
+        for row in dims:
+            objects.append({"object": row["bound_object_key"], "metrics": [], "dimensions": []})
+        buckets = {o["object"]: o for o in objects}
+        for row in metrics:
+            buckets[row["bound_object_key"]]["metrics"].append(
+                {"name": row["name"], "aliases": row["aliases"],
+                 "description": row["description"], "unit": row["unit"]})
+        for row in dims:
+            buckets[row["bound_object_key"]]["dimensions"].append(
+                {"name": row["name"], "aliases": row["aliases"],
+                 "enum": row["value_labels"], "description": row["description"]})
+        out = {"objects": list(buckets.values()), "total": len(buckets), "keywords": ["对象"]}
+
+        fitted = fit_metrics_payload(out, 2500)
+        assert _compact_chars(fitted) <= 2500
+        assert fitted["budget_level"] == "index"
+        assert [o["object"] for o in fitted["objects"]] == [o["object"] for o in out["objects"]]
+        for o in fitted["objects"]:
+            assert o["metrics"] == 10 and o["dimensions"] == 10
+            if len(o["metric_names"]) < o["metrics"]:
+                assert "只列前" in o["metric_names_truncated"]
+

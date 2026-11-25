@@ -143,3 +143,39 @@ def test_shipped_body_states_the_boundary():
     body = _shipped()["system_prompt"]
     assert "业务对象取数不属于本技能" in body, "正文必须自己划边界（常驻/取回/附带三条通道都靠它）"
     assert "案例有多少" in body, "用用户实际问过的问题当反例，口径才落地"
+
+
+# ── 4. 平台请求日志技能：同样与业务/RUM 共用工具，同样要划作用域 ─────────────────
+def _shipped_log_skill():
+    from backend.modules.mind.config.skill_loader import load_skill
+    skill = load_skill("platform-request-log")
+    assert skill, "内置技能 platform-request-log 必须存在"
+    return skill
+
+
+def test_shipped_log_skill_declares_scope_without_bare_words():
+    """截获「页面/访问」这类裸词会把 RUM 与业务问题全拉进本域（本域只管平台请求日志）。"""
+    cfg = _shipped_log_skill()["skill_config"]
+    scope = [str(x).strip() for x in (cfg.get("attach_scope") or [])]
+    assert scope, "与业务/RUM 共用 run_semantic_query 的技能必须声明作用域"
+    assert not ({"案例", "订单", "客户"} & set(scope)), "业务对象词不得进日志作用域"
+    for words in (scope, [str(x).strip() for x in (cfg.get("triggers") or [])]):
+        for word in ("页面", "流量", "访问", "访问量", "设备", "渠道", "监控"):
+            assert word not in words, f"裸词「{word}」会让 RUM/业务问题误命中本域"
+
+
+def test_shipped_log_scope_hits_only_platform_request_questions():
+    skill = _shipped_log_skill()
+    as_dict = {"attach_scope": skill["skill_config"].get("attach_scope") or []}
+    assert skt._scope_hits(as_dict, "这周接口成功率怎么样"), "平台接口问题必须命中"
+    assert skt._scope_hits(as_dict, "哪些平台接口的 P95 最慢"), "慢接口问题必须命中"
+    assert skt._scope_hits(as_dict, "案例有多少") == [], "业务对象取数不进本域"
+    assert skt._scope_hits(as_dict, "官网首屏加载慢不慢") == [], "页面性能属 RUM，不得命中本域"
+
+
+def test_shipped_log_body_states_the_boundary():
+    body = _shipped_log_skill()["system_prompt"]
+    assert "不是业务对象取数" in body and "案例" in body, "正文必须自己划业务边界"
+    assert "不是 RUM" in body, "页面性能/RUM 必须显式让路，否则两边口径互相冒充"
+    assert "不得相加" in body, "两站两个本体，数据不得静默相加"
+
