@@ -116,6 +116,7 @@ export default function QualityRules() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [editRule, setEditRule] = useState<QualityRule | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<QualityRule | null>(null);
@@ -144,6 +145,7 @@ export default function QualityRules() {
 
   const loadRules = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const { data } = await qualityApi.getRules({
         workspace_id: 0,
@@ -154,10 +156,19 @@ export default function QualityRules() {
         page,
         page_size: pageSize,
       });
+      // 服务端分页契约：传了 page_size 必须回 {items,total,...}。回成数组 = 后端还是旧进程
+      // （常驻 web 无 --reload，改完未重启）。静默当空列表会假装「暂无规则」，必须显式报错。
+      if (!data || Array.isArray(data) || !Array.isArray(data.items)) {
+        setRules([]);
+        setTotal(0);
+        setLoadError(tr('k_b70cd14cf7'));
+        return;
+      }
       // total 取服务端 COUNT 结果（不是当前页长度），分页条据此渲染
-      setRules(data?.items || []);
-      setTotal(data?.total || 0);
+      setRules(data.items);
+      setTotal(data.total || 0);
     } catch {
+      setLoadError(tr('k_7336648b3b'));
       toast.error(tr('k_7336648b3b'));
     } finally {
       setLoading(false);
@@ -286,10 +297,11 @@ export default function QualityRules() {
 
   const hasFilters = filterType !== 'all' || filterSeverity !== 'all' || !!filterTable || !!searchText;
 
+  // 外层 padding 由 DataPlatformLayout main 提供；本页为全高 flex：页头/筛选固定，表格区自滚，分页条作为尾栏
   return (
-    <div className="p-6 space-y-4">
+    <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-2xl font-bold">{t("k_e974beee2d")}</h1>
           <p className="text-muted-foreground text-sm mt-1">
@@ -306,7 +318,7 @@ export default function QualityRules() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30">
+      <div className="flex flex-wrap items-center gap-3 p-3 border rounded-lg bg-muted/30 mt-4 shrink-0">
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Filter className="w-4 h-4" />
           {tr('k_dcce9a144a')}</div>
@@ -365,35 +377,40 @@ export default function QualityRules() {
         )}
       </div>
 
-      {/* Rules Table */}
-      <div className="border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50">
-            <tr>
-              <th className="text-left p-3 font-medium">{t("k_1937bcb105")}</th>
-              <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
-              <th className="text-left p-3 font-medium">{t("k_442be9c497")}</th>
-              <th className="text-center p-3 font-medium">{t("k_9272e8abe5")}</th>
-              <th className="text-center p-3 font-medium">{t("k_62e951a692")}</th>
-              <th className="text-left p-3 font-medium">{t("k_6e85a9405c")}</th>
-              <th className="text-center p-3 font-medium">{t("k_d4e9ca3dd4")}</th>
-              <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
+      {/* Rules Table：表头固定 + 仅此区域滚动，分页条作为卡片尾栏不随内容滚动
+          （参照数据集页 pages/datasets/Datasets.tsx 的有界滚动容器版式） */}
+      <div className="mt-4 flex-1 min-h-0 overflow-auto border rounded-lg">
+        {loading ? (
+          <div className="h-full flex items-center justify-center p-8 text-sm text-muted-foreground">
+            {tr('k_26b5bd4947')}
+          </div>
+        ) : loadError ? (
+          <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={loadRules}>
+              {tr('k_e2d53a6d3a')}
+            </Button>
+          </div>
+        ) : rules.length === 0 ? (
+          <div className="h-full flex items-center justify-center p-8 text-sm text-muted-foreground">
+            {hasFilters ? tr('k_291b638eff') : tr('k_b196dec69b')}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-muted">
               <tr>
-                <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  {tr('k_26b5bd4947')}</td>
+                <th className="text-left p-3 font-medium">{t("k_1937bcb105")}</th>
+                <th className="text-left p-3 font-medium">{t("k_e4e46c7235")}</th>
+                <th className="text-left p-3 font-medium">{t("k_442be9c497")}</th>
+                <th className="text-center p-3 font-medium">{t("k_9272e8abe5")}</th>
+                <th className="text-center p-3 font-medium">{t("k_62e951a692")}</th>
+                <th className="text-left p-3 font-medium">{t("k_6e85a9405c")}</th>
+                <th className="text-center p-3 font-medium">{t("k_d4e9ca3dd4")}</th>
+                <th className="text-right p-3 font-medium">{t("k_f3ea6d345e")}</th>
               </tr>
-            ) : rules.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  {hasFilters ? tr('k_291b638eff') : tr('k_b196dec69b')}
-                </td>
-              </tr>
-            ) : (
-              rules.map(rule => (
+            </thead>
+            <tbody>
+              {rules.map(rule => (
                 <tr key={rule.id} className="border-t hover:bg-muted/30">
                   <td className="p-3">
                     <div className="font-medium">{rule.name}</div>
@@ -470,13 +487,13 @@ export default function QualityRules() {
                     </div>
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
-      {/* Pagination —— 服务端真分页：总数/页码均来自服务端 */}
+      {/* Pagination —— 服务端真分页：总数/页码均来自服务端；shrink-0 钉在滚动容器之外 */}
       {total > 0 && (
         <PaginationBar
           page={page}
@@ -485,6 +502,7 @@ export default function QualityRules() {
           busy={loading}
           onChange={(p: number) => setPage(p)}
           onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+          className="shrink-0 mt-2"
         />
       )}
 

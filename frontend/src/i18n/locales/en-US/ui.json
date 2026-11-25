@@ -4938,5 +4938,6 @@
   "k_9f01fa0abb": "Failed to load failed check results",
   "k_0eae1be41b": "Only the latest 100 of {{p0}} records are loaded; delete in batches",
   "k_f8de3dbe92": "Deleting",
-  "k_d1ebd112e1": "Select the records to delete first"
+  "k_d1ebd112e1": "Select the records to delete first",
+  "k_b70cd14cf7": "Unexpected response shape from the quality rules API (the backend may not have been restarted); please restart and retry"
 }
