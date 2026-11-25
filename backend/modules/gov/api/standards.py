@@ -29,16 +29,47 @@ class StandardUpdate(BaseModel):
 def list_standards(
     workspace_id: int = Query(0),
     standard_type: Optional[str] = None,
+    q: Optional[str] = Query(None, description="名称/描述模糊搜索"),
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=200),
 ):
-    """获取数据标准列表."""
+    """获取数据标准列表。
+
+    双档契约（.qoder/rules/list-pagination-server-side.md）：
+    * 不传 page_size → 返回全量数组（选择器/旧调用）；
+    * 传 page_size → 返回 {items,total,page,page_size}，total 为服务端 COUNT，
+      筛选/搜索下推 SQL，偏移由页号算出，排序含唯一 id 兜底（翻页不重行/漏行）。
+    """
     try:
-        sql = "SELECT * FROM adh_data_standards WHERE workspace_id = %s"
-        params = [workspace_id]
+        conditions = ["workspace_id = %s"]
+        params: list = [workspace_id]
         if standard_type:
-            sql += " AND standard_type = %s"
+            conditions.append("standard_type = %s")
             params.append(standard_type)
-        sql += " ORDER BY created_at DESC"
-        return execute_query(sql, params)
+        if q and q.strip():
+            like = f"%{q.strip()}%"
+            conditions.append("(name LIKE %s OR description LIKE %s)")
+            params.extend([like, like])
+        where = " AND ".join(conditions)
+        order = "ORDER BY created_at DESC, id DESC"
+
+        if page_size is None:
+            return execute_query(f"SELECT * FROM adh_data_standards WHERE {where} {order}", params)
+
+        total_row = execute_query(
+            f"SELECT COUNT(*) AS total FROM adh_data_standards WHERE {where}", params, fetchone=True
+        )
+        offset = (page - 1) * page_size
+        rows = execute_query(
+            f"SELECT * FROM adh_data_standards WHERE {where} {order} LIMIT %s OFFSET %s",
+            params + [page_size, offset],
+        )
+        return {
+            "items": rows,
+            "total": int((total_row or {}).get("total") or 0),
+            "page": page,
+            "page_size": page_size,
+        }
     except Exception as e:
         logger.error("List standards failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -29,6 +29,12 @@ description_en: "Browse and manage catalog metadata: datasources, tables, column
 - 使用 `search_ontology` 查找业务术语和指标定义
 - 帮助理解数据资产的业务语义
 
+### 4. 血缘链路（工具清单里有 `get_lineage` 时）
+- 问「这张表的数据从哪来 / 改它影响谁 / 多久更新一次」→ 先调 `get_lineage`（asset 用「数据源.表」），**不要凭表名相近自己推链路**。
+- `freshness.last_materialized_at` 是数据真实刷新时间，`catalog_synced_at` 只是表结构被收录的时间，两者不得混用。
+- 链路里的表受数据源授权过滤：`notes` 说明有节点隐去时如实告知“部分上游不在你的可查范围内”，不得说成“没有上游”。
+- 血缘是平台算出来的派生视图（DAG 编排 + 执行期 SQL + 元数据关系），**不要建议用户手工补边来“修”血缘**；链路不对应先查编排/数据集绑定是否缺失。
+
 ## 工作流程
 
 ### 了解数据全貌

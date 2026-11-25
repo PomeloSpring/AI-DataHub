@@ -23,6 +23,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.modules.catalog.services import data_product_service as dps
 
 
+def test_task_runtime_callback_resolves_module_in_fresh_process():
+    """任务壳回调必须指向**模块**，而不是包属性。
+
+    历史的 `backend.modules.catalog.services:data_product_service` 只有在
+    “别处先 import 过该子模块”时才能解析，独立进程（DAG 单节点/脚本）下必
+    AttributeError，被包成“数据产品登记失败”的稳定告警。
+    """
+    from backend.core.task_runtime import get_callback
+
+    mod = get_callback("catalog.data_product_service")
+    assert mod is dps
+    assert callable(mod.register_product)
+
+
 # ── fake DB ─────────────────────────────────────────────────────
 
 class _FakeDB:
@@ -116,6 +130,19 @@ class TestRegisterProduct:
     def test_invalid_producer_kind_rejected(self):
         with pytest.raises(ValueError, match="producer_kind"):
             dps.register_product({"product_name": "a.b", "producer_kind": "hack"}, columns=[])
+
+    def test_materialize_producer_kind_accepted(self, monkeypatch):
+        """定时物化节点的 producer_kind='materialize' 必须被接受。
+
+        物化写入后要登记数据产品（本体只能绑数据产品）；历史上该值不在
+        PRODUCER_KINDS 里，导致每次物化都只能带回一条“登记失败”告警。
+        """
+        monkeypatch.setattr(dps, "execute_query", lambda *a, **k: None)
+        monkeypatch.setattr(dps, "execute_write", lambda *a, **k: 1)
+        res = dps.register_product(
+            {"product_name": "Doris.dws_case_metric", "physical_table": "dws_case_metric",
+             "producer_kind": "materialize", "producer_ref": "materialize:node1"}, columns=[])
+        assert res.get("product") is not None or res.get("schema_changed") is not None
 
     def test_invalid_status_rejected(self):
         with pytest.raises(ValueError, match="status"):

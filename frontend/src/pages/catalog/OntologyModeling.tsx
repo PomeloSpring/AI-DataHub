@@ -226,6 +226,9 @@ export default function OntologyModeling() {
   // 内联新建对象行：点「＋ 新建对象」在画布顶部就地展开（不再弹居中对话框）
   const [creatingObject, setCreatingObject] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  /** 撤销草案：确认弹窗收在页面一处，托盘与「变更对比」都只负责发起（不各造一套实现） */
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   /** 图谱重建计数：重建后据此重挂图面板并重取状态徽章（否则「需重建」还挂着，图仍是旧的） */
   const [graphTick, setGraphTick] = useState(0);
   const draftPending = !!draftStatus?.has_draft;
@@ -438,14 +441,30 @@ export default function OntologyModeling() {
     }
   };
 
-  /** 丢弃草案（已由审阅面板调完 API，这里只负责把视图拉回一致状态） */
-  const handleDiscarded = async () => {
+  /** 撤销草案（丢弃整份草案回到生效版）：动作收敛在页面，审阅面板与底部托盘都走这里 */
+  const requestDiscardDraft = useCallback(() => {
+    if (!model || !draftPending) return;
+    setDiscardOpen(true);
+  }, [model, draftPending]);
+
+  const confirmDiscardDraft = async () => {
     if (!model) return;
-    setDraftJson('');
-    setTab('hub');
-    loadModels();
-    await loadModel(model.id);
-    toast.success(t('k_19ec113608'));
+    setDiscarding(true);
+    try {
+      await ontologyApi.discardDraft(model.id);
+      setDiscardOpen(false);
+      setDraftJson('');
+      setTab('hub');
+      loadModels();
+      // 撤销改变了服务端草案状态：必须重拉模型/草案（视图回生效版，标记一起消失）
+      await loadModel(model.id);
+      toast.success(t('k_19ec113608'));
+    } catch (e: any) {
+      // 透传服务端错因（无草案 / 无权限），不换成通用文案
+      toast.error(e?.response?.data?.detail || t('k_d66df9d32c'));
+    } finally {
+      setDiscarding(false);
+    }
   };
 
   // ── 激活 ──
@@ -708,6 +727,10 @@ export default function OntologyModeling() {
     publishing,
     onPublish: handlePublish,
     onViewChanges: () => { setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); },
+    // 撤销与「变更对比」里的是同一个动作（同一确认弹窗），生效版/草案视图都可达
+    canDiscard: editable && hasPerm('ontology:save'),
+    discarding,
+    onRequestDiscard: requestDiscardDraft,
   } : null;
 
   const headTitle = (label: string, count?: number, note?: string) => (
@@ -841,8 +864,9 @@ export default function OntologyModeling() {
         canPublish={editable && hasPerm('ontology:publish')}
         canEdit={editable && hasPerm('ontology:save')}
         publishing={publishing}
+        discarding={discarding}
         onPublish={handlePublish}
-        onDiscard={handleDiscarded}
+        onRequestDiscard={requestDiscardDraft}
         onEditInDraft={() => void switchView('draft')} />
     </div>
   ) : activeTab === 'terms' ? (
@@ -1029,6 +1053,32 @@ export default function OntologyModeling() {
         objectOptions={docObjectOptions}
         onOpenGraph={() => { setDocOpen(false); setTab('graph'); }}
         onOpenDraft={() => { setDocOpen(false); setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }} />
+
+      {/* 撤销草案确认（托盘与「变更对比」共用）：撤销后草案不可恢复，必须显式确认 */}
+      <Dialog open={discardOpen} onOpenChange={setDiscardOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>{t('k_a0eb9acff4')}</DialogTitle></DialogHeader>
+          <div className="text-sm text-muted-foreground space-y-2">
+            <p>
+              {t('k_5d04331aae', {
+                p0: draftStatus?.draft_updated_by || t('k_30b927775e'),
+                p1: draftStatus?.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—',
+                p2: draftStatus?.added.length || 0,
+                p3: draftStatus?.changed.length || 0,
+                p4: draftStatus?.removed.length || 0,
+              })}</p>
+            <p className="text-red-600">{t('k_3b3fcfb34d')}</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiscardOpen(false)} disabled={discarding}>
+              {t('k_4d0b4688c7')}</Button>
+            <Button variant="destructive" onClick={confirmDiscardDraft} disabled={discarding}>
+              {discarding ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Undo2 className="h-4 w-4 mr-1" />}
+              {t('k_55bfb65260')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 导入 YAML 弹窗 */}
       <Dialog open={yamlOpen} onOpenChange={setYamlOpen}>

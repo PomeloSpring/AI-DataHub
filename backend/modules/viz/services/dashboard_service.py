@@ -108,7 +108,17 @@ def _clean_tags(value) -> list:
 def _normalize_chart(row: dict) -> dict:
     """Normalize chart row for JSON serialization."""
     for field in ("config", "position", "semantic_query", i18n.I18N_COLUMN):
-        row[field] = _json_loads_safe(row.get(field))
+        value = _json_loads_safe(row.get(field))
+        if field in ("config", "position"):
+            # text 列存过二次编码的 JSON（JSON 字符串里再包一层 JSON 文本），解析一次仍是 str；
+            # 再解一层，否则下面 .get() 会让整个看板清单 500（一个脏图连坐整页）。
+            if isinstance(value, str):
+                value = _json_loads_safe(value)
+            if value is not None and not isinstance(value, dict):
+                logger.error("chart %s %s 不是 JSON 对象（%s），按空处理",
+                             row.get("id"), field, type(value).__name__)
+                value = {}
+        row[field] = value
     for ts in ("created_at", "updated_at"):
         if hasattr(row.get(ts), "isoformat"):
             row[ts] = row[ts].isoformat()

@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Code2, Loader2,
-  Pencil, Search, Trash2, Undo2,
+  Pencil, Search, Trash2,
 } from 'lucide-react';
 import { ontologyApi, type DraftObjectDiff, type DraftStatus } from '@/api/ontology';
 import { useTranslation } from 'react-i18next';
@@ -100,23 +100,23 @@ function DeltaDetail({ o }: { o: DraftObjectDiff }) {
 }
 
 export default function ModelDraftReview({
-  modelId, draft, canPublish, canEdit, publishing, onPublish, onDiscard, onEditInDraft,
+  modelId, draft, canPublish, canEdit, publishing, discarding, onPublish, onRequestDiscard, onEditInDraft,
 }: {
   modelId: number;
   draft: DraftStatus | null;
   canPublish: boolean;
   canEdit: boolean;
   publishing: boolean;
+  /** 撤销进行中（确认弹窗与 API 调用由页面统一持有，本面板不重复实现一套） */
+  discarding: boolean;
   onPublish: () => void;
-  onDiscard: () => void;
+  onRequestDiscard: () => void;
   onEditInDraft: () => void;
 }) {
   const { t } = useTranslation('ui');
   const [filter, setFilter] = useState<StateFilter>('all');
   const [kw, setKw] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [discarding, setDiscarding] = useState(false);
-  const [discardOpen, setDiscardOpen] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [jsonLoading, setJsonLoading] = useState(false);
   const [jsonText, setJsonText] = useState('');
@@ -157,20 +157,6 @@ export default function ModelDraftReview({
       setJsonLoading(false);
     }
   }, [modelId]);
-
-  const confirmDiscard = useCallback(async () => {
-    setDiscarding(true);
-    try {
-      await ontologyApi.discardDraft(modelId);
-      setDiscardOpen(false);
-      onDiscard();
-    } catch (e: any) {
-      setDiscarding(false);
-      setJsonError(e?.response?.data?.detail || t('k_d66df9d32c'));
-    } finally {
-      setDiscarding(false);
-    }
-  }, [modelId, onDiscard]);
 
   if (!draft?.has_draft) {
     return (
@@ -240,7 +226,7 @@ export default function ModelDraftReview({
           )}
           {canEdit && (
             <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-600"
-              onClick={() => setDiscardOpen(true)} disabled={publishing}>
+              onClick={onRequestDiscard} disabled={publishing || discarding}>
               <Trash2 className="h-3.5 w-3.5 mr-1" />{t('k_ec179f83bd')}
             </Button>
           )}
@@ -308,25 +294,6 @@ export default function ModelDraftReview({
           })}
         </div>
       </ScrollArea>
-
-      {/* 丢弃草案确认 */}
-      <Dialog open={discardOpen} onOpenChange={setDiscardOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>{t("k_a0eb9acff4")}</DialogTitle></DialogHeader>
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p>
-              {t('k_5d04331aae', { p0: draft.draft_updated_by || t('k_30b927775e'), p1: draft.draft_updated_at?.slice(0, 16).replace('T', ' ') || '—', p2: counts.added, p3: counts.changed, p4: counts.removed })}</p>
-            <p className="text-red-600">{t("k_3b3fcfb34d")}</p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDiscardOpen(false)}>{t("k_4d0b4688c7")}</Button>
-            <Button variant="destructive" onClick={confirmDiscard} disabled={discarding}>
-              {discarding ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Undo2 className="h-4 w-4 mr-1" />}
-              {t('k_55bfb65260')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* 原始内容（排查附录，不是主视图） */}
       <Dialog open={jsonOpen} onOpenChange={setJsonOpen}>

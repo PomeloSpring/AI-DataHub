@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS adh_data_products (
 
   -- 产出血统
   producer_kind     VARCHAR(24)  NOT NULL DEFAULT 'manual'
-                    COMMENT 'sync_task|dag_workflow|manual|external',
+                    COMMENT 'sync_task|dag_workflow|materialize|manual|external',
   producer_ref      VARCHAR(200) DEFAULT '' COMMENT '产出任务/工作流标识(如 sync_task:12)',
   upstream_refs     JSON         COMMENT '上游资产清单 [字符串]，供血缘/影响分析',
   data_version      VARCHAR(64)  DEFAULT '' COMMENT '数据快照/水位线标记',

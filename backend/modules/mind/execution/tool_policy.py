@@ -97,9 +97,9 @@ class ToolPolicy:
     def manifest(self):
         from backend.modules.mind.execution.tool_catalog import TOOL_CATALOG
         labels = {t["name"]: t["label"] for t in TOOL_CATALOG}
-        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools, memory_tools, render_tools, skill_tools
+        from backend.modules.mind.execution.sdk_tools import catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools, query_tools, asset_tools, lineage_tools, memory_tools, render_tools, skill_tools
         for module in (catalog_tools, semantic_tools, ontology_tools, screen_tools, system_tools,
-                       query_tools, asset_tools, memory_tools, render_tools, skill_tools):
+                       query_tools, asset_tools, lineage_tools, memory_tools, render_tools, skill_tools):
             for spec in getattr(module, "TOOL_SPECS", []):
                 labels[spec["name"]] = spec.get("description") or spec["name"]
         # 功能壳工具的业务描述（会话能力面板与提示词的「实际工具权限」段共用）

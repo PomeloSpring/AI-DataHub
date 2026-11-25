@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
+import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import {
   Plus,
   Play,
@@ -110,6 +111,9 @@ export default function QualityRules() {
   // 质量域为全局共享（工作空间概念已退役，不再按工作空间隔离/选择）；
   // API 的 workspace 参数固定 0，后端按 IN (ws, 0) 兼容全局行。
   const [rules, setRules] = useState<QualityRule[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [loading, setLoading] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -121,23 +125,44 @@ export default function QualityRules() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [configError, setConfigError] = useState('');
 
-  // Filters
+  // Filters（全部下推服务端：改筛选即回第 1 页，停手后再发搜索请求）
   const [filterType, setFilterType] = useState<string>('all');
   const [filterSeverity, setFilterSeverity] = useState<string>('all');
   const [filterTable, setFilterTable] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [searchText, setSearchText] = useState('');
+
+  useEffect(() => {
+    // 挂载/筛选清空时输入与已生效关键词相同 → 不复位页码（否则进页 300ms 内翻页会被弹回第 1 页）
+    if (searchInput === searchText) return;
+    const timer = setTimeout(() => {
+      setSearchText(searchInput);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput, searchText]);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await qualityApi.getRules(0);
-      setRules(data || []);
+      const { data } = await qualityApi.getRules({
+        workspace_id: 0,
+        q: searchText || undefined,
+        rule_type: filterType === 'all' ? undefined : filterType,
+        severity: filterSeverity === 'all' ? undefined : filterSeverity,
+        target_table: filterTable || undefined,
+        page,
+        page_size: pageSize,
+      });
+      // total 取服务端 COUNT 结果（不是当前页长度），分页条据此渲染
+      setRules(data?.items || []);
+      setTotal(data?.total || 0);
     } catch {
       toast.error(tr('k_7336648b3b'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [searchText, filterType, filterSeverity, filterTable, page, pageSize]);
 
   useEffect(() => { loadRules(); }, [loadRules]);
 
@@ -217,7 +242,8 @@ export default function QualityRules() {
       }
       setFormOpen(false);
       resetForm();
-      loadRules();
+      // 新建/编辑后回到第 1 页（列表按 id DESC，最新规则在首页）
+      if (page === 1) loadRules(); else setPage(1);
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || tr('k_6de920b4e4'));
     } finally {
@@ -250,20 +276,15 @@ export default function QualityRules() {
       await qualityApi.deleteRule(deleteTarget.id);
       toast.success(tr('k_8b2798c44a'));
       setDeleteTarget(null);
-      loadRules();
+      // 末页删空时收敛到前一个有效页，不停在空白页
+      if (rules.length === 1 && page > 1) setPage(page - 1);
+      else loadRules();
     } catch {
       toast.error(tr('k_acf0664a54'));
     }
   };
 
-  // Filtered rules
-  const filteredRules = rules.filter(rule => {
-    if (filterType !== 'all' && rule.rule_type !== filterType) return false;
-    if (filterSeverity !== 'all' && rule.severity !== filterSeverity) return false;
-    if (filterTable && !rule.target_table.toLowerCase().includes(filterTable.toLowerCase())) return false;
-    if (searchText && !rule.name.toLowerCase().includes(searchText.toLowerCase())) return false;
-    return true;
-  });
+  const hasFilters = filterType !== 'all' || filterSeverity !== 'all' || !!filterTable || !!searchText;
 
   return (
     <div className="p-6 space-y-4">
@@ -293,12 +314,12 @@ export default function QualityRules() {
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             placeholder={tr('k_ac88e4333c')}
-            value={searchText}
-            onChange={e => setSearchText(e.target.value)}
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
             className="pl-8 h-8 w-48"
           />
         </div>
-        <Select value={filterType} onValueChange={setFilterType}>
+        <Select value={filterType} onValueChange={v => { setFilterType(v); setPage(1); }}>
           <SelectTrigger className="h-8 w-36">
             <SelectValue placeholder={t("k_7655f477f1")} />
           </SelectTrigger>
@@ -309,7 +330,7 @@ export default function QualityRules() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={filterSeverity} onValueChange={setFilterSeverity}>
+        <Select value={filterSeverity} onValueChange={v => { setFilterSeverity(v); setPage(1); }}>
           <SelectTrigger className="h-8 w-32">
             <SelectValue placeholder={t("k_9272e8abe5")} />
           </SelectTrigger>
@@ -323,15 +344,22 @@ export default function QualityRules() {
         <Input
           placeholder={tr('k_8f02de6d18')}
           value={filterTable}
-          onChange={e => setFilterTable(e.target.value)}
+          onChange={e => { setFilterTable(e.target.value); setPage(1); }}
           className="h-8 w-48"
         />
-        {(filterType !== 'all' || filterSeverity !== 'all' || filterTable || searchText) && (
+        {hasFilters && (
           <Button
             variant="ghost"
             size="sm"
             className="h-8 text-xs"
-            onClick={() => { setFilterType('all'); setFilterSeverity('all'); setFilterTable(''); setSearchText(''); }}
+            onClick={() => {
+              setFilterType('all');
+              setFilterSeverity('all');
+              setFilterTable('');
+              setSearchInput('');
+              setSearchText('');
+              setPage(1);
+            }}
           >
             {tr('k_4bbc4e5fd9')}</Button>
         )}
@@ -358,14 +386,14 @@ export default function QualityRules() {
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
                   {tr('k_26b5bd4947')}</td>
               </tr>
-            ) : filteredRules.length === 0 ? (
+            ) : rules.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  {rules.length === 0 ? tr('k_b196dec69b') : tr('k_291b638eff')}
+                  {hasFilters ? tr('k_291b638eff') : tr('k_b196dec69b')}
                 </td>
               </tr>
             ) : (
-              filteredRules.map(rule => (
+              rules.map(rule => (
                 <tr key={rule.id} className="border-t hover:bg-muted/30">
                   <td className="p-3">
                     <div className="font-medium">{rule.name}</div>
@@ -448,11 +476,16 @@ export default function QualityRules() {
         </table>
       </div>
 
-      {/* Summary */}
-      {rules.length > 0 && (
-        <div className="text-xs text-muted-foreground text-right">
-          {tr('k_fbd2b1fb73')}{' '}{rules.length} {tr('k_6c2cfbf915')}{filteredRules.length !== rules.length && tr('k_720f167c58', { p0: filteredRules.length })}
-        </div>
+      {/* Pagination —— 服务端真分页：总数/页码均来自服务端 */}
+      {total > 0 && (
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          busy={loading}
+          onChange={(p: number) => setPage(p)}
+          onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+        />
       )}
 
       {/* Create/Edit Dialog */}

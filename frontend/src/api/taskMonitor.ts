@@ -138,6 +138,8 @@ export async function stopQueuedRun(kind: string, runId: number): Promise<{ stat
 
 export async function cleanupStaleRuns(timeoutMinutes: number = 10): Promise<{
   scheduled_runs: number; report_runs: number; sync_runs: number;
+  // DAG 收口结果：执行中租约过期 / 排队堵塞 / 孤儿节点（三者都算本次清理量）
+  dag?: { dag_runs?: number; dag_queued_runs?: number; dag_node_runs?: number };
 }> {
   const { data } = await client.post('/task-monitor/cleanup-stale', null, {
     params: { timeout_minutes: timeoutMinutes },

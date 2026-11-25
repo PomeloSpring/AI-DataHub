@@ -19,8 +19,8 @@ import {
 } from '@/components/ui/select';
 import { toast } from '@/lib/toast';
 import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
-import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield } from 'lucide-react';
-import { governanceApi, type SensitiveField } from '@/api/governance';
+import { Plus, Trash2, RefreshCw, ScanSearch, Edit, Shield, Search } from 'lucide-react';
+import { governanceApi, type SensitiveField, type SensitiveFieldFacets } from '@/api/governance';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import client from '@/api/client';
 import { useTranslation } from 'react-i18next';
@@ -42,6 +42,20 @@ const MASK_TYPE_OPTIONS = [
   { value: 'hash', label: i18nTr('k_29646d0eeb') },
   { value: 'none', label: i18nTr('k_b90319af3c') },
 ];
+
+const LEVEL_OPTIONS = ['low', 'medium', 'high', 'critical'].map(v => ({ value: v, label: LEVEL_MAP[v].label }));
+
+// 生效范围与后端 adh_sensitive_fields 口径一致：table_name 为空 = 按列名匹配的全局规则
+const SCOPE_OPTIONS = [
+  { value: 'global', label: i18nTr('k_e7bb3dd4b3') },
+  { value: 'table', label: i18nTr('k_1ad97efbc6') },
+];
+
+/** 筛选项统一哨兵：Radix Select 不接受空串 value */
+const ALL = '__all__';
+
+const countOf = (list: Array<{ value: string; count: number }> | undefined, value: string) =>
+  list?.find(o => o.value === value)?.count ?? 0;
 
 const maskTypeLabel = (v: string) =>
   MASK_TYPE_OPTIONS.find(m => m.value === v)?.label || v || '-';
@@ -76,6 +90,15 @@ export default function SensitiveData() {
   const [scanning, setScanning] = useState(false);
   const [scanDatasourceId, setScanDatasourceId] = useState('');
   const [datasources, setDatasources] = useState<Array<{ id: number; name: string; db_type: string }>>([]);
+  // 筛选项：全部下推服务端（清单与计数同源），不在前端二次过滤
+  const [keyword, setKeyword] = useState('');
+  const [debouncedKeyword, setDebouncedKeyword] = useState('');
+  const [levelFilter, setLevelFilter] = useState(ALL);
+  const [maskFilter, setMaskFilter] = useState(ALL);
+  const [dsFilter, setDsFilter] = useState(ALL);
+  const [scopeFilter, setScopeFilter] = useState(ALL);
+  const [facets, setFacets] = useState<SensitiveFieldFacets | null>(null);
+  const [facetsError, setFacetsError] = useState(false);
   const { getDefaultWorkspaceId } = useWorkspaceStore();
 
   // 加载数据源列表
@@ -89,7 +112,14 @@ export default function SensitiveData() {
     setLoading(true);
     try {
       const workspaceId = getDefaultWorkspaceId();
-      const res = await governanceApi.getSensitiveFields({ workspace_id: workspaceId, page, size: pageSize });
+      const params: Record<string, unknown> = { workspace_id: workspaceId, page, size: pageSize };
+      if (debouncedKeyword) params.keyword = debouncedKeyword;
+      if (levelFilter !== ALL) params.sensitivity_level = levelFilter;
+      if (maskFilter !== ALL) params.mask_type = maskFilter;
+      // 数据源筛选沿执行侧口径：全局(0) = 只看全局规则；具体源 = 全局 ∪ 该源
+      if (dsFilter !== ALL) params.datasource_id = dsFilter === '0' ? 0 : Number(dsFilter);
+      if (scopeFilter !== ALL) params.scope = scopeFilter;
+      const res = await governanceApi.getSensitiveFields(params);
       // 服务端分页：{items, total}（历史缺陷：接口只回数组无 total，分页条算不出页数等于没做）
       const payload: any = res.data;
       setFields(Array.isArray(payload) ? payload : (payload?.items || []));
@@ -99,9 +129,48 @@ export default function SensitiveData() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, getDefaultWorkspaceId]);
+  }, [page, pageSize, getDefaultWorkspaceId, debouncedKeyword, levelFilter, maskFilter, dsFilter, scopeFilter]);
+
+  // 筛选候选/计数：与清单同源谓词；失败显式提示（不把空选项伪装成“库里没有”）
+  const loadFacets = useCallback(async () => {
+    try {
+      const params: Record<string, unknown> = { workspace_id: getDefaultWorkspaceId() };
+      if (debouncedKeyword) params.keyword = debouncedKeyword;
+      if (levelFilter !== ALL) params.sensitivity_level = levelFilter;
+      if (maskFilter !== ALL) params.mask_type = maskFilter;
+      if (dsFilter !== ALL) params.datasource_id = dsFilter === '0' ? 0 : Number(dsFilter);
+      if (scopeFilter !== ALL) params.scope = scopeFilter;
+      const res = await governanceApi.getSensitiveFieldFacets(params);
+      setFacets(res.data && typeof res.data === 'object' ? res.data : null);
+      setFacetsError(false);
+    } catch {
+      setFacets(null);
+      setFacetsError(true);
+    }
+  }, [getDefaultWorkspaceId, debouncedKeyword, levelFilter, maskFilter, dsFilter, scopeFilter]);
+
+  // 搜索防抖：停手再发请求，避免逐字符刷新
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedKeyword(keyword.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [keyword]);
+
+  // 任一筛选变化都回到第 1 页（停在旧页码 + 新条件会拿到错位的空清单）
+  useEffect(() => { setPage(1); }, [debouncedKeyword, levelFilter, maskFilter, dsFilter, scopeFilter]);
 
   useEffect(() => { loadFields(); }, [loadFields]);
+  useEffect(() => { loadFacets(); }, [loadFacets]);
+
+  const filtersActive = !!debouncedKeyword || levelFilter !== ALL || maskFilter !== ALL
+    || dsFilter !== ALL || scopeFilter !== ALL;
+  const resetFilters = () => {
+    setKeyword('');
+    setDebouncedKeyword('');
+    setLevelFilter(ALL);
+    setMaskFilter(ALL);
+    setDsFilter(ALL);
+    setScopeFilter(ALL);
+  };
 
   const openCreate = () => {
     setEditField(null);
@@ -227,6 +296,84 @@ export default function SensitiveData() {
         </span>
       </div>
 
+      {/* 筛选栏：关键字/级别/脱敏方式/数据源/生效范围，全部下推服务端（与分页 total 同源） */}
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-8 h-9 w-56"
+            value={keyword}
+            onChange={e => setKeyword(e.target.value)}
+            placeholder={t('k_01f952431a')}
+            aria-label={t('k_01f952431a')}
+          />
+        </div>
+        <Select value={levelFilter} onValueChange={setLevelFilter}>
+          <SelectTrigger className="w-40 h-9" aria-label={t('k_cb6659abc3')}>
+            <SelectValue placeholder={t('k_5a9aba8112')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('k_5a9aba8112')}（{facets?.total ?? 0}）</SelectItem>
+            {LEVEL_OPTIONS.map(o => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}（{countOf(facets?.levels, o.value)}）
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={maskFilter} onValueChange={setMaskFilter}>
+          <SelectTrigger className="w-44 h-9" aria-label={t('k_a3c8120ace')}>
+            <SelectValue placeholder={t('k_cd4a35502b')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('k_cd4a35502b')}（{facets?.total ?? 0}）</SelectItem>
+            {MASK_TYPE_OPTIONS.map(o => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}（{countOf(facets?.mask_types, o.value)}）
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={dsFilter} onValueChange={setDsFilter}>
+          <SelectTrigger className="w-48 h-9" aria-label={t('k_bf27e4bfb0')}>
+            <SelectValue placeholder={t('k_ae6802c77c')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('k_ae6802c77c')}（{facets?.total ?? 0}）</SelectItem>
+            {(facets?.datasources || []).map(d => (
+              <SelectItem key={d.datasource_id} value={String(d.datasource_id)}>
+                {d.datasource_id === 0
+                  ? t('k_f92855e6dd')
+                  : (datasources.find(x => x.id === d.datasource_id)?.name || t('k_32cc05509f'))}
+                （{d.count}）
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={scopeFilter} onValueChange={setScopeFilter}>
+          <SelectTrigger className="w-44 h-9" aria-label={t('k_9736f0dc30')}>
+            <SelectValue placeholder={t('k_3b80be1349')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t('k_3b80be1349')}（{facets?.total ?? 0}）</SelectItem>
+            {SCOPE_OPTIONS.map(o => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}（{countOf(facets?.scopes, o.value)}）
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {filtersActive && (
+          <Button variant="ghost" size="sm" onClick={resetFilters}>{t('k_4bbc4e5fd9')}</Button>
+        )}
+        {facetsError && (
+          <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+            {t('k_10902be16e')}
+            <Button variant="outline" size="sm" onClick={loadFacets}>{t('k_e2d53a6d3a')}</Button>
+          </div>
+        )}
+      </div>
+
       {/* Fields Table：固定表头 + 有界滚动（顶部不随页面滚动），底栏作为卡片尾栏 */}
       <div className="flex-1 min-h-0 flex flex-col border rounded-lg overflow-hidden">
         <div className="flex-1 overflow-auto">
@@ -252,7 +399,7 @@ export default function SensitiveData() {
             ) : fields.length === 0 ? (
               <tr>
                 <td colSpan={7} className="p-8 text-center text-muted-foreground">
-                  {t('k_1c388efdd6')}
+                  {filtersActive ? t('k_e953193d11') : t('k_1c388efdd6')}
                 </td>
               </tr>
             ) : (

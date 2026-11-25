@@ -58,6 +58,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 - 触碰站点拓扑或 `binding_resolver` 的站点路由/`deploy_sites` 读写后，另跑 `tests/test_site_scope.py` + `tests/test_cross_site.py`（锁定：契约行只一行、跳站路由后产品身份随站刷新、未声明站点/路由目标不匹配均拒、未配置 deploy_sites 行为零变化、对象级白名单（未列对象=全部声明站点可用；列了=只这些站点可查，路由与本站精确命中两条路径都拒；越出声明站点/对象悬空均报错；`list_deployments` 与取数门同口径））。
 新增建模/解析行为分支必须同步新增 eval 用例（尤其：别名命中档位、孤儿引用阻断、上云脱敏、模糊回抛）。
 - 改本体/图谱**接口或权限绑定**后另跑 `tests/test_ontology_perm_binding.py`（见 §9）。
+- 改系统能力本体的动作/规则/场景（`system_ontology_catalog.py`）后另跑 `tests/test_system_ontology_catalog.py`（目录自检 + 动作↔工具通道一致 + flow 串联 + 上云投影 + 图谱投影 + `system_capability_plan` 工具），见 §10。
 
 ## 9. 权限标识与能力可见性（能不能看/能不能改 = 角色是否持有权限码）
 
@@ -138,3 +139,41 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 3. **路由层 `require_admin` 把门（补码也不放行）**：`/api/admin/terms*`、`/api/admin/metadata*`、`/api/admin/table-info*`、`/api/admin/relations*` 写面、`/api/admin/sync*`、`/api/admin/execution-layers*`、`/api/admin/cache*`、`/api/admin/menu-tree*` 写面、`/api/admin/brand` 写面、`/api/admin/release-notes*`、`/api/task-monitor*`、`/api/model-train*`、`POST /api/graph/{nodes,relations}`（另见 §9.4）。
 
 **收敛方向**：要开放第 3 类，先改路由依赖（`require_admin` → 按码裁决）**再**补码并同批授权，顺序反了就是空承诺（角色页能勾、接口仍 403）。第 2 类不要补码。第 1 类改口径必须三处同批（catalog 表 / 迁移 SQL / §9.2）。
+
+## 10. 任务流（`scenarios[].flow`）：行为/规则/场景的串联层
+
+> 三张平铺清单（`objects[].actions[]` / `rules[]` / `scenarios[]`）只能回答「平台有什么」，
+> 回答不了「这个任务按什么顺序做、上一步产出喂给谁、哪步 AI 能代做」。
+> `scenarios[].flow` 就是补齐这一层的**声明式编排**——它仍然是建模描述层，**不是新的执行裁决**。
+
+### 10.1 结构
+- `flow` = 有序步骤数组，每步：`order`（1..N 连续）、`action`（必须是本场景 `uses_actions` 里的动作 key，且该动作挂在某个对象的 `actions[]` 上）、`purpose`（用户要看到的这步在做什么，必填）、`produces` / `consumes`（人话产出物名）、`gated_by`（必须是本场景 `uses_rules` 里的规则 key）。
+- **步骤不手写 `perm_code` / `channel` / `action_label`**：三项一律由 `_attach_flow_bindings` 从 `ACTION_PERM_CODES` 与对象动作表派生。手写会形成第二套清单，与真实工具漂移。
+- 无步骤的问答型场景**不写 `flow`**（不要写空数组）；`system_capability_plan` 对它回 `executable=false` 并明确「不得自行编造步骤顺序」。
+
+### 10.2 单一真值源：`ACTION_PERM_CODES`
+- `{action_key: {code, channel}}`，覆盖 `objects[].actions[]` 的全部动作（`_action_binding_errors` 双向锁：多一个/少一个都判红）。
+- `channel` 只有两值：`ai`（AS-BOT 有真实工具可直调：功能动作在 `function_tools.FUNCTION_ACTION_SPECS`，本体动作在 `ontology_tools` 的 `_require_write_perm`）/ `human`（只有人能做的界面或 HTTP 端点）。**标 ai 必须真有工具，标 human 必须真没工具**（`test_ai_channel_actions_have_real_tooling` 锁）。
+
+### 10.3 串联校验（`_flow_errors`，宁阻断勿悬空）
+- 步序 1..N 连续；`action` ∈ `uses_actions`；`gated_by` ∈ `uses_rules`；
+- **`consumes` 必须由更早步骤的 `produces` 提供**——这是「串联」与「平铺」的实质区别，断了必须报错而不是静默。
+
+### 10.4 别名（`scenarios[].aliases`）
+- 场景必须有业务别名（如 `看板发布` / `发布看板`），因为模型和用户都是拿口语名问的；别名随 `to_cloud_md` 上云（`（又称：…）`），否则知识库教不会。
+- 别名与 `key`/`title` 归一后**不得跨场景撞车**（`normalize_scenario_name` + `_scenario_alias_errors`）；归一函数只此一份，`system_tools._pick_scenario` 复用，不得另写。
+
+### 10.5 四个消费面必须同批接通
+| 消费面 | 位置 | 要求 |
+|---|---|---|
+| 上云投影 | `ontology_service._cloud_flow_md` | 渲染「执行步骤（按序）」+ `AI 可直接执行`/`需人工到界面完成` + 权限码 + 依赖上一步产出 + 受规则约束；params_schema/enforcement 不上云 |
+| 图谱 | `common/rdf/ontology_to_rdf.py:_emit_flows` + `graph_service` | `adh:TaskFlow`/`adh:FlowStep` + `flowOf/stepOfFlow/stepAction/stepChannel/stepPerm/stepProduces/stepConsumes/stepGatedBy/nextStep`；`sem_types`/关系中文名同批登记；步骤节点不得成为 SQL 关系端点 |
+| AS-BOT 工具 | `sdk_tools/system_tools.py:system_capability_plan` | 只读计划（admin-only），每步回 `you_can_run`/`why_not`（channel=human 恒 false；ai 按持码 + `perm_link.effective_level`）；它是**描述**，真调用仍由 `require_write_perm` fail-closed 裁决 |
+| 提示词 | `prompt_composer.CAPABILITY_PLAN_RULES` | 多步任务先取计划；`channel=human` 只能交给人；`you_can_run=false` 不得声称已完成。**只在本会话注册了 `system_capability_plan` 时注入**（`has_capability_plan`）：它属 `system` 组，与 `screen` 组是两套授权，写进 `SCREEN_DIRECT_RULES` 会出现「有 screen 没 system」时教模型调不存在的工具（空承诺） |
+
+### 10.6 反模式
+- ❌ flow 里手写 perm_code/channel（两套清单必然漂移）；
+- ❌ 步骤 `consumes` 一个没有任何前置 `produces` 的东西（串联是假的）；
+- ❌ 动作标 `ai` 但既不在功能工具、本体工具里也没有该码的写码把关（模型会去调不存在的工具）；
+- ❌ 别名不登记、不回归一就上云（模型拿口语名取不到计划，联动入口等于不存在）；
+- ❌ 拿 `flow` 当执行器（在服务端按 `order` 自动连跑动作）——执行必须逐步由模型显式调用、逐步过权限码。

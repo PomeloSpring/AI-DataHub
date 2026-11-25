@@ -262,6 +262,7 @@ def execute_query(
     workspace_id: int = None,
     user_role: str = None,
     federated: list = None,
+    timeout_sec: int = None,
 ) -> tuple[pd.DataFrame, int, int]:
     """Execute a validated query against the specified datasource.
 
@@ -279,6 +280,8 @@ def execute_query(
         federated: 跨源联邦附加数据源 [{"name": 数据源名, "config": {连接配置}}]，
             SQL 中以 `name.db.table` 三段式引用；非空时禁止直连回退
             （直连无法跨源执行，必须走 DataFusion 联邦）。
+        timeout_sec: 调用侧显式读超时预算（秒）。仅数据工程通道（物化/批量）下发，
+            交互式取数保持 None = 沿用数据源高级配置/30s 默认；不得当批处理旁路开关。
 
     Returns:
         (DataFrame, execution_time_ms, row_count)
@@ -322,7 +325,7 @@ def execute_query(
     with slot_for_datasource(datasource_id):
         return _execute_via_semantic_execution(
             sql, datasource_id, user_id=user_id, workspace_id=workspace_id,
-            user_role=user_role, federated=federated)
+            user_role=user_role, federated=federated, timeout_sec=timeout_sec)
 
 
 def _is_es_datasource(datasource_id: Any) -> bool:
@@ -383,6 +386,7 @@ def _execute_via_semantic_execution(
     workspace_id: int = 0,
     user_role: str = "",
     federated: list = None,
+    timeout_sec: int = None,
 ) -> tuple[pd.DataFrame, int, int]:
     """Phase 7.2 切流执行载体：semantics.execution（远程下推 / 跨源联邦）。
 
@@ -440,8 +444,15 @@ def _execute_via_semantic_execution(
             })
         table = engine.execute_federated(sql, sources, dialect=dialect)
     else:
+        # 显式预算 > 数据源高级配置 > 缺省（resolve_timeouts 同一口径）；
+        # 不传 guardrail 时行为与改造前逐字一致（交互式 30s 默认不变）
+        guardrail = None
+        if timeout_sec:
+            from backend.semantics.models import Guardrail
+            guardrail = Guardrail(timeout_sec=int(timeout_sec))
         table = engine.execute_pushdown(
-            sql, datasource_id=int(datasource_id or 0), db_type=db_type, dialect=dialect)
+            sql, datasource_id=int(datasource_id or 0), db_type=db_type, dialect=dialect,
+            guardrail=guardrail)
     df = table.to_pandas()
     elapsed_ms = int((time.time() - start) * 1000)
     return df, elapsed_ms, int(table.num_rows)
@@ -454,6 +465,7 @@ def execute_query_with_permission(
     workspace_id: int = 0,
     database: str = "",
     federated_names: list = None,
+    timeout_sec: int = None,
 ) -> tuple[pd.DataFrame, int, int]:
     """Execute a query with lightweight permission enforcement.
 
@@ -521,7 +533,8 @@ def execute_query_with_permission(
         # Step 4: Execute the modified query
         df, elapsed_ms, row_count = execute_query(
             modified_sql, datasource_id,
-            user_id=user_id, workspace_id=workspace_id, federated=federated)
+            user_id=user_id, workspace_id=workspace_id, federated=federated,
+            timeout_sec=timeout_sec)
 
         # Step 5: Apply column hiding/masking (含 block 屏蔽列, 始终执行)
         if perm_result.hidden_columns or perm_result.masked_columns:

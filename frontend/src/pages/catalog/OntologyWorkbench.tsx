@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
-import { AlertTriangle, Boxes, CheckCircle2, ChevronDown, GitCompare, Loader2, Search, X } from 'lucide-react';
+import { AlertTriangle, Boxes, CheckCircle2, ChevronDown, GitCompare, Loader2, Search, Undo2, X } from 'lucide-react';
 import { t } from '@/i18n/runtime';
 
 export type WbStatus = 'draft' | 'active' | 'archived';
@@ -77,6 +77,10 @@ export interface WbTray {
   canPublish: boolean;
   onPublish: () => void;
   onViewChanges: () => void;
+  /** 撤销整份草案（回到生效版）：无 ontology:save 不渲染，不给点了必 403 的死开关 */
+  canDiscard: boolean;
+  discarding: boolean;
+  onRequestDiscard: () => void;
 }
 
 const STATUS_CHIP: Record<WbStatus, { label: string; cls: string }> = {
@@ -356,6 +360,17 @@ export default function OntologyWorkbench({
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{tray.summary}</span>
           {tray.blockHint && <span className="text-red-600">{tray.blockHint}</span>}
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            {/* 撤销 = 丢弃整份草案回到生效版：放在托盘里，任意页签都能对“待发布”做处置，
+                不必先切到「变更对比」。确认弹窗由调用方统一渲染（本组件不做第二套确认）。 */}
+            {tray.canDiscard && (
+              <button type="button" onClick={tray.onRequestDiscard}
+                disabled={tray.discarding || tray.publishing}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs text-red-600 hover:bg-red-500/10 disabled:pointer-events-none disabled:opacity-50">
+                {tray.discarding
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <Undo2 className="h-3 w-3" />}{t('k_ec179f83bd')}
+              </button>
+            )}
             <button type="button" onClick={tray.onViewChanges}
               className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs hover:bg-accent">
               <GitCompare className="h-3 w-3" />{t('k_8d535108e6')}

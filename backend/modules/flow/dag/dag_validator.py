@@ -14,6 +14,7 @@
 
 import logging
 import re
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,9 @@ WRITE_MODES = ("append", "overwrite")
 MATERIALIZE_WRITE_MODES = ("append", "overwrite", "partition_overwrite")
 SYNC_MODES = ("full", "incremental")
 CONTROL_ACTIONS = ("pass", "fail")
+# 运行参数（按次运行，不写进 graph_json）：物化时间窗口 + 本次参与的粒度。
+RUN_PARAM_KEYS = ("start_date", "end_date", "grains")
+RUN_GRAINS = ("day", "month", "year")
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,127}$")
 
@@ -161,30 +165,69 @@ def _validate_materialize_config(config: dict, key: str, check_datasources: bool
                 f"数据集 '{dataset}' 是语义型（无执行 SQL），不支持物化；请改用 SQL 型数据集", key)
 
     if write_mode == "partition_overwrite":
+        # 回看单位随粒度变化（天/月/年），常量与执行器同源，避免两套夹取口径漂移
+        from backend.modules.flow.dag.materialize_runner import (
+            GRAIN_LOOKBACK_LABEL, GRAIN_LOOKBACK_LIMIT, GRAINS,
+        )
         partition = config.get("partition") or {}
         date_arg = str(partition.get("date_arg") or "").strip()
         column = str(partition.get("column") or "").strip()
         if not date_arg:
             raise DagValidationError("分区覆盖必须指定日期参数名（数据集参数）", key)
         _validate_table_name(column, "分区日期列名", key)
+        grain = str(partition.get("grain") or "day").strip().lower()
+        if grain not in GRAINS:
+            raise DagValidationError(
+                f"物化粒度须为 {'/'.join(GRAINS)} 之一（收到 {grain}）", key)
         try:
             lookback = _int_or_default(partition.get("lookback_days"), 1)
         except (TypeError, ValueError) as exc:
-            raise DagValidationError("回看天数必须为正整数", key) from exc
-        if not 1 <= lookback <= 366:
-            raise DagValidationError("回看天数须在 1~366 之间", key)
+            raise DagValidationError("回看格数必须为正整数", key) from exc
+        limit = GRAIN_LOOKBACK_LIMIT[grain]
+        if not 1 <= lookback <= limit:
+            raise DagValidationError(
+                f"回看{GRAIN_LOOKBACK_LABEL[grain]}须在 1~{limit} 之间", key)
         if ds is not None:
             declared = _declared_dataset_params(ds)
             if date_arg not in declared:
                 raise DagValidationError(
                     f"数据集 '{dataset}' 未声明参数 '{date_arg}'（已声明: "
                     f"{sorted(declared) or '无'}），无法按日期增量物化", key)
+        # 多站同表：分区键的固定列（如 region='cn'）+ 分区名模板占位。
+        # 站点不进分区键时，同一天两站写同名分区，后跑的 OVERWRITE 会替掉前一站（数据静默消失）。
+        fixed = partition.get("fixed")
+        key_columns = partition.get("key_columns") or []
+        if fixed is not None:
+            if not isinstance(fixed, dict) or not fixed:
+                raise DagValidationError("分区固定列须为非空 {列名: 值} 映射", key)
+            for fixed_name, fixed_value in fixed.items():
+                if not IDENT_RE.match(str(fixed_name or "")):
+                    raise DagValidationError(
+                        f"分区固定列名不合法: {fixed_name!r}", key)
+                if isinstance(fixed_value, bool) or not isinstance(fixed_value, (str, int)):
+                    raise DagValidationError(
+                        f"分区固定列 '{fixed_name}' 的值须为字符串或整数", key)
+        if key_columns:
+            if not isinstance(key_columns, list):
+                raise DagValidationError("分区键列 key_columns 须为数组", key)
+            for col in key_columns:
+                if not IDENT_RE.match(str(col or "")):
+                    raise DagValidationError(f"分区键列名不合法: {col!r}", key)
+                if not fixed or str(col) not in fixed:
+                    raise DagValidationError(
+                        f"分区键列 '{col}' 缺少固定值（partition.fixed 须给出）", key)
         if partition.get("target_partition"):
             template = str(partition.get("target_partition"))
             if "{yyyyMMdd}" not in template and "{yyyy-MM-dd}" not in template \
                     and "{date}" not in template:
                 raise DagValidationError(
                     "Doris 分区名模板须含日期占位（{yyyyMMdd} 或 {yyyy-MM-dd}）", key)
+            allowed = {"yyyyMMdd", "yyyy-MM-dd", "date"} | set(fixed or {})
+            unknown = [ph for ph in re.findall(r"\{([^{}]+)\}", template)
+                       if ph not in allowed]
+            if unknown:
+                raise DagValidationError(
+                    f"分区名模板含未知占位 {unknown}（可用：日期占位 + 固定分区列名）", key)
 
 
 def _declared_dataset_params(ds: dict) -> set[str]:
@@ -290,6 +333,70 @@ def _validate_sql_config(config: dict, key: str, check_datasources: bool, check_
         _validate_table_name(target["table"], "目标表名", key)
         if target.get("write_mode", "append") not in WRITE_MODES:
             raise DagValidationError(f"写入模式不合法: {target.get('write_mode')}", key)
+
+
+def validate_run_params(workflow: dict, params: dict | None) -> dict:
+    """校验一次运行的参数（物化时间窗口），返回规范化后的参数字典。
+
+    为什么不能原样往上传：
+    - 未识别的键会被执行期静默忽略 —— 用户以为“指定了起始日期”，实际按回看
+      窗口跑了（假初始化，跑完还报成功，`no-silent-degradation`）；
+    - 日期格式写错（`2024-13-01` / `20241301`）靠下游宽松解析会把区间算歪；
+    - 工作流没有日期分区物化节点时，“起始参数”无处生效，必须当场拒
+      （不然参数存在但零作用，是最难查的一类“配置了没反应”）。
+
+    `grains` 是“本次运行只跑哪些粒度”：历史初始化时月/年档要回塑多年，
+    而日档只服务近月视图 —— 不区分粒度就会把日档也从 2021 年逐天扫一遍
+    （几千格、必超预算）。它只做“本次跳过”，不改任何节点的配置。
+    """
+    if not params:
+        return {}
+    if not isinstance(params, dict):
+        raise DagValidationError("运行参数必须是对象 {start_date?, end_date?, grains?}")
+    unknown = sorted(set(params) - set(RUN_PARAM_KEYS))
+    if unknown:
+        raise DagValidationError(
+            f"不支持的运行参数 {unknown}（可用：{list(RUN_PARAM_KEYS)}）")
+
+    out: dict = {}
+    for key in RUN_PARAM_KEYS:
+        raw = params.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if key == "grains":
+            if not isinstance(raw, (list, tuple)) or not raw:
+                raise DagValidationError("grains 须为非空列表（day/month/year 的子集）")
+            picked: list[str] = []
+            for item in raw:
+                text = str(item).strip().lower()
+                if text not in RUN_GRAINS:
+                    raise DagValidationError(
+                        f"未知物化粒度 {item!r}（可用：{list(RUN_GRAINS)}）")
+                if text not in picked:
+                    picked.append(text)
+            out[key] = picked
+            continue
+        text = str(raw).strip()
+        try:
+            out[key] = date.fromisoformat(text).isoformat()
+        except ValueError as exc:
+            raise DagValidationError(
+                f"{key} 须为 YYYY-MM-DD 日期（收到 {text!r}）") from exc
+    if "start_date" in out and "end_date" in out and out["start_date"] > out["end_date"]:
+        raise DagValidationError(
+            f"起始日期 {out['start_date']} 晚于结束日期 {out['end_date']}")
+
+    nodes = (workflow.get("graph_json") or {}).get("nodes") or []
+    windowed = [
+        n for n in nodes
+        if n.get("type") == "materialize"
+        and str((n.get("config") or {}).get("write_mode") or "") == "partition_overwrite"
+    ]
+    if not windowed:
+        raise DagValidationError(
+            "该工作流没有按日期分区的物化节点，运行参数（时间窗口）无处生效；"
+            "请用节点配置里的回看格数（partition.lookback_days）控制窗口")
+    return out
 
 
 def topological_order(node_map: dict, edges: list) -> list:

@@ -499,12 +499,14 @@ class GraphBuilder:
             conn.close()
 
     def _load_join_relations(self, datasource_id: int) -> list[dict]:
-        """Load JOIN relations from table_relations, falling back to data_lineage.
+        """Load JOIN relations from table_relations, falling back to real lineage.
 
-        adh_data_lineage 的列是 source_name/target_name(source_type/target_type 区分
-        实体种类), **没有** source_table/target_table, 也没有任何 datasource 列。
-        旧写法按旧 schema 取列, 一执行就 MySQL 1054, 被下面的 except 吞成 warning
-        后静默返回空 —— 图谱缺边且无人察觉。这里对齐真实 schema, 并显式表达域边界。
+        为什么不用 `adh_data_lineage`（已退役的僵尸表）：它只有迁移种子里的
+        demo 行（users→dwd_users 等），**没有任何写入方**，而真实血缘在
+        `adh_lineage_nodes/edges`（由 SQL 采集 / 编排定义推导 / 资产链生成）。
+        继续读旧表等于把提示模型“凭空编”的 join 当成元数据，与图谱里的真实表
+        节点也对不上（节点名永远命中不到）。这里对齐真实血缘表，并且它带
+        `datasource_id` 列，能按域过滤（旧表没有数据源维度，跨域串味）。
         """
         from backend.common.db.metadata_db import get_metadata_conn
         conn = get_metadata_conn()
@@ -523,22 +525,33 @@ class GraphBuilder:
                     return rows
 
                 if is_system_scope(datasource_id):
-                    # adh_data_lineage 无 datasource 列, 无法按域过滤; 其内容是业务表
-                    # 血缘, 吸入系统图会造成业务元数据串域(as-bot-system-waker §1)。
-                    # 这是有意的域边界, 不是失败, 故记 debug 而非 warning。
+                    # 表级血缘只描述业务物理表；系统本体图（平台自身表）不吸收，
+                    # 避免业务元数据串域（as-bot-system-waker §1）。
                     logger.debug("[graph] 系统域图不吸收业务血缘关系(域边界)")
                     return []
 
-                # Fallback: 业务/聚合域取表->表血缘(排除 datasource->* 等非表实体)
-                cur.execute("""
-                    SELECT source_name AS table1, target_name AS table2,
-                           'lineage' AS join_type, 0 AS datasource_id
-                    FROM adh_data_lineage
-                    WHERE is_active = 1
-                      AND source_type = 'table' AND target_type = 'table'
-                      AND source_name != target_name
-                    GROUP BY source_name, target_name
-                """)
+                # Fallback: 真实血缘里的表级 transform 边（两端同源才有 join 意义）。
+                # 节点 node_id 是「数据源业务名.表」，而图谱表节点用裸表名
+                # → 剥前缀回写；同源内表名唯一，不会歧义。
+                scope_sql = ""
+                scope_params: list = []
+                if datasource_id:
+                    scope_sql = "AND s.datasource_id = %s AND t.datasource_id = %s"
+                    scope_params = [int(datasource_id), int(datasource_id)]
+                cur.execute(f"""
+                    SELECT SUBSTRING_INDEX(s.node_id, '.', -1) AS table1,
+                           SUBSTRING_INDEX(t.node_id, '.', -1) AS table2,
+                           'lineage' AS join_type, s.datasource_id AS datasource_id
+                    FROM adh_lineage_edges e
+                    JOIN adh_lineage_nodes s ON s.id = e.source_node_id
+                    JOIN adh_lineage_nodes t ON t.id = e.target_node_id
+                    WHERE e.edge_type = 'transform'
+                      AND s.node_type = 'table' AND t.node_type = 'table'
+                      AND s.datasource_id <> 0 AND t.datasource_id <> 0
+                      AND s.node_id <> t.node_id
+                      {scope_sql}
+                    GROUP BY table1, table2, s.datasource_id
+                """, scope_params)
                 return cur.fetchall()
         except Exception as e:
             # 真正的意外异常才走到这里(列名/表名错配已在上面对齐 schema)。

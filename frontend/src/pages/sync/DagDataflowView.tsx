@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, X, FileSearch } from 'lucide-react';
 import { dagApi, type DagGraph, type DataflowGraph, type DataflowNode } from '@/api/dag';
+import AutoFitView from '@/components/graph/AutoFitView';
 import { useTranslation } from 'react-i18next';
 import { t as tr } from '@/i18n/runtime';
 
@@ -202,6 +203,8 @@ export default function DagDataflowView({
           setPlan(null);
         }}
       >
+        {/* 数据流是异步解析的：节点量完尺寸再适配（同 DagRunDetail） */}
+        <AutoFitView key={rf.nodes.length} />
         <Background gap={20} size={1} />
         <Controls />
       </ReactFlow>

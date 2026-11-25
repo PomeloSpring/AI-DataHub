@@ -86,17 +86,23 @@ def _record_lineage(sql_for_lineage: str, datasource_name: str, context: dict,
 def _qualify_lineage_sql(sql: str, source_ds: str, target_ds: str) -> str:
     """把血缘 SQL 的表引用限定到数据源：INSERT 目标 → target_ds，其余表 → source_ds。
 
-    血缘节点 ID 由此获得数据源维度（sql_lineage 输出 db.table 两段名）。
+    血缘节点 ID 由此获得数据源维度（sql_lineage 输出 `数据源业务名.表`）。
+    **已有库名前缀必须被覆盖**：原始 SQL 里的 `stardb.t_x` 中 stardb 是
+    database_name（不是数据源业务名），保留它会让同一张表生成第二个节点
+    （库名段 vs 业务名段），边接不上——历史缺陷，不得以“已有 db 就不改”跳过。
     """
     import sqlglot
     from sqlglot import exp
     tree = sqlglot.parse_one(sql, read="mysql")
-    inserts = [n for n in tree.find_all(exp.Table)]
-    insert_target = tree.this if isinstance(tree, exp.Insert) else None
-    for table in inserts:
-        if table.db:
-            continue
-        ds = target_ds if (insert_target is not None and table is insert_target) else source_ds
+    target_node = None
+    if isinstance(tree, exp.Insert):
+        tgt = tree.this
+        if isinstance(tgt, exp.Schema):
+            tgt = tgt.this
+        if isinstance(tgt, exp.Table):
+            target_node = tgt
+    for table in tree.find_all(exp.Table):
+        ds = target_ds if (target_node is not None and table is target_node) else source_ds
         if ds:
             table.set("db", exp.to_identifier(ds))
     return tree.sql(dialect="mysql")
@@ -221,6 +227,47 @@ def _register_product_after_write(df, target_ds: str, target_table: str,
     return out
 
 
+def _sync_catalog_after_write(target_ds_name: str, target_table: str,
+                             context: dict) -> dict:
+    """写入成功后把目标表结构登记进 catalog（表行 + 列元数据）。
+
+    为什么必须挂在写入这一环，而不是等人去点「元数据同步」：加工层产出的表是链条
+    的**新起点**，下游全都要读 `adh_table_info` / `adh_column_metadata` ——
+    `search_metadata` 检索、列级血缘、敏感字段登记、图 RAG 骨架、`get_table_schema`
+    都是。只登记数据产品（`adh_data_products`）不写 catalog 的话，表在“产品目录”
+    里存在、在“元数据目录”里查不到，LLM 只能靠猜列名（历史缺陷：9 张物化目标表
+    落地后 catalog 里 0 行、0 列）。
+
+    纪律：登记属治理旁路，失败**不阻断**已成功的落地（数据已提交，回滚它才是
+    损毁），但必须把失败与原因显式写进返回体与日志（no-silent-degradation）。
+    """
+    out = {"synced": False, "table": f"{target_ds_name}.{target_table}", "error": ""}
+    if not target_ds_name or not target_table:
+        out["error"] = "目标数据源/表为空，未登记元数据"
+        return out
+    try:
+        from backend.common.db import get_datasource_by_name
+        from backend.modules.catalog.services.metadata_sync import sync_table_columns
+        src = get_datasource_by_name(target_ds_name)
+        if not src:
+            out["error"] = f"目标数据源「{target_ds_name}」不存在，表结构未登记"
+            logger.warning("[Catalog] %s（表 %s）", out["error"], target_table)
+            return out
+        res = sync_table_columns(int(src["id"]), target_table)
+        out.update(synced=True, columns=int(res.get("total_columns") or 0),
+                   inserted=int(res.get("inserted") or 0),
+                   updated=int(res.get("updated") or 0),
+                   deleted=int(res.get("deleted") or 0))
+        logger.info("[Catalog] 目标表 %s 结构已登记：%d 列（新增 %d / 变更 %d / 移除 %d）",
+                    out["table"], out["columns"], out["inserted"], out["updated"],
+                    out["deleted"])
+    except Exception as exc:  # noqa: BLE001 治理旁路：不阻断落地，但显式带回
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        logger.warning("[Catalog] 目标表 %s 结构登记失败（落地数据不受影响，"
+                       "可稍后在元数据页对该表重跑同步）: %s", out["table"], exc)
+    return out
+
+
 def run_sync_node(config: dict, context: dict) -> dict:
     from backend.modules.flow.dag.federated_reader import governed_read_dataframe
     from backend.modules.flow.dag.target_writer import write_dataframe
@@ -287,11 +334,13 @@ def run_sync_node(config: dict, context: dict) -> dict:
     product = _register_product_after_write(
         df, target_ds, target_table, "sync_task",
         f"sync_task:{context.get('node_key') or ''}", [source_ds], context)
+    catalog = _sync_catalog_after_write(target_ds, target_table, context)
     if used_versions:
         from backend.modules.flow.dag.udf_registry import udf_registry
         udf_registry.bump_usage([item["name"] for item in used_versions])
     return {"rows_read": rows_read, "rows_written": rows_written,
-            "udf_versions": used_versions, "quality": quality, "data_product": product}
+            "udf_versions": used_versions, "quality": quality, "data_product": product,
+            "catalog": catalog}
 
 
 # ── sql_task：SQL 同步/转换（支持跨源联邦 + UDF） ────────────────────
@@ -329,6 +378,7 @@ def run_sql_task_node(config: dict, context: dict) -> dict:
     # 血缘采集（旁路）：有写目标时记录 源表→目标表 血缘
     quality = None
     product = {"registered": False}
+    catalog = {"synced": False, "error": "未配置写目标，无表结构可登记"}
     if target:
         _record_lineage(
             f"INSERT INTO `{target['table']}` {expanded_sql}",
@@ -340,8 +390,11 @@ def run_sql_task_node(config: dict, context: dict) -> dict:
             df, target.get("datasource") or "", target["table"], "dag_workflow",
             f"dag_workflow:{context.get('workflow_id') or 0}:{context.get('node_key') or ''}",
             [config.get("source_datasource") or ""], context)
+        catalog = _sync_catalog_after_write(
+            target.get("datasource") or "", target["table"], context)
     return {"rows_read": rows_read, "rows_written": rows_written,
-            "udf_versions": used_versions, "quality": quality, "data_product": product}
+            "udf_versions": used_versions, "quality": quality, "data_product": product,
+            "catalog": catalog}
 
 
 # ── control：控制节点（一期 pass / fail） ────────────────────────────

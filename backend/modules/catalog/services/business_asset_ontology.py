@@ -143,9 +143,24 @@ def _collect() -> dict:
         "JOIN adh_users u ON u.id = ur.user_id "
         "JOIN adh_roles r ON r.id = rda.role_id "
         "JOIN adh_datasources ds ON ds.id = rda.datasource_id")
+    # 跨源流转从真实血缘反推（adh_lineage_nodes.datasource_id），不读
+    # `adh_data_lineage`：那张表只有迁移种子里的 demo 行（主MySQL→Doris分析库等），
+    # 没有任何写入方。旧口径会把 demo 当成“系统数据源之间真的有流转”，用于场景
+    # 推荐就是错引导；真实血缘同时能跟表节点、站点与权限集对上。
+    # 回传列形状与 _build_lineage 的预期一致（source_type/target_type 均为 table，
+    # 不输出表名——跨源边只作数据源级能力，表名在图上才展开）。
     data["lineage"] = _q(
-        "SELECT source_type, source_id, source_name, target_type, target_id, target_name, "
-        "relation_type, description FROM adh_data_lineage WHERE is_active = 1")
+        "SELECT 'table' AS source_type, s.datasource_id AS source_id, sd.name AS source_name, "
+        "       'table' AS target_type, t.datasource_id AS target_id, td.name AS target_name, "
+        "       'produces' AS relation_type, '' AS description "
+        "FROM adh_lineage_edges e "
+        "JOIN adh_lineage_nodes s ON s.id = e.source_node_id "
+        "JOIN adh_lineage_nodes t ON t.id = e.target_node_id "
+        "JOIN adh_datasources sd ON sd.id = s.datasource_id "
+        "JOIN adh_datasources td ON td.id = t.datasource_id "
+        "WHERE e.edge_type = 'transform' "
+        "  AND s.node_type = 'table' AND t.node_type = 'table' "
+        "  AND s.datasource_id <> t.datasource_id")
     data["ds_names"] = ds_names
     data["ds_ids"] = ds_ids
     return data
@@ -375,9 +390,9 @@ def _build_asset_objects(data: dict, src_by_ds: dict) -> tuple[list, list]:
 def _build_lineage(data: dict) -> tuple[list, list, list]:
     """血缘 → 数据源节点间边 + 跨源场景。返回 (edges, scenarios, unmatched)。
 
-    edges 元素带 from_name/target_name（调用方归到对象 links）；节点按名称尽力
-    匹配注册数据源（匹配不上不猜配，宁缺勿错——血缘节点名可能是描述名，
-    如「主MySQL」）；table 级流转归并计数，不落表名（脱敏）。
+    edges 元素带 from_name/target_name（调用方归到对象 links）。跨源边由真实血缘
+    （表节点的 datasource_id）反推：两端数据源名称直接取自 adh_datasources，
+    不存在「节点名是描述名匹配不上」的旧问题；表级流转归并计数，不落表名（脱敏）。
     """
     ds_names = set(data["ds_names"])
 

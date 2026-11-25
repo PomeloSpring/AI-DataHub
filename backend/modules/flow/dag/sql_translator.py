@@ -143,8 +143,14 @@ def sql_to_dag(sql_script: str, default_datasource: str = "",
     return {"nodes": nodes, "edges": edges}
 
 
-def dag_to_sql(graph: dict) -> str:
-    """DAG 导出为拓扑序 SQL 脚本（人审阅用；非事实源）。"""
+def dag_to_sql(graph: dict, materialize_builder=None) -> str:
+    """DAG 导出为拓扑序 SQL 脚本（人审阅用；非事实源）。
+
+    `materialize_builder(config) -> list[str]`：物化节点的真实 SQL 构造器（由
+    `materialize_runner.export_materialize_sql` 提供）。不传时保留占位注释——
+    本模块不依赖数据集编译链（分层边界），但导出接口默认会传入它，
+    所以“导出 SQL 里没有 SQL”不再可能。
+    """
     nodes = graph.get("nodes") or []
     edges = graph.get("edges") or []
     node_map = {str(n.get("key")): n for n in nodes}
@@ -203,8 +209,10 @@ def dag_to_sql(graph: dict) -> str:
             if part:
                 lines.append(f"-- 分区: 列 {part.get('column', '')} / 日期参数 "
                              f"{part.get('date_arg', '')} / 回看 {part.get('lookback_days', 1)} 天")
-            # 取数 SQL 由平台编译（物化执行器统一生成），导出脚本只保留口径描述
-            lines.append("-- 数据集取数 SQL 由平台编译；目标表须已存在（不隐式建表）")
+            if materialize_builder is not None:
+                lines.extend(materialize_builder(config))
+            else:
+                lines.append("-- 数据集取数 SQL 由平台编译；目标表须已存在（不隐式建表）")
         elif ntype == "control":
             lines.append(f"-- 控制节点: {config.get('action', 'pass')}")
         lines.append("")

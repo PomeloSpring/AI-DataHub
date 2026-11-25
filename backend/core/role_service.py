@@ -117,10 +117,14 @@ class RoleService:
                     "mcp": {
                         "semantic": ["get_metrics", "get_glossary", "knowledge_search", "run_semantic_query"],
                         "catalog": ["search_metadata", "get_table_schema", "list_datasources"],
+                        # 血缘读与 catalog 同级：表节点按角色数据源授权 fail-closed 过滤，
+                        # 业务资产节点是治理资产。下钻分析离不开「这个数从哪来」，
+                        # 不给新角色默认开启就等于每个新角色都要人工补一次（口径漂移源）。
+                        "lineage": ["get_lineage"],
                         # 记忆只读写本人行、不返回业务数据行，属个人工作区能力 → 新建角色默认开启
                         "memory": ["save_memory", "list_memory", "delete_memory"],
                     },
-                    "groups": ["semantic", "catalog", "memory"],
+                    "groups": ["semantic", "catalog", "lineage", "memory"],
                     "external": {},
                     "standard": ["read", "grep", "glob"]
                 }

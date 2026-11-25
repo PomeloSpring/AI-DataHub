@@ -140,6 +140,8 @@
 | `actors` | 本格式必填 | 未校 | `role:admin` 之类，与权限登记同源 |
 | `uses_objects` / `uses_actions` / `uses_rules` | ✅ | 引用悬空=**error** | 比对对象/动作/规则 key 集合（不区分大小写） |
 | `path` | 可选 | 结构不合法=**error** | 有序步骤口径（漏斗/路径），单独见 §2.7 |
+| `flow` | 可选（**已落地**） | 结构/串联不合法=**error** | 任务流：有序步骤（动作/用途/产出与依赖/规则门），单独见 §2.8 |
+| `aliases` | 建议（**已落地**） | 归一后跨场景撞车=**error** | 业务别名（「看板发布」等口语名），否则模型无法用业务名取到该场景的任务流 |
 | `uses_behaviors` | **新增** | 无→建议纳入悬空校验 | 场景涉及的业务流转（本格式新增后配套） |
 | `eval_seed` | 本格式必填 | 未校 | 问句种子，进 golden-question 评测 |
 | `answer_shape` | **新增建议** | 无 | 期望产出形态（趋势/对比/明细/清单/结论建议），让评测有可判据、不只看"答得像" |
@@ -157,6 +159,24 @@
 | `entity` / `event_time` | 写了但为空=**error** | 按什么实体串序、看什么时间（只认**业务名**，不得填物理列） |
 | `window_sec` | ≤0/非整数=**error** | 步序时间窗 |
 | `steps[]` | 结构不合法=**error** | 有序步骤清单；与 `behaviors[]` 天然对应（一条行为≈一步），落地后建议 steps 改为**引用 behavior key**而不是重写文字 |
+
+### 2.8 任务流 Flow（`scenarios[].flow`，**已落地**）
+
+> 与 `path` 的区别：`path` 描述"**事件**按什么顺序发生"（观测/漏斗），`flow` 描述"**动作**按什么顺序做"（人机协作的任务编排）。
+> 两者可共存；`flow` 是动态本体的串联层，**不是执行器**。
+
+| 字段 | 校验档位 | 说明 |
+|---|---|---|
+| `order` | 非 1..N 连续=**error** | 步序 |
+| `action` | 不在 `uses_actions` / 悬空=**error** | 必须是本场景 `uses_actions` 里的动作 key（动作本身挂在某个对象的 `actions[]`） |
+| `purpose` | 缺失=**error** | 这步在做什么（直接展示给用户） |
+| `produces` / `consumes` | `consumes` 无前置 `produces`=**error** | 人话产出物名；串联的实质就靠这一对 |
+| `gated_by` | 不在 `uses_rules`=**error** | 该步生效的业务/权限规则 |
+| `perm_code` / `channel` / `action_label` | **只读派生** | 由 `_attach_flow_bindings` 从 `ACTION_PERM_CODES` 注入，手写会与真实工具漂移 |
+
+`channel` 只有两值：`ai`（AS-BOT 有真实工具可直调）/ `human`（只能人到界面做，如 `dashboard.publish` / `content_review.publish`）。
+消费面四处同批：上云 `_cloud_flow_md`、图谱 `_emit_flows`（TaskFlow/FlowStep）、AS-BOT 工具 `system_capability_plan`、提示词（多步任务先取计划）。
+建模纪律与反模式见 `.qoder/rules/ontology-modeling.md` §10。
 
 ---
 
@@ -280,7 +300,7 @@
 | 3 | 草案差异 | `ontology_service._obj_shape` / `_obj_delta`（第 1925 行起） | 指纹只比 `display_name/aliases/primary_table/properties/links` → 改动作/规则/场景后审阅页全 `unchanged` | 纳入 behaviors 与 M234 |
 | 4 | 覆盖防护 | `_reject_destructive_overwrite` | 只护 `properties/links` → 整份 JSON 覆盖把 `rules/scenarios` 抹空**不会被拦** | 纳入 behaviors/rules/scenarios（宁阻断勿损毁） |
 | 5 | 语义层业务投影 | `sdk_tools/scoped_metadata` | 只输出 `properties`，行为/规则不回馈给语义层 AS-BOT | 决定要不要给（§7.3），给则按业务名投影、不带物理列 |
-| 6 | 图谱 | `common/rdf/ontology_to_rdf.py`（JSON→Turtle）+ `semhub/graph/graph_service.py:564`（`sem_types = ["Action","Metric","Dimension","Rule","Scenario"]`） | 已发 Action/Rule/Scenario 节点与 `adh:hasAction / governs / controls / uses*` 边 | 新增 `adh:Behavior` 类型 + `transitionsTo`/`triggeredBy` 边；`sem_types` 与前端 `NODE_CONFIG` 色板同步（`graph-visualization §2`） |
+| 6 | 图谱 | `common/rdf/ontology_to_rdf.py`（JSON→Turtle）+ `semhub/graph/graph_service.py:564`（`sem_types = ["Action","Metric","Dimension","Rule","Scenario"]`） | 已发 Action/Rule/Scenario 节点与 `adh:hasAction / governs / controls / uses*` 边；任务流已发 `adh:TaskFlow`/`adh:FlowStep` + `flowOf/stepAction/stepChannel/stepPerm/stepProduces/stepConsumes/stepGatedBy/nextStep` | 若再引入 `adh:Behavior`（事件级状态迁移），复用任务流这套发射口径；`sem_types` 与前端 `NODE_CONFIG` 色板同步（`graph-visualization §2`） |
 | 7 | 前端建模界面 | `pages/catalog/OntologyModeling.tsx`（页签现为 **行为/规则/场景** + 新建/编辑对象）、`lib/ontologyObjects.ts: showsM234()` | `showsM234()` **返 true 不隐页签**（写不写由权限码把门，设计如此）；但现页签里的「行为」其实是 `actions`（见 §1 撞名注） | 改名「动作（可执行）」+ 新增「业务行为」页签与状态迁移可视化；体检项加"行为不可量化/状态越界" |
 | 8 | 存量迁移 | **6 个** active 模型（系统本体 50 对象 + 联耀业务 18 + 数仓 4 + 云平台日志 4 + ARMS RUM 1 + 应用使用事件 1 = **78** 对象） | 无 behaviors | 幂等迁移脚本（dry-run 默认）；不补则 `behaviors: []` + 体检出 warning，**不得**静默判成"该对象没有业务流转" |
 
@@ -293,6 +313,7 @@
 | 层 | 是什么 | 谁消费 | 不消费什么 |
 |---|---|---|---|
 | 建模描述层 | `objects[].actions[]`、`doc.rules[]` | 人（建模页/文档档）、图谱、上云投影、AS-BOT 提示词里的"这个对象能做什么"叙述 | **不参与执行判决**（`as-bot-system-waker §3` 明文：canonical 动作与规则 permission 仅是建模描述，无运行时消费方） |
+| 编排描述层 | `doc.scenarios[].flow` | 上云投影（`_cloud_flow_md`）、图谱（TaskFlow/FlowStep 可遍历）、AS-BOT 的 `system_capability_plan`（只读计划：每步 `you_can_run`/`why_not`） | **不自动执行**：服务端不得按 `order` 连跑动作；模型逐步显式调用工具，每步仍由权限码 `require_write_perm` fail-closed 裁决 |
 | 执行裁决层 | `adh_user_roles ⋈ adh_role_perms ⋈ adh_perm_registry.ai_access` + 代码层涉密硬上界 `perm_link.SECRET_BOUND_NONE_PERMS` | `backend/core/perm_link.py: require_write_perm`（**唯一**回路，fail-closed） | 不回读本体 doc 里的 `risk` / `read_only` / `requires_approval` |
 
 因此本格式对 `perm_code` / `mutates` 的定位必须钉死：

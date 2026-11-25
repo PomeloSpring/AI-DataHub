@@ -86,16 +86,17 @@ jieba.cache
 
 # 会话运行数据与本地诊断临时文件
 /data/
-/scripts/_tmp_*.py
 /services/dataengine/*.db
 /services/dataengine/*.db-shm
 /services/dataengine/*.db-wal
 
+# 临时脚本唯一落点（.qoder/rules/script-hygiene.md §1）：探针/验证/一次性迁移一律写这里，
+# 不随项目提交。带路径钉住，避免裸目录名吞掉别处的同名目录。
+/temp/
 # 只忽略根目录的一次性脚本目录；曾写成裸 `scripts`，会连带吃掉 backend/scripts/**
 # （frontend_port.sh 等被 start-all/stop-all/kill-ports source 的文件因此没进仓库，
 #  同事拉码后 ./start-all.sh 直接报 No such file or directory）
 /scripts/
-backend/scripts/_tmp_*.py
 # pytest tmp artifacts
 pytest-of-*/
 .qoder/plan

@@ -59,7 +59,7 @@ class TestPlaygroundGovernedExecution:
         captured = {}
 
         def fake_perm(sql, datasource_id=None, query_type="sql",
-                      user_context=None, workspace_id=0, database=""):
+                      user_context=None, workspace_id=0, database="", timeout_sec=None):
             captured["user_id"] = (user_context or {}).get("user_id")
             captured["datasource_id"] = datasource_id
             captured["workspace_id"] = workspace_id
@@ -232,7 +232,7 @@ class TestGovernedExecutor:
         captured = {}
 
         def fake_exec(sql, datasource_id=None, query_type="sql",
-                      user_context=None, workspace_id=0, database=""):
+                      user_context=None, workspace_id=0, database="", timeout_sec=None):
             captured["user_context"] = user_context
             captured["workspace_id"] = workspace_id
             captured["datasource_id"] = datasource_id

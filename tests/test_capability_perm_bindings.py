@@ -143,7 +143,8 @@ def test_materialize_pages_are_covered_by_their_menu_codes(conn):
     task_read = [("GET", "/api/dag/workflows"), ("GET", "/api/dag/workflows/12"),
                  ("GET", "/api/dag/workflows/12/runs")]
     task_write = [("POST", "/api/dag/workflows"), ("PUT", "/api/dag/workflows/12"),
-                  ("DELETE", "/api/dag/workflows/12")]
+                  ("DELETE", "/api/dag/workflows/12"), ("DELETE", "/api/dag/runs/9"),
+                  ("POST", "/api/dag/runs/batch-delete"), ("POST", "/api/dag/runs/batch-stop")]
     task_exec = [("POST", "/api/dag/workflows/12/run"), ("POST", "/api/dag/runs/9/retry")]
     logs_read = [("GET", "/api/dag/runs"), ("GET", "/api/dag/runs/9"),
                  ("GET", "/api/dag/workflows")]

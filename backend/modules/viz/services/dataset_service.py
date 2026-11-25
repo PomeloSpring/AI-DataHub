@@ -126,6 +126,143 @@ def normalize_origin(value) -> str:
     return origin if origin in DATASET_ORIGINS else "manual"
 
 
+def canonical_origin_filter(origin: Any) -> str:
+    """把「来源」筛选值归一：`''` = 不限，否则必须是 DATASET_ORIGINS 之一。
+
+    来源只由服务端写入（人工定义 / 看板收编 / AI 会话产物），筛选值必须白名单化；
+    未知值显式拒并给候选，不得静默当“不限”——否则“筛过了但空清单”会被误读成
+    “没有数据集”（no-silent-degradation）。
+    """
+    raw = str(origin or "").strip().lower()
+    if raw in ("", "all"):
+        return ""
+    if raw in DATASET_ORIGINS:
+        return raw
+    raise ValueError(
+        f"不支持的来源筛选：{origin or '(空)'}；可选 "
+        + " / ".join(f"{k}（{v}）" for k, v in ORIGIN_LABELS.items())
+        + "，或留空表示不限")
+
+
+# 取数方式（`source_type`）就是清单「来源」列展示的那一位：sql=执行 SQL、semantic=语义对象、
+# both=两种定义并存（运行时优先走 SQL）。筛选按**行上显示的值精确匹配**——不把 both 并进
+# semantic/sql：否则“筛语义、行上却写语义 + SQL”，用户没法用结果核验筛选。
+DATASET_SOURCE_TYPES = {"sql", "semantic", "both"}
+SOURCE_TYPE_LABELS = {"sql": "SQL", "semantic": "语义对象", "both": "语义 + SQL"}
+
+
+def normalize_source_type(value) -> str:
+    """存量值归一到当前三档：历史 `es`（内置通道标记，已退役）与空值一律当 sql。"""
+    st = str(value or "").strip().lower()
+    return st if st in DATASET_SOURCE_TYPES else "sql"
+
+
+def canonical_source_type_filter(value) -> str:
+    """取数方式筛值归一：`''`/`all` = 不限，否则必须是 DATASET_SOURCE_TYPES 之一。
+
+    未知值显式拒并给候选，不得静默当“不限”（筛过了却空清单会被误读成没有数据）。
+    """
+    raw = str(value or "").strip().lower()
+    if raw in ("", "all"):
+        return ""
+    if raw in DATASET_SOURCE_TYPES:
+        return raw
+    raise ValueError(
+        f"不支持的取数方式筛选：{value or '(空)'}；可选 "
+        + " / ".join(f"{k}（{v}）" for k, v in SOURCE_TYPE_LABELS.items())
+        + "，或留空表示不限")
+
+
+# 数据集标签（DDL 见 docker/mysql/dataset_tags_migration.sql）：自由文本分类，
+# 用于标记业务域（如「售后域」）、物化目的（如「大屏物化」）、共享范围等，
+# **只做检索/归类**：不参与取数、不参与可见性/权限裁决（那仍是 owner/visibility/角色授权）。
+# JSON 数组存储；pymysql 回读为字符串，读路径一律经 normalize_tags 归一。
+MAX_DATASET_TAGS = 12
+MAX_TAG_LENGTH = 32
+
+
+def normalize_tags(value) -> list[str]:
+    """标签归一（**容错读路径**）：字符串/JSON 字符串/数组 → 去空去重、保持原顺序、截断上限。
+
+    读存量行时不得因历史脏值抛错（那会让整个清单 500）；写路径的越界校验由
+    `validate_tags` 显式拒绝（fail-loud）。
+    """
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        parsed = _parse_json(text, None) if text[:1] in ("[", "{") else None
+        items = parsed if isinstance(parsed, list) else [text]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag or tag in out:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            tag = tag[:MAX_TAG_LENGTH]
+        out.append(tag)
+        if len(out) >= MAX_DATASET_TAGS:
+            break
+    return out
+
+
+def validate_tags(value) -> list[str]:
+    """写路径标签校验：格式/长度/数量越界**显式拒绝**，不静默截断后入库。"""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, str)):
+        raise ValueError("标签必须是字符串数组")
+    if isinstance(value, str):
+        text = value.strip()
+        if text[:1] == "[":
+            parsed = _parse_json(text, None)
+            if not isinstance(parsed, list):
+                raise ValueError("标签必须是字符串数组")
+            raw_items = parsed
+        else:
+            raw_items = text.split(",")
+    else:
+        raw_items = list(value)
+    tags: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, str):
+            raise ValueError("标签必须是字符串数组")
+        tag = item.strip()
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ValueError(f"单个标签最多 {MAX_TAG_LENGTH} 个字符: {tag[:MAX_TAG_LENGTH]}…")
+        if tag not in tags:
+            tags.append(tag)
+    if len(tags) > MAX_DATASET_TAGS:
+        raise ValueError(f"单个数据集最多 {MAX_DATASET_TAGS} 个标签（当前 {len(tags)} 个）")
+    return tags
+
+
+def parse_tag_filter(value) -> list[str]:
+    """筛选入参 → 标签列表（支持逗号分隔字符串或数组；空值 = 不筛）。"""
+    if value in (None, "", []):
+        return []
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = str(value).split(",")
+    out: list[str] = []
+    for item in items:
+        tag = str(item or "").strip()
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
 # 归属与可见性（DDL/回填见 docker/mysql/dataset_ownership_visibility_migration.sql）：
 #   private    仅属主可见（admin 在管理面可见可编辑）—— chat / Playground 等个人产物
 #   workspace  角色授权可见（adh_role_dataset_access）—— 内置/人工建模、已显式共享
@@ -484,7 +621,8 @@ def effective_source_name(effective_id: int) -> str:
 
 
 def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
-                  channel: str = "") -> list[dict]:
+                  channel: str = "", tags="", origin: str = "",
+                  source_type: str = "") -> list[dict]:
     """列出数据集(按角色授权过滤可见性, admin bypass); datasource_id>0 时按可用范围筛选。
 
     可见性 = 角色数据集授权 ∧ (可用数据源范围 ∩ 角色授权源 ≠ ∅)：
@@ -503,7 +641,8 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
     if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
         return []                      # 筛选的源已不存在 → 无命中（不静默当"全部"）
     select_sql, _where, params, allowed_ids, user_role, user_id = _list_sql(
-        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name)
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
+        tags=parse_tag_filter(tags), origin=origin, source_type=source_type)
     rows = execute_query(
         select_sql + " ORDER BY d.updated_at DESC, d.id DESC LIMIT 200",
         tuple(params)) or []
@@ -524,7 +663,7 @@ def list_datasets(identity: dict, keyword: str = "", datasource_id: int = 0,
 _LIST_SELECT = (
     "SELECT d.id, d.name, d.description, d.source_type, d.object_key, "
     "d.datasource_id, d.available_datasources, d.chart_type, d.chart_preset, d.owner_id, "
-    "d.status, d.origin, d.visibility, "
+    "d.status, d.origin, d.visibility, d.tags, "
     "COALESCE(u.username, '') AS owner_name, "
     "d.field_config, d.created_at, d.updated_at, COALESCE(ref.n, 0) AS `references`, "
     # 入参证据只用于服务端算摘要，算完即剥（见 _fill_param_summaries）：
@@ -538,7 +677,8 @@ _LIST_SELECT = (
 
 
 def _list_sql(identity: dict, *, keyword: str = "", datasource_id: int = 0,
-              filter_name: str = "", visibility: str = "", owner_id: int = 0):
+              filter_name: str = "", visibility: str = "", owner_id: int = 0,
+              tags=None, origin: str = "", source_type: str = ""):
     """清单与分页共用的 SELECT/WHERE 构造（唯一谓词来源，禁止两套漂移）。
 
     返回 `(select_sql, where_sql, params, allowed_ids, user_role, user_id)`；
@@ -585,6 +725,26 @@ def _list_sql(identity: dict, *, keyword: str = "", datasource_id: int = 0,
         where += " AND d.owner_id = %s"
         params.append(int(owner_id))
 
+    # 标签筛（多标签 = AND：同时含有这些标签）：JSON_CONTAINS 下推 SQL，
+    # 不在前端拉全量再 filter（list-pagination §2）。
+    for tag in parse_tag_filter(tags):
+        where += " AND JSON_CONTAINS(d.tags, %s)"
+        params.append(json.dumps(tag, ensure_ascii=False))
+
+    # 来源筛（人工定义 / 看板收编 / AI 会话产物）：白名单枚举，直接下推 SQL；
+    # 未知值由 canonical_origin_filter 显式拒（不静默当“不限”）。
+    ori = canonical_origin_filter(origin)
+    if ori:
+        where += " AND d.origin = %s"
+        params.append(ori)
+
+    # 取数方式筛（SQL / 语义对象 / 两种并存）：与上行同口径（白名单 + 下推），
+    # 值=行上「来源」列显示的那一位，筛完能用行核验。
+    st = canonical_source_type_filter(source_type)
+    if st:
+        where += " AND d.source_type = %s"
+        params.append(st)
+
     return _LIST_SELECT + where, where, params, allowed_ids, user_role, user_id
 
 
@@ -607,6 +767,8 @@ def _hydrate_dataset_rows(rows: list[dict], *, identity: dict, allowed_ids: set,
         # 口径来源显示业务名（ui-resource-display）：前端不得自己映射枚举
         r["origin"] = normalize_origin(r.get("origin"))
         r["origin_label"] = ORIGIN_LABELS[r["origin"]]
+        # 标签归一（JSON 列回读为字符串）：前端直接当数组渲染，不自己 JSON.parse
+        r["tags"] = normalize_tags(r.get("tags"))
         # 归属与可见性（页面展示“创建者/可见范围”；不得回退成裸 id）
         r["visibility"] = normalize_visibility(r.get("visibility"))
         r["visibility_label"] = VISIBILITY_LABELS[r["visibility"]]
@@ -642,7 +804,8 @@ def _hydrate_dataset_rows(rows: list[dict], *, identity: dict, allowed_ids: set,
 
 def list_datasets_page(identity: dict, *, page: int = 1, page_size: int = 20,
                        keyword: str = "", datasource_id: int = 0, channel: str = "",
-                       visibility: str = "", owner_id: int = 0) -> dict:
+                       visibility: str = "", owner_id: int = 0, tags="",
+                       origin: str = "", source_type: str = "") -> dict:
     """数据集管理页服务端分页（`{items,total,page,page_size}`）。
 
     - `total` = 同筛选条件下服务端 `COUNT(*)`，不是当前页长度；
@@ -661,7 +824,8 @@ def list_datasets_page(identity: dict, *, page: int = 1, page_size: int = 20,
 
     select_sql, where_sql, params, allowed_ids, _role, _uid = _list_sql(
         identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
-        visibility=visibility, owner_id=owner_id)
+        visibility=visibility, owner_id=owner_id, tags=parse_tag_filter(tags),
+        origin=origin, source_type=source_type)
 
     row = execute_query(f"SELECT COUNT(*) AS n FROM adh_datasets d{where_sql}",
                         tuple(params), fetchone=True) or {}
@@ -696,12 +860,88 @@ def _fill_param_summaries(rows: list[dict]) -> None:
             r.pop(leak, None)
 
 
+def list_dataset_tags(identity: dict, keyword: str = "", datasource_id: int = 0,
+                      visibility: str = "", owner_id: int = 0) -> list[dict]:
+    """标签筛选项（`[{name,count}]`）：可见性/搜索/源/范围谓词与清单**同源**。
+
+    标签是自由文本、数量很小，这里不做分页而是 Python 侧聚合计数（筛选下拉不挂分页条，
+    与 list-pagination §5 的“选择面板可取全量”一档一致）；筛选本身仍下推 `JSON_CONTAINS`。
+    不新建第二套可见性判断：WHERE 一律来自 `_list_sql`。
+    """
+    catalog = _load_datasource_catalog()
+    filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
+    if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
+        return []
+    _select, where_sql, params, _ids, _role, _uid = _list_sql(
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
+        visibility=visibility, owner_id=owner_id)
+    rows = execute_query(
+        f"SELECT d.tags FROM adh_datasets d{where_sql}", tuple(params)) or []
+    counts: dict[str, int] = {}
+    for r in rows:
+        for tag in normalize_tags(r.get("tags")):
+            counts[tag] = counts.get(tag, 0) + 1
+    return [{"name": tag, "count": counts[tag]} for tag in sorted(counts)]
+
+
+def list_dataset_origins(identity: dict, keyword: str = "", datasource_id: int = 0,
+                         visibility: str = "", owner_id: int = 0) -> list[dict]:
+    """来源筛选项（`[{value,label,count}]`）：计数口径与清单**同源**（`_list_sql`）。
+
+    来源是**固定枚举**（`DATASET_ORIGINS` 唯一真值），所以选项由服务端下发而不是前端硬编码：
+    以后新增来源时下拉自动跟上，不会出现“前端认得的来源比库里少”的漂移。
+    计数为当前可见集内各来源的行数（0 也保留：选项存在但当前无命中是真实结果）。
+    """
+    catalog = _load_datasource_catalog()
+    filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
+    if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
+        return []
+    _select, where_sql, params, _ids, _role, _uid = _list_sql(
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
+        visibility=visibility, owner_id=owner_id)
+    rows = execute_query(
+        f"SELECT d.origin FROM adh_datasets d{where_sql}", tuple(params)) or []
+    counts: dict[str, int] = {}
+    for r in rows:
+        o = normalize_origin(r.get("origin"))
+        counts[o] = counts.get(o, 0) + 1
+    return [{"value": o, "label": ORIGIN_LABELS[o], "count": counts.get(o, 0)}
+            for o in ORIGIN_LABELS]
+
+
+def list_dataset_source_types(identity: dict, keyword: str = "", datasource_id: int = 0,
+                              visibility: str = "", owner_id: int = 0) -> list[dict]:
+    """取数方式筛选项（`[{value,label,count}]`）：计数口径与清单**同源**（`_list_sql`）。
+
+    `sql` / `semantic` / `both` 是固定枚举（`DATASET_SOURCE_TYPES` 唯一真值），选项由服务端
+    下发而不是前端硬编码。计数为当前可见集内各方式的行数（0 也保留：选项存在但无命中是真实结果），
+    与行上「来源」列同一个值，筛完能逐行核验。
+    """
+    catalog = _load_datasource_catalog()
+    filter_name = _datasource_name_by_id(int(datasource_id or 0), catalog) if datasource_id else ""
+    if datasource_id and not filter_name and int(datasource_id) != _DEFAULT_ENGINE_ID:
+        return []
+    _select, where_sql, params, _ids, _role, _uid = _list_sql(
+        identity, keyword=keyword, datasource_id=datasource_id, filter_name=filter_name,
+        visibility=visibility, owner_id=owner_id)
+    rows = execute_query(
+        f"SELECT d.source_type FROM adh_datasets d{where_sql}", tuple(params)) or []
+    counts: dict[str, int] = {}
+    for r in rows:
+        st = normalize_source_type(r.get("source_type"))
+        counts[st] = counts.get(st, 0) + 1
+    return [{"value": st, "label": SOURCE_TYPE_LABELS[st], "count": counts.get(st, 0)}
+            for st in SOURCE_TYPE_LABELS]
+
+
 def get_dataset(dataset_id: int) -> dict | None:
     row = execute_query(
         "SELECT * FROM adh_datasets WHERE id = %s", (dataset_id,), fetchone=True)
     if row is not None:
         # 详情页的 ES 判定靠这一位（与取数分派同源），不是 `source_type === 'es'`
         row["is_es"] = execution_is_es(row)
+        # 标签归一（JSON 列回读为字符串）：详情/编辑面板直接当数组用
+        row["tags"] = normalize_tags(row.get("tags"))
         # 退役字段不再对外下发（列保留供跨环境核对历史值）：下发一个永远为空的字段
         # 会被后人当成“还没接通的配置面”，正是本轮要拆掉的双口径源头
         row.pop("es_pattern", None)
@@ -889,13 +1129,15 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
         raise ValueError(f"数据集名称已存在: {name}")
 
     field_config = json.dumps(req.get("field_config") or [], ensure_ascii=False)
+    # 标签：只做分类检索（域/物化目的等），不参与任何取数或权限裁决。写路径越界显式拒。
+    tags = validate_tags(req.get("tags"))
     new_id = int(execute_query("SELECT COALESCE(MAX(id),0)+1 AS n FROM adh_datasets",
                                fetchone=True)["n"])
     execute_write(
         "INSERT INTO adh_datasets (id, name, description, source_type, object_key, es_pattern, "
         "datasource_id, available_datasources, sql_query, sql_bodies, variables, touched_tables, field_config, "
-        "chart_type, chart_preset, paginable, owner_id, origin, visibility, status) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
+        "chart_type, chart_preset, paginable, owner_id, origin, visibility, tags, status) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')",
         (new_id, name, req.get("description") or "",
          _derive_source_type(object_key, sql_query), object_key, "",
          datasource_id, available_json, sql_query,
@@ -906,7 +1148,8 @@ def create_dataset(req: dict, identity: dict, *, origin: str = "manual") -> dict
          (req.get("chart_type") or "").strip(),
          json.dumps(req.get("chart_preset") or {}, ensure_ascii=False),
          1 if req.get("paginable") else 0,
-         int(identity.get("user_id") or 0), normalize_origin(origin), visibility))
+         int(identity.get("user_id") or 0), normalize_origin(origin), visibility,
+         json.dumps(tags, ensure_ascii=False)))
     ds = get_dataset(new_id) or {}
     warnings = _dialect_coverage_warnings(
         {**ds, "available_datasources": available_json}, catalog)
@@ -970,6 +1213,10 @@ def update_dataset(dataset_id: int, req: dict, identity: dict) -> dict:
             raise ValueError("chart_preset 必须是对象 {xCol,yCol,groupCol,limit}")
         updates.append("chart_preset = %s")
         params.append(json.dumps(req["chart_preset"], ensure_ascii=False))
+    if req.get("tags") is not None:
+        # 标签只做分类检索：格式/长度/数量越界显式拒，不静默截断后入库
+        updates.append("tags = %s")
+        params.append(json.dumps(validate_tags(req["tags"]), ensure_ascii=False))
     if req.get("datasource_id") is not None:
         updates.append("datasource_id = %s")
         params.append(int(req["datasource_id"]))
@@ -1254,6 +1501,165 @@ def compile_from_semantic(req: dict, identity: dict) -> dict:
     return {"sql": p.sql, "dialect": p.dialect,
             "dimensions": list(q.dimensions or []), "measures": list(q.metrics or []),
             "warnings": list(p.warnings or [])}
+
+
+def explain_dataset_sql(dataset_id: int, params: dict | None, identity: dict) -> dict:
+    """查看数据集本次取数对应的 SQL（**只编译不执行**）。
+
+    - 语义取数（有 object_key、无执行 SQL）：intent → binding → plan → `run_gates`，
+      回 `sql`（语义层编译产物）与 `secured_sql`（按**当前身份**叠加 RLS/列级后的正文），
+      以及闸门拒绝原因（拒绝也要能看“拒在哪一步”，不得静默返回空 SQL）；
+    - 执行 SQL 型：正文经 `dataset_compiler` 编译（参数/维度/指标渲染）后同样按当前身份
+      走 `enforcer.enforce_sql` 得 `secured_sql`，与运行期同一条治理改写链。
+
+    护栏 §7 例外：SQL 仅回显给持有 `dataset:manage` 的数据集编辑者/管理员（人工编辑面板），
+    不进 LLM/聊天/图表响应；**不回** provenance/物理表列/数据源内部 id。
+    """
+    _require_manage(identity, "/api/datasets/explain-sql")
+    ds = get_dataset(dataset_id)
+    if not ds or ds.get("status") != "active":
+        raise ValueError("数据集不存在或已停用")
+    _assert_dataset_visible(ds, identity, action="查看执行 SQL")
+    _require_editor(ds, identity)
+    req = params or {}
+    if req.get("datasource_id"):
+        raise ValueError("不接受数据源内部 id：请用 site（站点业务名）或 datasource（数据源业务名）指定")
+    effective = resolve_effective_source(
+        ds, identity,
+        site=str(req.get("site") or ""),
+        datasource=str(req.get("datasource") or ""),
+        preferred_id=int(req.get("preferred_datasource_id") or 0),
+        model_id=int(req.get("model_id") or 0))
+    ds = {**ds, "datasource_id": effective}
+    ctx = {"user_id": int(identity.get("user_id") or 0),
+           "username": identity.get("username") or "",
+           "workspace_id": int(identity.get("workspace_id") or 0)}
+    if (ds.get("sql_query") or "").strip():
+        out = _explain_sql_dataset(ds, req, identity)
+    elif (ds.get("object_key") or "").strip():
+        out = _explain_semantic_dataset(ds, req, identity, ctx)
+    else:
+        raise ValueError("数据集缺少执行定义: 请配置执行 SQL 或绑定本体对象")
+    out["dataset"] = {"id": int(ds.get("id") or dataset_id),
+                      "name": ds.get("name") or "",
+                      "source_type": ds.get("source_type") or ""}
+    # 对外只回生效源**业务名**（与取数同口径，不回 id/host/账号）
+    out["datasource"] = effective_source_name(effective)
+    return out
+
+
+def _explain_semantic_dataset(ds: dict, params: dict, identity: dict, ctx: dict) -> dict:
+    """语义型：跑 1~5 闸门 + RLS 改写（不执行），回 base/secured SQL 与拒绝原因。"""
+    from backend.semantics.binding_resolver import resolve_binding
+    from backend.semantics.gates import run_gates
+    from backend.semantics.intent import parse_intent
+    from backend.semantics.planner import plan
+
+    scopes = _scope_filters(int(ds.get("id") or 0), identity)
+    filters = list(params.get("filters") or [])
+    filters += [{"dim": s["field"], "op": s["op"], "value": s["value"]} for s in scopes]
+    payload = {
+        "object": ds.get("object_key") or "",
+        "metrics": params.get("measures") or params.get("metrics") or [],
+        "dimensions": params.get("dimensions") or [],
+        "filters": filters,
+        "order": params.get("order") or [],
+        "limit": min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT),
+        "datasource_id": int(ds.get("datasource_id") or 0),
+    }
+    for key in ("time_window", "time_column", "time_grain",
+                "time_range", "time_start", "time_end"):
+        if params.get(key) not in (None, "", [], {}):
+            payload[key] = params[key]
+    q, err, _notes = parse_intent(payload)
+    if err:
+        raise ValueError(f"查询意图非法: {err}")
+    binding, _bw = resolve_binding(q.object, datasource_id=q.datasource_id)
+    if binding is None:
+        raise ValueError(f"对象 '{q.object}' 未绑定到任何物理表, 请检查本体模型")
+    p = plan(q, binding)
+    se = run_gates(q, binding, p, ctx)
+    # 拒绝态也回 base_sql（“拒在哪一步/什么形状”才可诊断），但不下发任何数据行
+    base_sql = se.base_sql or p.sql
+    return {
+        "execution_path": "semantic",
+        "object_key": q.object,
+        "dialect": p.dialect,
+        "route": p.route,
+        "sql": base_sql,
+        "secured_sql": se.secured_sql or "",
+        "allowed": bool(se.allowed),
+        "blocked_at": se.blocked_at or "",
+        "reason": se.reason or "",
+        "needs_approval": bool(se.needs_approval),
+        "applied_rls": list(se.applied_rls or []),
+        "masked_columns": list(se.masked_columns or []),
+        "scopes_applied": len(scopes),
+        "dimensions": list(q.dimensions or []),
+        "measures": list(q.metrics or []),
+        "warnings": list(p.warnings or se.warnings or []),
+    }
+
+
+def _explain_sql_dataset(ds: dict, params: dict, identity: dict) -> dict:
+    """执行 SQL 型：编译器渲染后按当前身份过治理改写（不执行）。"""
+    from backend.core.enforcer import permission_enforcer
+    from backend.core.query_executor import validate_sql
+    from backend.semantics.dataset_compiler import DatasetCompileError, compile_dataset
+
+    args = params.get("args") or params.get("variables") or {}
+    try:
+        compiled = compile_dataset(
+            ds,
+            args=args if isinstance(args, dict) else {},
+            dimensions=params.get("dimensions") or [],
+            measures=params.get("measures") or params.get("metrics") or [],
+            filters=params.get("filters") or [],
+            order=params.get("order") or [],
+            limit=params.get("limit"),
+            time_grain=params.get("time_grain"),
+            db_type=_dataset_db_type(ds),
+        )
+    except DatasetCompileError as e:
+        raise ValueError(str(e))
+    scopes = _scope_filters(int(ds.get("id") or 0), identity)
+    sql = compiled.sql
+    if scopes:
+        where = _build_where(scopes)
+        limit = min(int(params.get("limit") or _DEFAULT_LIMIT), _MAX_LIMIT)
+        sql = f"SELECT * FROM ({sql}) AS _ds_scoped{where} LIMIT {limit}"
+    ok, msg = validate_sql(sql)
+    if not ok:
+        raise ValueError(f"SQL 校验失败: {msg}")
+    effective_id = int(ds.get("datasource_id") or 0)
+    try:
+        secured, res = permission_enforcer.enforce_sql(
+            sql, int(identity.get("user_id") or 0),
+            int(identity.get("workspace_id") or 0), effective_id)
+    except Exception as e:  # noqa: BLE001 — 与执行口同口径：策略加载失败即拒（不编译未脱敏 SQL）
+        raise ValueError(f"权限策略改写失败, 拒绝展示未脱敏 SQL: {e}")
+    allowances = getattr(res, "allowed", None)
+    # 列级策略：hidden 为不出列，masked 为脱敏出列（与 enforcer.PermissionResult 字段同源）
+    masked = sorted(set(getattr(res, "hidden_columns", []) or [])
+                    | set((getattr(res, "masked_columns", {}) or {}).keys()))
+    return {
+        "execution_path": "sql",
+        "object_key": ds.get("object_key") or "",
+        "dialect": getattr(compiled, "dialect", "") or "",
+        "route": "sql",
+        "sql": sql,
+        "secured_sql": secured or sql,
+        "allowed": bool(allowances) if allowances is not None else True,
+        "blocked_at": "" if (allowances in (None, True)) else "permission",
+        "reason": "" if (allowances in (None, True)) else str(getattr(res, "reason", "") or ""),
+        "needs_approval": False,
+        "applied_rls": list(getattr(res, "policies_applied", []) or []),
+        "masked_columns": masked,
+        "scopes_applied": len(scopes),
+        "dimensions": [],
+        "measures": [],
+        "warnings": list(compiled.warnings or []),
+    }
 
 
 def extract_from_sql(req: dict, identity: dict) -> dict:

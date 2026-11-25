@@ -65,9 +65,14 @@ export default function Standards() {
     setLoading(true);
     try {
       const workspaceId = getDefaultWorkspaceId();
-      const res = await governanceApi.listStandards({ workspace_id: workspaceId, page, size: pageSize });
-      setStandards(res.data.items || res.data || []);
-      setTotal(res.data.total || 0);
+      const res = await governanceApi.listStandards({
+        workspace_id: workspaceId,
+        page,
+        page_size: pageSize,
+      });
+      // 分页信封：total 取服务端 COUNT（不是当前页长度）
+      setStandards(res.data?.items || []);
+      setTotal(res.data?.total || 0);
     } catch {
       toast.error(t('k_0d165565bf'));
     } finally {
@@ -123,7 +128,8 @@ export default function Standards() {
         toast.success(t('k_2d4c5dcc74'));
       }
       setFormOpen(false);
-      loadStandards();
+      // 新建/编辑后回到第 1 页（按 created_at DESC，最新标准在首页）
+      if (page === 1) loadStandards(); else setPage(1);
     } catch {
       toast.error(t('k_6de920b4e4'));
     }
@@ -135,7 +141,9 @@ export default function Standards() {
       await governanceApi.deleteStandard(deleteTarget.id);
       toast.success(t('k_5cc232620c'));
       setDeleteTarget(null);
-      loadStandards();
+      // 末页删空时收敛到前一个有效页，不停在空白页
+      if (standards.length === 1 && page > 1) setPage(page - 1);
+      else loadStandards();
     } catch {
       toast.error(t('k_acf0664a54'));
     }
@@ -245,16 +253,18 @@ export default function Standards() {
         </table>
       </div>
 
-      {/* Pagination —— 统一分页条：固定底栏 */}
-      <PaginationBar
-        page={page}
-        pageSize={pageSize}
-        total={total}
-        onChange={(p: number) => setPage(p)}
-        onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
-        hideWhenSingle
-        className="shrink-0 mt-2"
-      />
+      {/* Pagination —— 统一分页条：固定底栏；单页也保留「共 N 条」与档位 */}
+      {total > 0 && (
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          busy={loading}
+          onChange={(p: number) => setPage(p)}
+          onPageSizeChange={(n: number) => { setPageSize(n); setPage(1); }}
+          className="shrink-0"
+        />
+      )}
 
       {/* Create/Edit Dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>

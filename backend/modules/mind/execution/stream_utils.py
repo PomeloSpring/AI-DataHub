@@ -22,6 +22,9 @@ TOOL_OUTPUT_LIMITS: dict[str, int] = {
     "get_table_schema": 8000,
     "search_metadata": 4000,
     "knowledge_search": 4000,
+    # 血缘回包含链路 + 每表新鲜度（多站时 5 条上游）：2000 会把 freshness 截掉，
+    # 而“数据新不新”恰恰是下钻时最该看见的一段。
+    "get_lineage": 4000,
 }
 TRUNCATE_SUFFIX = "\n... (truncated)"
 

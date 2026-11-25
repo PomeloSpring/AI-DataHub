@@ -84,6 +84,9 @@ class PolicyContext(BaseModel):
     # 本轮用户问题：仅服务端注入，只用于落 adh_query_audit 的 question 列（护栏 §9），
     # 不参与身份/权限裁决，也绝不下发给 LLM/前端。
     question: str = ""
+    # 数据工程通道（物化/批量回填）的显式读超时预算（秒）。None = 沿用数据源高级配置/
+    # 交互式 30s 默认；分析面永远不传（不拿预算放给交互式查询）。
+    timeout_sec: Optional[int] = None
     policy: dict[str, Any] = Field(
         default_factory=dict,
         description="enforcer 裁决产物（RLS 行策略/列掩码等，Phase 6.3 视图化强制消费）",
@@ -337,6 +340,7 @@ def execute_sql(
             datasource_id=ctx.datasource_id or None,
             user_context={"user_id": ctx.user_id, "username": ctx.username},
             workspace_id=ctx.workspace_id,
+            timeout_sec=ctx.timeout_sec,
         )
     except PermissionError as e:
         _sql_audit(ctx, sql, status="denied", error=str(e),

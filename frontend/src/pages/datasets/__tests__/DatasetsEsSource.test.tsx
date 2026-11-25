@@ -155,6 +155,12 @@ describe('筛选器 — 只有「数据源」一个维度（ES 取数通道项�
     renderPage();
     await waitFor(() => expect(screen.getByText('设备告警按天')).toBeInTheDocument());
     const urls: string[] = (client.get as any).mock.calls.map(([u]: string[]) => u);
-    expect(urls.filter((u: string) => u.startsWith('/datasets/'))).toEqual(['/datasets/']);
+    // `/datasets/tags`・`/datasets/source-types`・`/datasets/origins` 是标签/类型/来源筛选项接口
+    // （合法新增，与清单同一可见性谓词）；退役的是 `/datasets/channels`・`/datasets/es-patterns`
+    // 这类配置面端点，一条都不许回来。
+    expect(urls.filter((u: string) => u.startsWith('/datasets/')).sort())
+      .toEqual(['/datasets/', '/datasets/origins', '/datasets/source-types', '/datasets/tags']);
+    expect(urls).not.toContain('/datasets/channels');
+    expect(urls).not.toContain('/datasets/es-patterns');
   });
 });

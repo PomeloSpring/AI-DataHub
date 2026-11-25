@@ -151,6 +151,9 @@ def list_datasets(
     channel: str = QueryParam("", description="按执行通道筛选：''=全部，es=执行通道为 ES 型数据源"),
     visibility: str = QueryParam("", description="按可见范围筛选：''=全部，private/workspace/public"),
     owner_id: int = QueryParam(0, description="按创建者筛选(0=全部)"),
+    tags: str = QueryParam("", description="按标签筛选(多个用逗号分隔=同时命中，全部下推 SQL)"),
+    origin: str = QueryParam("", description="按来源筛选：''=全部，manual/chart_backfill/ai_session"),
+    source_type: str = QueryParam("", description="按取数方式筛选：''=全部，sql/semantic/both"),
     page: int = QueryParam(1, ge=1, description="页号(从 1 起，仅在传 page_size 时生效)"),
     page_size: Optional[int] = QueryParam(
         None, ge=1, le=200, description="每页条数；不传=全量数组(选择面板档)"),
@@ -171,13 +174,84 @@ def list_datasets(
         if page_size is None:
             items = dataset_service.list_datasets(
                 ident, keyword=keyword, datasource_id=int(datasource_id or 0),
-                channel=channel or "")
+                channel=channel or "", tags=tags or "", origin=origin or "",
+                source_type=source_type or "")
             return {"items": items}
         return dataset_service.list_datasets_page(
             ident, page=int(page or 1), page_size=int(page_size),
             keyword=keyword, datasource_id=int(datasource_id or 0),
             channel=channel or "", visibility=visibility or "",
-            owner_id=int(owner_id or 0))
+            owner_id=int(owner_id or 0), tags=tags or "", origin=origin or "",
+            source_type=source_type or "")
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.get("/tags")
+def list_dataset_tags(
+    keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
+    datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
+    visibility: str = QueryParam("", description="按可见范围筛选：''=全部，private/workspace/public"),
+    owner_id: int = QueryParam(0, description="按创建者筛选(0=全部)"),
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """标签筛选项（`[{name,count}]`，必须注册在 GET /{dataset_id} 之前）。
+
+    可见性/筛选谓词与清单**同源**（`_list_sql`）：看不到的数据集的标签不会出现在选项里。
+    标签量小且不挂分页条，故一次性返回全量选项（list-pagination §5 的选择面板档）。
+    """
+    try:
+        return {"items": dataset_service.list_dataset_tags(
+            _identity(user, workspace_id), keyword=keyword,
+            datasource_id=int(datasource_id or 0), visibility=visibility or "",
+            owner_id=int(owner_id or 0))}
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.get("/origins")
+def list_dataset_origins(
+    keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
+    datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
+    visibility: str = QueryParam("", description="按可见范围筛选：''=全部，private/workspace/public"),
+    owner_id: int = QueryParam(0, description="按创建者筛选(0=全部)"),
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """来源筛选项（`[{value,label,count}]`，必须注册在 GET /{dataset_id} 之前）。
+
+    来源是固定枚举（服务端 `DATASET_ORIGINS` 唯一真值），选项由服务端下发，前端不硬编码；
+    计数谓词与清单**同源**（`_list_sql`），看不到的数据集不计入。
+    """
+    try:
+        return {"items": dataset_service.list_dataset_origins(
+            _identity(user, workspace_id), keyword=keyword,
+            datasource_id=int(datasource_id or 0), visibility=visibility or "",
+            owner_id=int(owner_id or 0))}
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.get("/source-types")
+def list_dataset_source_types(
+    keyword: str = QueryParam("", description="名称/描述/对象 关键字"),
+    datasource_id: int = QueryParam(0, description="按数据源筛选(0=全部)"),
+    visibility: str = QueryParam("", description="按可见范围筛选：''=全部，private/workspace/public"),
+    owner_id: int = QueryParam(0, description="按创建者筛选(0=全部)"),
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """取数方式筛选项（`[{value,label,count}]`，必须注册在 GET /{dataset_id} 之前）。
+
+    `sql` / `semantic` / `both` 是固定枚举，选项由服务端下发（前端不硬编码值域）；
+    计数谓词与清单**同源**（`_list_sql`），看不到的数据集不计入。
+    """
+    try:
+        return {"items": dataset_service.list_dataset_source_types(
+            _identity(user, workspace_id), keyword=keyword,
+            datasource_id=int(datasource_id or 0), visibility=visibility or "",
+            owner_id=int(owner_id or 0))}
     except Exception as e:  # noqa: BLE001
         _raise(e)
 
@@ -264,6 +338,29 @@ def update_dataset(
     """更新数据集(仅创建者/管理员; SQL 变更重新校验)。"""
     try:
         return dataset_service.update_dataset(dataset_id, req, _identity(user, workspace_id))
+    except Exception as e:  # noqa: BLE001
+        _raise(e)
+
+
+@router.post("/{dataset_id}/explain-sql")
+def explain_dataset_sql(
+    dataset_id: int,
+    req: dict | None = None,
+    user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_workspace_id),
+):
+    """查看数据集本次取数对应的 SQL（只编译不执行，含语义取数编译产物）。
+
+    护栏 §7 例外：仅数据集编辑者（属主/admin）且持有 dataset:manage 时可回显；
+    服务端不取数据行、不落查询审计，也不回物理表列/数据源内部 id。
+    """
+    ident = _identity(user, workspace_id)
+    if not ident["user_id"]:
+        raise HTTPException(status_code=403, detail="缺少可信用户身份, 拒绝查看执行 SQL")
+    try:
+        return dataset_service.explain_dataset_sql(dataset_id, req or {}, ident)
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         _raise(e)
 

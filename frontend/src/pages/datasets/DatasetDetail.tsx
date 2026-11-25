@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { t , t as tr } from '@/i18n/runtime';
 import {
   ArrowLeft, Code2, Play, Save, Plus, Trash2, Loader2, Users, Shield,
-  BarChart3, Check, ChevronsUpDown, Share2, User as UserIcon, Lock,
+  BarChart3, Check, ChevronsUpDown, Share2, User as UserIcon, Lock, AlertTriangle,
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +19,9 @@ import {
 import {
   Popover, PopoverContent, PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import client from '../../api/client';
 import { hasPerm } from '../../stores/permissionStore';
 import DashboardChart, { CHART_TYPES } from '../../components/DashboardChart';
@@ -27,6 +30,7 @@ import { useChartDesign } from '@/hooks/useChartDesign';
 import { FIELD_DISPLAY_FORMATS, applyFieldFormats } from '@/lib/fieldFormat';
 import { useTranslation } from 'react-i18next';
 import ShareDatasetDialog from './ShareDatasetDialog';
+import TagsEditor, { normalizeTagList } from './TagsEditor';
 
 // Radix Select 不接受空串作为选项值，「不格式化」用哨兵位表示（存回后端仍是空 = 原样下发）
 const NO_FORMAT = '__no_format__';
@@ -85,6 +89,8 @@ function normalizeDataset(data: any): any {
     ...(data || {}),
     chart_preset: preset || {},
     available_datasources: Array.isArray(scope) ? scope : [],
+    // 标签是 JSON 列（回读可能是字符串）：进渲染/编辑前统一成字符串数组
+    tags: normalizeTagList(data?.tags),
   };
 }
 
@@ -142,6 +148,8 @@ export default function DatasetDetail() {
         available_datasources: ds.available_datasources || [],
         chart_type: ds.chart_type || '',
         chart_preset: cleanPreset(ds.chart_preset),
+        // 分类标签（业务域/物化目的等）：只做检索，不参与取数/权限（服务端同口径校验）
+        tags: normalizeTagList(ds.tags),
         // 明细行集 vs 统计汇总：表值图能不能真翻页由这一位决定（在数据集层声明）
         paginable: !!ds.paginable,
       });
@@ -228,6 +236,11 @@ export default function DatasetDetail() {
                   <Textarea rows={2} value={ds.description || ''} disabled={!canEdit}
                     onChange={e => setDs({ ...ds, description: e.target.value })} />
                 </div>
+                <div className="space-y-1.5">
+                  <Label>{tr('k_ae0a7afece')}</Label>
+                  <TagsEditor value={ds.tags} disabled={!canEdit}
+                    onChange={(tags) => setDs({ ...ds, tags })} />
+                </div>
               </div>
 
               {/* 执行 SQL */}
@@ -254,7 +267,7 @@ export default function DatasetDetail() {
             {/* 右栏: 数据预览(预览取数 + 按图表预设渲染的图表预览); 宽屏吸附并自带滚动, 避免高内容被裁 */}
             <div className="border rounded-lg p-3 min-w-0 space-y-2 xl:sticky xl:top-2 xl:max-h-[calc(100vh-2rem)] xl:overflow-auto">
               <div className="text-sm font-medium">{t("k_97b4a6aefe")}</div>
-              <PreviewPanel datasetId={datasetId} fields={fields} ds={ds} />
+              <PreviewPanel datasetId={datasetId} fields={fields} ds={ds} canExplain={canEdit} />
             </div>
           </div>
         </TabsContent>
@@ -684,10 +697,16 @@ function DatasourceScopeSelect({ value, disabled, execName, onChange }: {
 // ── 数据预览(治理取数, 服务端施加权限/RLS/scopes) ─────────────────────
 
 // 导出供用例直接验证 ES 执行通道的预览契约（请求体形状与治理标注来源）
-export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fields: DatasetField[]; ds: any }) {
+export function PreviewPanel({ datasetId, fields, ds, canExplain = false }: {
+  datasetId: number; fields: DatasetField[]; ds: any;
+  /** 仅数据集编辑者且持有 dataset:manage 时能要求回显 SQL（护栏 §7 例外） */
+  canExplain?: boolean;
+}) {
   const { t } = useTranslation('ui');
   const [result, setResult] = useState<any>(null);
   const [running, setRunning] = useState(false);
+  // “查看 SQL”：只编译不执行（语义型数据集这里才看得到七闸门编译产物）
+  const [explainOpen, setExplainOpen] = useState(false);
   // ES 型：取数形状由正文决定，不存在"选哪些维度/度量重新聚合"这回事（传了会被护栏显式拒）。
   // 判据必须用后端下发的**执行通道位** `is_es`：历史缺陷是拿 `source_type === 'es'` 判，
   // ES 数据源化后该标记恒为 false → 预览照旧发 dimensions/measures，被 ES 护栏显式拒
@@ -782,6 +801,10 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
         <Button size="sm" onClick={run} disabled={running}>
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Play className="h-3.5 w-3.5 mr-1" />}
           {tr('k_c0fe21f845')}</Button>
+        {canExplain && (
+          <Button size="sm" variant="outline" onClick={() => setExplainOpen(true)}>
+            <Code2 className="h-3.5 w-3.5 mr-1" /> {tr('k_dbbb950b93')}</Button>
+        )}
       </div>
       {isEs && (
         <p className="text-[10px] text-muted-foreground">
@@ -857,7 +880,131 @@ export function PreviewPanel({ datasetId, fields, ds }: { datasetId: number; fie
         <div className="text-center py-8 text-muted-foreground text-sm border rounded-lg">
           {tr('k_8a8a88ba84')}</div>
       )}
+      {canExplain && (
+        <SqlExplainDialog
+          open={explainOpen}
+          onClose={() => setExplainOpen(false)}
+          datasetId={datasetId}
+          isEs={isEs}
+          dimensions={dimensions}
+          measures={measuresSel}
+          source={sourceSel}
+        />
+      )}
     </div>
+  );
+}
+
+// ── 查看本次取数实际执行的 SQL（只编译不执行） ──────────────────────
+//
+// 语义型数据集没有可写正文（只有 object_key），此前人工编辑面板看不到
+// 七闸门到底会跑什么 SQL；这里调 `/datasets/{id}/explain-sql` 拿编译产物：
+// base_sql（语义层编译）+ secured_sql（按**当前身份**叠加 RLS/列级后的正文）。
+// 护栏 §7 例外：仅 dataset:manage 的数据集编辑者可见，不回任何数据行。
+function SqlExplainDialog({
+  open, onClose, datasetId, isEs, dimensions, measures, source,
+}: {
+  open: boolean; onClose: () => void; datasetId: number; isEs: boolean;
+  dimensions: string[]; measures: string[]; source: string;
+}) {
+  const { t } = useTranslation('ui');
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setError('');
+    setData(null);
+    // 参数与预览同形：展示的就是“点预览会跑的那条”（服务端定源/叠加 scopes）
+    client.post(`/datasets/${datasetId}/explain-sql`, {
+      ...(isEs ? {} : { dimensions, measures }),
+      limit: 100,
+      datasource: source || '',
+    }).then(({ data: d }) => setData(d))
+      .catch((e: any) => setError(e?.response?.data?.detail || tr('k_0ceb428f4c')))
+      .finally(() => setLoading(false));
+  }, [open, datasetId, isEs, dimensions, measures, source]);
+
+  const baseSql = data?.sql || '';
+  const securedSql = data?.secured_sql || '';
+  const showSecured = !!securedSql && securedSql !== baseSql;
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Code2 className="h-4 w-4" /> {tr('k_dbbb950b93')}
+            <Badge variant="outline" className="text-[10px]">
+              {data?.execution_path === 'semantic' ? tr('k_fea456cdeb') : 'SQL'}</Badge>
+            {data?.datasource && (
+              <Badge variant="secondary" className="text-[10px]">{data.datasource}</Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription>{tr('k_22e1e68f18')}</DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="flex justify-center py-10 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+        ) : error ? (
+          <p className="text-sm text-destructive py-4">{error}</p>
+        ) : (
+          <div className="space-y-3">
+            {/* 闸门拒绝必须显式告知“拒在哪一步/为什么”（不能拿空 SQL 冒充“没配置”） */}
+            {data && data.allowed === false && (
+              <div role="alert" className="border rounded-md p-2.5 bg-destructive/5 text-destructive text-xs space-y-1">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <AlertTriangle className="h-3.5 w-3.5" /> {tr('k_ad65e6dbf6')}
+                  {data.blocked_at && <Badge variant="destructive" className="text-[10px]">{data.blocked_at}</Badge>}
+                </div>
+                {data.reason && <div>{data.reason}</div>}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium">
+                {data?.execution_path === 'semantic' ? tr('k_d1f01090fd') : 'SQL'}
+              </div>
+              <pre className="border rounded-md p-2.5 bg-muted/30 text-[11px] font-mono whitespace-pre-wrap break-all max-h-[40vh] overflow-auto">
+                {baseSql || '—'}
+              </pre>
+            </div>
+
+            {showSecured && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium">{tr('k_534d96a7ce')}</div>
+                <pre className="border rounded-md p-2.5 bg-muted/30 text-[11px] font-mono whitespace-pre-wrap break-all max-h-[40vh] overflow-auto">
+                  {securedSql}
+                </pre>
+              </div>
+            )}
+
+            <div className="text-[11px] text-muted-foreground space-y-1">
+              {(data?.applied_rls || []).length > 0 && (
+                <div>{tr('k_492c136512', { p0: (data.applied_rls || []).join('、') })}</div>
+              )}
+              {(data?.masked_columns || []).length > 0 && (
+                <div className="text-destructive">{tr('k_b52cd59871', { p0: (data.masked_columns || []).join('、') })}</div>
+              )}
+              {!!data?.scopes_applied && (
+                <div>{tr('k_a3dc8b0714', { p0: data.scopes_applied })}</div>
+              )}
+              {(data?.warnings || []).map((w: string, i: number) => (
+                <div key={i} className="text-amber-600">· {w}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button onClick={onClose}>{t("k_cb63c62e50")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

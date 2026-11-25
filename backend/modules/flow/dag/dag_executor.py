@@ -12,11 +12,14 @@
 """
 
 import logging
+import threading
 import time
 from datetime import datetime
 
 from backend.modules.flow.dag import dag_planner
-from backend.modules.flow.dag.dag_service import dag_service
+from backend.modules.flow.dag.dag_service import (
+    dag_service, RUN_HEARTBEAT_INTERVAL_SECONDS, RUN_HEARTBEAT_LEASE_SECONDS,
+)
 from backend.modules.flow.dag.dag_validator import validate_graph, DagValidationError
 from backend.modules.flow.dag.node_runners import run_node, NodeExecutionError
 
@@ -46,7 +49,8 @@ def _public_error(exc: Exception) -> tuple:
 
 _RESULT_KEEP_KEYS = (
     "dataset", "target", "write_mode", "partitions", "reconciled", "strategy",
-    "budget", "quality", "data_product", "udf_versions",
+    "budget", "quality", "data_product", "catalog", "udf_versions", "window",
+    "last_committed_date",
 )
 
 
@@ -95,6 +99,21 @@ def execute_run_core(run_id: int, worker_id: str = "local") -> dict:
         current = dag_service.get_run(run_id) or {}
         return {"run_id": run_id, "status": current.get("status"), "duplicate": True}
 
+    # 心跳续租：认领时给的租约是整轮预算（最多 1 小时），执行体跑起来后由本线程
+    # 按短租约续期。为什么要这么绕：worker 被杀 / 机器下线 / background 线程随 web
+    # 重启时没有任何人改状态，短租约能让残留实例在 3 分钟内被判死并收口成 timeout，
+    # 而不是挂着「运行中」等到整轮预算用尽（单节点预算 ≤1800s 由心跳覆盖，不会误杀）。
+    heartbeat = threading.Event()
+
+    def _renew_lease():
+        while not heartbeat.wait(RUN_HEARTBEAT_INTERVAL_SECONDS):
+            try:
+                dag_service.renew_run_lease(run_id, RUN_HEARTBEAT_LEASE_SECONDS)
+            except Exception:  # noqa: BLE001 续租失败不能中断执行，下一轮再试
+                logger.warning("run %s 租约续期失败（不影响执行，下一轮再试）", run_id)
+
+    threading.Thread(target=_renew_lease, name=f"dag-lease-{run_id}", daemon=True).start()
+
     start = time.monotonic()
     deadline = start + timeout_seconds
     status_map: dict = {}
@@ -117,6 +136,9 @@ def execute_run_core(run_id: int, worker_id: str = "local") -> dict:
             return {"run_id": run_id, "status": "failed", "error_code": "GRAPH_INVALID"}
 
         owner_identity = _resolve_owner(workflow)
+        # 本次运行参数（物化时间窗口）：服务端落库、此处注入节点 context。
+        # 它不参与图校验（图是“怎么跑”，参数是“跑哪一段”）。
+        run_params = dict(run.get("params_json") or {})
         node_map = {str(n["key"]): n for n in graph["nodes"]}
         stats["nodes_total"] = len(node_map)
 
@@ -127,7 +149,7 @@ def execute_run_core(run_id: int, worker_id: str = "local") -> dict:
                 break
             for key in ready:
                 stop_check()
-                dag_service.renew_run_lease(run_id, timeout_seconds)
+                dag_service.renew_run_lease(run_id, RUN_HEARTBEAT_LEASE_SECONDS)
                 node = node_map[key]
                 node_status, node_stats = _execute_node_with_retry(
                     run_id=run_id,
@@ -140,12 +162,16 @@ def execute_run_core(run_id: int, worker_id: str = "local") -> dict:
                     max_retries=max_retries,
                     worker_id=worker_id,
                     stop_check=stop_check,
+                    run_params=run_params,
                 )
                 status_map[key] = node_status
                 stats["rows_read"] += node_stats.get("rows_read", 0)
                 stats["rows_written"] += node_stats.get("rows_written", 0)
                 if node_status == "success":
                     stats["nodes_success"] += 1
+                elif node_status == "skipped":
+                    # 跳过单独汇总（nodes_skipped），不得计入失败
+                    pass
                 else:
                     stats["nodes_failed"] += 1
 
@@ -168,12 +194,16 @@ def execute_run_core(run_id: int, worker_id: str = "local") -> dict:
         dag_service.finish_run(run_id, "failed", code, message, stats)
         dag_service.mark_run_stats(workflow["id"], "failed")
         return {"run_id": run_id, "status": "failed", "error_code": code}
+    finally:
+        # 无论正常结束/被终止/抛错都要停心跳，否则线程会一直续租已终结的 run
+        heartbeat.set()
 
 
 def _execute_node_with_retry(run_id: int, workflow_id: int, node: dict,
                              owner_identity: dict, workspace_id: int,
                              watermark_key: str, deadline: float,
-                             max_retries: int, worker_id: str, stop_check) -> tuple:
+                             max_retries: int, worker_id: str, stop_check,
+                             run_params: dict | None = None) -> tuple:
     """执行单节点（含重试）。返回 (node_status, node_stats)。"""
     key = str(node["key"])
     ntype = node.get("type", "unknown")
@@ -194,6 +224,7 @@ def _execute_node_with_retry(run_id: int, workflow_id: int, node: dict,
             "run_id": run_id, "workflow_id": workflow_id, "node_key": key,
             "owner_identity": owner_identity, "workspace_id": workspace_id,
             "watermark_key": watermark_key, "stop_check": stop_check,
+            "run_params": dict(run_params or {}),
         }
         start = time.monotonic()
         try:
@@ -201,6 +232,15 @@ def _execute_node_with_retry(run_id: int, workflow_id: int, node: dict,
             elapsed_ms = int((time.monotonic() - start) * 1000)
             node_stats["rows_read"] = int(result.get("rows_read") or 0)
             node_stats["rows_written"] = int(result.get("rows_written") or 0)
+            if result.get("skipped"):
+                # 运行参数主动跳过的粒度（如历史初始化只跑月/年档）：记 skipped
+                # 而不是 success —— “零写入的成功”会让运行页看不出哪些档位没跑。
+                dag_service.finish_node_run(
+                    node_run_id, "skipped",
+                    elapsed_ms=elapsed_ms, result=_result_summary(result),
+                    error_code="RUN_PARAM_SKIPPED",
+                    error_message=str((result.get("window") or {}).get("reason") or "")[:500])
+                return "skipped", node_stats
             dag_service.finish_node_run(
                 node_run_id, "success",
                 rows_read=node_stats["rows_read"], rows_written=node_stats["rows_written"],
@@ -225,8 +265,11 @@ def _execute_node_with_retry(run_id: int, workflow_id: int, node: dict,
 
 
 def dispatch_run(workflow_id: int, trigger_type: str = "manual",
-                 run_key: str = None) -> dict:
+                 run_key: str = None, params: dict | None = None) -> dict:
     """创建运行实例并派发（手动/重跑入口；cron 派发走 beat 的 run_key）。
+
+    `params` 是本次运行的参数（物化时间窗口 `start_date`/`end_date`），
+    调用方（API）必须先经 `dag_validator.validate_run_params` 校验再传进来。
 
     幂等：run_key 冲突时返回既有 run，不重复派发。
     """
@@ -236,7 +279,7 @@ def dispatch_run(workflow_id: int, trigger_type: str = "manual",
         raise ValueError("工作流不存在")
     key = run_key or f"dagrun:{workflow_id}:{uuid.uuid4().hex}"
     run = dag_service.create_run(workflow_id, key, trigger_type,
-                                 int(workflow.get("workspace_id") or 0))
+                                 int(workflow.get("workspace_id") or 0), params=params)
     if not run:
         raise RuntimeError("运行实例创建失败")
     if run.get("status") != "queued":

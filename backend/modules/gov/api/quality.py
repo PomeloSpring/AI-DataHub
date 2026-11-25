@@ -110,12 +110,21 @@ def _normalize_rule(row: dict) -> dict:
 @router.get("/rules")
 def list_rules(
     workspace_id: int = Query(0),
-    target_table: Optional[str] = Query(None),
+    target_table: Optional[str] = Query(None, description="目标表模糊匹配"),
     rule_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
     is_active: Optional[int] = Query(None),
+    q: Optional[str] = Query(None, description="规则名称/描述模糊搜索"),
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=200),
     user: dict = Depends(get_current_user),
 ):
-    """List quality rules with latest check status (returns array).
+    """List quality rules with latest check status.
+
+    双档契约（.qoder/rules/list-pagination-server-side.md）：
+    * 不传 page_size → 返回全量数组（选用面/兼容旧调用）；
+    * 传 page_size → 返回 {items,total,page,page_size}，total 来自服务端 COUNT，
+      筛选/搜索全部下推 SQL，偏移由页号算出，排序以唯一 id 兜底。
 
     口径：workspace_id=0 为全局/未分域（与 adh_sensitive_fields 的 IN (ws,0) 一致），
     查询含全局行；最近检查结果不再按执行者过滤（质量结果是治理域共享信息）。
@@ -123,37 +132,56 @@ def list_rules(
     conditions = ["r.workspace_id IN (%s, 0)"]
     params = [workspace_id]
     if target_table:
-        conditions.append("r.target_table = %s")
-        params.append(target_table)
+        conditions.append("r.target_table LIKE %s")
+        params.append(f"%{target_table}%")
     if rule_type:
         conditions.append("r.rule_type = %s")
         params.append(rule_type)
+    if severity:
+        conditions.append("r.severity = %s")
+        params.append(severity)
     if is_active is not None:
         conditions.append("r.is_active = %s")
         params.append(is_active)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        conditions.append("(r.rule_name LIKE %s OR r.description LIKE %s)")
+        params.extend([like, like])
 
     where = " AND ".join(conditions)
+    select_sql = f"""SELECT r.*, lr.check_time AS last_check_time,
+                       lr.passed AS last_passed, lr.detail AS last_detail
+                FROM adh_quality_rules r
+                LEFT JOIN (
+                    SELECT q1.rule_id, q1.check_time, q1.passed, q1.detail
+                    FROM adh_quality_results q1
+                    JOIN (
+                        SELECT rule_id, MAX(check_time) AS max_time
+                        FROM adh_quality_results
+                        GROUP BY rule_id
+                    ) q2 ON q1.rule_id = q2.rule_id AND q1.check_time = q2.max_time
+                ) lr ON lr.rule_id = r.id
+                WHERE {where}
+                ORDER BY r.id DESC"""
+
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                f"""SELECT r.*, lr.check_time AS last_check_time,
-                           lr.passed AS last_passed, lr.detail AS last_detail
-                    FROM adh_quality_rules r
-                    LEFT JOIN (
-                        SELECT q1.rule_id, q1.check_time, q1.passed, q1.detail
-                        FROM adh_quality_results q1
-                        JOIN (
-                            SELECT rule_id, MAX(check_time) AS max_time
-                            FROM adh_quality_results
-                            GROUP BY rule_id
-                        ) q2 ON q1.rule_id = q2.rule_id AND q1.check_time = q2.max_time
-                    ) lr ON lr.rule_id = r.id
-                    WHERE {where}
-                    ORDER BY r.id DESC""",
-                params,
-            )
+            if page_size is None:
+                cur.execute(select_sql, params)
+                return [_normalize_rule(r) for r in cur.fetchall()]
+
+            cur.execute(f"SELECT COUNT(*) AS total FROM adh_quality_rules r WHERE {where}", params)
+            total = int((cur.fetchone() or {}).get("total") or 0)
+            offset = (page - 1) * page_size
+            cur.execute(f"{select_sql} LIMIT %s OFFSET %s", params + [page_size, offset])
             rows = cur.fetchall()
-    return [_normalize_rule(r) for r in rows]
+
+    return {
+        "items": [_normalize_rule(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.post("/rules")
@@ -277,6 +305,7 @@ def rule_samples(rule_id: int, user: dict = Depends(get_current_user)):
 def list_results(
     rule_id: Optional[int] = Query(None),
     workspace_id: Optional[int] = Query(None),
+    passed: Optional[int] = Query(None, description="1=仅通过 0=仅失败/异常，缺省不过滤"),
     start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
     page: int = Query(1, ge=1),
@@ -292,6 +321,9 @@ def list_results(
     if rule_id:
         conditions.append("rule_id = %s")
         params.append(rule_id)
+    if passed is not None:
+        conditions.append("passed = %s")
+        params.append(1 if passed else 0)
     if workspace_id:
         conditions.append("workspace_id IN (%s, 0)")
         params.append(workspace_id)
@@ -323,9 +355,81 @@ def list_results(
                 detail = json.loads(detail)
             except (ValueError, TypeError):
                 detail = {}
-        row["detail"] = {k: detail[k] for k in ("execution", "status") if k in detail}
+        # error 必须在明细里透出：否则结果行只有 failed 状态、没有可诊断的失败原因，
+        # 前端「问题 TOP10」点进去只能看到一个红点（no-silent-degradation）。
+        row["detail"] = {k: detail[k] for k in ("execution", "status", "error") if k in detail}
 
     return {"total": total, "page": page, "page_size": page_size, "items": rows}
+
+
+# ── Deletion（人工清理：质量报告 / 问题记录）────────────────────────
+
+@router.delete("/reports/{report_id}")
+def delete_report(report_id: int, user: dict = Depends(get_current_user)):
+    """删除一份质量报告（报告只是当时快照，删掉不影响规则与检查结果）。"""
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, workspace_id FROM adh_quality_reports WHERE id = %s",
+                (report_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="报告不存在")
+            authorize_resource_scope(user, row.get("workspace_id") or 0)
+            cur.execute("DELETE FROM adh_quality_reports WHERE id = %s", (report_id,))
+    return {"message": "Report deleted", "id": report_id}
+
+
+def _delete_result_row(result_id: int, user: dict) -> dict:
+    """删单条检查结果（问题记录）；不存在 404、越权 403。
+
+    单条与批量共用同一实现：批量只逐条调用并回报失败项，不另写一套删改逻辑。
+    """
+    with DBConnection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, rule_id, workspace_id FROM adh_quality_results WHERE id = %s",
+                (result_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="问题记录不存在")
+            authorize_resource_scope(user, row.get("workspace_id") or 0)
+            cur.execute("DELETE FROM adh_quality_results WHERE id = %s", (result_id,))
+    return row
+
+
+@router.delete("/results/{result_id}")
+def delete_result(result_id: int, user: dict = Depends(get_current_user)):
+    """删除单条检查结果（问题记录）。"""
+    row = _delete_result_row(result_id, user)
+    return {"message": "Result deleted", "id": result_id, "rule_id": row.get("rule_id")}
+
+
+class ResultBatchDelete(BaseModel):
+    # 上限与前端删除弹窗的 page_size 对齐（一次最多删当页 100 条，超出分批）
+    ids: list[int] = Field(default_factory=list, min_length=1, max_length=100)
+
+
+@router.post("/results/batch-delete")
+def batch_delete_results(body: ResultBatchDelete,
+                         user: dict = Depends(get_current_user)):
+    """批量删除问题记录：逐条复用单条实现，逐条回报失败原因（部分成功不静默）。"""
+    deleted: list[int] = []
+    failed: list[dict] = []
+    for result_id in dict.fromkeys(body.ids):
+        try:
+            _delete_result_row(result_id, user)
+            deleted.append(result_id)
+        except HTTPException as exc:
+            failed.append({"id": result_id, "reason": str(exc.detail)})
+    return {
+        "deleted_count": len(deleted),
+        "deleted": deleted,
+        "failed": failed,
+        "message": f"已删除 {len(deleted)} 条",
+    }
 
 
 # ── Reports ──────────────────────────────────────────────────────────

@@ -37,10 +37,14 @@ def test_reconcile_records_run_state(monkeypatch):
     monkeypatch.setattr(report_service, "cleanup_stale_reports", lambda: 1)
 
     result = executor.reconcile_runs()
-    assert result == {"tasks": 2, "reports": 1}
+    # DAG 收口结果随对账一起回报（dag 子字典：执行中/排队/节点三类计数）
+    assert result["tasks"] == 2 and result["reports"] == 1
+    assert isinstance(result.get("dag"), dict)
     assert recorded and recorded[0][0][0] == "runs_reconcile"
     assert recorded[0][0][1] == "success"
     assert "2" in recorded[0][0][2]  # 结果摘要含清理数量
+    # 排队超时也必须写进摘要（否则清了 DAG 却说「没清」，结果与事实不符）
+    assert "排队超时" in recorded[0][0][2]
 
 
 def test_reconcile_failure_recorded_and_reraised(monkeypatch):

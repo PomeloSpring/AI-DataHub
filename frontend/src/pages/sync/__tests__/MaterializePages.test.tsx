@@ -2,7 +2,7 @@
 // 1) 单步物化落库形状 = 单节点 `materialize` DAG（数据集 → 已登记目标表 + 分区/预算）；
 // 2) 运行记录页 = DAG 运行实例的**服务端分页**（total 来自服务端，翻页带 page 重新请求）；
 // 3) 数据集选择器只列 SQL 型（语义型数据集物化会被执行器显式拒绝）。
-import { cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import SyncLogs from '../SyncLogs';
@@ -23,6 +23,9 @@ vi.mock('@/api/dag', () => ({
     deleteWorkflow: vi.fn(),
     runWorkflow: vi.fn(),
     listWorkflowRuns: vi.fn(),
+    deleteRun: vi.fn(),
+    batchDeleteRuns: vi.fn(),
+    batchStopRuns: vi.fn(),
   },
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
@@ -113,5 +116,147 @@ describe('运行记录页读 DAG 运行实例（服务端分页）', () => {
 
     fireEvent.click(screen.getByText('下一页'));
     await waitFor(() => expect(dagApi.listRuns).toHaveBeenLastCalledWith({ page: 2, size: 20 }));
+  });
+});
+
+describe('运行记录删除（写码把关 + 二次确认）', () => {
+  const baseRun = {
+    id: 7001, workflow_id: 9, workflow_name: '订单宽表日物化', run_key: 'k-1',
+    trigger_type: 'cron', status: 'success',
+    stats_json: { rows_read: 1200, rows_written: 1200 },
+    started_at: '2026-11-21 02:00:00', finished_at: '2026-11-21 02:00:10',
+  };
+
+  it('确认后调 DELETE /dag/runs/:id，并重取当前页（不停在已删行上）', async () => {
+    vi.mocked(dagApi.listWorkflows).mockResolvedValue({ data: { items: [] } } as any);
+    vi.mocked(dagApi.listRuns).mockResolvedValue({
+      data: { items: [baseRun], total: 1, page: 1, size: 20 },
+    } as any);
+    vi.mocked(dagApi.deleteRun).mockResolvedValue({ data: { deleted: true } } as any);
+
+    render(<MemoryRouter><SyncLogs /></MemoryRouter>);
+    await screen.findByText('订单宽表日物化');
+
+    fireEvent.click(screen.getByLabelText('删除'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByText('删除'));
+
+    await waitFor(() => expect(dagApi.deleteRun).toHaveBeenCalledWith(7001));
+    // 删完重取（不是本地把行抽掉：total 必须来自服务端）
+    await waitFor(() => expect(dagApi.listRuns).toHaveBeenCalledTimes(2));
+  });
+
+  it('运行中的记录不可删（先停止，否则执行体继续写节点行）', async () => {
+    vi.mocked(dagApi.listWorkflows).mockResolvedValue({ data: { items: [] } } as any);
+    vi.mocked(dagApi.listRuns).mockResolvedValue({
+      data: { items: [{ ...baseRun, status: 'running', finished_at: null }], total: 1, page: 1, size: 20 },
+    } as any);
+
+    render(<MemoryRouter><SyncLogs /></MemoryRouter>);
+    await screen.findByText('订单宽表日物化');
+
+    expect(screen.getByLabelText('删除')).toBeDisabled();
+  });
+});
+
+describe('运行记录筛选（全部下推服务端）', () => {
+  const run = {
+    id: 7001, workflow_id: 9, workflow_name: '订单宽表日物化', run_key: 'k-1',
+    trigger_type: 'cron', status: 'success',
+    stats_json: { rows_read: 1200, rows_written: 1200 },
+    started_at: '2026-11-21 02:00:00', finished_at: '2026-11-21 02:00:10',
+  };
+
+  beforeEach(() => {
+    vi.mocked(dagApi.listWorkflows).mockResolvedValue({ data: { items: [] } } as any);
+    vi.mocked(dagApi.listRuns).mockResolvedValue({
+      data: { items: [run], total: 1, page: 1, size: 20 },
+    } as any);
+  });
+
+  it('日期区间与关键字带参重取，且回第 1 页', async () => {
+    render(<MemoryRouter><SyncLogs /></MemoryRouter>);
+    await screen.findByText('订单宽表日物化');
+
+    fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-11-01' } });
+    fireEvent.change(screen.getByLabelText('结束日期'), { target: { value: '2026-11-25' } });
+
+    await waitFor(() => expect(dagApi.listRuns).toHaveBeenLastCalledWith({
+      page: 1, size: 20, start_from: '2026-11-01', start_to: '2026-11-25',
+    }));
+
+    // 关键字防抖后才发请求（不是每敲一个字符一次）
+    fireEvent.change(screen.getByLabelText('按任务名筛选'), { target: { value: '订单' } });
+    await waitFor(() => expect(dagApi.listRuns).toHaveBeenLastCalledWith({
+      page: 1, size: 20, start_from: '2026-11-01', start_to: '2026-11-25', q: '订单',
+    }), { timeout: 2000 });
+  });
+});
+
+describe('运行记录批量操作（逐条复用单条 + 逐条回报）', () => {
+  const run = {
+    id: 7001, workflow_id: 9, workflow_name: '订单宽表日物化', run_key: 'k-1',
+    trigger_type: 'cron', status: 'success',
+    stats_json: { rows_read: 1200, rows_written: 1200 },
+    started_at: '2026-11-21 02:00:00', finished_at: '2026-11-21 02:00:10',
+  };
+  const activeRun = { ...run, id: 7002, status: 'running', started_at: '2026-11-21 03:00:00', finished_at: null };
+
+  beforeEach(() => {
+    vi.mocked(dagApi.listWorkflows).mockResolvedValue({ data: { items: [] } } as any);
+    vi.mocked(dagApi.listRuns).mockResolvedValue({
+      data: { items: [run, activeRun], total: 2, page: 1, size: 20 },
+    } as any);
+  });
+
+  it('全选后批量删除：调用批量端点，未处理项逐条点名且保留勾选', async () => {
+    vi.mocked(dagApi.batchDeleteRuns).mockResolvedValue({
+      data: {
+        action: 'delete',
+        succeeded: [{ id: 7001, workflow_name: '订单宽表日物化' }],
+        failed: [{ id: 7002, workflow_name: '订单宽表日物化', reason: '运行实例仍在排队/执行中，请先停止再删除' }],
+        succeeded_count: 1,
+        failed_count: 1,
+        message: '已删除 1 条；1 条未处理（原因逐条列出）',
+      },
+    } as any);
+
+    render(<MemoryRouter><SyncLogs /></MemoryRouter>);
+    await screen.findAllByText('订单宽表日物化');
+
+    fireEvent.click(screen.getByText('批量操作'));
+    fireEvent.click(screen.getByText('本页全选'));
+    expect(screen.getByText('已选 2 条')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('批量删除'));
+    const confirm = await screen.findByRole('dialog');
+    fireEvent.click(within(confirm).getByText('批量删除'));
+
+    await waitFor(() => expect(dagApi.batchDeleteRuns).toHaveBeenCalledWith([7001, 7002]));
+    // 结果逐条点名（不笼统报“部分失败”），失败项仍保持勾选可重试
+    const result = await screen.findByText(/请先停止再删除/);
+    expect(result).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('已选 1 条')).toBeInTheDocument());
+  });
+
+  it('批量停止：走 stop 端点，结束后重取当前页', async () => {
+    vi.mocked(dagApi.batchStopRuns).mockResolvedValue({
+      data: {
+        action: 'stop', succeeded: [{ id: 7002 }], failed: [],
+        succeeded_count: 1, failed_count: 0, message: '已停止 1 条',
+      },
+    } as any);
+
+    render(<MemoryRouter><SyncLogs /></MemoryRouter>);
+    await screen.findAllByText('订单宽表日物化');
+
+    fireEvent.click(screen.getByText('批量操作'));
+    fireEvent.click(screen.getByText('本页全选'));
+    fireEvent.click(screen.getByText('批量停止'));
+    const confirm = await screen.findByRole('dialog');
+    fireEvent.click(within(confirm).getByText('停止'));
+
+    await waitFor(() => expect(dagApi.batchStopRuns).toHaveBeenCalledWith([7001, 7002]));
+    await waitFor(() => expect(dagApi.listRuns).toHaveBeenCalledTimes(2));
   });
 });

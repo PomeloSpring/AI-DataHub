@@ -415,11 +415,16 @@ def reconcile_runs():
         logger.info("[Reconcile] 内置任务已人工暂停，本轮对账跳过")
         return {"skipped": "paused"}
     from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
+    from backend.modules.flow.dag.dag_service import dag_service
     try:
+        dag = dag_service.cleanup_stale_runs()
         result = {"tasks": scheduled_task_service.cleanup_stale_running_logs(),
-                  "reports": call("report.cleanup_stale")}
+                  "reports": call("report.cleanup_stale"),
+                  "dag": dag}
         system_jobs.record_run("runs_reconcile", "success",
-                               f"清理卡死执行实例 {result['tasks']} 个、报告生成 {result['reports']} 个")
+                               f"清理卡死执行实例 {result['tasks']} 个、报告生成 {result['reports']} 个、"
+                               f"DAG 运行 {dag['dag_runs']} 个 / 排队超时 {dag.get('dag_queued_runs', 0)} 个"
+                               f" / 节点 {dag['dag_node_runs']} 个")
         return result
     except Exception as exc:  # noqa: BLE001 — 记录后显式抛出，不把失败掩成成功
         logger.exception("[Reconcile] 运行对账失败")

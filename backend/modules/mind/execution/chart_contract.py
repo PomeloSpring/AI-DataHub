@@ -58,13 +58,20 @@ sankey, tree, treemap, rose, radial_bar, word_cloud, china_map, world_map, map_h
 - 输出了 ```chart 块后,正文不要再重复粘贴同一份原始数据的 Markdown 表格或逐行数值\
 (前端卡片已内置 图表/明细/SQL 三视图),正文只给结论与要点解读
 - 一个回答可包含多个 ```chart 代码块;不需要图表时用普通 Markdown 即可
-- 关系图谱(表血缘/实体关系/流程拓扑)可用 ```graph 代码块输出,内容为严格 JSON:
+- 关系图谱可用 ```graph 代码块输出,内容为严格 JSON:
 
 ```graph
 {"title":"表血缘","nodes":[{"id":"orders","label":"订单表","type":"table"}],"edges":[{"source":"orders","target":"dws_sales","label":"汇总"}]}
 ```
 
   其中 nodes 需 id(label/type 可选,type 决定配色分组),edges 需 source/target(悬空边会被丢弃)
+- **血缘/依赖关系图的数据只能来自 get_lineage 工具的真实返回**(平台血缘图的事实源是
+  DAG 编排、执行期 SQL 与元数据关系):没调用过它就必须先调用;工具没授权或没查到记录时
+  在正文说明「未查到该资产的平台血缘」,**禁止**凭表名相似或印象自己拼 nodes/edges
+  (错血缘会让人照着不存在的链路下钻,比"查不到"危害大)。
+- 工具返回的表名是限定名(如 `prd-cn.t_case_records`),画图与正文都要原样保留:
+  多区域同名表是不同实体,合并成一个节点会把「5 个站点汇聚」错画成「1 个来源」。
+- 实体关系/流程拓扑若来自已查到的元数据可自绘,但同样不得虚构节点与方向。
 - 数据必须来自真实查询结果,禁止编造
 """
 

@@ -261,6 +261,21 @@ SCREEN_DIRECT_RULES = """## AS-BOT 系统域与可视化大屏直建（优先于
 """
 
 
+CAPABILITY_PLAN_RULES = """## 多步平台任务：先取计划再按步执行（系统能力本体的任务流）
+- 涉及**多步**平台任务（发布内容、发布看板、推进口径认证、数据产品契约变更、权限能力核查等
+  需要“分几步走”的问题），先调 `system_capability_plan` 拿有序步骤，再按 order 逐步执行；
+  **不得**凭印象编步骤，也**不得**跳步（前一步的产出是后一步的输入）。
+- 计划里的每一步都有 `channel`：`ai` 的步骤可直接调对应功能工具（仍受该步 `perm_code` 的
+  权限与 ai_access 级别 fail-closed 裁决）；`human` 的步骤只能交给人到对应页面操作，
+  **不得代做、不得声称已完成**，按计划里的 `purpose` 指路即可。
+- 每一步带 `you_can_run`/`why_not`：`false` 时**不得**声称该步已完成（no-silent-degradation），
+  如实说明缺的是权限码还是“只能人工”，让用户决定是否补权或自己去做。
+- 计划是**只读描述**，不是执行器：不替代权限码裁决，也不代表服务端会替你把步骤连跑；
+  工具报权限不足时如实转述，不换路径硬凑、不改报成功。
+- 场景名拿不准时**先不传 `scenario`**，工具会回全部候选（key/标题/别名/是否可执行），
+  从候选里选一个再取计划，不要猜名字。"""
+
+
 MEMORY_RULES = """## 用户记忆读写规范（save_memory / list_memory / delete_memory）
 记忆是**跨会话生效**的稳定画像：它会作为“用户记忆”段注入本用户之后所有会话的提示词。因此：
 - **只记**跨会话稳定事实：常用业务域/默认图表/时间粒度/输出格式/数字精度/角色背景（固定槽位），
@@ -271,6 +286,26 @@ MEMORY_RULES = """## 用户记忆读写规范（save_memory / list_memory / dele
   被服务端拒绝时把原因原样告知用户，不换槽位绕过、不静默放弃。
 - 同一槽位重复表达用覆盖；浮动条目两类合计上限 5 条，超限先 list_memory 查看并与用户确认删哪条，再保存。
 - 记忆只属于当前用户，不得声称能读到其他人的记忆；与语义层/字典口径冲突时以**实时语义层目录**为准，记忆只作个人偏好补充。"""
+
+
+LINEAGE_RULES = """## 血缘纪律（get_lineage）
+
+平台的血缘图是**算出来的**（事实源 = DAG 编排、执行期 SQL 采集、元数据关系），不是可以凭印象描述的：
+
+- 凡是「这个数从哪来 / 改这张表会影响谁 / 这份数据多久更新一次 / 中间经过了哪些加工」这类问题，
+  **先调 `get_lineage`** 拿真实链路，再组织回答；不要拿表名相似度或历史印象替代。
+- 起点用业务名：表用「数据源名.表名」（如 `Doris.dws_case_metric_d`），资产用其名称
+  （数据产品 / 本体对象 / 指标 / 维度 / 数据集 / 图表）。名字拿不准就先按业务词调一次。
+- 工具回 `candidates`（候选清单）表示**名字没精确命中**：从候选里挑一个重新查，
+  不要挑一个最像的就当命中，也不要自己拼名字。
+- 工具回 `error`（或 `notes` 里说某些表因未授权被隐去）时，把该事实告诉用户：
+  可以说「当前权限下看不到上游 X 个源」或「平台未记录该资产的血缘」，
+  **不能**把「查不到」说成「没有依赖」，也不能据此推断影响面为空。
+- 引用链路时保持工具给的**限定名与方向**：多区域（prd-cn / prd-en / …）的同名表是不同实体，
+  合并成一个节点就把「N 个站点汇聚」错说成「1 个来源」；上游/下游方向不得反转。
+- `freshness` 里 `last_materialized_at` 才是数据刷新时间，`catalog_synced_at` 只是**表结构**
+  被平台收录的时间——用户问「数据新不新」时不能用后者冒充。
+- 需要画图时用 ```graph 块，nodes/edges 必须与工具返回一一对应（可省略无关节点，不得新增）。"""
 
 
 def _persona_lines(persona: dict) -> list[str]:
@@ -1301,11 +1336,26 @@ def compose_system_prompt(
     if has_screen_tools:
         sections.append(SCREEN_DIRECT_RULES)
 
+    # 任务编排纪律：只有本会话真的注册了 system_capability_plan 才注入。
+    # 它属于 system 工具组，与 screen 组是两套授权；放进 SCREEN_DIRECT_RULES 会出现
+    # “有 screen 没 system”时教模型调一个不存在的工具（空承诺）。
+    has_capability_plan = bool(capabilities) and any(
+        "system_capability_plan" in str(t.get("name", ""))
+        for t in (capabilities.get("tools") or []))
+    if has_capability_plan:
+        sections.append(CAPABILITY_PLAN_RULES)
+
     # 记忆读写纪律: 只有本会话真的注册了 save_memory 才注入（不向模型承诺没有的写能力）
     has_memory_tools = bool(capabilities) and any(
         str(t.get("name", "")).endswith("save_memory") for t in (capabilities.get("tools") or []))
     if has_memory_tools:
         sections.append(MEMORY_RULES)
+
+    # 血缘纪律：只有本会话真的注册了 get_lineage 才注入（不向模型承诺调不到的工具）。
+    has_lineage_tool = bool(capabilities) and any(
+        str(t.get("name", "")).endswith("get_lineage") for t in (capabilities.get("tools") or []))
+    if has_lineage_tool:
+        sections.append(LINEAGE_RULES)
 
     # 敏感合规护城河(L1):强制加载当前用户的 RLS 行范围与合规屏蔽列, 越权请求须拒绝
     sections.append(COMPLIANCE_RULES)

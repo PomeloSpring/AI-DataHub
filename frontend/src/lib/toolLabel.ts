@@ -30,6 +30,8 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   get_object_definition: 'tools.get_object_definition',
   // 无人值守取数的正主（报告重跑与定时任务最常走的一步）
   run_semantic_query: 'tools.run_semantic_query',
+  // 平台算好的血缘链路（溯源/影响面/新鲜度）
+  get_lineage: 'tools.get_lineage',
   // 工作空间资产/磁盘治理工具
   asset_list: 'tools.asset_list',
   asset_get: 'tools.asset_get',
@@ -40,6 +42,8 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   // 系统运营工具
   system_usage: 'tools.system_usage',
   system_overview: 'tools.system_overview',
+  // 系统能力本体的任务流计划（场景 → 有序步骤 → 每步通道/权限码）
+  system_capability_plan: 'tools.system_capability_plan',
   // 执行层内置文件/通用工具
   Read: 'tools.Read',
   Write: 'tools.Write',

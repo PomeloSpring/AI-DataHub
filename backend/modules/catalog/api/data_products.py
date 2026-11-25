@@ -1,9 +1,10 @@
-"""Data Products API —— 数据产品（L1 治理身份）清单 / 详情 / 手工认领。
+"""Data Products API —— 数据产品（L1 治理身份）清单 / 详情 / 手工认领 / 状态流转。
 
 挂载在 /api/catalog/data-products：
-    GET  /                      数据产品清单（支持数据源/状态/关键词筛选）
-    GET  /{product_name}        详情（含 schema 版本历史）
-    POST /                      手工认领/登记一个数据产品（治理动作，需管理员）
+    GET   /                              数据产品清单（支持数据源/状态/关键词筛选）
+    GET   /{product_name}                详情（含 schema 版本历史）
+    POST  /                              手工认领/登记一个数据产品（治理动作，需管理员）
+    PATCH /{product_name}/status         状态流转（表在源上消失后退役其治理身份）
 
 UI 资源规范：返回体带 name/display_name 供展示，内部 id 只作次要信息；
 调用方选择产品时用 product_name（稳定键），不手填内部 id。
@@ -66,3 +67,27 @@ def register_data_product(req: dict, user: dict = Depends(require_admin)):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"登记失败: {e}")
     return result
+
+
+@router.patch("/{product_name}/status")
+def set_data_product_status(
+    product_name: str, req: dict, user: dict = Depends(require_admin),
+):
+    """产品状态流转（draft|certified|deprecated|retired）。
+
+    典型用法：物理表已在源上删除（catalog 里查不到）时，把指向它的产品置
+    `retired`——血缘重建会跳过 retired 产品，图面上不再出现指向不存在表的
+    产品节点与 produces 边。只改状态，不动契约与版本历史。
+    """
+    status = (req.get("status") or "").strip()
+    if not status:
+        raise HTTPException(status_code=400, detail="status 必填（draft|certified|deprecated|retired）")
+    try:
+        return dps.set_product_status(
+            product_name, status,
+            updated_by=f"user:{user.get('user_id')}",
+            reason=req.get("reason") or "")
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"数据产品不存在: {product_name}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

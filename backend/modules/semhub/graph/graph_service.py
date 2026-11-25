@@ -556,12 +556,14 @@ class GraphService:
                         FILTER(?rel IN (adh:hasAction, adh:hasProperty, adh:hasMetric,
                                         adh:hasDimension,
                                         adh:governs, adh:controls,
-                                        adh:usesObject, adh:usesAction, adh:usesRule))
+                                        adh:usesObject, adh:usesAction, adh:usesRule,
+                                        adh:flowOf, adh:stepOfFlow))
                     }}
         """
         # 属性节点是否入图由调用方声明：本体总览页默认把属性展开（对象直连的语义明细），
         # 统一大图则默认剔除（include_properties=False，图面克制）。
-        sem_types = ["Action", "Metric", "Dimension", "Rule", "Scenario"]
+        sem_types = ["Action", "Metric", "Dimension", "Rule", "Scenario",
+                     "TaskFlow", "FlowStep"]
         if include_properties:
             sem_types.append("Property")
         for ntype_local in sem_types:
@@ -599,11 +601,16 @@ class GraphService:
             "hasDimension": "维度",
             "governs": "约束", "controls": "管控",
             "usesObject": "场景对象", "usesAction": "场景行为", "usesRule": "场景规则",
+            # 任务流：场景→步骤→动作/规则门的串联链路（与 uses* 的区别是「有序」）
+            "flowOf": "任务流", "stepOfFlow": "流程步骤",
+            "stepAction": "步骤动作", "nextStep": "下一步",
+            "stepGatedBy": "步骤规则门",
         }
         # 与节点同理按关系类型分别取；顺序让业务主干（指标/维度/行为）先占边预算，
         # 属性明细放最后 —— 截断时先牺牲物理/明细边。
         sem_rels = ["hasMetric", "hasDimension", "hasAction", "governs", "controls",
-                    "usesObject", "usesAction", "usesRule"]
+                    "usesObject", "usesAction", "usesRule",
+                    "flowOf", "stepOfFlow", "stepAction", "nextStep", "stepGatedBy"]
         if include_properties:
             sem_rels.append("hasProperty")
         for rel_local in sem_rels:

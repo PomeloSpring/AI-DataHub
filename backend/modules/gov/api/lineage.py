@@ -8,7 +8,9 @@ from typing import Optional
 from backend.common.db import (
     execute_query, execute_insert, execute_write,
 )
-from backend.modules.gov.services.lineage_service import persist_sql_lineage
+from backend.modules.gov.services.lineage_service import (
+    persist_sql_lineage, rebuild_lineage,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["数据血缘"])
@@ -34,6 +36,14 @@ class SQLParseRequest(BaseModel):
     sql: str
     datasource_id: int
     workspace_id: int = 0
+
+
+class LineageRebuildRequest(BaseModel):
+    """全量重建血缘。dry_run 只统计待归一节点，不写库。"""
+    workspace_id: int = 0
+    include_inactive_dag: bool = True
+    dry_run: bool = False
+    reset_asset: bool = False
 
 
 @router.get("/tables/{table_name}")
@@ -161,36 +171,95 @@ def _parse_metadata(value) -> dict:
 
 
 @router.get("/graph")
-def get_lineage_graph(workspace_id: int = Query(0)):
-    """获取完整血缘图（用于可视化）.
+def get_lineage_graph(
+    workspace_id: int = Query(0),
+    datasource: str = Query("", description="按数据源业务名过滤（空=全部）"),
+    node_types: str = Query("", description="按节点类型过滤，逗号分隔（空=全部）"),
+):
+    """获取血缘图（用于可视化）。
 
     输出对齐前端图表契约：节点带 name（node_name 优先、node_id 兜底，
     不得回退裸类型标签）；边带 source_id/target_id（与内部 source_node_id
     并存，两套字段同值）；metadata 归一为对象（DB 存 JSON 字符串，
     不解析会让前端按字符展开）。
+
+    `datasources` 返回图中实际出现的数据源业务名（来自 `数据源.表` 节点前缀），
+    供前端筛选下拉；表节点的 `datasource_name` 同样按前缀回填，前端不拼 id。
+
+    数据源筛选 = 该源的表 + 沿血缘边**正向可达**的资产（产品/本体对象/口径/数据集/图表）。
+    只留表节点会把下游整段链截掉（图上只剩孤立表，看起来像“血缘断了”）。
+    `datasources` 始终按全量节点计算：源码过滤后仍需能切回其他源。
     """
     try:
         rows = execute_query(
-            "SELECT id, node_type, node_id, node_name, metadata FROM adh_lineage_nodes WHERE workspace_id IN (%s, 0)",
+            "SELECT id, node_type, node_id, node_name, datasource_id, metadata "
+            "FROM adh_lineage_nodes WHERE workspace_id IN (%s, 0)",
             (workspace_id,),
         )
-        nodes = [
-            {**n,
-             "name": n.get("node_name") or n.get("node_id") or "",
-             "metadata": _parse_metadata(n.get("metadata"))}
-            for n in (rows or [])
-        ]
+        wanted = {t.strip() for t in str(node_types or "").split(",") if t.strip()}
+        ds_filter = str(datasource or "").strip()
+        all_nodes = []
+        for n in (rows or []):
+            node_id = str(n.get("node_id") or "")
+            ds_name = node_id.split(".")[0] if n.get("node_type") == "table" and "." in node_id else ""
+            all_nodes.append({**n,
+                              "name": n.get("node_name") or node_id,
+                              "datasource_name": ds_name,
+                              "metadata": _parse_metadata(n.get("metadata"))})
+        datasources = sorted({n["datasource_name"] for n in all_nodes if n["datasource_name"]})
+
         edge_rows = execute_query(
-            "SELECT id, source_node_id, target_node_id, edge_type, transform_expr, confidence FROM adh_lineage_edges WHERE workspace_id IN (%s, 0)",
+            "SELECT id, source_node_id, target_node_id, edge_type, transform_expr, confidence "
+            "FROM adh_lineage_edges WHERE workspace_id IN (%s, 0)",
             (workspace_id,),
         )
-        edges = [
-            {**e, "source_id": e.get("source_node_id"), "target_id": e.get("target_node_id")}
-            for e in (edge_rows or [])
-        ]
-        return {"nodes": nodes, "edges": edges}
+        all_edges = [{**e, "source_id": e.get("source_node_id"),
+                      "target_id": e.get("target_node_id")}
+                     for e in (edge_rows or [])]
+
+        if ds_filter:
+            keep = {n["id"] for n in all_nodes if n["datasource_name"] == ds_filter}
+            adj: dict = {}
+            for e in all_edges:
+                adj.setdefault(e["source_id"], []).append(e["target_id"])
+            stack = list(keep)
+            while stack:
+                for nxt in adj.get(stack.pop(), ()):
+                    if nxt not in keep:
+                        keep.add(nxt)
+                        stack.append(nxt)
+        else:
+            keep = {n["id"] for n in all_nodes}
+
+        nodes = [n for n in all_nodes if n["id"] in keep
+                 and (not wanted or n.get("node_type") in wanted)]
+        node_ids = {n["id"] for n in nodes}
+        edges = [e for e in all_edges
+                 if e.get("source_id") in node_ids and e.get("target_id") in node_ids]
+        return {"nodes": nodes, "edges": edges, "datasources": datasources}
     except Exception as e:
         logger.error("Get lineage graph failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rebuild")
+def rebuild_lineage_graph(req: LineageRebuildRequest):
+    """全量重建血缘（幂等，可重复执行）。
+
+    先归一历史表/字段节点 id 到「数据源业务名.表[.列]」（合并同名双节点、迁移边），
+    再重算资产链（产品/本体/口径/数据集/图表）与 DAG 定义层表级边。
+    `dry_run=true` 只统计待归一数量，不写库；`reset_asset=true` 先清空派生的
+    资产层（节点+边，不动表/字段与 transform 边）再重算，仅初始化/口径变更时用。
+    """
+    try:
+        return rebuild_lineage(
+            workspace_id=req.workspace_id,
+            include_inactive_dag=req.include_inactive_dag,
+            dry_run=req.dry_run,
+            reset_asset=req.reset_asset,
+        )
+    except Exception as e:
+        logger.error("Rebuild lineage failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -38,8 +38,15 @@ class MetadataService:
             return {"success": False, "message": "请选择要同步的数据源"}
         try:
             from backend.modules.catalog.services.metadata_sync import sync_metadata as _sync
-            _sync(datasource_id)
-            return {"success": True, "message": "元数据同步完成"}
+            summary = _sync(datasource_id)
+            dropped = (summary or {}).get("tables_deleted") or []
+            message = "元数据同步完成"
+            if dropped:
+                # 表在源上消失是重要事实：不能只删 catalog 行不说，
+                # 用户得知道指向它们的血缘已被同批收敛。
+                head = "、".join(dropped[:5]) + ("…" if len(dropped) > 5 else "")
+                message += f"；源上消失 {len(dropped)} 张表（{head}），已同批收敛指向它们的血缘"
+            return {"success": True, "message": message}
         except Exception as e:
             logger.error("元数据同步失败 datasource_id=%s: %s", datasource_id, e)
             return {"success": False, "message": f"元数据同步失败：{e}"}

@@ -95,8 +95,10 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     # 治理域（gov）
     "gov.persist_sql_lineage": "backend.modules.gov.services.lineage_service:persist_sql_lineage",
     "gov.execute_quality_rule": "backend.modules.gov.services.quality_engine:execute_single_rule",
-    # 数据产品域（catalog）
-    "catalog.data_product_service": "backend.modules.catalog.services:data_product_service",
+    # 数据产品域（catalog）：目标传**模块**而不是包属性。
+    # 包属性依赖“有人先 import 过该子模块”才存在，独立进程（脚本/单节点运行）下
+    # getattr(package, ...) 会 AttributeError，表现为“数据产品登记失败”的稳定失效。
+    "catalog.data_product_service": "backend.modules.catalog.services.data_product_service",
     # 自进化域（catalog）：flow 的执行器要调它，走本表登记而不是 import，
     # 否则新增一条 L2 横向边（分层契约 §0 禁）
     "evolution.run_digest": "backend.modules.catalog.services.evolution_service:run_digest",
@@ -129,7 +131,9 @@ def _resolve(ref: str | Callable[..., Any]) -> Any:
     if callable(ref):
         return ref
     module_path, _, attr = ref.partition(":")
-    return getattr(import_module(module_path), attr)
+    mod = import_module(module_path)
+    # 无 ":attr" 时返回模块本身（消费方按模块取属性，如 dps.register_product）
+    return getattr(mod, attr) if attr else mod
 
 
 def register_callback(name: str, target: str | Callable[..., Any]) -> None:

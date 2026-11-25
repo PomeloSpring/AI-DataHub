@@ -6,7 +6,7 @@ description: 专业数据分析师技能：以假设驱动的探索循环自主�
 category: analysis
 exclusive_group: playbook
 requires_any: [execute_sql]
-triggers: [复杂查询, 多表, 关联查, join, 窗口函数, 子查询, 明细数据, 未建模, 原始数据, 物理表, SQL, 统计检验, 中位数, 分位数, 相关系数, 回归, 行级, 导出全量]
+triggers: [复杂查询, 多表, 关联查, join, 窗口函数, 子查询, 明细数据, 未建模, 原始数据, 物理表, SQL, 统计检验, 中位数, 分位数, 相关系数, 回归, 行级, 导出全量, 血缘, 数据来源, 影响面, 数据多久更新]
 display_name_en: "Deep Analysis"
 description_en: "Multi-turn deep analysis: iterative querying, attribution drill-down, cross-site fan-out and chart output; full capability with permission-gated writes."
 ---
@@ -42,6 +42,16 @@ description_en: "Multi-turn deep analysis: iterative querying, attribution drill
 - **硬约束**：只读；每条查询带 LIMIT；禁 DDL/DML/多语句；huge 表必须带过滤谓词；按数据源方言(MySQL/Doris 等)调整日期函数；除零用 `NULLIF`。
 - **不绕过本体**：已治理建模对象的常规取数是 ChatBI 分析师(语义层)的职责；你聚焦语义层覆盖不到的复杂/明细/未建模分析，不用裸查去猜已治理对象。
 - **数据源黑盒**：SQL、datasource_id、库表物理结构、账号/IP、原始报错栈对用户与你都是黑盒，只给业务结论；执行失败按提示说明"数据源当前不可用"，不臆测根因。
+
+### 写查询前先看链路（血缘：`get_lineage` 在工具清单里时）
+
+工具清单里有 `get_lineage` 时，**动 `execute_sql` 前先确认这张表是什么**——它不是可选步骤，而是避免“拿已经废弃的旧表算了一个很漂亮的数”的最便宜手段：
+
+- **它是谁产出的**：`get_lineage` 的 upstream 会告诉你目标表的上游是各站源表还是其他物化表，`freshness.last_materialized_at` 是它**最后一次真实写入**的时间。跑“今天/最近”的查询前先看这个时间，否则空结果可能只是数据还没刷新，不是没数据。
+- **它还是不是活的**：先看 `freshness.physical_status`——`missing` 表示这张表在源上已不存在（catalog 查不到），这条链是历史记录，**不要拿它当当前依赖**，也不要在上面写查询；`unregistered` 表示该源还没同步过元数据，存在性未知（需要就提示补元数据同步）。`physical_status=ok` 时再看两个时间：都空 → 这条链上没有成功物化记录（可能源表直查，也可能已废弃），不要拿"表里有历史数据"当成"当前有效数据"。
+- **改它/换写法会影响谁**：用 downstream 看哪些数据集/看板在用它；要说「这样改会影响哪些看板」必须来自工具返回，不是推的。下游为空只能说“平台里暂未查到引用”，不能说“没影响”。
+- **多站同名表**：回链里的表名带「数据源.表」限定名（如 `prd-en.t_order_records`），写多层 JOIN 时按这个区分站点，**不得**把不同站的同名表当成同一张。
+- 名字没精确命中时工具回 `candidates`：挑一个**重新查**，不要猜名字（血缘查错比查不到危害大）。
 
 ## 三、分析工具箱（按需组合，不必全用）
 

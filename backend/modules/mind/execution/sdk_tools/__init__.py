@@ -48,6 +48,7 @@ from backend.modules.mind.execution.sdk_tools.context import (
     set_execution_context,
 )
 from backend.modules.mind.execution.sdk_tools.ontology_tools import build_ontology_server
+from backend.modules.mind.execution.sdk_tools.lineage_tools import build_lineage_server
 from backend.modules.mind.execution.sdk_tools.memory_tools import build_memory_server
 from backend.modules.mind.execution.sdk_tools.query_tools import build_query_server
 from backend.modules.mind.execution.sdk_tools.render_tools import build_render_server
@@ -68,6 +69,7 @@ TOOL_SERVER_BUILDERS = {
     "screen": build_screen_server,
     "system": build_system_server,
     "assets": build_assets_server,
+    "lineage": build_lineage_server,
     "memory": build_memory_server,
     "render": build_render_server,
     "skills": build_skill_server,
@@ -102,11 +104,18 @@ TOOL_SERVER_TOOLS = {
         "list_dashboard_groups", "manage_dashboard_groups",
         "list_vis_components", "get_vis_component", "save_vis_component",
     ]),
-    "system": ("datahub_system", ["system_usage", "system_overview"]),
+    # system：系统运营只读面。system_capability_plan 把系统能力本体的任务流
+    # （scenario → 有序步骤 → 动作/规则门/权限码）交给模型逐步执行，不新增执行裁决点。
+    "system": ("datahub_system", ["system_usage", "system_overview",
+                                   "system_capability_plan"]),
     "assets": ("datahub_assets", [
         "asset_list", "asset_get", "asset_archive", "disk_status",
         "cleanup_candidates", "cleanup_execute",
     ]),
+    # lineage: 平台已算好的血缘链路（不是让模型自编图谱）。答案来自
+    # adh_lineage_nodes/edges（事实源 = DAG 编排 + 执行期 SQL + 元数据关系），
+    # 出站只给业务名形态 + 新鲜度，不出 datasource_id/生成 SQL/内部 id（护栏 §7）。
+    "lineage": ("datahub_lineage", ["get_lineage"]),
     "memory": ("datahub_memory", ["save_memory", "list_memory", "delete_memory"]),
     # 交付形态渲染机（模型自选通道，服务端只设能力硬门）：三个形态都已接线。
     "render": ("datahub_render", ["render_chart", "render_html", "render_report"]),
@@ -203,6 +212,7 @@ __all__ = [
     "build_render_server",
     "build_system_server",
     "build_assets_server",
+    "build_lineage_server",
     "build_memory_server",
     "ExecutionContextVar",
     "get_execution_context",

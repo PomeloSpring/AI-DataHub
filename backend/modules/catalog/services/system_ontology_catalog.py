@@ -675,6 +675,10 @@ OBJECTS: list[dict] = [
             _a("content_review.submit", "提交内容审核",
                "把草稿提交人工审核；审核通过才发布生效", risk="medium",
                params={"required": ["article_id"]}),
+            # 发布只给人：`POST /api/content/publish*` 由 article:publish 把关，AI 无发布工具
+            _a("content_review.publish", "发布内容（审核后上线）",
+               "审核通过后在内容中心发布上线（article:publish 仅人持有，AI 不得代发）",
+               risk="high", params={"required": ["article_id"]}),
         ],
     ),
     _obj(
@@ -785,6 +789,42 @@ OBJECTS: list[dict] = [
             _a("alias.reject", "驳回别名建议",
                "标记建议不采纳（不写回任何别名）", risk="low",
                params={"required": ["term", "target_type"]}),
+        ],
+    ),
+    _obj(
+        "knowledge_proposal", "知识更新提议", ["知识提案", "知识更新", "KNOWLEDGE_PROPOSAL"],
+        "对话中发现的知识缺口/纠正，只入进化中心待审队列（adh_knowledge_update_proposals），"
+        "不直写本体/知识库/场景：提交由 knowledge:manage 把关，处置（标记已处理/驳回）由"
+        " evolution:manage 把关；落库必须人在进化中心逐条确认。",
+        "adh_knowledge_update_proposals",
+        [
+            _p("id", "提议ID", "bigint", True),
+            _p("source", "来源", "enum", False, "chat/manual/evolution"),
+            _p("target_type", "落地域", "enum", False, "kb_doc/scenario/ontology_object"),
+            _p("title", "提议标题", "varchar"),
+            _p("rationale", "提议理由", "varchar", False, "为什么提这条（用户纠正了什么/口径来自哪）"),
+            _p("target_hint", "目标业务名", "varchar", False,
+               "知识库名/文档标题/场景标题/对象业务名，不存内部 id"),
+            _p("datasource_name", "所属数据源", "varchar", False, "本体对象类提议用；其余可空"),
+            _p("status", "处理状态", "enum", False, "pending/applied/rejected/superseded"),
+            _p("applied_ref", "落点标识", "varchar", False, "改了哪一行（业务标识，便于回看）"),
+            _p("decided_by", "处理人", "varchar", False, "服务端注入，不信任请求体"),
+            _p("decided_at", "处理时间", "datetime"),
+        ],
+        [
+            _l("knowledge_base", "targets", "N:1", "落点可能是知识库文档/分析场景/本体对象"),
+            _l("ontology_model", "targets", "N:1", "落点为 ontology_object 时改的是哪个本体"),
+        ],
+        [
+            _a("knowledge_proposal.create", "提交知识更新提议",
+               "把对话里发现的知识缺口写进待审队列（不直写任何资产，需 knowledge:manage）",
+               risk="low", params={"required": ["target_type", "title", "content"]}),
+            _a("evolution_proposal.applied", "标记知识更新已处理",
+               "人已在目标域落库后回写 applied_ref（需 evolution:manage）",
+               risk="low", params={"required": ["title"]}),
+            _a("evolution_proposal.reject", "驳回知识更新提议",
+               "判定不采纳并写原因（需 evolution:manage）",
+               risk="low", params={"required": ["title"]}),
         ],
     ),
     _obj(
@@ -1237,6 +1277,9 @@ CAPABILITY_PERM_CODES: dict[str, tuple[str, ...]] = {
     # 别名候选的 HTTP 面（/api/as-bot/alias-suggestions*）目前仅 admin 可达，路由内另按
     # ontology:save 复核（require_write_perm）；两个码分别对应读/写语义
     "alias_suggestion": ("catalog:read", "ontology:save"),
+    # 知识更新提议：提交（knowledge:manage）与处置（evolution:manage）是两个不同的人职责，
+    # 不能合并成一个码——否则「能提」就等于「能批」
+    "knowledge_proposal": ("knowledge:manage", "evolution:manage"),
     "sensitive_field": ("sensitive:read", "sensitive:manage"),
     "rls_policy": ("rls:read", "rls:manage"),
     "data_standard": ("standard:read", "standard:manage"),
@@ -1267,6 +1310,56 @@ CAPABILITY_NO_OWN_CODE: dict[str, str] = {
     "user_asset": "/api/assets* 属个人自助：中间件 _SELF_ROUTE_PATTERNS 按属主放行（不按权限码拦，"
                   "跨空间资产跟随用户），菜单显隐用 asset:read（workspace:assets）；域码会与属主校验重复裁决",
 }
+
+# ── 动作 ↔ 权限码 ↔ 执行通道（任务流每步「要哪个码 / AI 能否直接做」的唯一声明处）──
+# 为什么必须单独一张表：场景（scenarios[].flow）的每一步都要回答"这步是 AI 调工具、
+# 还是只能人去界面"，若在 flow 里手写一份，就会与 function_tools / HTTP 端点漂移，
+# 变成空承诺。flow 步骤不写 channel/code，一律从本表派生（`_attach_flow_bindings`）。
+#   channel=ai    —— AS-BOT 有工具可直接调用（功能动作 function_tools / 本体动作 ontology_tools）；
+#   channel=human —— 只有人能操作的界面或 HTTP 端点（AI 无工具，必须显式交给人）。
+# 改本表必须同批跑 tests/test_system_ontology_catalog.py 的真值交叉校验。
+ACTION_PERM_CODES: dict[str, dict] = {
+    # ── 本体（ontology_tools，经 require_write_perm 把关）──
+    "ontology.generate": {"code": "ontology:generate", "channel": "ai"},
+    "ontology.save": {"code": "ontology:save", "channel": "ai"},
+    "ontology.activate": {"code": "ontology:activate", "channel": "ai"},
+    "ontology.import_yaml": {"code": "ontology:import", "channel": "ai"},
+    "dict.save_metric": {"code": "ontology:save", "channel": "ai"},
+    "dict.save_dimension": {"code": "ontology:save", "channel": "ai"},
+    # ── 功能动作（function_tools.FUNCTION_ACTION_SPECS，key 与工具一一对应）──
+    "knowledge_base.list": {"code": "kb:read", "channel": "ai"},
+    "datasource.list_safe": {"code": "datasource:read", "channel": "ai"},
+    "report.list": {"code": "report:read", "channel": "ai"},
+    "report.generate": {"code": "report:manage", "channel": "ai"},
+    "report.save": {"code": "report:manage", "channel": "ai"},
+    "dashboard.list": {"code": "dashboard:read", "channel": "ai"},
+    # 发布看板只有 HTTP（dashboard_design_service 的 require_write_perm），AI 无工具
+    "dashboard.publish": {"code": "dashboard:manage", "channel": "human"},
+    "scheduled_task.list": {"code": "scheduled:read", "channel": "ai"},
+    "scheduled_task.create": {"code": "scheduled:manage", "channel": "ai"},
+    "quality_rule.list": {"code": "quality:read", "channel": "ai"},
+    "quality_rule.run_check": {"code": "quality:manage", "channel": "ai"},
+    "dataset.list": {"code": "dataset:read", "channel": "ai"},
+    # 契约变更在数据产品页由人提交（require_write_perm dataset:manage），AI 无工具
+    "product.contract_change": {"code": "dataset:manage", "channel": "human"},
+    "content_article.list": {"code": "article:manage", "channel": "ai"},
+    "content_article.get": {"code": "article:manage", "channel": "ai"},
+    "content_draft.create": {"code": "article:manage", "channel": "ai"},
+    "content_draft.update": {"code": "article:manage", "channel": "ai"},
+    "content_review.submit": {"code": "article:manage", "channel": "ai"},
+    # 发布是人的动作：只有 POST /api/content/publish*（article:publish, ai_access=none）
+    "content_review.publish": {"code": "article:publish", "channel": "human"},
+    "knowledge_proposal.create": {"code": "knowledge:manage", "channel": "ai"},
+    "evolution_proposal.applied": {"code": "evolution:manage", "channel": "ai"},
+    "evolution_proposal.reject": {"code": "evolution:manage", "channel": "ai"},
+    "content_taxonomy.list": {"code": "article:manage", "channel": "ai"},
+    "decision.list": {"code": "decision:read", "channel": "ai"},
+    "decision.evaluate": {"code": "decision:read", "channel": "ai"},
+    # 别名采纳/驳回只有 HTTP（/api/as-bot/alias-suggestions*），AI 无工具
+    "alias.approve": {"code": "ontology:save", "channel": "human"},
+    "alias.reject": {"code": "ontology:save", "channel": "human"},
+}
+
 
 _PERM_CODE_RE = re.compile(r"^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)+$")
 
@@ -1301,6 +1394,42 @@ def _attach_perm_bindings(objects: list[dict]) -> list[dict]:
             "cardinality": "N:N",
             "description": desc,
         })
+    return out
+
+
+def _attach_action_bindings(objects: list[dict]) -> list[dict]:
+    """把「动作 → 权限码 / 执行通道」注入每个 actions[] 条目。
+
+    与对象级 requires_permission 并列：对象级回答「这个能力由哪些码把关」，
+    动作级回答「这个具体动作要哪个码、AI 能不能直接做」。RDF 与上云投影都按步骤读这两个字段。
+    """
+    import copy as _copy
+
+    out = _copy.deepcopy(objects)
+    for obj in out:
+        for act in (obj.get("actions") or []):
+            meta = ACTION_PERM_CODES.get(str(act.get("key") or "")) or {}
+            act["perm_code"] = str(meta.get("code") or "")
+            act["channel"] = str(meta.get("channel") or "")
+    return out
+
+
+def _attach_flow_bindings(scenarios: list[dict], objects: list[dict]) -> list[dict]:
+    """把权限码/执行通道/动作中文名注入每个 flow 步骤（flow 本身不写这三项，防两套漂移）。"""
+    import copy as _copy
+
+    labels = {
+        str(a.get("key") or ""): str(a.get("label") or "")
+        for o in objects for a in (o.get("actions") or [])
+    }
+    out = _copy.deepcopy(scenarios)
+    for scn in out:
+        for step in (scn.get("flow") or []):
+            key = str(step.get("action") or "")
+            meta = ACTION_PERM_CODES.get(key) or {}
+            step["perm_code"] = str(meta.get("code") or "")
+            step["channel"] = str(meta.get("channel") or "")
+            step["action_label"] = labels.get(key, "")
     return out
 
 
@@ -1442,6 +1571,22 @@ RULES: list[dict] = [
         "source": "as-bot-system-waker §3",
         "enforcement": {"subject": "ai:as_bot", "action": "*", "level": "deny"},
     },
+    {
+        "key": "constraint_content_review_before_publish",
+        "type": "business_constraint",
+        "statement": "内容必须先落草稿并提交审核，审核通过才发布；不得跳过审核直接上线；"
+                     "发布后再次修改会回到草稿态（需重新审核）。",
+        "source": "内容中心发布流程",
+        "enforcement": {"rule": "draft_then_review"},
+    },
+    {
+        "key": "constraint_dashboard_preview_before_publish",
+        "type": "business_constraint",
+        "statement": "看板必须先确认业务范围并完成治理预览，再用 dashboard:manage 发布；"
+                     "发布后修改会使旧预览失效，需重新预览再发布。",
+        "source": "as-bot-system-waker §4",
+        "enforcement": {"rule": "preview_then_publish"},
+    },
 ]
 
 
@@ -1449,6 +1594,7 @@ SCENARIOS: list[dict] = [
     {
         "key": "ops_modeling_progress",
         "title": "建模进度巡检",
+        "aliases": ["建模进度", "本体进度", "本体推进情况"],
         "goal": "回答业务方「本体建到哪了、还缺什么」",
         "actors": ["role:admin"],
         "uses_objects": ["ontology_model", "dataset"],
@@ -1459,6 +1605,7 @@ SCENARIOS: list[dict] = [
     {
         "key": "ops_sensitive_marking",
         "title": "敏感列补标",
+        "aliases": ["敏感列", "脱敏缺口", "敏感数据补标"],
         "goal": "发现未登记敏感基线的列并推动补标（数据护城河完整性）",
         "actors": ["role:admin"],
         "uses_objects": ["sensitive_field", "rls_policy", "dataset"],
@@ -1469,36 +1616,68 @@ SCENARIOS: list[dict] = [
     {
         "key": "ops_metric_certification",
         "title": "口径认证推进",
+        "aliases": ["口径认证", "指标口径认证", "口径推进"],
         "goal": "推动指标/维度口径认证与责任人落实",
         "actors": ["role:admin"],
         "uses_objects": ["metric", "dimension", "ontology_model"],
-        "uses_actions": ["dict.save_metric"],
+        "uses_actions": ["dict.save_metric", "dict.save_dimension"],
         "uses_rules": ["constraint_metric_single_source"],
+        "flow": [
+            {"order": 1, "action": "dict.save_metric",
+             "purpose": "补登/修正指标口径（业务名、口径正文、责任人）",
+             "produces": "已登记口径的指标"},
+            {"order": 2, "action": "dict.save_dimension",
+             "purpose": "为指标补齐可下钻维度与取值字典，避免下钻时口径歧义",
+             "consumes": "已登记口径的指标",
+             "gated_by": ["constraint_metric_single_source"]},
+        ],
         "eval_seed": ["还有多少指标口径没有认证？谁负责？"],
     },
     {
         "key": "ops_contract_change",
         "title": "契约变更影响分析",
+        "aliases": ["契约变更", "数据产品契约", "契约影响分析"],
         "goal": "数据产品契约变更前评估影响面（对象/口径/看板）",
         "actors": ["role:admin"],
         "uses_objects": ["data_product", "dataset", "dashboard"],
-        "uses_actions": ["product.contract_change"],
+        "uses_actions": ["dataset.list", "product.contract_change"],
         "uses_rules": ["perm_admin_full_by_role_perms"],
+        "flow": [
+            {"order": 1, "action": "dataset.list",
+             "purpose": "先摸清受影响的数据集与消费方清单",
+             "produces": "受影响清单"},
+            {"order": 2, "action": "product.contract_change",
+             "purpose": "携影响面到数据产品页提交契约变更（AI 无此写工具，由人确认）",
+             "consumes": "受影响清单",
+             "gated_by": ["perm_admin_full_by_role_perms"]},
+        ],
         "eval_seed": ["改这张表的契约会影响哪些看板？"],
     },
     {
         "key": "ops_dashboard_publish",
         "title": "看板设计到发布",
-        "goal": "先确认业务范围与治理预览，再发布为看板（不跳过预览）",
+        "aliases": ["看板发布", "发布看板", "看板设计", "看板上线", "大屏发布"],
+        "goal": "先确认业务范围与治理预览，再发布为看板（不跳预览）",
         "actors": ["role:admin"],
         "uses_objects": ["dashboard_design", "dashboard", "dataset"],
-        "uses_actions": ["dashboard.publish"],
-        "uses_rules": ["perm_ai_write_fail_closed"],
+        "uses_actions": ["dashboard.list", "dashboard.publish"],
+        "uses_rules": ["perm_ai_write_fail_closed", "constraint_dashboard_preview_before_publish"],
+        "flow": [
+            {"order": 1, "action": "dashboard.list",
+             "purpose": "确认现有看板与目标归属，避免重名覆盖",
+             "produces": "目标看板清单"},
+            {"order": 2, "action": "dashboard.publish",
+             "purpose": "确认业务范围并完成治理预览后发布（发布只能由人在看板设计面板完成）",
+             "consumes": "目标看板清单",
+             "gated_by": ["constraint_dashboard_preview_before_publish",
+                            "perm_ai_write_fail_closed"]},
+        ],
         "eval_seed": ["发布看板需要什么条件？"],
     },
     {
         "key": "ops_permission_audit",
         "title": "权限与菜单核查",
+        "aliases": ["权限核查", "菜单核查", "角色权限核对"],
         "goal": "核对角色权限码、菜单显隐与 AI 开放级别的对应关系",
         "actors": ["role:admin"],
         "uses_objects": ["role", "permission", "menu", "as_bot"],
@@ -1509,16 +1688,34 @@ SCENARIOS: list[dict] = [
     {
         "key": "ops_content_publish",
         "title": "内容草稿到发布",
+        "aliases": ["内容发布", "发布公告", "公告发布", "内容审核发布"],
         "goal": "新建内容草稿走审核后发布，不直接改线上",
         "actors": ["role:admin"],
         "uses_objects": ["content_article", "content_category"],
-        "uses_actions": ["content_draft.create", "content_review.submit"],
-        "uses_rules": ["constraint_ontology_two_phase"],
+        "uses_actions": ["content_draft.create", "content_review.submit",
+                         "content_review.publish"],
+        "uses_rules": ["constraint_content_review_before_publish"],
+        "flow": [
+            {"order": 1, "action": "content_draft.create",
+             "purpose": "先落草稿，线上内容不受影响",
+             "produces": "待审核草稿"},
+            {"order": 2, "action": "content_review.submit",
+             "purpose": "提交审核，审核通过后才发布",
+             "consumes": "待审核草稿",
+             "produces": "已提交审核的内容",
+             "gated_by": ["constraint_content_review_before_publish"]},
+            {"order": 3, "action": "content_review.publish",
+             "purpose": "审核通过后由发布人在内容中心发布上线（AI 无发布工具，不得代发）",
+             "consumes": "已提交审核的内容",
+             "produces": "已上线内容",
+             "gated_by": ["constraint_content_review_before_publish"]},
+        ],
         "eval_seed": ["怎么发布一篇平台公告？"],
     },
     {
         "key": "ops_data_engineering_boundary",
         "title": "数据工程边界说明",
+        "aliases": ["数据工程边界", "同步任务能不能建", "DAG 能不能让 AI 做"],
         "goal": "解释同步/DAG/UDF 为什么不在对话里操作（运维专属，需到对应页面人工执行）",
         "actors": ["role:admin"],
         "uses_objects": ["sync_task", "dag_workflow", "udf"],
@@ -1529,6 +1726,7 @@ SCENARIOS: list[dict] = [
     {
         "key": "ops_capability_lookup",
         "title": "能力与权限码核查",
+        "aliases": ["权限码", "能力核查", "功能要什么权限"],
         "goal": "回答「这个功能要什么权限码、由哪个菜单开、码管哪些接口、哪些能力还没有码」",
         "actors": ["role:admin"],
         "uses_objects": ["permission", "menu", "role", "as_bot", "ontology_model"],
@@ -1569,7 +1767,7 @@ def validate_catalog(objects: list[dict] | None = None) -> list[str]:
         errors.append("对象 key 重复: " + ", ".join(sorted({k for k in keys if keys.count(k) > 1})))
     key_set = set(keys)
     action_keys: list[str] = []
-    for o in OBJECTS:
+    for o in objects:
         okey = str(o.get("key") or "")
         for a in (o.get("actions") or []):
             action_keys.append(str(a.get("key") or ""))
@@ -1588,6 +1786,7 @@ def validate_catalog(objects: list[dict] | None = None) -> list[str]:
     if dup_actions:
         errors.append("动作 key 重复: " + ", ".join(dup_actions))
     akey_set = set(action_keys)
+    rkey_set = {str(r.get('key') or '') for r in RULES}
     for r in RULES:
         enf = r.get("enforcement") or {}
         act = str(enf.get("action") or "")
@@ -1595,10 +1794,13 @@ def validate_catalog(objects: list[dict] | None = None) -> list[str]:
             errors.append(f"规则 {r.get('key')} 引用了不存在的动作: {act}")
     for s in SCENARIOS:
         for field, valid in (("uses_objects", key_set), ("uses_actions", akey_set),
-                             ("uses_rules", {str(r.get('key') or '') for r in RULES})):
+                             ("uses_rules", rkey_set)):
             for ref in (s.get(field) or []):
                 if str(ref) not in valid:
                     errors.append(f"场景 {s.get('key')} 的 {field} 引用了不存在的项: {ref}")
+    errors.extend(_action_binding_errors(akey_set))
+    errors.extend(_flow_errors(akey_set, rkey_set))
+    errors.extend(_scenario_alias_errors())
     errors.extend(_binding_errors(key_set))
     return errors
 
@@ -1635,6 +1837,125 @@ def _binding_errors(key_set: set[str]) -> list[str]:
     return errors
 
 
+_ACTION_CHANNELS = ("ai", "human")
+
+
+def _action_binding_errors(akey_set: set[str]) -> list[str]:
+    """每个动作必须声明权限码与执行通道；漏登记会让 flow 的步骤变成「不知能不能做」。"""
+    errors: list[str] = []
+    declared = set(ACTION_PERM_CODES)
+    unknown = declared - akey_set
+    if unknown:
+        errors.append("动作绑定引用了不存在的动作: " + ", ".join(sorted(unknown)))
+    missing = akey_set - declared
+    if missing:
+        errors.append("以下动作未声明「权限码/执行通道（必须进 ACTION_PERM_CODES）: "
+                      + ", ".join(sorted(missing)))
+    for key, meta in ACTION_PERM_CODES.items():
+        code = str((meta or {}).get("code") or "")
+        channel = str((meta or {}).get("channel") or "")
+        if not _PERM_CODE_RE.match(code):
+            errors.append(f"动作 {key} 绑定了非法权限码: {code!r}")
+        if channel not in _ACTION_CHANNELS:
+            errors.append(f"动作 {key} 的执行通道非法: {channel!r}"
+                          f"（只允许 {list(_ACTION_CHANNELS)}）")
+    return errors
+
+
+def _flow_errors(akey_set: set[str], rkey_set: set[str]) -> list[str]:
+    """任务流（scenarios[].flow）自检。
+
+    这是「串联」与「平铺清单」的区别所在：
+    - 步序连续、动作/规则门可解析；
+    - flow 的动作必须已在 uses_actions 里（两套清单会漂移）；
+    - **consumes 必须由更早步骤 produces**（下一步拿不到上一步产出 = 串联断了）。
+    """
+    errors: list[str] = []
+    for s in SCENARIOS:
+        skey = str(s.get("key") or "")
+        flow = s.get("flow")
+        if flow is None:
+            continue
+        if not isinstance(flow, list) or not flow:
+            errors.append(f"场景 {skey} 的 flow 必须是非空数组（无步骤请直接不写 flow）")
+            continue
+        uses_actions = {str(x) for x in (s.get("uses_actions") or [])}
+        uses_rules = {str(x) for x in (s.get("uses_rules") or [])}
+        orders: list[int] = []
+        produced: set[str] = set()
+        for i, st in enumerate(flow, start=1):
+            if not isinstance(st, dict):
+                errors.append(f"场景 {skey} 第 {i} 步不是对象结构")
+                continue
+            action = str(st.get("action") or "")
+            if action not in akey_set:
+                errors.append(f"场景 {skey} 第 {i} 步引用了不存在的动作: {action!r}")
+            elif action not in uses_actions:
+                errors.append(f"场景 {skey} 第 {i} 步的动作 {action!r} 未列在 uses_actions"
+                              "（两套清单会漂移，图谱/检索按 uses_actions 走）")
+            if not str(st.get("purpose") or "").strip():
+                errors.append(f"场景 {skey} 第 {i} 步缺 purpose（用户要看到的这步在做什么）")
+            raw = st.get("order")
+            try:
+                orders.append(int(raw if raw is not None else i))
+            except (TypeError, ValueError):
+                errors.append(f"场景 {skey} 第 {i} 步 order={raw!r} 非整数")
+            for rk in (st.get("gated_by") or []):
+                if str(rk) not in rkey_set:
+                    errors.append(f"场景 {skey} 第 {i} 步 gated_by 引用了不存在的规则: {rk!r}")
+                elif str(rk) not in uses_rules:
+                    errors.append(f"场景 {skey} 第 {i} 步的规则门 {rk!r} 未列在 uses_rules")
+            need = str(st.get("consumes") or "").strip()
+            if need and need not in produced:
+                errors.append(f"场景 {skey} 第 {i} 步要消费「{need}」，但更早步骤没有 produces 它"
+                              "（串联断了：下一步拿不到上一步的产出）")
+            got = str(st.get("produces") or "").strip()
+            if got:
+                produced.add(got)
+        if orders and orders != list(range(1, len(orders) + 1)):
+            errors.append(f"场景 {skey} 步序必须从 1 连续不重复（实得 {orders}）")
+    return errors
+
+
+_NAME_STRIP_RE = re.compile(r"[\s_\-/、,，>→]+")
+
+
+def normalize_scenario_name(value) -> str:
+    """场景名归一（全角→半角、去空白/分隔符、casefold）。
+
+    别名匹配与冲突检测用同一口径：两处各写一套归一会让「有没有撞车」判不准。
+    """
+    t = str(value or "")
+    t = "".join(chr(ord(c) - 0xFEE0) if "\uFF01" <= c <= "\uFF5E" else c for c in t)
+    return _NAME_STRIP_RE.sub("", t).casefold()
+
+
+def _scenario_alias_errors() -> list[str]:
+    """场景名自检：key/title/别名的归一值不得跨场景撞车。
+
+    撞车的别名永远只能回候选（定位靠猜），等于把「用业务名取计划」这条入口堵死。
+    """
+    errors: list[str] = []
+    seen: dict[str, str] = {}
+    for s in SCENARIOS:
+        skey = str(s.get("key") or "")
+        names: list[tuple[str, object]] = [("key", skey), ("title", s.get("title"))]
+        names += [("aliases", a) for a in (s.get("aliases") or [])]
+        for field, raw in names:
+            if field == "aliases" and not str(raw or "").strip():
+                errors.append(f"场景 {skey} 的 aliases 含空值（空别名会命中任何查询）")
+                continue
+            norm = normalize_scenario_name(raw)
+            if not norm:
+                continue
+            owner = seen.get(norm)
+            if owner and owner != skey:
+                errors.append(f"场景名归一后重复：「{raw}」同时被 {owner} 与 {skey} 占用")
+            else:
+                seen[norm] = skey
+    return errors
+
+
 def build_system_ontology_doc() -> dict:
     """组装系统本体 canonical doc（确定性输出，不含时间戳）。
 
@@ -1644,6 +1965,7 @@ def build_system_ontology_doc() -> dict:
     import copy
 
     objects = _attach_perm_bindings(OBJECTS)
+    objects = _attach_action_bindings(objects)
     problems = validate_catalog(objects)
     if problems:
         raise ValueError("系统本体目录自检失败: " + "; ".join(problems[:20]))
@@ -1654,5 +1976,5 @@ def build_system_ontology_doc() -> dict:
         "sources": [],
         "objects": objects,
         "rules": copy.deepcopy(RULES),
-        "scenarios": copy.deepcopy(SCENARIOS),
+        "scenarios": _attach_flow_bindings(SCENARIOS, objects),
     }

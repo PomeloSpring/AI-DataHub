@@ -11,8 +11,10 @@
 5. M2/M3/M4 建模位校验无 error。
 """
 
+import asyncio
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -213,3 +215,187 @@ def test_bound_codes_exist_in_registry():
     bound.discard("")
     bound.discard("*")
     assert bound - codes == set(), f"本体绑定了库里不存在的权限码: {sorted(bound - codes)}"
+
+
+# ══════════════════════════════════════════════════════════════════
+# 任务流（scenarios[].flow）：行为 / 规则 / 场景必须真正串起来
+#
+# 三张平铺清单 ≠ 动态本体。要让模型顺着「场景 → 有序步骤 → 每步动作 + 权限码 +
+# 规则门 + 上一步产出」走完一个平台任务，链接点必须能被校验、被图谱遍历、
+# 被上云文档与 AS-BOT 工具读到。下列用例把这条链路锁死在代码上。
+# ══════════════════════════════════════════════════════════════════
+
+_PERM_CODE_RE = re.compile(r"^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)+")
+
+
+def test_every_action_declares_perm_and_channel():
+    """每个动作都要有权限码 + 执行通道：缺了 flow 步骤就变成「不知 AI 能不能做」。"""
+    akeys = {str(a.get("key") or "")
+             for o in catalog.OBJECTS for a in (o.get("actions") or [])}
+    assert set(catalog.ACTION_PERM_CODES) == akeys, (
+        f"动作绑定表与对象 actions 不一致：多出 {sorted(set(catalog.ACTION_PERM_CODES) - akeys)}"
+        f" / 缺少 {sorted(akeys - set(catalog.ACTION_PERM_CODES))}")
+    for key, meta in catalog.ACTION_PERM_CODES.items():
+        assert _PERM_CODE_RE.match(str(meta.get("code") or "")), f"{key} 的权限码非法: {meta}"
+        assert meta.get("channel") in ("ai", "human"), f"{key} 的执行通道非法: {meta}"
+
+
+def test_ai_channel_actions_have_real_tooling():
+    """channel 不是文案：标 ai 必须真有工具，标 human 必须真没工具。
+
+    历史偏差：alias.approve/reject 在 as-bot-system-waker §3 被当成 AI 写动作，
+    实际只有 HTTP 端点、没有 AI 工具——这种「配了但 AI 做不了」必须显式标 human，
+    否则模型会照计划去调一个根本不存在的工具。
+    """
+    import inspect
+
+    from backend.modules.mind.execution.function_tools import FUNCTION_ACTION_SPECS
+    from backend.modules.mind.execution.sdk_tools import ontology_tools
+
+    onto_src = inspect.getsource(ontology_tools)
+    drift = []
+    for key, meta in catalog.ACTION_PERM_CODES.items():
+        code, channel = str(meta["code"]), str(meta["channel"])
+        spec = FUNCTION_ACTION_SPECS.get(key)
+        if channel == "ai":
+            if spec is not None:
+                if str(spec.get("perm_code") or "") != code:
+                    drift.append(f"{key}: 本体标 {code}，功能工具实际 {spec.get('perm_code')}")
+            elif f'_require_write_perm("{code}"' not in onto_src:
+                drift.append(f"{key}: 既不在功能工具，本体工具里也没有 {code} 的写码把关")
+        elif spec is not None:
+            drift.append(f"{key}: 标成 human，但功能工具注册了它（AI 其实能做）")
+    assert drift == [], "动作通道与真实工具不一致: " + "; ".join(drift)
+
+
+def test_flows_are_ordered_and_chained():
+    """flow 必须是有序、可串联、引用可解析的步骤清单（平铺清单不算联动）。"""
+    doc = catalog.build_system_ontology_doc()
+    flows = [s for s in doc["scenarios"] if s.get("flow")]
+    assert flows, "至少要有一个带任务步骤的场景"
+    for s in flows:
+        steps = s["flow"]
+        assert [st["order"] for st in steps] == list(range(1, len(steps) + 1)), \
+            f"{s['key']} 步序不是 1..N 连续"
+        produced: set = set()
+        for st in steps:
+            assert st["action"] in s["uses_actions"], \
+                f"{s['key']} 第 {st['order']} 步动作未列在 uses_actions（两套清单会漂移）"
+            assert st["perm_code"], f"{s['key']} 第 {st['order']} 步没有权限码"
+            assert st["channel"] in ("ai", "human"), f"{s['key']} 第 {st['order']} 步通道非法"
+            assert st["action_label"], f"{s['key']} 第 {st['order']} 步缺业务动作名"
+            if st.get("consumes"):
+                assert st["consumes"] in produced, (
+                    f"{s['key']} 第 {st['order']} 步要消费「{st['consumes']}」，"
+                    "但更早步骤没有 produces 它（串联断了）")
+            for rk in (st.get("gated_by") or []):
+                assert rk in s["uses_rules"], f"{s['key']} 第 {st['order']} 步规则门未列在 uses_rules"
+            if st.get("produces"):
+                produced.add(st["produces"])
+
+
+def test_flow_reaches_cloud_projection_with_channel_and_perm():
+    """上云文档必须显式写清「哪步 AI 能做 / 哪步只能人工 / 要哪个码 / 依赖上一步什么」。"""
+    md = ontology_service.to_cloud_md(catalog.build_system_ontology_doc())
+    assert "执行步骤（按序" in md
+    assert "AI 可直接执行" in md, "AI 可执行步骤未标注，模型会以为都要人工"
+    assert "需人工到界面完成" in md, "人工步骤未标注，模型会声称做完了"
+    assert "权限码 article:manage" in md
+    assert "待审核草稿" in md, "上一步产出未渲染，串联断在文档里"
+    assert "受规则约束：" in md
+    # 别名必须上云：模型是拿口语名（「看板发布」）问的
+    assert "（又称：看板发布" in md
+
+
+def test_rdf_projects_task_flow_as_traversable_edges():
+    """图谱要能顺着场景→步骤→动作/规则门走，且步骤节点不得被当成 SQL 关系端点。"""
+    from backend.common.rdf.ontology_to_rdf import ontology_json_to_turtle
+    from backend.semantics.graph_rag.link_graph import _iri_key
+
+    turtle = ontology_json_to_turtle(catalog.build_system_ontology_doc(), datasource_id=-1)
+    for token in ("a adh:TaskFlow", "a adh:FlowStep", "adh:flowOf", "adh:stepAction",
+                  "adh:stepChannel", "adh:stepPerm", "adh:nextStep",
+                  "adh:stepGatedBy", "adh:stepProduces"):
+        assert token in turtle, f"任务流未投影到图谱: {token}"
+    base = "http://ai-datahub.org/ontology/"
+    assert _iri_key(base + "fstep:ops_content_publish_1") == "", \
+        "步骤节点被当成对象端点会污染 SQL 关系链"
+
+
+# ── AS-BOT 取计划（只读工具，不含任何新的执行裁决）────────────────
+
+def _plan_harness(monkeypatch, role_perms: dict):
+    """把工具接到确定的本体与角色权限上（不依赖库状态）。"""
+    from backend.core.role_service import role_service
+    from backend.modules.mind.execution.sdk_tools import system_tools
+
+    monkeypatch.setattr(system_tools, "_admin_identity",
+                        lambda: {"user_id": 7, "role": "admin", "workspace_id": 0})
+    monkeypatch.setattr(system_tools, "_active_system_doc", catalog.build_system_ontology_doc)
+    monkeypatch.setattr(role_service, "get_user_role_ai_perms",
+                        lambda user_id, workspace_id: role_perms)
+    return system_tools
+
+
+def _call_plan(tools, scenario=None):
+    args = {} if scenario is None else {"scenario": scenario}
+    out = asyncio.run(tools.system_capability_plan(args))
+    return json.loads(out["content"][0]["text"]), bool(out.get("isError"))
+
+
+def test_plan_resolves_business_alias_and_marks_human_step(monkeypatch):
+    """口语别名（「看板发布」）必须命中，人工步骤必须标成不可代做。"""
+    tools = _plan_harness(monkeypatch, {"dashboard:read": {"ai_access": "read", "ai_note": ""}})
+    data, is_err = _call_plan(tools, "看板发布")
+    assert not is_err, data
+    assert data["executable"] is True and data["step_count"] == 2
+    first, second = data["steps"]
+    assert first["channel"] == "ai" and first["you_can_run"] is True
+    assert first["perm_code"] == "dashboard:read"
+    assert second["channel"] == "human" and second["you_can_run"] is False
+    assert "只能由人" in second["why_not"]
+    assert second["consumes"] == first["produces"] == "目标看板清单"
+    assert any(g["key"] == "constraint_dashboard_preview_before_publish"
+               for g in second["rule_gates"])
+
+
+def test_plan_denies_unheld_code_without_guessing(monkeypatch):
+    tools = _plan_harness(monkeypatch, {})
+    data, is_err = _call_plan(tools, "内容发布")
+    assert not is_err, data
+    assert data["steps"][0]["you_can_run"] is False
+    assert "未持有权限码 article:manage" in data["steps"][0]["why_not"]
+
+
+def test_plan_denies_write_step_when_ai_level_is_read(monkeypatch):
+    """角色有码但 AI 级别只到 read：写步骤仍不可执行（配置级别不是能力证明）。"""
+    tools = _plan_harness(monkeypatch, {"article:manage": {"ai_access": "read", "ai_note": ""}})
+    data, _ = _call_plan(tools, "内容发布")
+    step = data["steps"][0]
+    assert step["read_only"] is False and step["you_can_run"] is False
+    assert "需要 write" in step["why_not"]
+
+
+def test_plan_lists_candidates_instead_of_guessing(monkeypatch):
+    tools = _plan_harness(monkeypatch, {})
+    data, is_err = _call_plan(tools, "系统巡检")
+    assert is_err and "不猜" in data["error"]
+    assert data["candidates"], "匹配不到时必须回候选，不能只报错"
+    assert all({"key", "title", "executable"} <= set(c) for c in data["candidates"])
+
+
+def test_plan_returns_full_catalog_when_query_missing(monkeypatch):
+    tools = _plan_harness(monkeypatch, {})
+    data, is_err = _call_plan(tools, None)
+    assert not is_err, data
+    assert len(data["candidates"]) == len(catalog.SCENARIOS)
+    assert {c["key"] for c in data["candidates"] if c["executable"]} == \
+        {s["key"] for s in catalog.SCENARIOS if s.get("flow")}
+
+
+def test_plan_marks_qa_only_scenario_not_executable(monkeypatch):
+    tools = _plan_harness(monkeypatch, {})
+    data, is_err = _call_plan(tools, "能力与权限码核查")
+    assert not is_err, data
+    assert data["executable"] is False
+    assert "没有任务步骤" in data["note"], "问答型场景必须显式说明不得编造步骤"

@@ -54,6 +54,20 @@ export interface SensitiveField {
   updated_at: string;
 }
 
+/** 敏感字段筛选项候选/计数（服务端下发，与清单共用同一谓词） */
+export interface SensitiveFacetCount {
+  value: string;
+  count: number;
+}
+
+export interface SensitiveFieldFacets {
+  levels: SensitiveFacetCount[];
+  mask_types: SensitiveFacetCount[];
+  scopes: SensitiveFacetCount[];
+  datasources: Array<{ datasource_id: number; count: number }>;
+  total: number;
+}
+
 export const governanceApi = {
   // Roles
   listRoles: () => client.get('/roles'),
@@ -78,8 +92,13 @@ export const governanceApi = {
   // Standards
   getStandards: (workspaceId: number, type?: string) =>
     client.get('/standards', { params: { workspace_id: workspaceId, standard_type: type } }),
-  listStandards: (params?: { workspace_id?: number; page?: number; size?: number }) =>
-    client.get('/standards', { params }),
+  listStandards: (params?: {
+    workspace_id?: number;
+    standard_type?: string;
+    q?: string;
+    page?: number;
+    page_size?: number;
+  }) => client.get('/standards', { params }),
   createStandard: (data: any) => client.post('/standards', data),
   updateStandard: (id: number, data: any) => client.put(`/standards/${id}`, data),
   deleteStandard: (id: number) => client.delete(`/standards/${id}`),
@@ -87,6 +106,8 @@ export const governanceApi = {
 
   // Sensitive Fields
   getSensitiveFields: (params: any) => client.get('/security/sensitive-fields', { params }),
+  getSensitiveFieldFacets: (params: any) =>
+    client.get<SensitiveFieldFacets>('/security/sensitive-fields/facets', { params }),
   createSensitiveField: (data: any) => client.post('/security/sensitive-fields', data),
   updateSensitiveField: (id: number, data: any) => client.put(`/security/sensitive-fields/${id}`, data),
   deleteSensitiveField: (id: number) => client.delete(`/security/sensitive-fields/${id}`),

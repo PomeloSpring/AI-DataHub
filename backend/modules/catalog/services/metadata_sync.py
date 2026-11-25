@@ -152,7 +152,7 @@ def _get_datasource_config(ds_id: int) -> dict:
 # Sync logic — MySQL / Doris (information_schema)
 # ---------------------------------------------------------------------------
 
-def _apply_sync(ds_id: int, dst_conn, tables: list, fetch_columns) -> None:
+def _apply_sync(ds_id: int, dst_conn, tables: list, fetch_columns) -> dict:
     """通用元数据回写（MySQL/Doris 与 SLS 共用）：diff adh_table_info / adh_column_metadata。
 
     tables: [{TABLE_NAME, TABLE_COMMENT}]；fetch_columns(table_name) -> [{COLUMN_NAME, DATA_TYPE,
@@ -160,6 +160,11 @@ def _apply_sync(ds_id: int, dst_conn, tables: list, fetch_columns) -> None:
     （_sync_mysql_metadata / _sync_sls_metadata）负责，本函数只管回写 + commit/rollback。
     更新分支只用系统字段判变更、保留人工 business_desc 与派生 region_tag/domain_tag
     （同步不得覆盖人工标注——见 test_domain_tag_derivation）。
+
+    Returns:
+        {"tables_deleted": [表名...], "columns_deleted": n}——调用方据此触发血缘
+        物理存在性对账（表在源上消失后，指向它的血缘链路必须同批收敛，否则
+        LLM 下钻会拿到已经不存在的依赖）。
     """
     try:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -336,13 +341,15 @@ def _apply_sync(ds_id: int, dst_conn, tables: list, fetch_columns) -> None:
         print(f"[metadata_sync] Done — "
               f"tables: {len(tables)} ({len(tables_to_insert)} new, {len(tables_to_update)} updated, {len(tables_to_delete)} deleted), "
               f"columns: {len(cols_to_insert)} new, {len(cols_to_update)} updated, {len(cols_to_delete)} deleted.")
+        return {"tables_deleted": sorted(tables_to_delete),
+                "columns_deleted": len(cols_to_delete)}
     except Exception as exc:
         dst_conn.rollback()
         print(f"[metadata_sync] ERROR: {exc}")
         raise
 
 
-def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
+def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> dict:
     """Full sync for MySQL/Doris datasources（information_schema 探查 + 通用回写）。"""
     src_conn = pymysql.connect(
         host=ds_config["host"], port=ds_config["port"],
@@ -354,8 +361,8 @@ def _sync_mysql_metadata(ds_id: int, ds_config: dict) -> None:
     target_schema = ds_config["database"]
     try:
         tables = _fetch_tables(src_conn, target_schema)
-        _apply_sync(ds_id, dst_conn, tables,
-                    lambda t: _fetch_columns(src_conn, t, target_schema))
+        return _apply_sync(ds_id, dst_conn, tables,
+                           lambda t: _fetch_columns(src_conn, t, target_schema))
     finally:
         src_conn.close()
         dst_conn.close()
@@ -402,21 +409,21 @@ def _open_sls_conn(ds_config: dict):
     )
 
 
-def _sync_sls_metadata(ds_id: int, ds_config: dict) -> None:
+def _sync_sls_metadata(ds_id: int, ds_config: dict) -> dict:
     """Full sync for SLS（PG 协议）datasources：LogStore→表、字段→列元数据。"""
     src_conn = _open_sls_conn(ds_config)
     dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
     project_schema = ds_config["database"]
     try:
         tables = _fetch_tables_sls(src_conn, project_schema)
-        _apply_sync(ds_id, dst_conn, tables,
-                    lambda t: _fetch_columns_sls(src_conn, t, project_schema))
+        return _apply_sync(ds_id, dst_conn, tables,
+                           lambda t: _fetch_columns_sls(src_conn, t, project_schema))
     finally:
         src_conn.close()
         dst_conn.close()
 
 
-def _sync_es_metadata(ds_id: int) -> None:
+def _sync_es_metadata(ds_id: int) -> dict:
     """ES 型数据源的元数据同步：表 = 已登记索引别名，列 = `_field_caps` 字段并集。
 
     口径与拍板一致（2026-11-13）：**取并集**、不逐索引展开、不统计索引数量。
@@ -430,7 +437,7 @@ def _sync_es_metadata(ds_id: int) -> None:
     tables = es_table_list(ds)
     dst_conn = _get_doris_conn(METADATA_DB_DATABASE)
     try:
-        _apply_sync(ds_id, dst_conn, tables, lambda t: es_column_list(ds, t))
+        return _apply_sync(ds_id, dst_conn, tables, lambda t: es_column_list(ds, t))
     finally:
         dst_conn.close()
 
@@ -447,12 +454,17 @@ def _sync_es_table_columns(ds_id: int, table_name: str) -> dict:
         dst_conn.close()
 
 
-def sync_metadata(ds_id: int = 0) -> None:
+def sync_metadata(ds_id: int = 0) -> dict:
     """Incremental sync: sync table info and column metadata.
 
     Dispatches by datasource type: mysql/doris → information_schema(pymysql);
     sls → PG 协议 information_schema(psycopg2); es → 索引别名 + `_field_caps` 并集。
     其余类型 fail-loud 报错（不给默认方言去探）。
+
+    表在源上消失时同批触发血缘物理存在性对账（`prune_missing_table_lineage`）：
+    catalog 删行的同时，指向它的血缘链路必须一起收，否则 LLM 会把已删除的
+    表当成仍然有效的依赖。血缘是派生视图，对账失败只告警不回滚元数据同步，
+    但必须显式记录（不静默）。
     """
     if not ds_id:
         raise ValueError("datasource_id is required")
@@ -461,13 +473,33 @@ def sync_metadata(ds_id: int = 0) -> None:
     db_type = ds_config["db_type"]
 
     if db_type in ("mysql", "doris"):
-        _sync_mysql_metadata(ds_id, ds_config)
+        summary = _sync_mysql_metadata(ds_id, ds_config)
     elif db_type == "sls":
-        _sync_sls_metadata(ds_id, ds_config)
+        summary = _sync_sls_metadata(ds_id, ds_config)
     elif is_es_db_type(db_type):
-        _sync_es_metadata(ds_id)
+        summary = _sync_es_metadata(ds_id)
     else:
         raise ValueError(f"暂不支持从 {db_type} 类型数据源同步元数据")
+    _reconcile_lineage_after_drop(summary)
+    return summary or {}
+
+
+def _reconcile_lineage_after_drop(summary: dict) -> None:
+    """表在源上消失后收敛血缘（派生视图，失败不得阻断元数据同步主链路）。"""
+    dropped = (summary or {}).get("tables_deleted") or []
+    if not dropped:
+        return
+    try:
+        from backend.modules.gov.services.lineage_service import (
+            prune_missing_table_lineage)
+        res = prune_missing_table_lineage(0, dry_run=False)
+        print(f"[metadata_sync] 血缘对账：源上消失 {len(dropped)} 张表 "
+              f"({', '.join(dropped[:5])}{'…' if len(dropped) > 5 else ''})，"
+              f"清理表节点 {res.get('nodes_deleted', 0)} 个 / 边 {res.get('edges_deleted', 0)} 条，"
+              f"未决缺口 {res.get('gap_count', 0)} 条")
+    except Exception as exc:  # noqa: BLE001 — 派生视图失败不得回滚事实源同步
+        print(f"[metadata_sync] WARN 血缘对账失败（元数据已同步，"
+              f"血缘待下次重建收敛）: {exc}")
 
 
 def sync_table_columns(ds_id: int, table_name: str) -> dict:
@@ -687,6 +719,30 @@ def _apply_columns_sync(ds_id: int, dst_conn, table_name: str, columns: list) ->
         cols_to_delete = set(existing_cols.keys()) - fresh_col_names
 
         with dst_conn.cursor() as cur:
+            # 0. 兜底登记表行：单表列同步过去只写列，表行只能靠「整源全量同步」产生
+            #    —— 新落地的物化目标表因此「有列无表」：adh_table_info 查不到它，
+            #    search_metadata / 资产目录 / 血缘列级全都看不见（历史缺陷）。
+            #    这里只补缺失行并推进 sync_time；已存在时**不覆盖** table_comment /
+            #    table_business_desc / keywords / region_tag / domain_tag（人工标注与
+            #    派生缓存的事实源不是元数据同步）。
+            cur.execute(
+                "SELECT id FROM adh_table_info WHERE datasource_id = %s AND table_name = %s",
+                (ds_id, table_name),
+            )
+            _tbl_row = cur.fetchone()
+            if _tbl_row is None:
+                cur.execute(
+                    "INSERT INTO adh_table_info "
+                    "(id, datasource_id, table_name, table_comment, table_business_desc, "
+                    " keywords, region_tag, domain_tag, is_active, sync_time) "
+                    "VALUES (%s, %s, %s, '', '', '', %s, %s, 1, %s)",
+                    (int(_time.time() * 1000000) + 800000, ds_id, table_name,
+                     extract_region_tag(table_name), extract_domain_tag(table_name), now),
+                )
+            else:
+                cur.execute("UPDATE adh_table_info SET sync_time = %s WHERE id = %s",
+                            (now, _tbl_row["id"]))
+
             for cn in cols_to_delete:
                 cur.execute(
                     "DELETE FROM adh_column_metadata WHERE table_name = %s AND column_name = %s AND datasource_id = %s",

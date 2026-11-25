@@ -117,6 +117,11 @@ def ontology_json_to_turtle(json_content: str | dict, datasource_id: int = 0) ->
     # path:/step: 节点天然不会被 planner 误当关系链（路径是口径声明，不是关联关系）。
     _emit_paths(lines, model.get("scenarios") or [])
 
+    # ── 任务流（scenarios[].flow）：场景→有序步骤→动作/规则门的可遍历链路 ──
+    # 与 uses_actions（平铺清单）的区别：flow 表达先后顺序与「上一步产出喂下一步」。
+    # 只参与检索与图展开，不参与 SQL JOIN（link_graph._iri_key 只认 obj: 前缀）。
+    _emit_flows(lines, model.get("scenarios") or [])
+
     # Process enums → owl:Class with owl:oneOf
     for enum in model.get("enums", []):
         _emit_enum(lines, enum, model_name)
@@ -210,6 +215,77 @@ def _emit_paths(lines: list[str], scenarios: list) -> None:
                 lines.append(f"{s_iri} adh:stepOn {_class_iri(obj_ref)} .")
         for (cur, _st), (_nxt_iri, _nxt) in zip(step_iris, step_iris[1:]):
             lines.append(f"{cur} adh:nextStep {_nxt_iri} .")
+    if emitted:
+        lines.append("")
+
+
+def _flow_iri(key: str) -> str:
+    return f"adh:flow:{_safe_uri(key)}"
+
+
+def _flow_step_iri(flow_key: str, order: Any) -> str:
+    return f"adh:fstep:{_safe_uri(flow_key)}_{_safe_uri(str(order))}"
+
+
+def _emit_flows(lines: list[str], scenarios: list) -> None:
+    """把场景任务流投影成有序步骤图（任务联动的可遍历链路）。
+
+    canonical 位置: scenarios[].flow = [{order, action, purpose, produces, consumes, gated_by}]。
+    与 uses_actions（平铺清单）的区别：flow 回答"这个任务按什么顺序做、下一步是什么、
+    上一步产出交给谁、卡在哪道规则"。投影后 adh:nextStep / adh:stepAction / adh:stepGatedBy
+    即可在图上从左到右串起来（与血缘页同一 LR 方向语义）。
+    """
+    emitted = False
+    for scn in scenarios or []:
+        flow = scn.get("flow")
+        if not isinstance(flow, list) or not flow:
+            continue
+        skey = str(scn.get("key") or "").strip()
+        if not skey:
+            continue
+        emitted = True
+        scenario_iri = f"adh:scenario:{_safe_uri(skey)}"
+        f_iri = _flow_iri(skey)
+        lines.append(f"{f_iri} a adh:TaskFlow ;")
+        lines.append(f'    rdfs:label "{_escape(str(scn.get("title") or skey))}"@zh ;')
+        lines.append(f"    adh:flowOf {scenario_iri} .")
+
+        ordered: list[tuple[int, dict]] = []
+        for i, st in enumerate([x for x in flow if isinstance(x, dict)], start=1):
+            raw = st.get("order")
+            try:
+                order = int(raw if raw is not None else i)
+            except (TypeError, ValueError):
+                order = i      # 步序写错时按出现序落图（保存侧已 error）
+            ordered.append((order, st))
+        ordered.sort(key=lambda x: x[0])
+
+        prev_iri = ""
+        for order, st in ordered:
+            s_iri = _flow_step_iri(skey, order)
+            label = str(st.get("action_label") or st.get("action") or f"第{order}步")
+            lines.append(f"{s_iri} a adh:FlowStep ;")
+            lines.append(f'    rdfs:label "{_escape(label)}"@zh ;')
+            lines.append(f"    adh:stepOfFlow {f_iri} ;")
+            lines.append(f'    adh:stepOrder "{order}"^^xsd:integer .')
+            act = str(st.get("action") or "").strip()
+            if act:
+                lines.append(f"{s_iri} adh:stepAction adh:act:{_safe_uri(act)} .")
+            if st.get("purpose"):
+                lines.append(f'{s_iri} adh:effect "{_escape(str(st["purpose"]))}"^^xsd:string .')
+            if st.get("channel"):
+                lines.append(f'{s_iri} adh:stepChannel "{_escape(str(st["channel"]))}"^^xsd:string .')
+            if st.get("perm_code"):
+                lines.append(f'{s_iri} adh:stepPerm "{_escape(str(st["perm_code"]))}"^^xsd:string .')
+            if st.get("produces"):
+                lines.append(f'{s_iri} adh:stepProduces "{_escape(str(st["produces"]))}"^^xsd:string .')
+            if st.get("consumes"):
+                lines.append(f'{s_iri} adh:stepConsumes "{_escape(str(st["consumes"]))}"^^xsd:string .')
+            for rk in (st.get("gated_by") or []):
+                lines.append(f"{s_iri} adh:stepGatedBy adh:rule:{_safe_uri(str(rk))} .")
+            if prev_iri:
+                lines.append(f"{prev_iri} adh:nextStep {s_iri} .")
+            prev_iri = s_iri
     if emitted:
         lines.append("")
 

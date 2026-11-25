@@ -29,7 +29,9 @@ from typing import Optional
 from backend.common.db import execute_query, execute_write
 
 # producer_kind / status 取值（与迁移文件注释保持一致）
-PRODUCER_KINDS = ("sync_task", "dag_workflow", "manual", "external")
+# materialize = 定时物化节点（数据集 → 目标表），与 DAG 同步节点同为平台自产，
+# 但口径不同（来源是数据集而非源表），provenance 必须能区分，不能拿 dag_workflow 充数。
+PRODUCER_KINDS = ("sync_task", "dag_workflow", "materialize", "manual", "external")
 STATUSES = ("draft", "certified", "deprecated", "retired")
 COMPAT = ("backward", "forward", "full", "none")
 
@@ -308,6 +310,43 @@ def get_product(product_name: str) -> Optional[dict]:
         "SELECT * FROM adh_data_products WHERE product_name = %s",
         (product_name,), fetchone=True)
     return dict(row) if row else None
+
+
+def set_product_status(product_name: str, status: str, updated_by: str = "system",
+                       reason: str = "") -> dict:
+    """产品状态流转（治理动作，不碰契约与版本）。
+
+    为什么必须单独一个动作：产品是「表 → 本体/数据集」之间的治理身份，
+    表在源上被删除后产品不能继续冒充有效身份——`build_asset_lineage` 只跳过
+    `retired`。此前没有任何入口能把 status 置为 retired（只有 register 能在
+    新建时带 status），于是出现「配了没入口」：血缘一直挂着指向已不存在表的
+    产品节点与 produces 边。
+
+    纪律：
+    - 只接受 STATUSES 白名单；retired 是「从图面与后续级联中退场」的语义，
+      要重新启用应重新登记（重建治理身份），不是把它改回 draft；
+    - 只改 status/updated_at，不动 schema_version / 契约列（历史版本仍可回溯）；
+    - 状态未变化时幂等返回 changed=False，不重复写库。
+    """
+    name = str(product_name or "").strip()
+    if not name:
+        raise ValueError("product_name 必填（数据产品的稳定身份）")
+    status = str(status or "").strip()
+    if status not in STATUSES:
+        raise ValueError(f"status 必须是 {STATUSES}")
+    prev = get_product(name)
+    if not prev:
+        raise KeyError(name)
+    previous = str(prev.get("status") or "")
+    if previous == status:
+        return {"product_name": name, "status": status, "changed": False,
+                "previous": previous}
+    execute_write(
+        "UPDATE adh_data_products SET status=%s, updated_at=%s WHERE product_name=%s",
+        (status, _now(), name))
+    return {"product_name": name, "status": status, "changed": True,
+            "previous": previous, "reason": str(reason or ""),
+            "updated_by": str(updated_by or "system")}
 
 
 def list_products(datasource_name: str = "", status: str = "",

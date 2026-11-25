@@ -270,7 +270,10 @@ export default function TaskMonitor() {
   const handleCleanupStale = async () => {
     try {
       const res = await cleanupStaleRuns();
-      const total = (res.scheduled_runs || 0) + (res.report_runs || 0) + (res.sync_runs || 0);
+      // DAG run/排队/节点也是本次实际清理的实例，漏计会让用户看到
+      // 「没有需要清理的实例」而实际刚清了三条（结果与事实不符）。
+      const total = (res.scheduled_runs || 0) + (res.report_runs || 0) + (res.sync_runs || 0)
+        + (res.dag?.dag_runs || 0) + (res.dag?.dag_queued_runs || 0) + (res.dag?.dag_node_runs || 0);
       toast.success(total > 0 ? t('k_765ef66697', { p0: total }) : t('k_5bdf569289'));
       load();
     } catch (error: any) {
@@ -663,7 +666,8 @@ export default function TaskMonitor() {
                       <td className="p-3">{fmtTime(run.started_at)}</td>
                       <td className="p-3">{fmtTime(run.finished_at)}</td>
                       <td className="p-3 text-right">
-                        <Button variant="ghost" size="sm" onClick={() => navigate(`/data/sync/dag-runs/${run.id}`)}>
+                        <Button variant="ghost" size="sm"
+                                onClick={() => navigate(`/data/sync/dag-runs/${run.id}`, { state: { from: '/system/task-monitor' } })}>
                           {t('k_4f55ee1e68')}
                         </Button>
                       </td>

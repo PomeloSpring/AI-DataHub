@@ -298,19 +298,37 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.queryByRole('button', { name: /查看草案/ })).toBeNull();
   });
 
-  it('丢弃草案 → DELETE 后回到生效版，待发布标记与变更对比页签一起消失', async () => {
+  it('撤销草案（变更对比页签）→ DELETE 后回到生效版，待发布标记与变更对比页签一起消失', async () => {
     await pickModel();
     await toChangesTab();
-    await userEvent.click(await screen.findByRole('button', { name: /丢弃草案/ }));
-    expect(await screen.findByText('草案丢弃后不可恢复；生效版与图谱/知识库不受影响。')).toBeTruthy();
+    // 撤销入口收在页面一处：托盘与审阅面板都发起同一个确认弹窗
+    const discardBtns = await screen.findAllByRole('button', { name: /撤销草案/ });
+    expect(discardBtns.length).toBeGreaterThan(0);
+    await userEvent.click(discardBtns[0]);
+    expect(await screen.findByText('草案撤销后不可恢复；生效版与图谱/知识库不受影响。')).toBeTruthy();
 
-    await userEvent.click(screen.getByRole('button', { name: /确认丢弃/ }));
+    await userEvent.click(screen.getByRole('button', { name: /确认撤销/ }));
     await waitFor(() => expect(vi.mocked(client.delete)).toHaveBeenCalledWith(
       '/catalog/ontology/models/901/draft'));
 
     await waitFor(() => expect(screen.queryByText(/待发布改动尚未生效/)).toBeNull());
     expect(screen.queryByText('待发布')).toBeNull();
     expect(screen.queryByRole('tab', { name: /变更对比/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /^草案 · / })).toBeDisabled();
+  });
+
+  it('对象画布的草案托盘也提供撤销：不必先进变更对比就能丢弃整份草案', async () => {
+    await pickModel();
+    // 默认落在对象画布（非变更对比），底部托盘是待发布改动的处置出口
+    await screen.findByText(/新增「集成记录」/);
+    const trayDiscard = (await screen.findAllByRole('button', { name: /撤销草案/ }))[0];
+    expect(trayDiscard).toBeTruthy();
+
+    await userEvent.click(trayDiscard);
+    await userEvent.click(await screen.findByRole('button', { name: /确认撤销/ }));
+    await waitFor(() => expect(vi.mocked(client.delete)).toHaveBeenCalledWith(
+      '/catalog/ontology/models/901/draft'));
+    await waitFor(() => expect(screen.queryByText('待发布')).toBeNull());
     expect(screen.getByRole('button', { name: /^草案 · / })).toBeDisabled();
   });
 
@@ -339,9 +357,9 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.queryByRole('button', { name: /^发布草案/ })).toBeNull();
     await toChangesTab();
     expect(screen.queryByRole('button', { name: /^发布草案/ })).toBeNull();
-    // 有 save 码：审阅面板仍给编辑与丢弃（不是整页瘫掉）
+    // 有 save 码：审阅面板与托盘仍给编辑与撤销（不是整页瘫掉）
     expect(screen.getByRole('button', { name: /在草案中编辑/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /丢弃草案/ })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /撤销草案/ }).length).toBeGreaterThan(0);
   });
 
   it('基线已失效 → 明示发布会被阻断并禁用发布（不假装能一键发布）', async () => {

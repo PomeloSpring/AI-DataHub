@@ -327,8 +327,13 @@ class TaskMonitorService:
             log_id, status="cancelled", stage_error_code="CANCELLED", finished_at=_now_iso()))
 
     def cleanup_stale(self, timeout_minutes: int = 10) -> dict:
-        """手动卡死清理：定时执行实例 + 报表生成 + 同步执行，全部条件更新为超时。"""
+        """手动卡死清理：定时执行实例 + 报表生成 + 同步执行 + DAG run/节点。
+
+        DAG 部分必须走 ``dag_service.cleanup_stale_runs``（租约判据 + 孤儿节点收口），
+        否则页面上的“运行中”节点没有任何回收点。
+        """
         from backend.modules.flow.services.scheduled_task_service import scheduled_task_service
+        from backend.modules.flow.dag.dag_service import dag_service
         from backend.core.task_runtime import call
         sched = scheduled_task_service.cleanup_stale_running_logs(timeout_minutes)
         reports = call("report.cleanup_stale")
@@ -336,7 +341,8 @@ class TaskMonitorService:
             "UPDATE adh_sync_logs SET status='failed', finished_at=NOW(), "
             "error_message='执行超过租约未完成，已按超时清理' "
             "WHERE status='running' AND started_at<=NOW()-INTERVAL %s MINUTE", (timeout_minutes,))
-        return {"scheduled_runs": sched, "report_runs": reports, "sync_runs": sync}
+        dag = dag_service.cleanup_stale_runs(timeout_minutes)
+        return {"scheduled_runs": sched, "report_runs": reports, "sync_runs": sync, "dag": dag}
 
     # ── 同步任务 ─────────────────────────────────────────────────────
 

@@ -23,11 +23,15 @@ def governed_execute(
     user_id: int,
     workspace_id: int = 0,
     username: str = "",
+    timeout_sec: int = None,
 ) -> dict:
     """经统一护城河执行 raw_sql 取数。
 
     返回 {columns, rows, row_count, elapsed_ms}, 与原 `_execute_on_datasource` 契约一致,
     但结果已按当前用户身份施加敏感列屏蔽(block 剔除/mask 脱敏) + RLS 行级过滤 + 审计。
+
+    `timeout_sec`：仅数据工程通道（定时物化/批量回填）下发的显式读超时预算（秒）。
+    分析面必须保持 None：交互式查询的超时天花板不能被批处理预算抬上去。
 
     Phase 6.4：执行口统一为 `semantics.execute.execute_sql`（护栏 §1），
     异常语义保持——权限拒绝仍是 PermissionError 族，执行失败上抛。
@@ -46,6 +50,7 @@ def governed_execute(
             username=username or "",
             workspace_id=int(workspace_id or 0),
             datasource_id=int(datasource_id or 0),
+            timeout_sec=int(timeout_sec) if timeout_sec else None,
         ))
     except SemanticError as e:
         # 异常语义还原：权限拒绝保持 PermissionError 族，其余按执行失败上抛

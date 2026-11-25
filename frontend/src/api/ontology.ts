@@ -273,7 +273,7 @@ export const ontologyApi = {
       id: number; name: string; status: string; has_draft: boolean;
       draft_json_content: string; effective_json_content: string;
     }>(`/catalog/ontology/models/${id}/draft/content`),
-  /** 丢弃草案（只清草案，生效版不动），需 ontology:save */
+  /** 撤销草案（丢弃整份未发布草案，只清草案列，生效版不动），需 ontology:save */
   discardDraft: (id: number) =>
     client.delete<DraftStatus & { discarded?: boolean }>(`/catalog/ontology/models/${id}/draft`),
   activate: (id: number) => client.post<OntologyModel>(`/catalog/ontology/models/${id}/activate`),

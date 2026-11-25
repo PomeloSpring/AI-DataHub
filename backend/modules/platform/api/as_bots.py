@@ -164,6 +164,8 @@ _TOOL_GROUP_META = {
     "screen": ("可视化大屏", "直建/管理数据大屏 + 字模库(逐图落数据集再挂图, 取数走治理入口)"),
     "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
     "assets": ("工作空间资产", "会话产物与磁盘治理(资产清单/归档收藏/配额用量/两步确认清理)"),
+    "lineage": ("血缘链路", "查平台已算好的血缘：上游取自哪张表、下游影响谁、数据新不新"
+                            "（答案来自 DAG 编排/执行期 SQL/元数据关系，禁止模型自编图谱）"),
     "memory": ("用户记忆", "个人跨会话稳定偏好/口径纠错的读写(仅作用于本人记忆行, 不返回业务数据行; 严禁存会话上下文)"),
     "render": ("交付渲染机", "交付形态渲染机(模型在单图/整份文档间自选): 正文落受管文档对象、消息内只留引用;"
                           " 服务端只把能力硬门与 HTML 体检, 不替模型判“该不该用整页文档”)"),
@@ -188,8 +190,10 @@ _TOOL_LABELS = {
     "list_dashboard_groups": "看板组合", "manage_dashboard_groups": "管理看板组合*",
     "list_vis_components": "字模列表", "get_vis_component": "字模详情", "save_vis_component": "存为字模*",
     "system_usage": "用量统计", "system_overview": "系统概览",
+    "system_capability_plan": "任务流计划",
     "asset_list": "资产清单", "asset_get": "读取资产", "asset_archive": "归档收藏*",
     "disk_status": "磁盘用量", "cleanup_candidates": "清理候选", "cleanup_execute": "执行清理*",
+    "get_lineage": "血缘链路",
     "save_memory": "保存记忆*", "list_memory": "记忆列表", "delete_memory": "删除记忆*",
     "render_html": "交付 HTML 报告*", "render_chart": "交付图表*", "render_report": "交付结构化报告*",
 }

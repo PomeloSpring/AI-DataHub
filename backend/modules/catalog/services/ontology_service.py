@@ -1369,6 +1369,56 @@ def _cloud_path_md(path) -> str:
     return seg
 
 
+def _cloud_flow_md(flow, action_labels: dict, rule_statements: dict) -> list[str]:
+    """任务流的上云投影（白名单）：只出业务名、步骤用途、执行通道与权限码。
+
+    不上云的内容：params_schema、enforcement、物理列——与对象段同一白名单口径。
+    channel 必须显式写明：AI 能直接做的步骤与必须人去界面做的步骤不区分，
+    模型会把“做不了”说成“做完了”（no-silent-degradation）。
+    """
+    if not isinstance(flow, list) or not flow:
+        return []
+    steps = [x for x in flow if isinstance(x, dict)]
+    if not steps:
+        return []
+
+    def _order(st) -> int:
+        try:
+            return int(st.get("order"))
+        except (TypeError, ValueError):
+            return 99
+
+    out = ["  · 执行步骤（按序，AI 与人工分工显式）："]
+    for i, st in enumerate(sorted(steps, key=_order), start=1):
+        action = str(st.get("action") or "")
+        label = action_labels.get(action) or action
+        head = f"    {st.get('order') or i}. {label}"
+        tags: list[str] = []
+        channel = str(st.get("channel") or "")
+        if channel == "ai":
+            tags.append("AI 可直接执行")
+        elif channel == "human":
+            tags.append("需人工到界面完成")
+        if st.get("perm_code"):
+            tags.append(f"权限码 {st['perm_code']}")
+        if tags:
+            head += "｜" + "｜".join(tags)
+        if st.get("purpose"):
+            head += f"：{st['purpose']}"
+        extras: list[str] = []
+        if st.get("consumes"):
+            extras.append(f"依赖上一步产出「{st['consumes']}」")
+        if st.get("produces"):
+            extras.append(f"产出「{st['produces']}」")
+        for rk in (st.get("gated_by") or []):
+            stmt = rule_statements.get(str(rk)) or str(rk)
+            extras.append(f"受规则约束：{str(stmt).rstrip('。')}")
+        if extras:
+            head += "（" + "；".join(extras) + "）"
+        out.append(head)
+    return out
+
+
 def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> str:
     """把 canonical 本体 doc 渲染为可安全上云的业务语义文档(白名单)。
 
@@ -1402,8 +1452,21 @@ def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> s
     scenarios = doc.get("scenarios") or []
     if scenarios:
         parts.append("### 典型使用场景")
+        # 任务流需要把 action key 反查到业务名，规则门反查到业务人话（不上 enforcement）
+        action_labels = {
+            str(a.get("key") or ""): str(a.get("label") or "")
+            for o in (doc.get("objects") or []) for a in (o.get("actions") or [])
+        }
+        rule_statements = {
+            str(r.get("key") or ""): str(r.get("statement") or "")
+            for r in (doc.get("rules") or [])
+        }
         for s in scenarios:
             seg = f"- {s.get('title') or s.get('key', '')}"
+            # 业务别名必须上云：模型是拿口语名（如「看板发布」）问的，不知道别名就找不到场景
+            alias_names = [str(a).strip() for a in (s.get("aliases") or []) if str(a).strip()]
+            if alias_names:
+                seg += f"（又称：{'、'.join(alias_names)}）"
             if s.get("goal"):
                 seg += f"：{s['goal']}"
             parts.append(seg)
@@ -1411,6 +1474,8 @@ def to_cloud_md(doc: dict, dataset_vars_fn=None, dict_metrics: dict = None) -> s
             seg = _cloud_path_md(s.get("path"))
             if seg:
                 parts.append(seg)
+            # 任务流：场景→有序步骤→（动作/权限码/规则门）；channel 显式区分 AI 可执行与需人工
+            parts.extend(_cloud_flow_md(s.get("flow"), action_labels, rule_statements))
             sroute = s.get("route") or {}
             for e in (sroute.get("sources") or []):
                 e = e or {}

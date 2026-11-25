@@ -28,6 +28,7 @@ import PaginationBar, { DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { formatDateTime } from '@/lib/format';
 import DatasetBatchSourceDialog from './DatasetBatchSourceDialog';
 import ShareDatasetDialog from './ShareDatasetDialog';
+import TagsEditor, { normalizeTagList } from './TagsEditor';
 import { useTranslation } from 'react-i18next';
 
 interface Dataset {
@@ -56,6 +57,11 @@ interface Dataset {
   is_owner?: boolean;
   /** 当前身份是否真有可执行源（分页档显式下发，false=标“不可用”，不静默藏行） */
   executable?: boolean;
+  /** 分类标签（业务域/物化目的等；只用于筛选，不参与取数与权限） */
+  tags?: string[];
+  /** 口径来源（服务端写入、只读：人工定义/看板收编/AI 会话产物） */
+  origin?: string;
+  origin_label?: string;
   field_count: number;
   references: number;
   updated_at: string;
@@ -68,6 +74,14 @@ const SOURCE_LABELS: Record<string, string> = {
   sql: 'SQL',
   semantic: tr('k_668cea6a49'),
   both: tr('k_764b4b7d97'),
+};
+// 口径来源（这份定义怎么来的）的业务名：值域与计数由服务端枚举下发（`/datasets/origins`），
+// 文案走 i18n；将来服务端新增来源时回退它下发的 label，不把内部枚举当名称展示
+// （ui-resource-display §1）。
+const ORIGIN_LABEL_KEYS: Record<string, string> = {
+  manual: 'k_2fd6e772e0',
+  chart_backfill: 'k_5f4893f030',
+  ai_session: 'k_255ae0dcb7',
 };
 // 图表预设只支持真实图表(排除参数控件)
 const PRESET_CHART_TYPES = CHART_TYPES.filter(t => t.category !== 'widget');
@@ -93,6 +107,17 @@ export default function Datasets() {
   const [sourceFilter, setSourceFilter] = useState('0');
   // 筛选：可见范围 'all' | 'private' | 'workspace'
   const [visibilityFilter, setVisibilityFilter] = useState('all');
+  // 筛选：标签（'__all__'=不限，否则为标签原文）。选项来自服务端（与清单同一可见性谓词）
+  const [tagFilter, setTagFilter] = useState('__all__');
+  const [allTags, setAllTags] = useState<Array<{ name: string; count: number }>>([]);
+  // 筛选：口径来源（'__all__'=不限）。来源是固定枚举，选项由服务端下发，前端不硬编码值域
+  const [originFilter, setOriginFilter] = useState('__all__');
+  const [originOptions, setOriginOptions] = useState<Array<{ value: string; label: string; count: number }>>([]);
+  // 筛选：取数方式（'__all__'=不限）= 行上「来源」列那一值（SQL / 语义对象 / 两种并存）
+  const [typeFilter, setTypeFilter] = useState('__all__');
+  const [typeOptions, setTypeOptions] = useState<Array<{ value: string; label: string; count: number }>>([]);
+  // 筛选项拉取失败要显式告知（不能退成“无标签/无来源”被误读为库里没有）
+  const [facetsError, setFacetsError] = useState(false);
   const [datasources, setDatasources] = useState<any[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -120,6 +145,9 @@ export default function Datasets() {
           keyword,
           datasource_id: Number(sourceFilter) || 0,
           visibility: visibilityFilter === 'all' ? '' : visibilityFilter,
+          tags: tagFilter === '__all__' ? '' : tagFilter,
+          origin: originFilter === '__all__' ? '' : originFilter,
+          source_type: typeFilter === '__all__' ? '' : typeFilter,
           page,
           page_size: pageSize,
         },
@@ -137,7 +165,7 @@ export default function Datasets() {
     } finally {
       setLoading(false);
     }
-  }, [keyword, sourceFilter, visibilityFilter, page, pageSize]);
+  }, [keyword, sourceFilter, visibilityFilter, tagFilter, originFilter, typeFilter, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -148,7 +176,9 @@ export default function Datasets() {
   }, [kwInput]);
 
   // 筛选/搜索/每页条数变化 → 回到第 1 页（停在旧页码会拿到错位空清单）
-  useEffect(() => { setPage(1); }, [keyword, sourceFilter, visibilityFilter, pageSize]);
+  useEffect(() => {
+    setPage(1);
+  }, [keyword, sourceFilter, visibilityFilter, tagFilter, originFilter, typeFilter, pageSize]);
 
   // 数据源筛选器选项（显示 name、value=id，符合“显示用 name、选择用选择框”规范）
   useEffect(() => {
@@ -156,6 +186,25 @@ export default function Datasets() {
       .then(({ data }) => setDatasources(Array.isArray(data) ? data : (data?.items || [])))
       .catch(() => setDatasources([]));
   }, []);
+
+  // 筛选项：标签（自由文本汇总）+ 取数方式（固定枚举）+ 口径来源（固定枚举）。同批拉取，
+  // 任一失败都要显式提示并可重试：空选项不得冒充“库里没有”（no-silent-degradation）。
+  const loadFacets = useCallback(async () => {
+    const [tagRes, typeRes, originRes] = await Promise.allSettled([
+      client.get('/datasets/tags'),
+      client.get('/datasets/source-types'),
+      client.get('/datasets/origins'),
+    ]);
+    setAllTags(tagRes.status === 'fulfilled' && Array.isArray(tagRes.value.data?.items)
+      ? tagRes.value.data.items : []);
+    setTypeOptions(typeRes.status === 'fulfilled' && Array.isArray(typeRes.value.data?.items)
+      ? typeRes.value.data.items : []);
+    setOriginOptions(originRes.status === 'fulfilled' && Array.isArray(originRes.value.data?.items)
+      ? originRes.value.data.items : []);
+    setFacetsError(tagRes.status === 'rejected' || typeRes.status === 'rejected'
+      || originRes.status === 'rejected');
+  }, []);
+  useEffect(() => { loadFacets(); }, [loadFacets]);
 
   const handleDelete = async (ds: Dataset) => {
     if (!confirm(tr('k_b60c1886cc', { p0: ds.name }))) return;
@@ -266,7 +315,7 @@ export default function Datasets() {
         </div>
       </div>
 
-      {/* 筛选项：关键字（防抖）/ 数据源 / 可见范围；筛选全部下推服务端（不在前端再 filter） */}
+      {/* 筛选项：关键字（防抖）/ 数据源 / 可见范围 / 取数方式 / 标签 / 口径来源；全部下推服务端 */}
       <div className="flex gap-2 mb-4 flex-wrap shrink-0">
         <Input
           placeholder={t("k_b05ef3f713")}
@@ -279,10 +328,10 @@ export default function Datasets() {
           onValueChange={setSourceFilter}
         >
           <SelectTrigger className="w-56 h-9" aria-label={t("k_3a38ce0110")}>
-            <SelectValue placeholder={t("k_f8d22fd22e")} />
+            <SelectValue placeholder={t("k_ae6802c77c")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="0">{t("k_f8d22fd22e")}</SelectItem>
+            <SelectItem value="0">{t("k_ae6802c77c")}</SelectItem>
             {/* 只留「数据源」维度：“ES 取数通道”那组已撤（与按 ES 源筛重复且词容易误读，
                 理由见文首 ES 通道注释）；数据源清单回源 `/datasources/`，不写死。 */}
             {datasources.map((d: any) => (
@@ -300,9 +349,66 @@ export default function Datasets() {
             <SelectItem value="workspace">{tr('k_2f81d5ae64')}</SelectItem>
           </SelectContent>
         </Select>
-        {(kwInput || sourceFilter !== '0' || visibilityFilter !== 'all') && (
+        {/* 取数方式筛（SQL / 语义对象 / 两种并存）：与行上「来源」列同一枚举（服务端下发）；
+            按显示值精确匹配，不把“两种并存”并进 SQL/语义（筛完能逐行核验） */}
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-40 h-9" aria-label={tr('k_63adda1672')}>
+            <SelectValue placeholder={tr('k_fa6968d9f0')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">{tr('k_fa6968d9f0')}</SelectItem>
+            {typeOptions.map(o => (
+              <SelectItem key={o.value} value={o.value}>
+                {SOURCE_LABELS[o.value] || o.label}{o.count ? `（${o.count}）` : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {/* 标签筛：单标签（多标签 AND 由后端下推 JSON_CONTAINS）；选项来自已可见数据集的标签汇总 */}
+        <Select value={tagFilter} onValueChange={setTagFilter}>
+          <SelectTrigger className="w-44 h-9" aria-label={tr('k_6d0ce36058')}>
+            <SelectValue placeholder={tr('k_ffd92f5524')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">{tr('k_ffd92f5524')}</SelectItem>
+            {allTags.map(tag => (
+              <SelectItem key={tag.name} value={tag.name}>
+                {tag.name}{tag.count ? `（${tag.count}）` : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {/* 口径来源筛（人工定义/看板收编/AI 会话产物）：值域由服务端枚举下发，
+            未知值由后端白名单显式拒（不静默当“不限”；no-silent-degradation） */}
+        <Select value={originFilter} onValueChange={setOriginFilter}>
+          <SelectTrigger className="w-40 h-9" aria-label={tr('k_45c33d233c')}>
+            <SelectValue placeholder={tr('k_f8d22fd22e')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">{tr('k_f8d22fd22e')}</SelectItem>
+            {originOptions.map(o => (
+              <SelectItem key={o.value} value={o.value}>
+                {ORIGIN_LABEL_KEYS[o.value] ? tr(ORIGIN_LABEL_KEYS[o.value]) : o.label}
+                {o.count ? `（${o.count}）` : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {facetsError && (
+          <span className="text-[11px] text-destructive flex items-center gap-1">
+            {tr('k_8dc1d914b3')}
+            <button type="button" className="underline hover:no-underline" onClick={loadFacets}>
+              {tr('k_e2d53a6d3a')}
+            </button>
+          </span>
+        )}
+        {(kwInput || sourceFilter !== '0' || visibilityFilter !== 'all'
+          || typeFilter !== '__all__' || tagFilter !== '__all__' || originFilter !== '__all__') && (
           <Button size="sm" variant="ghost" className="h-9"
-            onClick={() => { setKwInput(''); setSourceFilter('0'); setVisibilityFilter('all'); }}>
+            onClick={() => {
+              setKwInput(''); setSourceFilter('0'); setVisibilityFilter('all');
+              setTypeFilter('__all__'); setTagFilter('__all__'); setOriginFilter('__all__');
+            }}>
             {tr('k_3d81345303')}</Button>
         )}
       </div>
@@ -344,6 +450,8 @@ export default function Datasets() {
               {canManage && batchMode && <TableHead className="w-10" />}
               <TableHead className="min-w-[220px]">{tr('k_1be7ae4fc2')}</TableHead>
               <TableHead>{tr('k_c63f79e636')}</TableHead>
+              <TableHead>{tr('k_e030d37edf')}</TableHead>
+              <TableHead>{tr('k_ae0a7afece')}</TableHead>
               <TableHead>{tr('k_a3ccf702c5')}</TableHead>
               <TableHead className="text-right">{tr('k_77a49f2c38')}</TableHead>
               <TableHead className="text-right">{tr('k_23c0e102a0')}</TableHead>
@@ -387,6 +495,33 @@ export default function Datasets() {
                         {tr('k_645f449115')}</Badge>
                     )}
                   </div>
+                </TableCell>
+                <TableCell className="py-2">
+                  {/* 口径来源是服务端写入的只读事实（这份定义是人写的还是收编来的），
+                      行上可见才能核验筛选结果；内部枚举不当名称展示 */}
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {ds.origin && ORIGIN_LABEL_KEYS[ds.origin]
+                      ? tr(ORIGIN_LABEL_KEYS[ds.origin])
+                      : (ds.origin_label || '—')}
+                  </span>
+                </TableCell>
+                <TableCell className="py-2">
+                  {/* 标签只做分类展示（≤3 个 + 剩余计数）；它是自由文本，不参与取数与权限 */}
+                  {(() => {
+                    const tags = normalizeTagList(ds.tags);
+                    if (!tags.length) return <span className="text-xs text-muted-foreground">—</span>;
+                    return (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {tags.slice(0, 3).map(tag => (
+                          <Badge key={tag} variant="secondary" className="text-[10px]">{tag}</Badge>
+                        ))}
+                        {tags.length > 3 && (
+                          <span className="text-[10px] text-muted-foreground"
+                            title={tags.slice(3).join('、')}>+{tags.length - 3}</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell className="py-2">
                   <div className="flex items-center gap-1 flex-wrap">
@@ -569,6 +704,9 @@ function CreateDatasetDialog({
     name: '', description: '', datasource_id: 0, sql_query: '',
     chart_type: '',
   });
+  // 标签（业务域/物化目的等）：只做分类检索，不影响取数/权限
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [preset, setPreset] = useState({ xCol: '', yCol: '', groupCol: '' });
   const [datasources, setDatasources] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
@@ -580,6 +718,11 @@ function CreateDatasetDialog({
     client.get('/datasources/').then(({ data }) => {
       setDatasources(Array.isArray(data) ? data : (data?.items || []));
     }).catch(() => setDatasources([]));
+    // 已用标签供一键复用（避免同义异写）；拉不到就当无建议，不阻断新建
+    client.get('/datasets/tags')
+      .then(({ data }) => setTagOptions(
+        (Array.isArray(data?.items) ? data.items : []).map((t: any) => String(t?.name || '')).filter(Boolean)))
+      .catch(() => setTagOptions([]));
   }, [open]);
 
   // 图表预设可选列: 按 SQL 结果列
@@ -628,6 +771,7 @@ function CreateDatasetDialog({
         chart_type: form.chart_type,
         chart_preset: chartPreset,
         field_config: inferredFields,
+        tags,
       });
       toast.success(tr('k_2215b20d59'));
       onCreated(data.id);
@@ -669,6 +813,10 @@ function CreateDatasetDialog({
           <div className="space-y-1.5">
             <Label>{t("k_412f54dc38")}</Label>
             <Textarea rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>{tr('k_aae763a530')}</Label>
+            <TagsEditor value={tags} onChange={setTags} suggestions={tagOptions} />
           </div>
 
           {/* ── 执行正文（治理域 SQL）── */}

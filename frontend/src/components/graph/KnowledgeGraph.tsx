@@ -55,6 +55,12 @@ export const NODE_CONFIG: Record<string, { color: string; label: string }> = {
   Property: { color: '#22c55e', label: '属性' },
   Rule: { color: '#f59e0b', label: '规则' },
   Scenario: { color: '#8b5cf6', label: '场景' },
+  // 资产血缘层（数据产品/数据集/图表/报表）：与上列色板同一事实源，
+  // 血缘页的图例与节点颜色都从这里取，不另造一套配色（图可视化规范 §2）。
+  Product: { color: '#0891b2', label: '数据产品' },
+  Dataset: { color: '#a855f7', label: '数据集' },
+  Chart: { color: '#e11d48', label: '图表' },
+  Report: { color: '#64748b', label: '报表' },
 };
 
 /** 圆节点尺寸随标签长度收敛（参考图：圆的大小托住标签）。 */
@@ -82,6 +88,10 @@ export function leafDotSize(type?: string): number {
     case 'Column': return 10;
     case 'DataSource': return 26;
     case 'ETLTask': return 22;
+    case 'Product': return 20;
+    case 'Dataset': return 20;
+    case 'Chart': return 18;
+    case 'Report': return 18;
     default: return 16;
   }
 }

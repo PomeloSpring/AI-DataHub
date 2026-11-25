@@ -900,6 +900,33 @@ def test_screen_direct_rules_replace_design_rules():
     assert "site" in rules
 
 
+def test_capability_plan_rules_injected_only_with_system_tool():
+    """任务编排纪律只随 system 组工具注入：
+
+    `system_capability_plan` 属 system 组，与 screen 组是两套授权。
+    放进 SCREEN_DIRECT_RULES 会出现「有 screen 没 system」时教模型调一个不存在的工具
+    （空承诺）；反过来「有 system 没 screen」也要能拿到计划纪律。
+    """
+    pc = importlib.import_module("backend.modules.mind.execution.prompt_composer")
+    assert "system_capability_plan" in pc.CAPABILITY_PLAN_RULES
+    assert "system_capability_plan" not in pc.SCREEN_DIRECT_RULES
+
+    def prompt_for(tool_names: list) -> str:
+        return pc.compose_system_prompt(
+            default_as_bot=None, as_bots=[],
+            capabilities={"tools": [{"name": n} for n in tool_names]},
+        )
+
+    marker = "先取计划再按步执行"
+    only_system = prompt_for(["mcp__datahub_system__system_capability_plan"])
+    only_screen = prompt_for(["mcp__datahub_screen__create_data_screen"])
+    both = prompt_for(["mcp__datahub_system__system_capability_plan",
+                       "mcp__datahub_screen__create_data_screen"])
+    assert marker in only_system
+    assert marker not in only_screen
+    assert marker in both
+
+
 # ── 数据集刷新链路：相对时间窗按当前时刻重算（不静默丢口径）──────────
 
 def test_refresh_dataset_chart_passes_intent_window_from_config(monkeypatch):
