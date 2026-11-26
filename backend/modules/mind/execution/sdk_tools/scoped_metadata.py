@@ -3,8 +3,8 @@ import json
 
 from backend.common.db import execute_query
 from backend.modules.mind.execution.sdk_tools.semantic_tools import (
-    KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, fit_metrics_payload,
-    metric_keywords,
+    KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, build_object_hits,
+    fit_metrics_payload, metric_keywords,
 )
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
@@ -218,8 +218,46 @@ def execute(name, args, ctx, resource_scope=None):
         out["keyword_note"] = (
             "只回命中条目（BM25+子串排序取前 {n} 条），不是对象全量；每个对象带 "
             "metric_total/dimension_total（该对象一共多少条），truncated=true 表示还有命中未下发。"
-            "要看某对象全量：get_metrics(object=\"<object>\")；要换角度再排：调整 keyword 或 top_k。"
-            "未出现的对象=名称/英文名/别名/枚举业务名不含这些词，不代表平台没有该口径。").format(n=top_k)
+            "要看某对象全量：get_metrics(object=\"<object>\")；要换角度再排：调 整 keyword 或 top_k。"
+            "未出现的对象=名称/英文名/别名/枚举业务名不含这些词，不代表平台没有 该口径。").format(n=top_k)
+        # 对象级命中（对象名/别名/描述）+ 跨对象可执行写法。字典行检索看不到本体对象自身
+        # 的业务名（如「第三方集成」→ isv），也没有跨对象链路的提示——这两件缺失会让模型
+        # 只看到部分对象的同名字段就反问口径（2026-11-26 联耀「第三方集成用户类型」实测）。
+        doc_objects: list[dict] = []
+        for row in rows:
+            doc = row["json_content"]
+            if isinstance(doc, str):
+                doc = json.loads(doc)
+            for obj in (doc or {}).get("objects", []):
+                if not obj.get("key"):
+                    continue
+                doc_objects.append({
+                    "key": obj.get("key"),
+                    "display_name": obj.get("display_name") or "",
+                    "aliases": obj.get("aliases") or [],
+                    "description": obj.get("description") or "",
+                    "links": obj.get("links") or [],
+                })
+        obj_hits = build_object_hits(keywords, doc_objects, loaded)
+        if obj_hits:
+            out["object_hits"] = obj_hits
+            out["object_hits_note"] = (
+                "object_hits = 对象名/别名/描述命中的本体对象（不一定命中字典条目）："
+                "cross_object 给出该对象 ≤2 跳关联对象上与本问题相关的维度/指标，按「对象key.名称」"
+                "跨对象引用，语义层按本体 links 自动 JOIN（最多 2 跳）——主对象上没有该字段时用这些写法，"
+                "不得改用裸 SQL，也不得静默丢掉该维度。")
+            # 前移到 objects 之前：**展示链路**按前缀截断（stream_utils 的展示上限，
+            # get_metrics 走默认 2000 字符），提示落在末尾的话时间线/历史回放里根本看不见
+            # ——「存了但不可诊断」。模型侧的超大输出不是前缀截断，而是运行时整份落盘换
+            # 文件指针，那一条靠 fit_metrics_payload 的预算兜住，顺序救不了。
+            ordered: dict = {}
+            for k, v in out.items():
+                if k == "objects":
+                    ordered["object_hits"] = out["object_hits"]
+                    ordered["object_hits_note"] = out["object_hits_note"]
+                if k not in ("object_hits", "object_hits_note"):
+                    ordered[k] = v
+            out = ordered
         return _scope_note(fit_metrics_payload(out))
     models, candidates = [], []
     keyword = str(args.get("query") or args.get("keyword") or args.get("table_name") or "").strip().lower()

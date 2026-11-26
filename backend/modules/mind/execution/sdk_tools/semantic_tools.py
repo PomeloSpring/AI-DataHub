@@ -425,6 +425,173 @@ def metric_keywords(args: dict) -> list[str]:
     return [w.lower() for w in _dedupe(_split_multi(args.get("keyword")))][:10]
 
 
+# ── 对象级命中 + 跨对象可执行写法（一次给足，省下钻轮次）──────────────────
+# 为什么需要它（2026-11-26 联耀实测）：get_metrics 的关键词只检索**字典行**（指标/维度名与
+# 别名），本体对象自身的业务名/别名/描述不参与。用户问「第三方集成的用户类型」时，
+# `isv`（open_isv_info）根本不出现在候选里，模型只看到 user / user_company_membership
+# 两套「用户类型」就反问口径；即使看到 isv，也不知道它经「商户绑定用户」2 跳可达
+# 「用户企业关系」。这里把两件事一次给足：对象命中 + 该对象的跨对象可执行写法。
+# 只**推荐写法**，不替调用方自动跨对象绑定（口径仍由用户/模型确认，宁缺勿错）。
+_CROSS_MAX_HOPS = 2          # 与 planner._JOIN_MAX_HOPS 同口径
+_CROSS_HINT_LIMIT = 8
+# 对象描述下发：摘要截断 + 「【」口径段**整段保留**。
+# 为什么不能硬截一个固定值（2026-11-26 实测）：口径/跨对象写法写在描述末尾，
+# 硬截 160 后模型只看到半句「本对象经「商户绑定用户」(isv_」，随后判定
+# “描述被截断，需要知识库查完整描述”白烧一轮检索，跨对象写法直接丢掉。
+_DESC_HEAD_CHARS = 240
+_DESC_NOTE_MAX = 800
+
+
+def _object_desc(desc, head_chars: int = _DESC_HEAD_CHARS) -> str:
+    """对象描述下发：业务摘要（可截断，必须标注）+ 「【…】」口径段整段保留。
+
+    口径段从【开始切分，而不是先截 head 再补全段：两者重叠会把同一口径写两遍，
+    既浪费预算又让模型误以为看到两套口径。
+    """
+    s = str(desc or "").strip()
+    if len(s) <= head_chars:
+        return s
+    cut = s.find("\n【")
+    if cut < 0 and s.startswith("【"):
+        cut = 0
+    body, notes = (s[:cut], s[cut:]) if cut >= 0 else (s, "")
+    body = body.strip()
+    if len(body) > head_chars:
+        body = body[:head_chars].rstrip() + "…（摘要已截断）"
+    notes = notes.strip()
+    if len(notes) > _DESC_NOTE_MAX:
+        notes = (notes[:_DESC_NOTE_MAX]
+                 + "…（口径说明已截断，完整见 get_ontology_model(object=…)）")
+    return "\n".join(p for p in (body, notes) if p)
+
+
+def _usable_link_join(join) -> bool:
+    """与 planner._join_is_usable 同口径：空 join 与跨跳占位符（含 →/—）都不可编译。"""
+    j = str(join or "")
+    return bool(j.strip()) and "→" not in j and "—" not in j
+
+
+def _reachable_objects(edges: dict[str, list[str]], src: str,
+                       hops: int = _CROSS_MAX_HOPS) -> list[str]:
+    """src 出发 ≤hops 跳的可编译关联对象（不含自身，BFS 层序稳定）。"""
+    out: list[str] = []
+    seen = {src}
+    frontier = [src]
+    for _ in range(hops):
+        nxt: list[str] = []
+        for node in frontier:
+            for tgt in edges.get(node) or []:
+                if tgt in seen:
+                    continue
+                seen.add(tgt)
+                out.append(tgt)
+                nxt.append(tgt)
+        frontier = nxt
+    return out
+
+
+def build_object_hits(keywords: list[str], objects: list[dict], dict_rows: list[dict],
+                      *, limit: int = 5, max_cross: int = _CROSS_HINT_LIMIT) -> list[dict]:
+    """关键词命中的本体对象 + 其 ≤2 跳关联对象上可跨对象引用的维度/指标。
+
+    objects: [{key, display_name, aliases, description, links:[{target, join}]}]
+    dict_rows: [{object, kind, name, aliases}]（已在调用方做过作用域过滤）
+
+    命中分档：名称/别名完全相同 > 名称/别名包含 > 描述包含（档内按 key 定序，确定性）。
+    cross_object 先给「名称/别名含关键词」的行，剩余名额补该关联对象已登记的指标——
+    因为问「按 X 分类有多少」时，分类字段与计数指标往往不同名。
+    """
+    toks = [str(k).strip().lower() for k in (keywords or []) if str(k).strip()]
+    if not toks:
+        return []
+    scored: list[tuple] = []
+    for obj in objects or []:
+        key = str(obj.get("key") or "").strip()
+        if not key:
+            continue
+        names = [key, str(obj.get("display_name") or "")]
+        names += [str(a) for a in (obj.get("aliases") or [])]
+        names_l = [n.lower() for n in names if n]
+        desc_l = str(obj.get("description") or "").lower()
+        tier = None
+        for t in toks:
+            if any(n == t for n in names_l):
+                tier = 0
+                break
+            if any(t in n for n in names_l):
+                tier = 1
+                break
+        if tier is None and any(t in desc_l for t in toks):
+            tier = 2
+        if tier is not None:
+            scored.append((tier, key, obj))
+    scored.sort(key=lambda x: (x[0], x[1]))
+
+    edges: dict[str, list[str]] = {}
+    for obj in objects or []:
+        src = str(obj.get("key") or "")
+        if src:
+            edges[src] = [str(l.get("target") or "") for l in (obj.get("links") or [])
+                          if l.get("target") and _usable_link_join(l.get("join"))]
+    rows_by_obj: dict[str, list] = {}
+    for r in dict_rows or []:
+        rows_by_obj.setdefault(str(r.get("object") or ""), []).append(r)
+
+    out: list[dict] = []
+    for _tier, key, obj in scored[:limit]:
+        # 主对象自己已有同名字段时不再推荐别处的同名（否则「用户类型」会指向 user 主档的
+        # 简化分类，而不是 user_company_membership 的权威 0–11 编码）。
+        # 身份名取 name/name_en/aliases：同义（如「用户类型」是企业用户类型的别名）也算自有。
+        own: set[str] = set()
+        for r in rows_by_obj.get(key, []):
+            for n in [r.get("name"), r.get("name_en")] + list(r.get("aliases") or []):
+                if str(n or "").strip():
+                    own.add(str(n).strip().lower())
+        matched: list[str] = []
+        backup_by_obj: dict[str, list[str]] = {}
+        for tgt in _reachable_objects(edges, key):
+            for r in rows_by_obj.get(tgt, []):
+                name = str(r.get("name") or "")
+                if not name or name.lower() in own:
+                    continue
+                ref = f"{tgt}.{name}"
+                hay = " ".join([name, str(r.get("name_en") or "")]
+                               + [str(a) for a in (r.get("aliases") or [])]).lower()
+                if any(t in hay for t in toks):
+                    if ref not in matched:
+                        matched.append(ref)
+                elif r.get("kind") in ("metric", "dimension"):
+                    lst = backup_by_obj.setdefault(tgt, [])
+                    if ref not in lst:
+                        lst.append(ref)
+        # 名额分配：关键词命中优先；余量按目标对象**轮转**各补 2 条，避免单个对象
+        # （如 1 跳的 user）把 8 个名额全占满，导致真正需要的 2 跳对象不给提示。
+        cross = matched[:max_cross]
+        seen = set(cross)
+        queues = {tgt: [r for r in refs if r not in seen][:2]
+                  for tgt, refs in backup_by_obj.items()}
+        progressed = True
+        while len(cross) < max_cross and progressed:
+            progressed = False
+            for tgt in list(queues):
+                if len(cross) >= max_cross:
+                    break
+                if queues[tgt]:
+                    ref = queues[tgt].pop(0)
+                    if ref in seen:
+                        continue
+                    seen.add(ref)
+                    cross.append(ref)
+                    progressed = True
+        item = {"object": key,
+                "display_name": obj.get("display_name") or "",
+                "description": _object_desc(obj.get("description"))}
+        if cross:
+            item["cross_object"] = cross
+        out.append(item)
+    return out
+
+
 async def get_glossary(args):
     """业务术语查询; 支持 keywords 一次传多个(逗号分隔/JSON数组), 合并去重返回。
 

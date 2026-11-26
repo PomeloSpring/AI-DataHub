@@ -54,6 +54,11 @@ SEMANTIC_QUERY_RULES = """## 数据查询规范（统一语义层）
 - 指标/维度名必须从「实时目录或平台同步语义层文档」原文复制（name 或任一 alias 都合法）；告警提示「无法解析」时，
   附近似候选就先判断是否就是用户要的口径、确认后重试一次，否则从「可用指标/维度」清单里选最贴近的重试——
   系统不会自动绑定近似名（宁缺勿错）。
+- **跨对象字段用「对象key.名称」限定**：要分组/过滤的字段在本对象上没有、而在关联对象上时（典型：商户看板里
+  「按第三方集成用户类型看」——类型列在用户企业关系上），dimensions 写 `["<object_key>.<维度名>"]`
+  （key 取 get_metrics/检索返回的 object/对象 key，如 `user_company_membership.用户类型`）。语义层按本体
+  links 的单跳关联自动 JOIN（最多 2 跳）；返回「无关联路径」= 该关系未建模/未配 join，返回「多条同长度
+  关联路径」= 口径不唯一——两者都**不得**改用裸 SQL，也不得静默丢掉该维度，按告警给出的候选向用户确认口径。
 - **时间必须落成参数**：相对滚动窗用 `time_window`（`7d`/`24h`/`1M`），日历区间用 `time_range`（只接受
   `today`/`yesterday`/`this_week`/`last_week`/`this_month`/`last_month`/`this_quarter`/`last_quarter`/
   `this_year`/`last_year`），两者可配 `time_column`，由语义层按数据源方言编译成时间谓词；按天/按月趋势 =

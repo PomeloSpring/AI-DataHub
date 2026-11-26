@@ -287,6 +287,10 @@ def _dialect_of(db_type: str) -> str:
 _JOIN_MAX_HOPS = 2
 _links_cache: dict[int, tuple[float, dict]] = {}
 _LINKS_TTL_SEC = 60.0
+# 「主对象上解析不到 → 关联对象上同名维度/指标」的推荐写法缓存
+# （仅失败路径的提示，60s TTL；元数据库是远程的，重跑同一无解名称不必重查）
+_XOBJ_HINT_CACHE: dict[tuple, tuple[float, list[str]]] = {}
+_XOBJ_HINT_TTL_SEC = 60.0
 
 
 def _identity(s: str) -> str:
@@ -394,26 +398,112 @@ def _load_object_links(datasource_id: int = 0) -> dict:
     return data
 
 
+def _join_is_usable(join) -> bool:
+    """该关系的 join 能不能编进 SQL：空 join（纯语义关系）与跨跳占位符（含 `→`/`—`）都不能。
+
+    跨跳占位符是建模时写的“两段式说明”（`A.x = Mid.x → Mid.y = C.y`），中间表/对象未建模，
+    无法确定性改写。必须在这里就当作**不可遍历边**跳过：否则 BFS 把它当最短路径选出来，
+    真正可用的多跳路径（A→B→C 各自单跳 join）永远轮不到（历史缺陷 2026-11-26：
+    用户→企业 被 `→` 直连边占据，2 跳的正规路径被挡，跨对象维度一律被丢）。
+    """
+    j = str(join or "")
+    return bool(j.strip()) and "→" not in j and "—" not in j
+
+
+def _link_chains(edges: dict[str, list[tuple[str, str]]], src: str, dst: str,
+                 max_hops: int = _JOIN_MAX_HOPS) -> list[list[tuple[str, str]]]:
+    """BFS 求出**最短**层级的全部可编译关系链（按节点序列去重）。
+
+    只走**可编译**的边（非空 join 且无跨跳占位符）。返回多条 = 图上有多个同长度口径
+    （如 用户→企业 可经“用户企业关系”也可经“案例”），选哪条会改变数据含义。
+    """
+    if src == dst:
+        return [[]]
+    frontier: list[tuple[str, list, set]] = [(src, [], {src})]
+    for _ in range(max_hops):
+        nxt: list[tuple[str, list, set]] = []
+        found: list[list[tuple[str, str]]] = []
+        for node, path, seen in frontier:
+            for tgt, join in edges.get(node, []):
+                if not _join_is_usable(join):
+                    continue        # 语义关系/跨跳说明不构成 SQL 链(宁缺勿错)
+                if tgt == dst:
+                    found.append(path + [(tgt, join)])
+                    continue
+                if tgt not in seen:
+                    nxt.append((tgt, path + [(tgt, join)], seen | {tgt}))
+        if found:
+            uniq: dict[tuple, list] = {}
+            for p in found:
+                uniq.setdefault(tuple(t for t, _ in p), p)
+            return list(uniq.values())
+        frontier = nxt
+    return []
+
+
 def _link_chain(edges: dict[str, list[tuple[str, str]]], src: str, dst: str,
                 max_hops: int = _JOIN_MAX_HOPS) -> Optional[list[tuple[str, str]]]:
-    """BFS 求 src→dst 关系链(≤max_hops 跳); 无路径 None(回抛, 不猜 join)。"""
-    if src == dst:
-        return []
-    frontier = [(src, [])]
+    """**唯一**可编译关系链；无路径或“多条同长度路径（口径歧义）”一律 None（宁缺勿错）。"""
+    chains = _link_chains(edges, src, dst, max_hops)
+    return chains[0] if len(chains) == 1 else None
+
+
+def _reachable_objects(edges: dict[str, list[tuple[str, str]]], src: str,
+                       max_hops: int = _JOIN_MAX_HOPS) -> list[str]:
+    """src 出发 ≤max_hops 的**可编译**关联对象（不含自身，BFS 层序稳定）。"""
+    out: list[str] = []
     seen = {src}
+    frontier = [src]
     for _ in range(max_hops):
-        nxt: list[tuple[str, list]] = []
-        for node, path in frontier:
-            for tgt, join in edges.get(node, []):
-                if not join:
-                    continue        # 语义关系(无物理 join)不构成 SQL 链(宁缺勿错)
-                if tgt == dst:
-                    return path + [(tgt, join)]
-                if tgt not in seen:
-                    seen.add(tgt)
-                    nxt.append((tgt, path + [(tgt, join)]))
+        nxt: list[str] = []
+        for node in frontier:
+            for tgt, join in (edges.get(node) or []):
+                if tgt in seen or not _join_is_usable(join):
+                    continue
+                seen.add(tgt)
+                out.append(tgt)
+                nxt.append(tgt)
         frontier = nxt
-    return None
+    return out
+
+
+def _cross_object_suggestions(binding, name: str, kind: str) -> list[str]:
+    """主对象解析不到该名称时，列出**关联对象**上的同名维度/指标（`对象key.名称`）。
+
+    为什么必须在失败路径给可执行写法：跨对象维度只能写成「对象key.名称」，而 LLM 拿到
+    的候选清单只包含主对象的维度（如 isv 上看不到「用户类型」）——只回“无法解析”会把模型
+    逼向裸 SQL 或直接说“查不了”（2026-11-26 联耀实测）。这里只**推荐写法**，
+    不替调用方自动跨对象绑定（口径仍由用户确认，宁缺勿错）。
+
+    只在失败路径调用；60s TTL 缓存同一 (源, 主对象, 名称) 的结论——模型按题目重试同一无解
+    名称很常见，而元数据库是远程的（实测单次 ~300ms/往返）。
+    """
+    ds = int(getattr(binding, "datasource_id", 0) or 0)
+    src = str(getattr(binding, "object_key", "") or "").strip()
+    ck = (ds, src, str(name), kind)
+    now = time.time()
+    hit = _XOBJ_HINT_CACHE.get(ck)
+    if hit and now - hit[0] < _XOBJ_HINT_TTL_SEC:
+        return hit[1]
+    try:
+        links = _load_object_links(ds)
+    except Exception as e:  # noqa: BLE001 — 提示是旁路，图不可用不影响编译主链路
+        logger.warning("[planner] 跨对象候选查询失败(仅提示): %s", e)
+        return []
+    hits: list[str] = []
+    for obj_key in _reachable_objects((links or {}).get("edges") or {}, src):
+        fb = _resolve_foreign_binding(obj_key, ds)
+        if fb is None or not fb.physical_table:
+            continue
+        r = _ColumnResolver(fb)
+        found = (r.lookup_dimension(name) is not None if kind == "dimension"
+                 else r._lookup_metric(name) is not None)
+        if found:
+            hits.append(f"{obj_key}.{name}")
+    if len(_XOBJ_HINT_CACHE) > 512:      # 防无界增长：仅提示缓存，清了不丢正确性
+        _XOBJ_HINT_CACHE.clear()
+    _XOBJ_HINT_CACHE[ck] = (now, hits)
+    return hits
 
 
 def _resolve_foreign_binding(obj_key: str, datasource_id: int):
@@ -559,9 +649,19 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
                 continue
             chain = _link_chain(links_data["edges"], src_key, tgt_key)
             if chain is None:
-                warnings.append(
-                    f"跨对象引用「{obj_ref}.…」无关联路径(≤{_JOIN_MAX_HOPS}跳), 已跳过; "
-                    "请确认对象关系(links)已建模或改用主对象字段")
+                # 区分“真的无路径”与“多条同长度路径（口径不唯一）”：后者不能任选一条，
+                # 否则同一问题会因图边顺序不同而得到不同口径的数据（宁缺勿错）。
+                paths = _link_chains(links_data["edges"], src_key, tgt_key)
+                if len(paths) > 1:
+                    cand = " / ".join(
+                        "→".join([src_key] + [t for t, _ in c]) for c in paths[:3])
+                    warnings.append(
+                        f"跨对象引用「{obj_ref}.…」存在多条同长度关联路径({cand})，口径不唯一，"
+                        "已跳过；请直接以关系对象为主对象提问，或在本体中约定唯一关联口径")
+                else:
+                    warnings.append(
+                        f"跨对象引用「{obj_ref}.…」无关联路径(≤{_JOIN_MAX_HOPS}跳), 已跳过; "
+                        "请确认对象关系(links)已建模或改用主对象字段")
                 resolve_failed.add(obj_ref)
                 continue
             prev, ok = src_key, True
@@ -714,12 +814,20 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
         expr, role = r.resolve_dimension(d_rest, time_grain=query.time_grain)
         if expr is None:
             hint = r.fuzzy_hint(d_rest)
-            warnings.append(
-                f"无法解析维度「{d}」, 已跳过。{hint or f'本对象可用维度: {r.suggest_dimensions()}; 请用字典名或其别名重试'}")
+            # 本对象没有 → 去关联对象找同名维度，回可直接使用的「对象key.名称」写法
+            xhits = ([] if _split_qualified(d)[0]
+                     else _cross_object_suggestions(binding, d_rest, "dimension"))
+            if xhits:
+                warnings.append(
+                    f"无法解析维度「{d}」, 已跳过。该名称在关联对象上有同名维度: "
+                    f"{' / '.join(xhits[:5])}（跨对象引用写法 `对象key.名称`，语义层自动关联 JOIN）")
+            else:
+                warnings.append(
+                    f"无法解析维度「{d}」, 已跳过。{hint or f'本对象可用维度: {r.suggest_dimensions()}; 请用字典名或其别名重试'}")
             unresolved.append({
                 "term": d, "type": "dimension",
                 "reason": r.resolution_sources().get(d_rest) or "unresolved",
-                "candidates": r.fuzzy_candidates(d_rest),
+                "candidates": r.fuzzy_candidates(d_rest) or xhits,
             })
             continue
         alias = _proj_alias(d)
@@ -743,11 +851,18 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
             warnings.append(
                 f"指标「{m}」未配置 {dialect}{_eng} 方言表达式(formula_dialects), 已跳过")
         if expr is None:
-            warnings.append(
-                f"无法解析指标「{m}」, 已跳过。本对象可用指标: "
-                f"{r.suggest_metrics()}; 请用字典名或其别名重试")
+            xm = ([] if _split_qualified(m)[0]
+                  else _cross_object_suggestions(binding, m_rest, "metric"))
+            if xm:
+                warnings.append(
+                    f"无法解析指标「{m}」, 已跳过。该名称在关联对象上有同名指标: "
+                    f"{' / '.join(xm[:5])}（跨对象引用写法 `对象key.名称`，语义层自动关联 JOIN）")
+            else:
+                warnings.append(
+                    f"无法解析指标「{m}」, 已跳过。本对象可用指标: "
+                    f"{r.suggest_metrics()}; 请用字典名或其别名重试")
             unresolved.append({
-                "term": m, "type": "metric", "reason": "unresolved", "candidates": [],
+                "term": m, "type": "metric", "reason": "unresolved", "candidates": xm,
             })
             continue
         alias = _proj_alias(m)

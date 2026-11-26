@@ -55,6 +55,10 @@ def patched(monkeypatch):
                         lambda self: dict(DIMS), raising=True)
     monkeypatch.setattr(_ColumnResolver, "_load_metrics",
                         lambda self: dict(METRICS), raising=True)
+    # 跨对象候选提示需真实关系图 + 远组元数据库：本文件只锁解析口径，默认无候选；
+    # 专门用例（TestCrossObjectSuggestions）里再覆盖成带值。
+    monkeypatch.setattr(planner, "_cross_object_suggestions",
+                        lambda *a, **k: [], raising=True)
 
 
 @pytest.fixture
@@ -290,3 +294,82 @@ class TestTimeWindow:
         assert cond is None
         assert warns and "time_column" in warns[0]
         assert "t_case_records" not in warns[0]  # 不暴露物理表名
+
+
+class TestCrossObjectJoinChain:
+    """跨对象 join 链的选路纪律（2026-11-26）。
+
+    历史缺陷：① 跨跳占位符（`A.x = Mid.x → Mid.y = C.y`）的直连边被 BFS 当最短路径选中，
+    真正可用的多跳路径（逐跳单跳 join）永远轮不到；② 多条同长度路径时按图边顺序任选，
+    同一问题会因建模顺序不同而得到不同口径的数据。两者都会让跨对象维度静默算错。
+    """
+
+    def test_cross_hop_placeholder_edge_falls_back_to_valid_chain(self):
+        edges = {
+            "user": [("company", "User.x = Mid.x → Mid.y = Company.y"),
+                     ("membership", "User.user_code = Membership.user_code")],
+            "membership": [("company", "Membership.company_code = Company.company_code")],
+        }
+        chain = planner._link_chain(edges, "user", "company")
+        assert chain == [("membership", "User.user_code = Membership.user_code"),
+                         ("company", "Membership.company_code = Company.company_code")]
+
+    def test_ambiguous_same_length_paths_are_refused(self):
+        edges = {
+            "user": [("case", "User.user_code = Case.doctor_user_code"),
+                     ("membership", "User.user_code = Membership.user_code")],
+            "case": [("company", "Case.company_code = Company.company_code")],
+            "membership": [("company", "Membership.company_code = Company.company_code")],
+        }
+        assert planner._link_chain(edges, "user", "company") is None
+        assert len(planner._link_chains(edges, "user", "company")) == 2
+
+    def test_empty_join_edge_is_not_traversable(self):
+        edges = {"user": [("company", "")], "company": [("order", "Company.x = Order.x")]}
+        assert planner._link_chain(edges, "user", "order") is None
+
+    def test_duplicate_edges_with_same_node_sequence_count_once(self):
+        edges = {
+            "user": [("ticket", "User.user_id = Ticket.user_id"),
+                     ("ticket", "User.user_id = Ticket.user_id")],
+        }
+        assert planner._link_chain(edges, "user", "ticket") == [
+            ("ticket", "User.user_id = Ticket.user_id")]
+
+
+class TestCrossObjectSuggestions:
+    """本对象没有该名称时，要把「关联对象上的同名维度」以可执行写法回给调用方。
+
+    历史缺陷（2026-11-26 联耀实测）：LLM 拿到 isv 的维度清单里没有「用户类型」
+    （它在用户企业关系对象上），只回“无法解析”→模型改向裸 SQL 或答“查不了”。
+    """
+
+    def test_reachable_objects_skips_unusable_and_respects_hops(self):
+        edges = {"a": [("b", "A.x = B.x"), ("dead", "")],
+                 "b": [("c", "B.y = C.y")],
+                 "c": [("d", "C.z = D.z")]}
+        assert planner._reachable_objects(edges, "a") == ["b", "c"]
+        assert planner._reachable_objects(edges, "a", max_hops=1) == ["b"]
+
+    def test_unresolved_dimension_carries_qualified_suggestion(self, patched, binding,
+                                                               monkeypatch):
+        monkeypatch.setattr(
+            planner, "_cross_object_suggestions",
+            lambda b, n, k: ["user_company_membership.用户类型"], raising=True)
+        q = SemanticQuery(object="case", dimensions=["案例状态", "用户类型"], limit=5)
+        p = plan(q, binding)
+        msg = [w for w in p.warnings if "无法解析维度「用户类型」" in w][0]
+        assert "user_company_membership.用户类型" in msg
+        assert "对象key.名称" in msg
+        un = [u for u in p.provenance["unresolved_terms"] if u["term"] == "用户类型"][0]
+        assert un["candidates"] == ["user_company_membership.用户类型"]
+
+    def test_qualified_failure_does_not_suggest_again(self, patched, binding,
+                                                      monkeypatch):
+        """已用限定名但无路径时不再重复去查候选（告警已在解链阶段给出）。"""
+        calls: list = []
+        monkeypatch.setattr(planner, "_cross_object_suggestions",
+                            lambda *a, **k: calls.append(a) or [], raising=True)
+        q = SemanticQuery(object="case", dimensions=["nobody.x"], limit=5)
+        plan(q, binding)
+        assert calls == []

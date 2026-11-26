@@ -72,19 +72,29 @@ def test_object_properties_project_from_name_key(monkeypatch):
     assert "datasource_id" not in dumped and "primary_table" not in dumped
 
 
-def test_keyword_expands_whole_object_and_declares_subset(monkeypatch):
-    """keyword 只决定命中哪些对象；命中对象的目录必须是全量并显式声明。"""
+def test_keyword_returns_matched_entries_and_declares_totals(monkeypatch):
+    """keyword 只回命中条目，但必须带该对象的全量计数与下钻出口（不得冒充全量）。
+
+    历史口径「命中即整对象补全」已退役（泛词会一次补全十几个对象 → 超预算被运行时截断成
+    读不回来的文件指针，见 scoped_metadata 的 L1/L2 注释）：现在的约定是
+    命中条目 + `*_total`（该对象一共几条）+ `keyword_note` 里的 `object=` 下钻出口。
+    """
     _patch(monkeypatch)
     out = sm.execute("get_metrics", {"keyword": "订单"}, _ctx())
 
     assert out["total"] == 1
     obj = out["objects"][0]
     assert obj["object"] == "order"
-    # 命中的只有「订单状态」，但补全后必须能看到同对象的「接单技工所」
-    assert {d["name"] for d in obj["dimensions"]} == {"订单状态", "接单技工所"}
-    marks = {d["name"]: d["matched_by_keyword"] for d in obj["dimensions"]}
-    assert marks == {"订单状态": True, "接单技工所": False}
-    assert "keyword_note" in out and "全量" in out["keyword_note"]
+    # 只回命中条目（订单量/订单状态），并用计数声明还有「接单技工所」没下发
+    assert {d["name"] for d in obj["dimensions"]} == {"订单状态"}
+    assert obj["dimension_total"] == 2 and obj["metric_total"] == 1
+    assert all(d["matched_by_keyword"] for d in obj["dimensions"])
+    assert "全量" in out["keyword_note"] and 'get_metrics(object=' in out["keyword_note"]
+
+    # 下钻出口真的能拿全量口径
+    full = sm.execute("get_metrics", {"object": "order"}, _ctx())
+    assert {d["name"] for d in full["objects"][0]["dimensions"]} == {"订单状态", "接单技工所"}
+    assert full["mode"] == "object_full"
 
 
 def test_keyword_without_hit_returns_empty_not_whole_catalog(monkeypatch):
