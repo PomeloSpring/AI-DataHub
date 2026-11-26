@@ -1175,7 +1175,12 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
       return {
         ...baseSpec,
         type: 'gauge',
-        data: { target: Math.max(0, Math.min(val, total)), total, thresholds },
+        // G2 5.x 的复合 mark 把 mark 上的**对象** data 一律当数据源描述符处理：
+        // normalizedDataSource 会把它当成 { ...字段, type: 'inline' }，inline 连接器只读 `.value`，
+        // 本仓装的 5.4.8 读到的是 undefined → 复合层解包后 Gauge 拿到空 data，target=undefined，
+        // 渲染期崩在 target.toString()（实机报错即「Cannot read properties of undefined (reading 'toString')」）。
+        // 必须显式包一层 value（G2 自己的数据源形态），对象才会原样交给 Gauge mark。
+        data: { value: { target: Math.max(0, Math.min(val, total)), total, thresholds } },
         style: {
           pointerShape: 'pointer',
           pinShape: 'circle',
@@ -1184,6 +1189,10 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
           textFontWeight: '600',
         },
         scale: { color: { range: colors } },
+        // G2 仪表盘内部用 color 字段区分「阈值环段」(0/1/2) 与「指针」(target)，视图层会据此
+        // 自动生成图例——mark 自带的 DEFAULT legend:false 拦不住它（实测 5.4.8），于是卡片左上角
+        // 冒出一排「0 1 2 target」这种内部色值，对用户没有任何意义。必须在 spec 根层显式关掉。
+        legend: false,
       };
     }
 

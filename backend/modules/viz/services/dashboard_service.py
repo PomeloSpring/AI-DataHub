@@ -492,15 +492,30 @@ def _chart_cache_json(chart: dict, columns, rows, extra: dict | None = None) -> 
     return text
 
 
-def _cache_chart_result(cur, conn, chart: dict, result: dict) -> None:
+def _write_chart_cache(chart: dict, columns, rows, extra: dict | None = None) -> None:
+    """写图表首屏缓存（**短连接**：只在 UPDATE 这一瞬占用元数据库连接）。
+
+    为什么不复用调用方的连接：取数可能卡在数据源上几十秒（实测单图 20~28s），而元
+    数据库连接池是 max 8、全应用共享、blocking。"取数期间持着连接"等于让一批什么都
+    不干的连接把池占满 —— 一块板 24 图并发刷新时，主应用的查询/保存全部排队（实测
+    8 路并发刷新 24 图 15 分钟不返回，是等连接不是慢）。连接只用于写缓存，写完立刻归还。
+    """
+    cache = _chart_cache_json(chart, columns, rows, extra)
+    conn = get_metadata_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
+                (cache, _now(), chart["id"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _cache_chart_result(chart: dict, result: dict) -> None:
     """把取数结果写进 adh_charts.data_cache(不另开一份口径, 只刷缓存)。"""
-    cache = _chart_cache_json(chart, result.get("columns"), result.get("rows"),
-                              _paging_extra(result))
-    cur.execute(
-        "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
-        (cache, _now(), chart["id"]),
-    )
-    conn.commit()
+    _write_chart_cache(chart, result.get("columns"), result.get("rows"), _paging_extra(result))
 
 
 # ── 模板示例数据（demo chart）──────────────────────────────────────────────────
@@ -2074,7 +2089,7 @@ class ChartService:
         return {"ok": all(r["ok"] for r in results), "errors": [], "results": results, "created": created}
 
     def _refresh_dataset_chart(self, chart: dict, params: dict,
-                               user_id: int, workspace_id: int, username: str, cur,
+                               user_id: int, workspace_id: int, username: str,
                                *, page_size: int = None, page_num: int = None) -> dict:
         """数据集图表(source_type='dataset'): 统一经数据集治理入口取数.
 
@@ -2164,12 +2179,7 @@ class ChartService:
         # 本次响应仍把完整行回给前端，不得拿“用户开了大页”去撑大首屏预览的存储。
         # 分页元信息（total/paging）随缓存一起写：首屏要知道“共多少行、能不能跳页”，
         # 少了它就会把首页当成全量。
-        cache = _chart_cache_json(chart, data.get("columns"), data.get("rows"),
-                                  _paging_extra(data))
-        cur.execute(
-            "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
-            (cache, _now(), chart["id"]),
-        )
+        _write_chart_cache(chart, data.get("columns"), data.get("rows"), _paging_extra(data))
         return data
 
     def refresh_chart(self, dashboard_id: int, chart_id: int, params: dict = None,
@@ -2188,6 +2198,8 @@ class ChartService:
             raise PermissionError("无权访问该仪表盘")
 
         params = params or {}
+        # 读图配置用**短连接**：取数可能几十秒，取数期间不得持有元数据库连接
+        # （连接池 max 8 全应用共享，理由见 `_write_chart_cache`）。
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -2198,19 +2210,18 @@ class ChartService:
                     (chart_id, dashboard_id),
                 )
                 chart = cur.fetchone()
-                if not chart:
-                    raise ValueError("图表不存在")
-
-                if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
-                    return refresh_designed_chart(chart, user_id)
-                return self._refresh_by_channel(
-                    chart, params, user_id, workspace_id, username, cur, conn, dashboard_id,
-                    page_size=page_size, page_num=page_num)
         finally:
             conn.close()
+        if not chart:
+            raise ValueError("图表不存在")
+        if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+            return refresh_designed_chart(chart, user_id)
+        return self._refresh_by_channel(
+            chart, params, user_id, workspace_id, username, dashboard_id,
+            page_size=page_size, page_num=page_num)
 
     def _refresh_by_channel(self, chart: dict, params: dict, user_id: int,
-                            workspace_id: int, username: str, cur, conn, dashboard_id: int,
+                            workspace_id: int, username: str, dashboard_id: int,
                             *, page_size: int = None, page_num: int = None) -> dict:
         """单图重查的通道分派（`refresh_chart` 与 `refresh_all_charts` 共用一份实现）。
 
@@ -2228,7 +2239,7 @@ class ChartService:
         page_size, page_num = _resolve_chart_page(chart, page_size, page_num)
         if chart.get("source_type") == "dataset" and chart.get("source_id"):
             return self._refresh_dataset_chart(
-                chart, params, user_id, workspace_id, username, cur,
+                chart, params, user_id, workspace_id, username,
                 page_size=page_size, page_num=page_num)
         server_channel = _is_server_generated_channel(chart)
         intent = _semantic_intent(chart)
@@ -2240,7 +2251,7 @@ class ChartService:
             result = _execute_via_semantic(intent, params, user_id,
                                            chart.get("workspace_id") or workspace_id,
                                            _get_chart_datasource_id(chart), None)
-            _cache_chart_result(cur, conn, chart, result)
+            _cache_chart_result(chart, result)
             return result
         if not server_channel and str(chart.get("sql_query") or "").strip():
             # 存量直写 SQL 图表（收编未覆盖或库外手工写入）：不拿旧口径默默继续跑，
@@ -2283,25 +2294,47 @@ class ChartService:
                     (dashboard_id,),
                 )
                 charts = cur.fetchall()
-
-                results = {}
-                for chart in charts:
-                    cid = chart["id"]
-                    if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
-                        results[cid] = refresh_designed_chart(chart, user_id)
-                        continue
-                    try:
-                        results[cid] = self._refresh_by_channel(
-                            chart, params, user_id, workspace_id, username, cur, conn, dashboard_id)
-                    except Exception as e:  # noqa: BLE001  逐图上报可诊断原因(已脱敏)
-                        logger.warning("[ChartRefresh] chart=%s 失败: %s", cid, e)
-                        results[cid] = {"error": str(e)}
-
-                conn.commit()
-                _invalidate_dashboard_payload(dashboard_id, structural=False)
-                return {"charts": results}
         finally:
+            # 配置一次读齐就归还连接：下面每张图要卡在数据源上数秒，不能占着元数据库连接
             conn.close()
+
+        def _one(chart: dict) -> dict:
+            """单图重查（跑在专用通道里，与主应用的线程/连接资源隔离）。"""
+            cid = chart["id"]
+            try:
+                if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
+                    return refresh_designed_chart(chart, user_id)
+                return self._refresh_by_channel(
+                    chart, params, user_id, workspace_id, username, dashboard_id)
+            except Exception as e:  # noqa: BLE001  逐图上报可诊断原因(已脱敏)
+                logger.warning("[ChartRefresh] chart=%s 失败: %s", cid, e)
+                return {"error": str(e)}
+
+        from backend.core import viz_query_pool
+
+        payloads: dict = {}
+        futures: list = []
+        busy_reason: str | None = None
+        for chart in charts:
+            if busy_reason is not None:
+                continue
+            try:
+                futures.append((chart["id"], viz_query_pool.submit(_one, chart)))
+            except viz_query_pool.VizQueryBusy as exc:
+                # 通道已满：剩下的图如实标未执行，不排进看不见的内部队列
+                busy_reason = str(exc)
+        for cid, fut in futures:
+            try:
+                payloads[cid] = fut.result()
+            except viz_query_pool.VizQueryExpired as exc:
+                payloads[cid] = {"error": str(exc)}
+        results = {}
+        for chart in charts:
+            cid = chart["id"]
+            results[cid] = payloads.get(cid) or {
+                "error": busy_reason or "本次未执行取数（取数通道已满），请稍后重试"}
+        _invalidate_dashboard_payload(dashboard_id, structural=False)
+        return {"charts": results}
 
     def update_layout(self, dashboard_id: int, layouts: list) -> bool:
         """Batch update chart positions (layout save)."""

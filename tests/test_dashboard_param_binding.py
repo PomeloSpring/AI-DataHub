@@ -188,19 +188,16 @@ class TestServerSideDefaultWindowIsVisible(unittest.TestCase):
     否则用户以为“没筛 = 全量”，实际拿的是默认窗口（no-silent-degradation）。
     """
 
-    class _Cur:
-        def execute(self, *a, **k):
-            return None
-
     def _refresh(self, result, notes=None):
         chart = {"id": 7, "name": "异常上报·CASE 明细", "source_type": "dataset",
                  "source_id": 33, "config": "{}", "data_cache": None}
         diag = {"unbound": [], "notes": notes or [], "partial": [], "skipped": 0}
+        # 缓存写入现在走短连接（`_write_chart_cache`）：用例拦这一层即可，不连真库
         with mock.patch.object(dash, "_dataset_bound_args", return_value=({}, diag)), \
              mock.patch.object(ds_svc, "query_dataset", return_value=result), \
+             mock.patch.object(dash, "_write_chart_cache"), \
              mock.patch("backend.common.auth.get_user_by_id", return_value={"user_role": "admin"}):
-            return dash.ChartService()._refresh_dataset_chart(
-                chart, {}, 1, 0, "admin", self._Cur())
+            return dash.ChartService()._refresh_dataset_chart(chart, {}, 1, 0, "admin")
 
     def test_default_window_is_echoed_and_explained(self):
         out = self._refresh({
@@ -231,22 +228,24 @@ class TestChartCacheKeepsFirstPageOnly(unittest.TestCase):
     成功、整张图却显“刷新失败”，而且能不能刷出来取决于本批文本长度（随机故障）。
     """
 
-    class _Cur:
+    class _Sink:
+        """拦住 `_write_chart_cache` 的写入（缓存内容仍由同一实现 `_chart_cache_json` 生成）。"""
+
         def __init__(self):
             self.writes = []
 
-        def execute(self, sql, params=None):
-            if "data_cache" in sql:
-                self.writes.append(params[0])
+        def __call__(self, chart, columns, rows, extra=None):
+            self.writes.append(dash._chart_cache_json(chart, columns, rows, extra))
 
     def _refresh(self, chart, result):
-        cur = self._Cur()
+        sink = self._Sink()
         diag = {"unbound": [], "notes": [], "partial": [], "skipped": 0}
         with mock.patch.object(dash, "_dataset_bound_args", return_value=({}, diag)), \
              mock.patch.object(ds_svc, "query_dataset", return_value=result), \
+             mock.patch.object(dash, "_write_chart_cache", sink), \
              mock.patch("backend.common.auth.get_user_by_id", return_value={"user_role": "admin"}):
-            out = dash.ChartService()._refresh_dataset_chart(chart, {}, 1, 0, "admin", cur)
-        return out, cur
+            out = dash.ChartService()._refresh_dataset_chart(chart, {}, 1, 0, "admin")
+        return out, sink
 
     @staticmethod
     def _table_chart(**cfg_over):
@@ -316,9 +315,11 @@ class TestChartCacheKeepsFirstPageOnly(unittest.TestCase):
         self.assertIn("列", msg)
 
     def test_both_write_channels_share_one_implementation(self):
-        # 数据集与声明式语义两条通道都只能经 `_chart_cache_json`，不得再留第二套行序/字节算法
+        # 数据集与声明式语义两条通道都只能经 `_write_chart_cache`（内部 `_chart_cache_json`），
+        # 不得再留第二套行序/字节算法，也不得各自拼 UPDATE 占着连接取数
         for fn in (dash._cache_chart_result, dash.ChartService._refresh_dataset_chart):
-            self.assertIn("_chart_cache_json", inspect.getsource(fn))
+            self.assertIn("_write_chart_cache", inspect.getsource(fn))
+        self.assertIn("_chart_cache_json", inspect.getsource(dash._write_chart_cache))
 
 
 if __name__ == "__main__":

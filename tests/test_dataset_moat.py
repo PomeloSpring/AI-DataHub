@@ -390,4 +390,4 @@ class TestDatasetChartRefreshGoverned:
         from backend.modules.viz.services.dashboard_service import ChartService
         with pytest.raises(NoIdentityError):
             ChartService()._refresh_dataset_chart(
-                {"id": 1, "source_id": 2, "config": "{}"}, {}, 0, 0, "", None)
+                {"id": 1, "source_id": 2, "config": "{}"}, {}, 0, 0, "")

@@ -3,6 +3,7 @@
 Migrated from backend/api/dashboard.py. Uses service layer for all business logic.
 """
 
+import asyncio
 import logging
 
 import pymysql
@@ -12,6 +13,7 @@ from typing import Optional
 
 from backend.common.auth import get_current_user, get_workspace_id, require_admin
 from backend.common.db import DBConnection
+from backend.core import viz_query_pool
 from backend.core.governed_query import NoIdentityError
 from backend.modules.viz.services.dashboard_service import (
     dashboard_service,
@@ -690,16 +692,22 @@ def batch_save_charts_endpoint(
 
 
 @router.post("/{dashboard_id}/charts/{chart_id}/refresh")
-def refresh_chart_endpoint(
+async def refresh_chart_endpoint(
     dashboard_id: int,
     chart_id: int,
     req: ChartRefreshRequest = ChartRefreshRequest(),
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """按查看者身份重查一个图表（只经数据集/声明式语义/AS-BOT 设计三条通道）。"""
+    """按查看者身份重查一个图表（只经数据集/声明式语义/AS-BOT 设计三条通道）。
+
+    取数走**看板专用有界通道**（`core/viz_query_pool`）：端点是 `async def`，await
+    期间不占 anyio 的全应用共享线程池；通道满/排队超预算 **显式 503**，不回"空结果"、
+    也不无限期挂着用户的点击（`no-silent-degradation.md`）。
+    """
     try:
-        result = chart_service.refresh_chart(
+        result = await viz_query_pool.run_async(
+            chart_service.refresh_chart,
             dashboard_id, chart_id,
             params=req.params,
             page_size=req.page_size,
@@ -709,6 +717,8 @@ def refresh_chart_endpoint(
             username=user.get("username", "") or "",
         )
         return result
+    except (viz_query_pool.VizQueryBusy, viz_query_pool.VizQueryExpired) as e:
+        raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
     except NoIdentityError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -721,21 +731,30 @@ def refresh_chart_endpoint(
 
 
 @router.post("/{dashboard_id}/refresh")
-def refresh_all_charts_endpoint(
+async def refresh_all_charts_endpoint(
     dashboard_id: int,
     req: dict = {},
     user: dict = Depends(get_current_user),
     workspace_id: int = Depends(get_workspace_id),
 ):
-    """Re-execute all charts' SQL in a dashboard on their respective datasources."""
+    """整板重查（服务端并发）：逐图结果与单图刷新同形状，失败项带可读原因。
+
+    为什么在服务端并发：浏览器 HTTP/1.1 每源只有 6 条连接，让前端逐图并发既受这个
+    上限约束、又会和同页其它请求抢连接。这里一次请求下发整板，图与图之间在
+    `core/viz_query_pool` 的**专用有界通道**里并发，主应用的线程/连接资源不受影响。
+    服务层自己提交到该通道（此处不再嵌套一层，避免占着通道线程等通道线程）。
+    """
     try:
-        result = chart_service.refresh_all_charts(
+        result = await asyncio.to_thread(
+            chart_service.refresh_all_charts,
             dashboard_id, params=req.get("params", {}),
             user_id=user.get("user_id") or 0,
             workspace_id=workspace_id,
             username=user.get("username", "") or "",
         )
         return result
+    except (viz_query_pool.VizQueryBusy, viz_query_pool.VizQueryExpired) as e:
+        raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
     except NoIdentityError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:

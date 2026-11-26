@@ -342,14 +342,30 @@ describe('buildG2Spec', () => {
     const gaugeRows = [{ label: 'CPU', value: 75 }]
     const spec = buildG2Spec('gauge', ['label', 'value'], gaugeRows, {}, false, 400, 300)
     expect(spec.type).toBe('gauge')
-    expect(spec.data).toEqual({ target: 75, total: 100, thresholds: [100] })
+    expect(spec.data).toEqual({ value: { target: 75, total: 100, thresholds: [100] } })
+  })
+
+  // 历史缺陷：仪表盘 data 写成扁平对象 { target, total, thresholds }，G2 5.4.8 的复合 mark 把它
+  // 当数据源描述符取 .value（扁平对象没有该键 → undefined）解包，Gauge 内部 target=undefined，
+  // 渲染期崩在 target.toString()，画布只剩一句「渲染失败」。必须包一层 value（G2 数据源形态）。
+  it('仪表盘 data 必须是 G2 数据源描述符（value 包裹），扁平对象会被解包成空数据', () => {
+    const spec = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 0.42 }], { maxValue: 1, thresholds: [0.5, 0.8] }, false, 400, 300)
+    expect(spec.data).toEqual({ value: { target: 0.42, total: 1, thresholds: [0.5, 0.8, 1] } })
+    expect(spec.data).not.toHaveProperty('target')
+  })
+
+  // 仪表盘内部用 color 区分阈值环段（0/1/2）与指针（target），G2 会拿这些内部色值自动生成图例
+  // （mark 级 DEFAULT legend:false 拦不住）。卡片上不能出现「0 1 2 target」这种无意义图例。
+  it('仪表盘不渲染图例（0/1/2/target 是内部色值，不是业务分类）', () => {
+    const spec = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 0.42 }], { maxValue: 1 }, false, 400, 300)
+    expect(spec.legend).toBe(false)
   })
 
   it('仪表盘按量程转换比例阈值并限制越界值', () => {
     const spec = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 75 }], { maxValue: 100, thresholds: [0.85, 0.6, 0.6] }, true, 400, 300)
-    expect(spec.data).toEqual({ target: 75, total: 100, thresholds: [60, 85, 100] })
+    expect(spec.data.value).toEqual({ target: 75, total: 100, thresholds: [60, 85, 100] })
     const ratio = buildG2Spec('gauge', ['label', 'value'], [{ label: 'CPU', value: 0.75 }], {}, false, 400, 300)
-    expect(ratio.data).toEqual({ target: 0.75, total: 1, thresholds: [1] })
+    expect(ratio.data.value).toEqual({ target: 0.75, total: 1, thresholds: [1] })
   })
 
   it.each(['heatmap', 'calendar_heatmap'])('%s 采用字模色板', chartType => {
