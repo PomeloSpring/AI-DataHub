@@ -524,6 +524,13 @@ def create_user(username: str, password: str, role: str = "viewer",
                      email_hash, enc_phone, "", role, "active", 0, now, now),
                 )
 
+                # 角色绑定同事务写入真值源 adh_user_roles（含 adh_users.role_id 同步）。
+                # 历史缺陷：只写 user_role 显示列 → ①「用户分配」弹窗读真值源看不到
+                # 该用户，还得再分配一次；②用户零权限码被 API 门控 403（建号即不可用）。
+                # 角色不存在在此抛 ValueError 并整体回滚，原因原样回给调用方（见 except）。
+                from backend.core.role_service import role_service as _role_svc
+                _role_svc._apply_user_role(cur, user_id, role)
+
                 # Auto-add to default workspace
                 cur.execute("SELECT id FROM adh_workspaces WHERE is_default = 1 LIMIT 1")
                 default_ws = cur.fetchone()
@@ -535,6 +542,11 @@ def create_user(username: str, password: str, role: str = "viewer",
                     )
 
         return True, "创建成功", user_id
+    except ValueError as exc:
+        # 角色绑定失败（如角色名不存在）：错因必须可诊断，不得被通用"创建失败"吞掉
+        # （no-silent-degradation §1）；异常发生在 DBConnection 内已整体回滚，无半态。
+        logger.error("Failed to create user (role binding): %s", exc)
+        return False, str(exc), 0
     except Exception as e:
         logger.error("Failed to create user: %s", e)
         return False, "创建失败", 0
@@ -589,25 +601,34 @@ def update_user(user_id: int, username: str = None, email: str = None,
                 if phone is not None:
                     updates.append("phone = %s")
                     params.append(enc_phone)
-                if role is not None:
-                    updates.append("user_role = %s")
-                    params.append(role)
+                # role 不进通用 updates：改角色走绑定唯一写入口 _apply_user_role
+                # （真值源 adh_user_roles + role_id + 名缓存同事务），只写显示列 =
+                # 角色分配弹窗看不到变更、权限码仍是旧角色（与 create_user 同一缺陷）。
                 if display_name is not None:
                     updates.append("display_name = %s")
                     params.append(display_name.strip())
 
-                if not updates:
+                if not updates and role is None:
                     return True, "无需更新"
 
-                updates.append("updated_at = %s")
-                params.append(_now_str())
-                params.append(user_id)
+                if updates:
+                    updates.append("updated_at = %s")
+                    params.append(_now_str())
+                    params.append(user_id)
 
-                cur.execute(
-                    f"UPDATE adh_users SET {', '.join(updates)} WHERE id = %s",
-                    params,
-                )
+                    cur.execute(
+                        f"UPDATE adh_users SET {', '.join(updates)} WHERE id = %s",
+                        params,
+                    )
+
+                if role is not None:
+                    from backend.core.role_service import role_service as _role_svc
+                    _role_svc._apply_user_role(cur, user_id, role)
         return True, "更新成功"
+    except ValueError as exc:
+        # 同 create_user：角色不存在等原因原样回出，不洗成"更新失败"
+        logger.error("Failed to update user (role binding): %s", exc)
+        return False, str(exc)
     except Exception as e:
         logger.error("Failed to update user: %s", e)
         return False, "更新失败"
@@ -692,7 +713,13 @@ def delete_user(user_id: int) -> tuple[bool, str]:
                 user = cur.fetchone()
                 if not user:
                     return False, "用户不存在"
+                # 同事务清真值源绑定：只删 adh_users 会留悬空行（角色页 JOIN 不显示
+                # 但死数据永存，且若 id 复用会串到别人的角色）。
+                cur.execute("DELETE FROM adh_user_roles WHERE user_id = %s", (user_id,))
                 cur.execute("DELETE FROM adh_users WHERE id = %s", (user_id,))
+        # 绑定行变更 → 角色/权限码配置缓存同批失效（写入口纪律，AST 守卫把门）
+        from backend.common.as_bot_config_cache import invalidate
+        invalidate(f"delete_user user={user_id}")
         return True, "删除成功"
     except Exception as e:
         logger.error("Failed to delete user: %s", e)
