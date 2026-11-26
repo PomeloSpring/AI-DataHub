@@ -97,6 +97,19 @@ class _Cur:
 class _Conn:
     def __init__(self, responses):
         self.cur = _Cur(responses)
+        self.began = False
+        self.committed = False
+        self.rolled_back = False
+
+    def begin(self):
+        # 元库 autocommit=True，服务侧靠显式 BEGIN 才有真事务（半态防护）
+        self.began = True
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
     def cursor(self):
         return self.cur
@@ -104,7 +117,12 @@ class _Conn:
     def __enter__(self):
         return self
 
-    def __exit__(self, *a):
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # 对齐 backend.common.db.DBConnection.__exit__ 的分派（半态防护靠它兑现）
+        if exc_type:
+            self.rollback()
+        else:
+            self.commit()
         return False
 
 
@@ -197,6 +215,8 @@ def test_create_user_writes_user_role_binding_truth_source(monkeypatch):
 
     ok, msg, uid = auth_service.create_user("newbie", "Aa123456!", role="analyst")
     assert ok, msg
+    assert conn.began and conn.committed, (
+        "必须显式 BEGIN 后提交（元库 autocommit=True，不开事务则 rollback 空转）")
 
     del_sql, del_params = next(
         (s, p) for s, p in conn.cur.calls if "DELETE FROM adh_user_roles" in s)
@@ -224,6 +244,9 @@ def test_create_user_unknown_role_fails_loud_not_generic(monkeypatch):
     assert not ok and uid == 0
     assert "角色不存在" in msg, f"错因被通用文案吞掉了：{msg}"
     assert msg != "创建失败"
+    # 半态防护：失败必须回滚（用户行不得残留，否则下次重试报「用户名已存在」）
+    assert conn.began and conn.rolled_back, "失败未回滚 = 留下半态用户行"
+    assert not conn.committed
 
 
 def test_update_user_role_change_writes_truth_source(monkeypatch):

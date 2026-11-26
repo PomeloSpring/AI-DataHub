@@ -504,6 +504,9 @@ def create_user(username: str, password: str, role: str = "viewer",
         now = _now_str()
 
         with DBConnection() as conn:
+            # 元库连接是 autocommit=True（metadata_db）：不显式 BEGIN 的话
+            # __exit__ 的 rollback 是空转，写一半失败会留半态（用户行在、绑定无）。
+            conn.begin()
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM adh_users WHERE username = %s", (username,))
                 if cur.fetchone():
@@ -571,6 +574,9 @@ def update_user(user_id: int, username: str = None, email: str = None,
 
     try:
         with DBConnection() as conn:
+            # 同 create_user：显式 BEGIN 让 rollback 真回滚（否则改了显示列、
+            # 绑定没改 = 回到「角色分配看不到」的原始缺陷形态）。
+            conn.begin()
             with conn.cursor() as cur:
                 # Check user exists
                 cur.execute("SELECT id, username FROM adh_users WHERE id = %s", (user_id,))
@@ -708,6 +714,7 @@ def delete_user(user_id: int) -> tuple[bool, str]:
     """Delete a user by ID. Returns (success, message)."""
     try:
         with DBConnection() as conn:
+            conn.begin()
             with conn.cursor() as cur:
                 cur.execute("SELECT id, username FROM adh_users WHERE id = %s", (user_id,))
                 user = cur.fetchone()
