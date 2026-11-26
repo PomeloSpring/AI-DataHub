@@ -1963,7 +1963,7 @@ def _trigger_kb_sync(model_id: int) -> None:
 
 
 def save_draft_only(model_id: int, json_content: str, name: str = None,
-                    created_by: str = "") -> dict:
+                    created_by: str = "", strict: bool = False) -> dict:
     """只存草案，**不碰生效内容、不级联**（两段式第一段）。
 
     与 save_draft 的区别：save_draft 对 active 模型会就地改内容并立即级联（重展开 objects /
@@ -1973,6 +1973,11 @@ def save_draft_only(model_id: int, json_content: str, name: str = None,
     草案里若带顶层 `_declared_removals`（建模页删属性的显式声明）要**原样暂存**：
     护栏在 publish_draft → save_draft 那一步生效，声明必须活到发布时才能区分
     “人点名要删”与“顺手抹掉”；save_draft 会在写入前剥除，不污染 canonical 正文。
+
+    ``strict=True``（AS-BOT 写通道用）：与生效版对比会造成已有定义丢失时**直接拒写**，
+    而不是先存进草案、等到发布才被打回 —— “存好了却发不出去”本身就是一种静默失败
+    （no-silent-degradation）。局部合并通道（patch_object）也走 strict：它本不该造成丢失，
+    一旦造成说明合并逻辑有 bug，宁可直接拒绝。
     """
     model = get_model(model_id)
     if not model:
@@ -1989,6 +1994,18 @@ def save_draft_only(model_id: int, json_content: str, name: str = None,
         raise ValueError(f"json_content 不是合法 JSON: {e}")
     if not isinstance(doc, dict):
         raise ValueError("json_content 必须是对象")
+    # 草案与生效版的风险差异：草案是沙箱（可以写坏、可丢弃），但**不能静默**——
+    # 历史缺陷：AS-BOT 用脱敏摘要重建对象写进草案，工具回 success，直到发布才被护栏
+    # 打回（“存好了但发不出去”）。这里把“发布会被阻断 / 哪些定义会丢”随回执带出。
+    blocking, advisory = _overwrite_risk({"json_content": base},
+                                         json.dumps(doc, ensure_ascii=False))
+    if strict and blocking:
+        raise ValueError(
+            "已拒绝写入草案：本次提交会造成已有定义丢失（宁阻断勿损毁）："
+            + "；".join(blocking[:10])
+            + "。修改已有对象请用 update_ontology_object（服务端按业务名局部合并，"
+              "未提交的字段/属性/关系一律保留）；新增对象请用 add_ontology_objects；"
+              "确需删减请在提交里显式声明 _declared_removals / _declared_link_removals")
     now = _now()
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
@@ -2002,6 +2019,12 @@ def save_draft_only(model_id: int, json_content: str, name: str = None,
     out = get_model(model_id)
     out["draft_pending"] = True
     out["note"] = "改动已存为草案，未生效；需发布（publish）后才级联到对象表/图谱/知识库"
+    warnings = list(advisory) + [f"发布会被阻断：{b}" for b in blocking]
+    out["destructive"] = bool(blocking)
+    if warnings:
+        out["validation_warnings"] = warnings
+        logger.warning("[ontology] 草案 model=%s 与生效版存在风险差异: %s",
+                       model_id, "；".join(warnings))
     return out
 
 
@@ -2150,6 +2173,606 @@ def merge_object_scalars(model_id: int, object_key: str, patch: dict,
                     "需在「本体建模」或用发布入口执行 publish 才级联生效"}
 
 
+#: `patch_object` 允许改的对象标量字段（路由/主表也是建模页可写范围）
+OBJECT_PATCH_SCALARS = ("display_name", "description", "primary_table")
+
+
+def _patch_names(raw) -> list[str]:
+    """名单参数归一（支持 list / 逗号分隔字符串）。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.replace("，", ",").split(",")
+    try:
+        items = list(raw)
+    except TypeError:
+        return []
+    return [str(x or "").strip() for x in items if str(x or "").strip()]
+
+
+def _model_metadata_source_ids(model: dict) -> list[int]:
+    """模型可用于列元数据核验的数据源 id（自有源 + 该模型部署绑定登记的源）。"""
+    ids: list[int] = []
+    own = int(model.get("datasource_id") or 0)
+    if own:
+        ids.append(own)
+    try:
+        with get_metadata_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT datasource_id FROM adh_ontology_bindings "
+                            "WHERE model_id = %s AND status = 'active'", (model["id"],))
+                for r in cur.fetchall() or []:
+                    ds = int(r.get("datasource_id") or 0)
+                    if ds and ds not in ids:
+                        ids.append(ds)
+    except Exception as e:  # noqa: BLE001 — 绑定表不可用不阻断（自有源仍可解析）
+        logger.warning("[ontology] 读取 model=%s 部署绑定源失败: %s", model.get("id"), e)
+    return ids
+
+
+def _table_business_columns(datasource_id: int, table: str) -> dict[str, str]:
+    """该表「业务属性名 → 物理列」映射；同一业务名对应多列视为歧义，不映射。"""
+    with get_metadata_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, business_desc, column_comment FROM adh_column_metadata "
+                "WHERE datasource_id = %s AND table_name = %s AND is_active = 1",
+                (datasource_id, table))
+            rows = cur.fetchall() or []
+    by_biz: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for r in rows:
+        col = str(r.get("column_name") or "").strip()
+        if not col:
+            continue
+        for biz in (r.get("business_desc"), r.get("column_comment")):
+            name = str(biz or "").strip()
+            if not name:
+                continue
+            if name in by_biz and by_biz[name] != col:
+                ambiguous.add(name)
+            by_biz.setdefault(name, col)
+    for name in ambiguous:
+        by_biz.pop(name, None)
+    return by_biz
+
+
+# join 推导时不作为关联键的通用列：几乎每张表都有，拿它连表必错（宁缺勿错）
+_JOIN_NON_KEY_COLUMNS = {
+    "id", "create_time", "update_time", "del_flag", "is_deleted", "deleted",
+    "created_at", "updated_at", "create_by", "update_by", "created_by", "updated_by",
+    "tenant_id", "workspace_id", "version",
+}
+
+
+def _norm_ref(s) -> str:
+    """限定名/对象引用归一（去空白与 _-、小写；保留中文）。"""
+    return re.sub(r"[\s_\-]+", "", str(s or "").strip().lower())
+
+
+def _bare_table(table) -> str:
+    """物理表裸名（去 schema 前缀与反引号）：列元数据按裸表名登记。"""
+    s = str(table or "").strip().strip("`")
+    return s.rsplit(".", 1)[-1].strip("`").strip() if s else ""
+
+
+def _table_columns(datasource_ids: list[int], table: str) -> set:
+    """该表在模型可用源里的物理列集（取第一个有元数据的源）。"""
+    for ds in datasource_ids:
+        try:
+            with get_metadata_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT column_name FROM adh_column_metadata "
+                        "WHERE datasource_id = %s AND table_name = %s AND is_active = 1",
+                        (ds, table))
+                    rows = cur.fetchall() or []
+        except Exception as e:  # noqa: BLE001 — 元数据不可用按“无从推导”处理，不猜
+            logger.warning("[ontology] 读取表 %s 列元数据失败(ds=%s): %s", table, ds, e)
+            continue
+        cols = {str(r.get("column_name") or "").strip() for r in rows}
+        cols.discard("")
+        if cols:
+            return cols
+    return set()
+
+
+def _find_doc_object(doc: dict, ref: str) -> dict | None:
+    """doc 内按对象引用（key/显示名/别名，归一比较）定位对象。"""
+    want = _norm_ref(ref)
+    if not want:
+        return None
+    for o in (doc.get("objects") or []):
+        if not isinstance(o, dict):
+            continue
+        cands = [o.get("key"), o.get("display_name"), o.get("label"), o.get("name")]
+        cands += list(o.get("aliases") or [])
+        if any(_norm_ref(c) == want for c in cands if c):
+            return o
+    return None
+
+
+def _column_of_property(obj: dict, name: str) -> str:
+    """对象属性业务名 → 物理列（裸列名）；未命中回空。"""
+    want = _norm_ref(name)
+    if not want:
+        return ""
+    for p in (obj.get("properties") or []):
+        if not isinstance(p, dict):
+            continue
+        names = [p.get("name"), p.get("display_name"), p.get("key")]
+        if any(_norm_ref(n) == want for n in names if n):
+            return _bare_table(p.get("column"))
+    return ""
+
+
+def _join_side(obj: dict) -> str:
+    """join 表达式里的限定名：用对象 key（planner 的限定名正则只认 ASCII 标识符）；
+    key 非 ASCII 时退物理表裸名。"""
+    key = str(obj.get("key") or "").strip()
+    if re.fullmatch(r"[A-Za-z_]\w*", key):
+        return key
+    return _bare_table(obj.get("primary_table"))
+
+
+def derive_link_join(doc: dict, model: dict, src_obj: dict, link: dict) -> tuple[str, str]:
+    """为一条**新关系**推导单跳物理 join；返回 (join, 未推导原因)。
+
+    为什么在写入口推导（历史缺陷 2026-11-26）：chat 新建关系只给业务名（读接口剥 join），
+    落库的 links 没有 join → `planner._link_chain` 视作“语义关系”跳过，跨对象查询永远
+    走不通；用户问「按集成方区分」时只能退化成裸 SQL。
+
+    纪律：只认**确定性**信号，不猜（宁缺勿错）：
+    1. `join_on`：调用方给**目标/源对象的业务属性名**，服务端按属性 `column` 反查；
+    2. 两表同名业务列（排除 id/时间/删除标记等通用列）**唯一**时用它；
+    3. 多个同名列时，只有恰好一列以两端对象 key 命名（如 user_code）才算确定；
+    其余一律回原因（由调用方提示“跨对象查询用不到这条关系”），不写半截 join。
+    """
+    tgt_ref = str(link.get("target") or "").strip()
+    tgt = _find_doc_object(doc, tgt_ref)
+    if tgt is None:
+        return "", f"关系目标对象「{tgt_ref}」不在本模型中"
+    src_table = _bare_table(src_obj.get("primary_table"))
+    tgt_table = _bare_table(tgt.get("primary_table"))
+    if not src_table or not tgt_table:
+        return "", "对象未声明主表（dataset 形状），无法推导单跳 join"
+    if src_table == tgt_table:
+        return "", "两端是同一张物理表，无需求 join"
+    ds_ids = _model_metadata_source_ids(model)
+    shared = (_table_columns(ds_ids, src_table) & _table_columns(ds_ids, tgt_table))
+    shared -= _JOIN_NON_KEY_COLUMNS
+    if not shared:
+        return "", "两张表没有同名的业务关联列"
+    hint = str(link.get("join_on") or "").strip()
+    if hint:
+        col = _column_of_property(src_obj, hint) or _column_of_property(tgt, hint)
+        if not col:
+            return "", f"join_on「{hint}」在两端对象的属性里解析不到物理列"
+        if col not in shared:
+            return "", f"join_on「{hint}」对应的列在两张表里不同名，无法作为关联键"
+        return f"{_join_side(src_obj)}.{col} = {_join_side(tgt)}.{col}", ""
+    src_key, tgt_key = _norm_ref(src_obj.get("key")), _norm_ref(tgt.get("key"))
+    hinted = [c for c in shared
+              if (len(src_key) >= 3 and src_key in _norm_ref(c))
+              or (len(tgt_key) >= 3 and tgt_key in _norm_ref(c))]
+    if len(hinted) == 1:
+        col = hinted[0]
+    elif len(shared) == 1:
+        col = next(iter(shared))
+    else:
+        return "", (f"两张表有多个同名业务列（{len(shared)} 个），无法确定关联键；"
+                     "请用 join_on=<目标对象业务属性名> 指明")
+    return f"{_join_side(src_obj)}.{col} = {_join_side(tgt)}.{col}", ""
+
+
+def find_links_without_sql_join(doc: dict) -> list[str]:
+    """关系清单：没有 join 或含跨跳占位符（planner 不会把它们编译进 SQL）。
+
+    只用于告警（保存/发布提示），不阻断：关系本身仍是检索/关系上下文的有效信息；
+    但跨对象**取数**用不到，属建模质量缺口，必须让人看见（no-silent-degradation）。
+    """
+    out: list[str] = []
+    for o in (doc.get("objects") or []):
+        if not isinstance(o, dict):
+            continue
+        src = str(o.get("display_name") or o.get("key") or "")
+        for l in (o.get("links") or []):
+            if not isinstance(l, dict):
+                continue
+            j = str(l.get("join") or "")
+            if j.strip() and "→" not in j and "—" not in j:
+                continue
+            out.append(f"{src}→{l.get('target') or '?'}")
+    return out
+
+
+def resolve_object_property_columns(model: dict, table: str,
+                                    names: list[str]) -> tuple[dict, list[str]]:
+    """把**业务属性名**解析成物理列（服务端对着列元数据映射，不让人/模型猜）。
+
+    为什么要它：AS-BOT 拿不到物理列名（读接口剥列），而新对象的属性必须带 column
+    才能进部署绑定 column_map。让模型凭猜写列名 = 要么查不到数、要么**静默查错字段**；
+    正确做法是服务端按该表列元数据的业务描述反查（与 planner 的 physical_desc 档同口径）。
+
+    返回 (解析结果 {业务名: 列}, 该表可用业务名清单)。多源对同一业务名给出**不同列**时
+    不猜（宁缺勿错）；列名只用于回填 doc，不进错误文案（护栏 §7）。
+    """
+    want = [str(n or "").strip() for n in names if str(n or "").strip()]
+    if not table or not want:
+        return {}, []
+    found: dict[str, set[str]] = {}
+    options: set[str] = set()
+    for ds in _model_metadata_source_ids(model):
+        mapping = _table_business_columns(ds, table)
+        options.update(mapping.keys())
+        for name in want:
+            col = mapping.get(name)
+            if col:
+                found.setdefault(name, set()).add(col)
+    return ({n: next(iter(cols)) for n, cols in found.items() if len(cols) == 1},
+            sorted(options))
+
+
+def fill_missing_property_columns(model: dict, obj: dict) -> tuple[dict, list[str], list[str]]:
+    """把对象里缺 `column` 的属性按主表列元数据回填（业务名 → 物理列，不猜）。
+
+    返回 (对象, 已回填的业务名, 仍未解析的业务名)；只补 `column`，不动其它字段。
+    """
+    table = str(obj.get("primary_table") or "").strip()
+    props = obj.get("properties") or []
+    missing = [p for p in props
+               if isinstance(p, dict) and not str(p.get("column") or "").strip()]
+    names = [str(p.get("name") or p.get("display_name") or "") for p in missing]
+    if not table or not missing:
+        return obj, [], names
+    resolved, _options = resolve_object_property_columns(model, table, names)
+    filled: list[str] = []
+    left: list[str] = []
+    for p, name in zip(missing, names):
+        col = resolved.get(name)
+        if col:
+            p["column"] = col
+            filled.append(name)
+        else:
+            left.append(name)
+    return obj, filled, left
+
+
+def validate_new_object(obj: dict) -> list[str]:
+    """新建对象的形状校验（返回错误清单，空=通过）。
+
+    为什么在写入口挡：部署绑定的 column_map 由 `properties[].column` 派生，
+    column 缺失会被**静默跳过** —— 对象/属性看着齐全，语义取数却永远查不到该列。
+    历史缺陷（2026-11-25）：AS-BOT 只用业务名造了两个对象（8/12 个属性全无 column、
+    也无主表），草案看着成功，发布后这两个对象永远取不到数。宁缺勿错。
+    """
+    from backend.modules.catalog.services.ontology_yaml_import import _dataset_ref_of_obj
+
+    errs: list[str] = []
+    key = str(obj.get("key") or "").strip()
+    if not key:
+        errs.append("对象缺 key")
+    table = str(obj.get("primary_table") or "").strip()
+    if not table and not _dataset_ref_of_obj(obj):
+        errs.append(
+            f"对象「{key}」未声明物理形状：primary_table（挂哪张表）或 execution_dataset 二者必填其一；"
+            "AS-BOT 新建对象必须能取数，纯概念对象请在建模页由人创建")
+    if table:
+        props = obj.get("properties") or []
+        no_col = [str(p.get("name") or p.get("display_name") or p.get("column") or "")
+                  for p in props
+                  if isinstance(p, dict) and not str(p.get("column") or "").strip()]
+        if no_col:
+            errs.append(
+                f"对象「{key}」有 {len(no_col)} 个属性缺物理列 column（"
+                + ", ".join(no_col[:6]) + (" …" if len(no_col) > 6 else "")
+                + "）：column 缺失会在部署绑定里被静默跳过，对象看着有字段却查不到；"
+                  "服务端会按主表列元数据的业务描述自动解析同名的业务属性名，"
+                  "解析不到时请先用 generate_ontology_draft 取真实表结构素材（或检查属性业务名是否与列业务描述一致）")
+    return errs
+
+
+def patch_object(model_id: int, object_key: str, patch: dict, *,
+                 remove_properties=None, remove_links=None,
+                 created_by: str = "") -> dict:
+    """按 key **局部合并**单个对象（属性按业务名、关系按 type+target），落草案。
+
+    为什么必须由服务端合并（2026-11-25 用户报“chat 建了草案但发布不了”）：读接口只回对象
+    摘要（无 links、属性无物理列），而旧实现是**整对象替换**——模型据此重建 User/Company，
+    把 13/6 条关系、51/50 个属性的物理列全部清零；草案“保存成功”，发布才被护栏打回。
+    写入方本来就只能看到摘要，所以“不丢东西”只能靠服务端：
+
+    * 标量：提交才改，未提交保留；aliases / metrics 取并集；
+    * 属性：按业务名合并，未提交字段（column/type/enum/description）保留；新增属性**必须**带 column；
+    * 关系：按 `type→target` 合并（同身份只覆盖提交的字段）；默认追加，不删；
+    * 删除必须显式：`remove_properties` / `remove_links`，并写入顶层
+      `_declared_removals` / `_declared_link_removals` 供发布护栏区分“点名删除”与“意外抹掉”；
+    * 系统能力本体的文档由声明目录维护，本通道拒（与 merge_object_scalars 同口径）。
+
+    返回变更明细 + 草案风险告警（`warnings`/`destructive`）：写入口即告知“发布会不会被阻断”，
+    不再等发布才报。
+    """
+    key = str(object_key or "").strip()
+    if not key:
+        raise ValueError("object_key 必填")
+    if not isinstance(patch, dict):
+        raise ValueError("object 必须是对象（含 key 与要改的字段）")
+    model = get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    if str(model.get("kind") or "") == "system":
+        raise ValueError("系统能力本体由声明目录维护（system_ontology_catalog.py + "
+                         "refresh_system_ontology.py），改动会被下次刷新覆盖；"
+                         "请改声明目录后重跑刷新脚本")
+    if str(model.get("status") or "") == "archived":
+        raise ValueError("已归档模型不可编辑；如需修改请先在版本管理中回滚激活")
+
+    base = get_draft(model_id).get("draft") or model.get("json_content") or "{}"
+    try:
+        doc = json.loads(base)
+    except ValueError as e:
+        raise ValueError(f"模型正文不是合法 JSON：{e}")
+    if not isinstance(doc, dict):
+        raise ValueError("模型正文必须是对象")
+    objects = doc.get("objects")
+    if not isinstance(objects, list):
+        objects = []
+    idx = next((i for i, o in enumerate(objects)
+                if isinstance(o, dict)
+                and str(o.get("key") or "").strip().lower() == key.lower()), None)
+    created = idx is None
+    # 深拷贝：不能就地改 doc 里的对象再存（失败时会让内存 doc 半改）
+    obj: dict = {} if created else json.loads(json.dumps(objects[idx], ensure_ascii=False))
+    obj["key"] = str(obj.get("key") or key)
+
+    changed: list[str] = []
+    for f in OBJECT_PATCH_SCALARS:
+        if f not in patch or patch.get(f) is None:
+            continue
+        val = str(patch.get(f) or "").strip()
+        if f == "display_name" and not val:
+            raise ValueError("显示名不能改成空（对象必须有业务名）")
+        if f == "primary_table" and not val:
+            raise ValueError(
+                "primary_table 不能改成空：主表是对象的物理绑定（column_map 与取数都由它派生），"
+                "清空后该对象永远查不到数；确需换表请直接提交新表名")
+        if val != str(obj.get(f) or ""):
+            obj[f] = val
+            changed.append(f)
+
+    for f in ("aliases", "metrics"):
+        if patch.get(f) is None:
+            continue
+        merged = [str(x).strip() for x in (obj.get(f) or []) if str(x).strip()]
+        seen = {x.lower() for x in merged}
+        added: list[str] = []
+        for name in _patch_names(patch.get(f)):
+            if name.lower() not in seen:
+                merged.append(name)
+                seen.add(name.lower())
+                added.append(name)
+        if added:
+            obj[f] = merged
+            changed.append(f)
+
+    props = obj.get("properties")
+    if not isinstance(props, list):
+        props = []
+    added_props: list[str] = []
+    modified_props: list[str] = []
+    pending_cols: list[dict] = []   # 缺 column 的新增属性：循环后按列元数据统一解析
+    auto_cols: dict[str, str] = {}
+    if patch.get("properties") is not None:
+        raw_props = patch.get("properties")
+        if not isinstance(raw_props, list):
+            raise ValueError("properties 必须是数组")
+        index: dict[str, int] = {}
+        for i, p in enumerate(props):
+            if isinstance(p, dict):
+                ident = str(p.get("name") or p.get("display_name") or "").strip().lower()
+                if ident:
+                    index.setdefault(ident, i)
+        for raw_p in raw_props:
+            if not isinstance(raw_p, dict):
+                raise ValueError("properties 的每一项必须是对象")
+            pname = str(raw_p.get("name") or raw_p.get("display_name") or "").strip()
+            if not pname:
+                raise ValueError("属性必须含 name（业务名）")
+            i = index.get(pname.lower())
+            if i is None:
+                col = str(raw_p.get("column") or "").strip()
+                newp: dict = {"name": pname}
+                if col:
+                    newp["column"] = col
+                for f in ("type", "is_key", "description", "enum"):
+                    if raw_p.get(f) is not None:
+                        newp[f] = raw_p[f]
+                props.append(newp)
+                index[pname.lower()] = len(props) - 1
+                added_props.append(pname)
+                if not col:
+                    pending_cols.append(newp)
+                continue
+            cur = props[i]
+            touched: list[str] = []
+            for f in ("name", "column", "type", "is_key", "description", "enum"):
+                if f not in raw_p:
+                    continue
+                val = raw_p.get(f)
+                if f == "name":
+                    val = str(val or "").strip()
+                    if not val:
+                        raise ValueError(f"属性「{pname}」的 name 不能改成空")
+                elif f == "column":
+                    # 显式 "" = 有意解绑（护栏只在提醒里报，不阻断）
+                    val = str(val or "").strip()
+                if cur.get(f) != val:
+                    cur[f] = val
+                    touched.append(f)
+            if touched:
+                modified_props.append(pname)
+    if pending_cols:
+        # 新增属性缺列：服务端按主表列元数据的业务描述反查（模型拿不到物理列，不能猜）
+        resolved, options = resolve_object_property_columns(
+            model,
+            str(patch.get("primary_table") or obj.get("primary_table") or "").strip(),
+            [str(p.get("name") or "") for p in pending_cols])
+        for p in pending_cols:
+            col = resolved.get(str(p.get("name") or ""))
+            if col:
+                p["column"] = col
+                auto_cols[p["name"]] = col
+        missing = [p["name"] for p in pending_cols if not str(p.get("column") or "").strip()]
+        if missing:
+            raise ValueError(
+                "新增属性未给出物理列，且该表列元数据里找不到同名业务属性: "
+                + ", ".join(missing)
+                + ("；该表可用业务属性示例: " + ", ".join(options[:20]) if options else
+                   "；请先用 generate_ontology_draft 取真实表结构素材后重试"))
+        obj["properties"] = props
+    removed_props: list[str] = []
+    drop_props = _patch_names(remove_properties)
+    if drop_props:
+        drop_l = {n.lower() for n in drop_props}
+        kept: list = []
+        for p in props:
+            ident = (str(p.get("name") or p.get("display_name") or "").strip().lower()
+                     if isinstance(p, dict) else "")
+            if ident and ident in drop_l:
+                removed_props.append(str(p.get("name") or p.get("display_name")))
+            else:
+                kept.append(p)
+        missing = drop_l - {x.lower() for x in removed_props}
+        if missing:
+            raise ValueError("要删除的属性不存在: " + ", ".join(sorted(missing)))
+        props = kept
+    obj["properties"] = props
+
+    links = obj.get("links")
+    if not isinstance(links, list):
+        links = []
+    added_links: list[str] = []
+    updated_links: list[str] = []
+    derived_join_links: list[str] = []      # 新建关系：服务端确定性补了 join
+    join_missing_links: list[tuple[str, str]] = []   # 新建关系：无从推导（跨对象取数用不到）
+    if patch.get("links") is not None:
+        raw_links = patch.get("links")
+        if not isinstance(raw_links, list):
+            raise ValueError("links 必须是数组")
+        existing = {_link_identity(x): x for x in links if _link_identity(x)}
+        for raw_l in raw_links:
+            if not isinstance(raw_l, dict):
+                raise ValueError("links 的每一项必须是对象")
+            if not str(raw_l.get("target") or "").strip():
+                raise ValueError("关系必须含 target（指向的对象 key）")
+            ident = _link_identity(raw_l)
+            cur = existing.get(ident)
+            if cur is None:
+                newl = dict(raw_l)
+                # join_on 是**输入提示**（目标/源对象的业务属性名），不落库：
+                # chat 拿不到物理列/join（读接口剥），只能给业务名，由服务端反查列。
+                hint = newl.pop("join_on", None)
+                if not str(newl.get("join") or "").strip():
+                    join_sql, why = derive_link_join(
+                        doc, model, obj,
+                        {**newl, "join_on": hint} if hint else newl)
+                    if join_sql:
+                        newl["join"] = join_sql
+                        derived_join_links.append(ident)
+                    else:
+                        join_missing_links.append((ident, why or "无从推导关联键"))
+                links.append(newl)
+                existing[ident] = newl
+                added_links.append(ident)
+                continue
+            touched_any = False
+            for f in ("type", "target", "join", "cardinality", "description", "display_name", "key"):
+                if f in raw_l and cur.get(f) != raw_l.get(f):
+                    cur[f] = raw_l[f]
+                    touched_any = True
+            if touched_any:
+                updated_links.append(ident)
+    removed_links: list[str] = []
+    drop_links: list[str] = []
+    for x in (remove_links or []):
+        ident = _link_identity(x) if isinstance(x, dict) else str(x or "").strip().lower()
+        if ident:
+            drop_links.append(ident)
+    if drop_links:
+        kept_links: list = []
+        for l in links:
+            ident = _link_identity(l)
+            hit = bool(ident) and (ident in drop_links
+                                   or ident.split("→")[-1] in drop_links
+                                   or ident.split("→")[0] in drop_links)
+            if hit:
+                removed_links.append(ident)
+            else:
+                kept_links.append(l)
+        if not removed_links:
+            raise ValueError("要删除的关系不存在: " + ", ".join(drop_links))
+        links = kept_links
+    obj["links"] = links
+
+    if not (changed or added_props or modified_props or removed_props
+            or added_links or updated_links or removed_links):
+        return {"mode": "unchanged", "key": key, "model_id": model_id,
+                "changed_fields": [], "draft_pending": bool(get_draft(model_id).get("has_draft")),
+                "note": "提交的值与当前草案/生效版一致，未写草案"}
+
+    if created:
+        obj.setdefault("display_name", key)
+        obj.setdefault("description", "")
+        errs = validate_new_object(obj)
+        if errs:
+            raise ValueError("；".join(errs))
+        objects.append(obj)
+    else:
+        objects[idx] = obj
+    doc["objects"] = objects
+    # 点名删除必须随草案活到发布：否则 publish 时护栏会把“人明确要删的”也当成意外丢失。
+    if removed_props:
+        raw_dec = doc.get(_REMOVALS_KEY)
+        raw_dec = dict(raw_dec) if isinstance(raw_dec, dict) else {}
+        raw_dec[key] = sorted(set(_patch_names(raw_dec.get(key)) + removed_props))
+        doc[_REMOVALS_KEY] = raw_dec
+    if removed_links:
+        raw_lr = doc.get(_LINK_REMOVALS_KEY)
+        raw_lr = dict(raw_lr) if isinstance(raw_lr, dict) else {}
+        raw_lr[key] = sorted(set(_patch_names(raw_lr.get(key)) + removed_links))
+        doc[_LINK_REMOVALS_KEY] = raw_lr
+
+    saved = save_draft_only(model_id, json.dumps(doc, ensure_ascii=False),
+                            created_by=created_by, strict=True)
+    logger.info("[ontology] patch_object model=%s key=%s mode=%s props(+%s ~%s -%s) links(+%s ~%s -%s) by=%s",
+                model_id, key, "created" if created else "updated",
+                len(added_props), len(modified_props), len(removed_props),
+                len(added_links), len(updated_links), len(removed_links), created_by)
+    return {
+        "mode": "created" if created else "updated",
+        "key": key, "model_id": model_id,
+        "changed_fields": changed,
+        "properties_added": added_props,
+        "properties_column_resolved": sorted(auto_cols.keys()),
+        "properties_modified": modified_props,
+        "properties_removed": removed_props,
+        "links_added": added_links,
+        "links_updated": updated_links,
+        "links_removed": removed_links,
+        "links_join_derived": derived_join_links,
+        "kept_properties": len(props),
+        "kept_links": len(links),
+        "draft_pending": True,
+        "warnings": ([f"关系「{ident}」未生成单跳 join（{why}）：跨对象语义查询不会走这条关系；"
+                      "可补 join_on=<目标对象业务属性名> 重提交，或在建模页手工补 join"
+                      for ident, why in join_missing_links]
+                     + list(saved.get("validation_warnings") or [])),
+        "destructive": bool(saved.get("destructive")),
+        "note": ("对象已局部合并进草案（未生效）：未提交的字段/属性/关系由服务端保留；"
+                 "需 publish_ontology_model 发布后才级联生效"),
+    }
+
+
 def _doc_objects_by_key(raw: str) -> dict:
     """JSON 正文 → {对象身份键: 对象}；解析失败回空 dict（调用方按“无差异”处理并出告警）。"""
     try:
@@ -2171,9 +2794,15 @@ def _obj_label(o: dict) -> str:
 
 
 def _obj_shape(o: dict) -> str:
-    """对象结构指纹（判“改了没有”）：只取影响语义的字段，忽略键序。"""
+    """对象结构指纹（判“改了没有”）：只取影响语义的字段，忽略键序。
+
+    description 必须在内：它是 chat/页面最常改的标量（`update_ontology_object` 三大
+    可改字段之一），漏掉就会把“只改了一句业务说明”的草案渲染成 unchanged——审阅面板
+    什么都不显示，人却会把改动发布出去（`_obj_delta.description_changed` 也就成了死字段）。
+    """
     return json.dumps({
         "display_name": _obj_label(o),
+        "description": str(o.get("description") or ""),
         "aliases": sorted(str(a) for a in (o.get("aliases") or [])),
         "primary_table": str(o.get("primary_table") or ""),
         "properties": o.get("properties") or [],
@@ -2188,11 +2817,18 @@ def _prop_identity(p: dict) -> str:
     return str(p.get("column") or p.get("name") or p.get("key") or "").strip().lower()
 
 
-def _link_identity(l: dict) -> str:
-    """关系身份：type -> target（cardinality 变化算同一关系的修改，不重复计数）。"""
+def _link_identity(l) -> str:
+    """关系身份：`type→target`（小写；cardinality 变化算同一关系的修改，不重复计数）。
+
+    变更对比（`_obj_delta`）、覆盖风险判定（`_overwrite_risk`）与显式删除声明
+    （`_declared_link_removals`）**必须共用同一口径**：否则“人点名要删的关系”
+    在发布时会被当成意外丢失而阻断（历史缺陷：两处各写一份，分隔符都不一样）。
+    """
     if not isinstance(l, dict):
-        return str(l)
-    return f"{str(l.get('type') or 'references').strip().lower()}->{str(l.get('target') or '').strip().lower()}"
+        return str(l or "").strip().lower()
+    target = str(l.get("target") or l.get("to") or l.get("to_key") or "").strip().lower()
+    typ = str(l.get("type") or l.get("key") or l.get("relation") or "").strip().lower()
+    return f"{typ}→{target}" if (typ or target) else ""
 
 
 def _named_set(items, key_of) -> dict:
@@ -2445,32 +3081,83 @@ def pop_declared_removals(doc: dict) -> dict:
     return _normalize_declared_removals(doc.pop(_REMOVALS_KEY, None))
 
 
-def _reject_destructive_overwrite(model: dict, json_content: str,
-                                  declared_removals: dict | None = None) -> None:
-    """整份覆盖前校验：不得无损丢失已有对象的属性/关系定义（fail-loud）。
+# 显式删除**关系**的声明键（doc 顶层，写入前剥离，不进 canonical 正文）。
+# 为什么需要它：关系收缩此前一律阻断（页面没有删关系入口），但 AS-BOT/脚本确实需要
+# 撤掉建错的关系；不开口子就只能靠人改库。与属性删除同口径：只放行**被点名**的关系。
+_LINK_REMOVALS_KEY = "_declared_link_removals"
 
-    历史风险：读接口（get_ontology_model）出于脱敏只回对象**摘要**（properties 为空数组），
-    而写接口（save_draft/save_ontology_model）要求提交完整 JSON 并整份覆盖。
-    调用方（含 AS-BOT）若凭摘要重建一份提交，会把已有对象的属性、枚举、关系定义**整份抹掉**——
-    这不是“挂错对象”，而是破坏性写入。宁阻断勿损毁。
 
-    `declared_removals`（建模页显式删除声明）：只放行**被点名**且确实消失的属性名，
-    未声明的消失照旧阻断；关系收缩仍一律阻断（页面没有删关系入口）。
+def _normalize_declared_link_removals(raw) -> dict:
+    """{对象 key: [关系身份…]} → {归一对象身份: {关系身份}}；非法形态当“未声明”。"""
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if not isinstance(v, (list, tuple, set, frozenset)):
+            continue
+        items = set()
+        for x in v:
+            ident = _link_identity(x) if isinstance(x, dict) else str(x or "").strip().lower()
+            if ident:
+                items.add(ident)
+        if items:
+            out[object_identity_key(str(k))] = items
+    return out
+
+
+def pop_declared_link_removals(doc: dict) -> dict:
+    """取出并剥离 doc 顶层的关系删除声明（绝不进 canonical 正文/派生视图）。"""
+    if not isinstance(doc, dict):
+        return {}
+    return _normalize_declared_link_removals(doc.pop(_LINK_REMOVALS_KEY, None))
+
+
+def _prop_by_identity(obj: dict) -> dict[str, dict]:
+    """属性身份名 → 属性（与 `_prop_identity_names` 同口径：name > display_name > column）。"""
+    out: dict[str, dict] = {}
+    for p in obj.get("properties") or obj.get("attributes") or []:
+        if not isinstance(p, dict):
+            continue
+        for k in ("name", "display_name", "column"):
+            v = str(p.get(k) or "").strip()
+            if v:
+                out[v] = p
+                break
+    return out
+
+
+def _overwrite_risk(model: dict, json_content: str,
+                    declared_removals: dict | None = None) -> tuple[list[str], list[str]]:
+    """整份覆盖的风险判定（不抛异常）：返回 (阻断项, 提醒项)。
+
+    历史风险：读接口（get_ontology_model）出于脱敏只回对象**摘要**（properties 为空数组、
+    无 links、无物理列），而整份写接口要求提交完整 JSON 并整份覆盖。调用方（含 AS-BOT）
+    若凭摘要重建一份提交，会把已有对象的属性、枚举、关系、物理列定义**整份抹掉**——
+    这不是“挂错对象”，而是破坏性写入。
+
+    阻断项 = 无声丢失已有定义：整对象消失 / 属性名消失（未声明）/ 同名属性丢了 `column` 键 /
+    关系收缩（未声明）/ 主表被清空（对象将失去物理绑定，没有正当解绑场景）。
+    提醒项 = 有意动作但人必须看见：按 `_declared_removals` 点名删属性、按
+    `_declared_link_removals` 点名删关系、显式 `column: ""` 解绑物理列。
     """
     try:
         current = json.loads(model.get("json_content") or "{}")
         incoming = json.loads(json_content or "{}")
     except ValueError:
-        return  # JSON 非法由后续解析报错，这里不重复报
+        return [], []  # JSON 非法由后续解析报错，这里不重复报
     if not isinstance(current, dict) or not isinstance(incoming, dict):
-        return
+        return [], []
     cur_objs = {object_identity_key(o.get("key") or ""): o for o in (current.get("objects") or [])}
     if not cur_objs:
-        return
+        return [], []
     new_objs = {object_identity_key(o.get("key") or ""): o for o in (incoming.get("objects") or [])}
-    declared = _normalize_declared_removals(declared_removals)
+    declared = _normalize_declared_removals(
+        declared_removals if declared_removals is not None
+        else incoming.get(_REMOVALS_KEY))
+    declared_links = _normalize_declared_link_removals(
+        incoming.get(_LINK_REMOVALS_KEY))
     lost_detail: list[str] = []
-    removed_detail: list[str] = []
+    advisory: list[str] = []
     for key, old in cur_objs.items():
         new = new_objs.get(key)
         if new is None:
@@ -2500,21 +3187,90 @@ def _reject_destructive_overwrite(model: dict, json_content: str,
                         + (" …" if len(undeclared) > 8 else "") + ")")
                 else:
                     # 声明的删除是**人的明确动作**：不阻断，但必须留痕（谁删了哪些名字）
-                    removed_detail.append(
-                        f"{key}: " + ", ".join(sorted(vanished)[:20]))
+                    advisory.append(
+                        f"{key}(按声明删除属性: " + ", ".join(sorted(vanished)[:20]) + ")")
+        # 属性名没变但物理列**无声消失**：护栏按名字看不见这类损毁（历史缺陷：AS-BOT 用
+        # 脱敏摘要重建对象 → 属性名齐全、column 全空，发布后 column_map 直接缺列，
+        # 语义取数对这两张表静默失效）。`column` 键缺失 = 意外丢失（阻断）；
+        # 显式 `column: ""` = 有意解绑（提醒，不阻断，页面/脚本按此表达解绑）。
+        old_props_map = _prop_by_identity(old)
+        new_props_map = _prop_by_identity(new)
+        dropped_cols: list[str] = []
+        unbound_cols: list[str] = []
+        for pname, old_prop in old_props_map.items():
+            old_col = str((old_prop or {}).get("column") or "").strip()
+            if not old_col:
+                continue
+            new_prop = new_props_map.get(pname)
+            if new_prop is None:
+                continue  # 属性整体消失已由上面的名字判定覆盖
+            if "column" not in new_prop:
+                dropped_cols.append(f"{pname}(原 {old_col})")
+            elif not str(new_prop.get("column") or "").strip():
+                unbound_cols.append(f"{pname}(原 {old_col})")
+        if dropped_cols:
+            lost_detail.append(
+                f"{key}(属性物理列定义丢失: " + ", ".join(dropped_cols[:8])
+                + (" …" if len(dropped_cols) > 8 else "") + ")")
+        if unbound_cols:
+            advisory.append(
+                f"{key}(显式解绑属性物理列: " + ", ".join(unbound_cols[:8])
+                + (" …" if len(unbound_cols) > 8 else "") + ")")
+        old_tbl = str(old.get("primary_table") or "").strip()
+        if old_tbl and not str(new.get("primary_table") or "").strip():
+            # 主表是对象的物理绑定：部署绑定的 column_map、语义取数都按它派生。
+            # 清空 = 对象从此查不到任何列，且没有任何「解绑主表」的正当场景/声明通道
+            # → 与物理列丢失同口径，一律按丢失阻断（历史草案把 company 主表清空，
+            # 若只提醒，发布会产出一个永远取不到数的对象）。
+            lost_detail.append(f"{key}(主表 {old_tbl} 被清空，对象将失去物理绑定)")
         if new_l < old_l:
-            lost_detail.append(f"{key}(关系 {old_l}→{new_l})")
-    if removed_detail:
-        logger.warning("[ontology] 按显式删除声明移除属性（建模页手动删除）: %s",
-                       "；".join(removed_detail))
-    if lost_detail:
+            old_ids = {_link_identity(x) for x in (old.get("links") or [])}
+            new_ids = {_link_identity(x) for x in (new.get("links") or [])}
+            old_ids.discard("")
+            new_ids.discard("")
+            gone = old_ids - new_ids
+            allowed_links = declared_links.get(key) or set()
+            undeclared_links = gone - allowed_links
+            # 身份解析不出（条目缺 target/to 且缺 type）时无法定位删的是哪条：
+            # 按丢失条数差异兜底阻断，不得因为 gone 为空就当成“没有关系丢失”。
+            unresolved = (old_l - new_l) - len(gone)
+            if unresolved > 0:
+                lost_detail.append(
+                    f"{key}(关系 {old_l}→{new_l}，有 {unresolved} 条关系消失且身份无法解析"
+                    "（缺 target/to），按丢失处理)")
+            if undeclared_links:
+                lost_detail.append(
+                    f"{key}(关系 {old_l}→{new_l}，丢失: "
+                    + ", ".join(sorted(undeclared_links)[:6])
+                    + (" …" if len(undeclared_links) > 6 else "") + ")")
+            elif not unresolved:
+                advisory.append(
+                    f"{key}(按声明删除关系: " + ", ".join(sorted(gone)[:6]) + ")")
+    return lost_detail, advisory
+
+
+def _reject_destructive_overwrite(model: dict, json_content: str,
+                                  declared_removals: dict | None = None) -> list[str]:
+    """整份覆盖前校验：不得无损丢失已有对象的属性/关系/物理列定义（fail-loud）。
+
+    判据见 `_overwrite_risk`：阻断项一律抛错；提醒项（被显式声明的删除/解绑）返回给调用方，
+    由 save_draft 带进 validation_warnings 让人看见。关系收缩只有在
+    `_declared_link_removals` 里点名时才放行。
+    """
+    blocking, advisory = _overwrite_risk(model, json_content, declared_removals)
+    if advisory:
+        logger.warning("[ontology] 本次提交含显式删减/解绑（人可见提醒）: %s",
+                       "；".join(advisory))
+    if blocking:
         raise ValueError(
             "本次提交会造成已有定义丢失，已阻断（宁阻断勿损毁）："
-            + "；".join(lost_detail[:10])
+            + "；".join(blocking[:10])
             + "。若确需删减，请在「本体建模页」操作，或提交与现有定义等量/更完整的 JSON。"
               "注意读接口出于脱敏只回对象摘要（properties 为空），不能拿摘要重建整份 JSON；"
               "指标口径归并进对象 metrics[] 名字引用（指向指标字典）不计为属性丢失；"
-              "仅「建模页 · 编辑对象 · 删除属性」会用顶层 _declared_removals 声明点名删除")
+              "修改已有对象请用 update_ontology_object 局部提交（服务端按业务名合并属性与关系，"
+              "未提交的字段与关系一律保留）；点名删除走 _declared_removals / _declared_link_removals")
+    return advisory
 
 
 def save_draft(model_id: int, json_content: str, name: str = None,
@@ -2546,15 +3302,20 @@ def save_draft(model_id: int, json_content: str, name: str = None,
     if not isinstance(doc, dict):
         raise ValueError("JSON 解析失败: 顶层必须是对象")
     declared = pop_declared_removals(doc)
+    declared_links = pop_declared_link_removals(doc)
     if declared:
         logger.info("[ontology] 模型 %s 提交含显式删除声明（建模页删除属性）: %s",
                     model_id, {k: sorted(v) for k, v in declared.items()})
+    if declared_links:
+        logger.info("[ontology] 模型 %s 提交含显式关系删除声明: %s",
+                    model_id, {k: sorted(v) for k, v in declared_links.items()})
     if allow_full_regenerate:
         # 不静默：谁跳了护栏、为什么跳，必须留在日志里可查
         logger.warning(
             "[ontology] 模型 %s(%s) 跳过破坏性覆盖护栏：调用方声明为全量重算的派生模型", model_id, name or "")
+        _overwrite_advisory: list[str] = []
     else:
-        _reject_destructive_overwrite(model, json_content, declared)
+        _overwrite_advisory = _reject_destructive_overwrite(model, json_content, declared)
 
     if not isinstance(doc.get("objects"), list) or not doc["objects"]:
         raise ValueError("JSON 必须包含非空 objects 数组")
@@ -2662,7 +3423,7 @@ def save_draft(model_id: int, json_content: str, name: str = None,
     # 缺陷显式暴露(no-silent-degradation)：
     #   - 对象 key 重复：任何状态都告警，激活时硬阻断（见 activate）；
     #   - 字典孤儿引用：沿用"草案告警 / 激活阻断"口径。
-    warnings: list = []
+    warnings: list = [f"[提交] 已按声明放行: {w}" for w in _overwrite_advisory]
     try:
         for dup in find_duplicate_object_keys(doc):
             warnings.append(
@@ -2677,6 +3438,18 @@ def save_draft(model_id: int, json_content: str, name: str = None,
                 "对象绑在未登记为数据产品的裸表上，激活会被阻断: " + ", ".join(unreg[:10]))
     except Exception as e:  # noqa: BLE001 — 校验不影响保存主链路
         logger.warning("[Ontology] save_draft product check failed: %s", e)
+    if str(model.get("kind") or "") != "system":
+        try:
+            # 关系缺 join / 含跨跳占位符 = 跨对象**取数**走不通（planner 只把单跳 join 编进 SQL）。
+            # 不阻断（关系仍是检索/关系上下文的有效信息），但必须让人看见。
+            nojoin = find_links_without_sql_join(doc)
+            if nojoin:
+                warnings.append(
+                    f"有 {len(nojoin)} 条对象关系不构成单跳物理 join（无 join 或含跨跳占位符），"
+                    "跨对象语义查询不会走它们: " + ", ".join(nojoin[:8])
+                    + (" …" if len(nojoin) > 8 else ""))
+        except Exception as e:  # noqa: BLE001 — 校验不影响保存主链路
+            logger.warning("[Ontology] save_draft link-join check failed: %s", e)
     if model["status"] == "draft":
         try:
             orphans = find_orphan_dict_bindings(doc)
@@ -2895,8 +3668,15 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int,
     `view.url` 被当成 `表=view / 列=url`，永远匹配不到字典行，enum/别名联动静默空转）：
     以对象物理表(`table_of_object`，来自部署绑定层)为前缀限定，按候选 (表,列) 存
     在性命中（口径收口在 physical_ref.dim_lookup_candidates）。
+
+    **裸列名(`user_type`)不是“没有列引用”**：它表示“该列属于本对象主表”。历史缺陷是
+    这里 `if "." not in col_ref: continue` 把它们整体跳过 —— 这批属性的 enum/中文名
+    从未同步进字典，于是跨对象维度按业务名解析时字典查不到（无 value_labels），
+    落到物理列分支，把 `user_type` 的 1/2/3 裸码直接输出给用户（2026-11-26 联耀模型实测）。
+    统一交给 `dim_lookup_candidates(col_ref, obj_table)` 用主表补前缀；主表也定位不到时
+    记入 `unresolved_props` 并 warning（不静默丢）。
     """
-    updated, conflicts, gaps = 0, [], []
+    updated, conflicts, gaps, unresolved = 0, [], [], []
     tables = {str(k): str(v) for k, v in (table_of_object or {}).items()}
     # 同一列可能被多对象引用: 合并后再写
     by_col: dict[tuple[str, str], dict] = {}
@@ -2904,11 +3684,14 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int,
         obj_table = (str(obj.get("primary_table") or "").strip()
                      or tables.get(str(obj.get("key") or ""), ""))
         for p in obj.get("properties") or obj.get("attributes") or []:
-            col_ref = str(p.get("column") or "")
-            if "." not in col_ref:
+            col_ref = str(p.get("column") or "").strip()
+            if not col_ref:
                 continue
-            cands = _physical_ref.dim_lookup_candidates(col_ref, obj_table)
+            cands = [c for c in _physical_ref.dim_lookup_candidates(col_ref, obj_table)
+                     if c[0] and c[1]]
             if not cands:
+                if p.get("enum"):
+                    unresolved.append(f"{obj.get('key')}.{p.get('name')}({col_ref})")
                 continue
             entry_owner = by_col.get(cands[0])
             if entry_owner is None:
@@ -2932,7 +3715,10 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int,
                 entry["aliases"].add(a)
         # 对象级别名不进列, 只收属性
     if not by_col:
-        return {"updated": 0, "conflicts": [], "gaps": []}
+        if unresolved:
+            logger.warning("[ontology] 有枚举的属性定位不到物理列（缺主表/部署绑定），"
+                           "枚举未同步进字典: %s", unresolved)
+        return {"updated": 0, "conflicts": [], "gaps": [], "unresolved_props": unresolved}
 
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
@@ -3014,9 +3800,13 @@ def sync_enums_to_dimensions(doc: dict, datasource_id: int,
         logger.warning("[ontology] enum→dims 冲突(保留人工标签): %s", conflicts)
     if gaps:
         logger.info("[ontology] 有枚举语义但字典缺维度行: %s", gaps)
-    logger.info("[ontology] sync_enums_to_dimensions: updated=%d conflicts=%d gaps=%d",
-                updated, len(conflicts), len(gaps))
-    return {"updated": updated, "conflicts": conflicts, "gaps": gaps}
+    if unresolved:
+        logger.warning("[ontology] 有枚举的属性定位不到物理列（缺主表/部署绑定），"
+                       "枚举未同步进字典: %s", unresolved)
+    logger.info("[ontology] sync_enums_to_dimensions: updated=%d conflicts=%d gaps=%d "
+                "unresolved=%d", updated, len(conflicts), len(gaps), len(unresolved))
+    return {"updated": updated, "conflicts": conflicts, "gaps": gaps,
+            "unresolved_props": unresolved}
 
 
 def _table_of_object(model_id: int, datasource_id: int) -> dict:

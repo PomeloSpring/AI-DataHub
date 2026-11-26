@@ -131,6 +131,21 @@ class TestDraftDiff:
         d = svc.draft_diff(MID)
         assert [r["key"] for r in d["removed"]] == ["isv"]
 
+    def test_description_only_change_is_visible(self, monkeypatch):
+        """只改一句业务说明也必须计为 changed。
+
+        description 是 `update_ontology_object` 最常改的标量；漏在结构指纹外的话，审阅面板
+        会把这类草案渲成“无改动”（unchanged），人看不到改了什么就把发布点了。
+        """
+        doc = json.loads(json.dumps(EFF))
+        doc["objects"][0]["description"] = "客户提交的售后案例"
+        _patch(monkeypatch, json.dumps(doc, ensure_ascii=False))
+        d = svc.draft_diff(MID)
+        assert [c["key"] for c in d["changed"]] == ["case"]
+        delta = d["changed"][0]["delta"]
+        assert delta["description_changed"] is True
+        assert delta["properties_added"] == [] and delta["properties_removed"] == []
+
     def test_no_draft_is_explicit(self, monkeypatch):
         _patch(monkeypatch, "")
         d = svc.draft_diff(MID)
@@ -278,9 +293,12 @@ class TestAddObjectsMergesOntoDraft:
         monkeypatch.setattr(svc, "get_model", lambda mid: {
             "id": mid, "name": "n", "status": "active", "json_content": eff})
         monkeypatch.setattr(svc, "get_draft", lambda mid: {"draft": existing_draft})
-        monkeypatch.setattr(svc, "save_draft_only",
-                            lambda mid, content, created_by="": saved.update(
-                                {"mid": mid, "content": content}) or {"id": mid})
+
+        def _fake_save(mid, content, created_by="", **kw):
+            saved.update({"mid": mid, "content": content, "strict": kw.get("strict")})
+            return {"id": mid}
+
+        monkeypatch.setattr(svc, "save_draft_only", _fake_save)
         monkeypatch.setattr(ot, "_assert_model_editable", lambda mid: None)
         monkeypatch.setattr(ot, "_require_write_perm", lambda code, action: None)
         monkeypatch.setattr(ot, "_reject_datasource_arg", lambda args: None)
@@ -291,16 +309,23 @@ class TestAddObjectsMergesOntoDraft:
         return saved, payload
 
     def test_second_add_keeps_first_draft_object(self, monkeypatch):
+        # 新增对象必须能取数：带主表与物理列（无主表/无列会被 validate_new_object 拒）
         saved, payload = self._run(
             monkeypatch, _draft_raw(),
-            [{"key": "isv_token", "display_name": "密钥记录"}])
+            [{"key": "isv_token", "display_name": "密钥记录", "primary_table": "t_isv_token",
+              "properties": [{"name": "密钥", "column": "token"}]}])
         keys = {o["key"] for o in json.loads(saved["content"])["objects"]}
         assert {"isv_integration", "isv_token"} <= keys   # 草案里前一次的对象还在
         assert payload["added"] == ["isv_token"] and payload["skipped"] == []
         assert payload["draft_pending"] is True            # 不生效，要发布
+        # 追加通道也走 strict：要造成已有定义丢失时立刻拒写，不让“存好了却发布不了”重现
+        assert saved["strict"] is True
 
     def test_no_draft_falls_back_to_effective(self, monkeypatch):
-        saved, _ = self._run(monkeypatch, "", [{"key": "isv_token", "display_name": "密钥记录"}])
+        saved, _ = self._run(
+            monkeypatch, "",
+            [{"key": "isv_token", "display_name": "密钥记录", "primary_table": "t_isv_token",
+              "properties": [{"name": "密钥", "column": "token"}]}])
         keys = {o["key"] for o in json.loads(saved["content"])["objects"]}
         assert keys == {"case", "isv", "isv_token"}
 

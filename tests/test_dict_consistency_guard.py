@@ -331,14 +331,16 @@ def test_add_objects_is_append_only(monkeypatch):
     # add_ontology_objects 与 update 同口径：基于「已有草案」合并，会先读草案。
     # 本用例无待发布草案，桩 get_draft 返回空 draft → 回退到生效版（否则查元库 id=1 不存在而假失败）。
     monkeypatch.setattr(osvc, "get_draft", lambda mid: {"draft": None})
-    def _fake_draft(mid, jc, name=None, created_by=""):
+    def _fake_draft(mid, jc, name=None, created_by="", **kw):
         calls["doc"] = json.loads(jc)
+        calls["strict"] = kw.get("strict")
         return {"id": mid}
     monkeypatch.setattr(osvc, "save_draft_only", _fake_draft)
 
     result = asyncio.run(ot.add_ontology_objects({"model_id": 1, "objects": [
         {"key": "case", "display_name": "被覆盖者"},   # 已存在 → 必须跳过
-        {"key": "isv", "display_name": "集成记录"},    # 新增
+        {"key": "isv", "display_name": "集成记录",     # 新增（必须能取数：主表 + 物理列）
+         "primary_table": "t_isv", "properties": [{"name": "来源", "column": "source"}]},
     ]}))
     text = "".join(b.get("text", "") for b in result.get("content", []))
     assert result.get("isError") is not True
@@ -348,6 +350,8 @@ def test_add_objects_is_append_only(monkeypatch):
     assert case["display_name"] == "案例"
     assert any(o["key"] == "isv" for o in calls["doc"]["objects"])
     assert "isv" in text and "case" in text
+    # 追加也要 strict：已有定义会丢时当场拒写（不重演“存好了却发布不了”）
+    assert calls["strict"] is True
 
 
 def test_publish_requires_user_confirmation(monkeypatch):

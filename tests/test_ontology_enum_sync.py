@@ -183,3 +183,68 @@ class TestSyncNestedDottedColumn:
         assert res["updated"] == 0 or cur.updates, "候选定位应能命中旧写法行"
         if cur.updates:
             assert cur.updates[0][1][-1] == 70
+
+
+# ── 裸列名（`user_type`）定位 ────────────────────────────────
+
+DOC_BARE = {
+    "objects": [{
+        "key": "user_company_membership",
+        "primary_table": "t_user_company_relation",
+        "properties": [
+            {"column": "user_code", "name": "用户编码", "description": "平台用户编码",
+             "enum": []},
+            {"column": "user_type", "name": "用户类型",
+             "description": "该用户在该企业下的用户类型",
+             "enum": {"1": "内部用户", "2": "诊所（医生）", "3": "技工"}},
+        ],
+    }],
+}
+
+
+class TestSyncBareColumn:
+    """裸列名不是“没有列引用”，而是“该列属于本对象主表”。
+
+    历史缺陷（2026-11-26 联耀模型实测）：`if "." not in col_ref: continue` 把裸列名属性
+    整体跳过 → 枚举/属性中文名从未进字典 → 跨对象维度（`user_company_membership.用户类型`）
+    按业务名解析落到物理列，把 1/2/3 裸码直接输出给用户。
+    """
+
+    def test_bare_column_resolves_via_primary_table(self):
+        cur = FakeCursor([(361, "t_user_company_relation", "user_type", "企业用户类型",
+                           '["关系表用户类型"]', None)])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(DOC_BARE, datasource_id=1)
+        assert res["updated"] == 1
+        sql, params = cur.updates[0]
+        # 枚举标签按字典行写入
+        assert json.loads(params[0]) == {"1": "内部用户", "2": "诊所（医生）", "3": "技工"}
+        # 属性中文名进 aliases → 跨对象引用可用业务名命中该字典行
+        assert "用户类型" in json.loads(params[1])
+        assert res.get("unresolved_props") == []
+
+    def test_bare_column_resolves_via_binding_table_map(self):
+        """doc 无 primary_table 时用部署绑定层给的表（与带点写法同口径）。"""
+        doc = {"objects": [{**DOC_BARE["objects"][0]}]}
+        doc["objects"][0].pop("primary_table")
+        cur = FakeCursor([(361, "t_user_company_relation", "user_type", "企业用户类型",
+                           None, None)])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(
+                doc, datasource_id=1,
+                table_of_object={"user_company_membership": "t_user_company_relation"})
+        assert res["updated"] == 1
+
+    def test_bare_column_without_table_is_reported_not_silently_dropped(self):
+        """主表与绑定都拿不到时，枚举属性必须进 unresolved_props（可诊断，不静默）。"""
+        cur = FakeCursor([])
+        with patch("backend.modules.catalog.services.ontology_service.get_metadata_conn",
+                   return_value=_conn_for(cur)):
+            res = sync_enums_to_dimensions(
+                {"objects": [{"key": "orphan_obj", "properties": [
+                    {"column": "user_type", "name": "用户类型", "enum": {"1": "内部用户"}}]}]},
+                datasource_id=1)
+        assert res["updated"] == 0
+        assert res["unresolved_props"] == ["orphan_obj.用户类型(user_type)"]

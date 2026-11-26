@@ -116,8 +116,8 @@ class TestWriteOpsEnforceDomain:
         import backend.modules.catalog.services.ontology_service as osvc
         saved = {}
 
-        def fake_save_draft_only(mid, content, name=None, created_by=""):
-            saved.update({"id": mid, "content": content})
+        def fake_save_draft_only(mid, content, name=None, created_by="", strict=False):
+            saved.update({"id": mid, "content": content, "strict": strict})
             return {"id": mid}
 
         monkeypatch.setattr(osvc, "save_draft_only", fake_save_draft_only)
@@ -125,6 +125,8 @@ class TestWriteOpsEnforceDomain:
         p = _payload(asyncio.run(ot.save_ontology_model(
             {"model_id": 1791127653486902, "json_content": "{}"})))
         assert p.get("success") is True and saved["id"] == 1791127653486902
+        # 全量通道必须走 strict：会造成定义丢失时拒写，而不是“存好了却发不出去”
+        assert saved["strict"] is True
 
     def test_save_system_model_rejected_by_domain(self, monkeypatch):
         """系统本体：域约束执行前拒（即使有权限码也不放行）。"""
@@ -167,10 +169,11 @@ class TestWriteOpsEnforceDomain:
         import backend.modules.catalog.services.ontology_service as osvc
         monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
         monkeypatch.setattr(osvc, "get_model",
-                            lambda mid: {"id": mid, "json_content": '{"objects":[]}'})
+                            lambda mid: {"id": mid, "kind": "business",
+                                         "json_content": '{"objects":[]}'})
         monkeypatch.setattr(osvc, "get_draft", lambda mid: {"draft": None})
-        monkeypatch.setattr(osvc, "save_draft_only",
-                            lambda mid, content, created_by="": {"id": mid})
+        monkeypatch.setattr(osvc, "patch_object",
+                            lambda mid, key, patch, **kw: {"mode": "created", "key": key})
         # 业务可改
         _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
         p = _payload(asyncio.run(ot.update_ontology_object(
@@ -179,7 +182,7 @@ class TestWriteOpsEnforceDomain:
         # 系统不可
         _patch_model(monkeypatch, [{"name": "系统能力本体", "kind": "system"}])
         assert "系统本体" in _payload(asyncio.run(ot.update_ontology_object(
-            {"model_id": 2789709247647610, "object": {"key": "x"}})))["error"]
+            {"model_id": 2789709247647610, "object": {"key": "x"}}))) ["error"]
 
 
 # ── 可见域：AS-BOT 只见系统本体，业务 AS-BOT 见非 system（按触达源）──────

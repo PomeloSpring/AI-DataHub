@@ -36,6 +36,43 @@ def _text(data, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"isError": True} if is_error else {})}
 
 
+def _link_view(link) -> dict | None:
+    """关系对 LLM 的**业务投影**：`join`（含物理表/列的表达式）一律剥离。
+
+    历史缺陷（2026-11-25）：读接口完全不回关系，模型以为对象没有关系，
+    改对象时凭印象重建 → 把 13/6 条关系与全部物理列一起抹掉。
+    关系必须可见（目标对象 key/类型/基数），但物理 join 不下发。
+    """
+    if not isinstance(link, dict):
+        return None
+    target = str(link.get("target") or "").strip()
+    if not target:
+        return None
+    out: dict = {"target": target, "type": str(link.get("type") or "references")}
+    for f in ("cardinality", "display_name", "description"):
+        v = str(link.get(f) or "").strip()
+        if v:
+            out[f] = v
+    return out
+
+
+def _object_exists(model_id: int, object_key: str) -> bool:
+    """对象是否已存在（**草案优先**：草案里新建但未发布的对象再改算“修改”）。"""
+    from backend.modules.catalog.services import ontology_service
+
+    model = ontology_service.get_model(model_id)
+    if not model:
+        raise ValueError("模型不存在")
+    base = ontology_service.get_draft(model_id).get("draft") or model.get("json_content") or "{}"
+    try:
+        doc = json.loads(base)
+    except (json.JSONDecodeError, TypeError):
+        doc = {}
+    key = str(object_key or "").strip().lower()
+    return any(str(o.get("key") or "").strip().lower() == key
+               for o in (doc.get("objects") or []) if isinstance(o, dict))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 只读工具 handler
 # ═══════════════════════════════════════════════════════════════════
@@ -122,16 +159,23 @@ async def get_ontology_model(args):
         for obj in doc.get("objects", []):
             key = obj.get("key") or obj.get("class")
             props = obj.get("properties") or []
+            links = obj.get("links") or []
             item = {
                 "key": key,
                 "display_name": obj.get("display_name") or obj.get("label"),
                 "description": (obj.get("description") or "")[:200],
                 "property_count": len(props),
+                "link_count": len(links),
             }
             if object_key_want and str(key or "") == object_key_want:
                 item["properties"] = [v for v in (_prop_view(p) for p in props) if v]
+                item["links"] = [v for v in (_link_view(l) for l in links) if v]
                 if props and not item["properties"]:
                     item["properties_note"] = "该对象已登记属性但缺失业务名，无法投影；不得据此认为对象没有字段"
+                item["physical_note"] = (
+                    "属性物理列与关系 join 表达式属内部标识，读接口不下发；修改时也**不必**提交它们——"
+                    "update_ontology_object 局部合并会保留未提交的属性/关系/列绑定；"
+                    "新增关系由服务端按两表同名业务列推导单跳 join，多列同名时用 links[].join_on=<业务属性名> 指名")
             summary.append(item)
         if object_key_want:
             summary = [s for s in summary if str(s.get("key") or "") == object_key_want]
@@ -145,8 +189,11 @@ async def get_ontology_model(args):
             "object_count": model.get("object_count"),
             "objects_summary": summary,
             "properties_note": "" if object_key_want else (
-                "对象属性未展开：传 object_key=<对象 key> 获取该对象的业务属性清单"
-                "（业务名/类型/枚举，不含物理列）。属性为空≠对象没有字段，两者不可混为一谈。"),
+                "对象属性/关系未展开：传 object_key=<对象 key> 获取该对象的业务属性与关系清单"
+                "（业务名/类型/枚举/关系目标，不含物理列与 join 表达式）。属性为空≠对象没有字段。"),
+            "edit_note": ("修改已有对象用 update_ontology_object（只提交要改的字段，服务端按业务名局部合并，"
+                          "未提交的属性/关系/列绑定保留）；新增用 add_ontology_objects。"
+                          "**不得**拿本摘要重建整份 JSON 调 save_ontology_model（会被护栏阻断）。"),
             "created_at": model.get("created_at"),
             "updated_at": model.get("updated_at"),
         })
@@ -394,16 +441,25 @@ async def save_ontology_model(args):
 
     def _run():
         from backend.modules.catalog.services import ontology_service
-        # 走**只存草案**：不碰生效内容、不级联，等 publish 才生效（两段式第一段）
+        # 走**只存草案**：不碰生效内容、不级联，等 publish 才生效（两段式第一段）。
+        # strict=True：与生效版对比会造成已有定义丢失时**拒写**（而不是存了却发布不了）。
         return ontology_service.save_draft_only(
             model_id,
             json_content if isinstance(json_content, str) else json.dumps(json_content, ensure_ascii=False),
             name=args.get("name"),
             created_by=str(getattr(ctx, "username", "") or ""),
+            strict=True,
         )
 
-    model = await asyncio.to_thread(_run)
-    return _text({"success": True, "model_id": model["id"]})
+    try:
+        model = await asyncio.to_thread(_run)
+    except ValueError as e:
+        return _text({"error": str(e)}, is_error=True)
+    out = {"success": True, "model_id": model["id"], "draft_pending": True,
+           "note": "改动已存为草案（未生效），需 publish_ontology_model 发布才级联"}
+    if model.get("validation_warnings"):
+        out["warnings"] = model["validation_warnings"]
+    return _text(out)
 
 
 def _dict_publish_decision(args, ctx, row_kind: str):
@@ -427,8 +483,8 @@ def _dict_publish_decision(args, ctx, row_kind: str):
 async def add_ontology_objects(args):
     """在本体模型中**新增对象**（只增不删，落草案）— 权限码把关后直执行。
 
-    与 save_ontology_model 的区别：本工具只追加对象，不接受删除/裁剪已有定义；
-    改动只存草案，需 publish_ontology_model 发布才生效。
+    新增对象必须能取数：无主表/无执行数据集、或属性解析不到物理列的对象一律拒（宁缺勿错）。
+    属性未给 column 时，服务端按主表列元数据的业务描述自动解析（不刺探物理列，不猜）。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
 
@@ -469,25 +525,41 @@ async def add_ontology_objects(args):
             doc = {}
         merged = copy.deepcopy(doc)
         existing = {str(o.get("key") or "").strip().lower(): o for o in (merged.get("objects") or [])}
-        added, skipped = [], []
+        added, skipped, resolved_cols, errs = [], [], [], []
         for obj in objects:
             key = str(obj.get("key") or "").strip()
             if key.lower() in existing:
-                # 已存在的对象**不覆盖**（只增不删；修改请走 save_ontology_model）
+                # 已存在的对象**不覆盖**（只增不删；修改请走 update_ontology_object 局部合并）
                 skipped.append(key)
                 continue
-            merged.setdefault("objects", []).append(obj)
-            existing[key.lower()] = obj
+            this = copy.deepcopy(obj)
+            this, filled, _left = ontology_service.fill_missing_property_columns(model, this)
+            bad = ontology_service.validate_new_object(this)
+            if bad:
+                errs.extend(bad)
+                continue
+            merged.setdefault("objects", []).append(this)
+            existing[key.lower()] = this
             added.append(key)
+            if filled:
+                resolved_cols.append({"key": key, "properties": filled})
+        if errs:
+            # 宁缺勿错：任何对象不合格就整体拒写，不落半截草案
+            raise ValueError("新增对象形状不合格（本次未写入草案）：\n- " + "\n- ".join(errs))
         if not added:
             return {"added": [], "skipped": skipped,
-                    "note": "所有对象均已存在；如需修改已有对象请用 save_ontology_model"}
+                    "note": "所有对象均已存在；修改已有对象请用 update_ontology_object（局部合并）"}
         saved = ontology_service.save_draft_only(
             model_id, json.dumps(merged, ensure_ascii=False),
-            created_by=str(getattr(ctx, "username", "") or ""))
-        return {"added": added, "skipped": skipped, "model_id": saved["id"],
-                "draft_pending": True,
-                "note": "对象已加入草案，未生效；需发布后才级联到对象表/图谱/知识库"}
+            created_by=str(getattr(ctx, "username", "") or ""), strict=True)
+        out = {"added": added, "skipped": skipped, "model_id": saved["id"],
+               "properties_column_resolved": resolved_cols,
+               "draft_pending": True,
+               "note": "对象已加入草案，未生效；需发布后才级联到对象表/图谱/知识库"}
+        if saved.get("validation_warnings"):
+            out["warnings"] = saved["validation_warnings"]
+            out["destructive"] = bool(saved.get("destructive"))
+        return out
 
     try:
         result = await asyncio.to_thread(_run)
@@ -497,13 +569,18 @@ async def add_ontology_objects(args):
 
 
 async def update_ontology_object(args):
-    """按 key **新增或覆盖单个对象**（服务端合并，落草案）。
+    """按 key **局部合并**单个对象（服务端合并，落草案）。
 
-    为什么需要它：读接口出于脉敏只回对象摘要（properties 为空），而 save_ontology_model
-    要求提交**全量 JSON** —— 这个读写不对称使 AS-BOT 根本无法安全地改一个对象
-    （拿不到全量就没法重建，拿摘要重建会抹掉其他对象的属性/关系）。
-    本工具只替换指定 key 的那一个对象，其余对象由服务端原样保留，
-    **结构上不可能写坏其他对象**，因此不需要调用方持有全量定义。
+    为什么必须服务端合并（2026-11-25 用户报“chat 建了草案但发布不了”）：读接口出于脱敏
+    只回对象摘要（属性无物理列、旧版本连关系都不回），而旧实现是**整对象替换** ——
+    模型据此重建 User/Company，把 13/6 条关系、51/50 个属性的物理列全部清零；
+    草案“保存成功”，直到发布才被护栏打回。写入方本来就只能看到摘要，
+    所以“不丢东西”只能靠服务端：
+
+    * 只提交要改的字段；未提交的字段/属性/关系由服务端保留；
+    * 属性按业务名合并，关系按 `type→target` 合并（默认追加，不删）；
+    * 新增属性未给 column 时按主表列元数据的业务描述自动解析（不猜）；
+    * 删除必须显式传 remove_properties / remove_links。
     """
     from backend.modules.mind.execution.sdk_tools.context import get_execution_context
 
@@ -519,42 +596,26 @@ async def update_ontology_object(args):
         return _text({"error": "model_id 必填"}, is_error=True)
     if not isinstance(obj, dict) or not str(obj.get("key") or "").strip():
         return _text({"error": "object 必填且需含非空 key"}, is_error=True)
+    object_key = str(obj.get("key") or "").strip()
     try:
         _reject_datasource_arg(args)
         _assert_model_editable(model_id)   # 系统本体不可编辑（业务本体放行）
-        _require_write_perm("ontology:save", "修改本体对象")
+        # 新建对象与修改对象是两个权限码：不能靠“改”的码新建对象（fail-closed）
+        exists = await asyncio.to_thread(_object_exists, model_id, object_key)
+        if exists:
+            _require_write_perm("ontology:save", "修改本体对象")
+        else:
+            _require_write_perm("ontology:create", "新增本体对象")
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
 
     def _run():
         from backend.modules.catalog.services import ontology_service
-        import copy
-        model = ontology_service.get_model(model_id)
-        if not model:
-            raise ValueError("模型不存在")
-        # 已有草案则基于草案合并（连续改多个对象不互相覆盖）
-        base_json = ontology_service.get_draft(model_id).get("draft") or model.get("json_content") or "{}"
-        doc = json.loads(base_json)
-        if not isinstance(doc, dict):
-            doc = {}
-        objects = copy.deepcopy(doc.get("objects") or [])
-        key = str(obj.get("key") or "").strip()
-        idx = next((i for i, o in enumerate(objects)
-                    if str(o.get("key") or "").strip().lower() == key.lower()), None)
-        if idx is None:
-            objects.append(obj)
-            mode = "created"
-        else:
-            objects[idx] = obj
-            mode = "updated"
-        doc["objects"] = objects
-        saved = ontology_service.save_draft_only(
-            model_id, json.dumps(doc, ensure_ascii=False),
+        return ontology_service.patch_object(
+            model_id, object_key, obj,
+            remove_properties=args.get("remove_properties"),
+            remove_links=args.get("remove_links"),
             created_by=str(getattr(ctx, "username", "") or ""))
-        return {"mode": mode, "key": key, "model_id": saved["id"],
-                "object_count": len(objects), "draft_pending": True,
-                "note": f"对象「{key}」已{('新建' if mode == 'created' else '更新')}到草案，"
-                        f"其余 {len(objects) - 1} 个对象未动；需 publish_ontology_model 发布才生效"}
 
     try:
         result = await asyncio.to_thread(_run)
@@ -907,9 +968,11 @@ TOOL_SPECS = [
         "name": "get_ontology_model",
         "description": (
             "Get details of a specific ontology model by ID. Returns model metadata "
-            "and a summary of its objects (key, display_name, property_count). "
-            "Pass object_key to get that object's business properties (name/type/enum), "
-            "which is the authoritative field list for query planning."
+            "and a summary of its objects (key, display_name, property_count, link_count). "
+            "Pass object_key to get that object's business properties (name/type/enum) AND "
+            "its relations (target/type/cardinality). Physical columns and join expressions are "
+            "internal and never returned. To EDIT an object use update_ontology_object with only "
+            "the fields to change — do NOT rebuild the whole JSON from this summary."
         ),
         "schema": {
             "model_id": Annotated[int, "The ontology model ID"],
@@ -980,7 +1043,12 @@ TOOL_SPECS = [
     {
         "name": "save_ontology_model",
         "description": (
-            "Save edits to an ontology model's JSON content."
+            "Save a **complete** ontology model JSON into the draft (does NOT take effect, no cascade). "
+            "Use ONLY for whole-model regeneration where you legitimately hold the full doc. To change an "
+            "existing object use update_ontology_object (server-side merge) — rebuilding the model from "
+            "get_ontology_model summaries DROPS properties/relations/physical columns and will be REJECTED "
+            "(destructive overwrite guard). Write-time warnings (e.g. publish would be blocked) are returned "
+            "in the response; nothing is silently saved-and-unpublishable."
         ),
         "schema": {
             "model_id": Annotated[int, "The ontology model ID to save"],
@@ -1017,14 +1085,17 @@ TOOL_SPECS = [
         "name": "add_ontology_objects",
         "description": (
             "在本体模型中**新增对象**（只增不删，落草案）。传 model_id 与 objects 数组"
-            "（每项含 key/display_name/aliases/description/properties）。"
-            "已存在的同 key 对象不会被覆盖（只增不删，修改请用 save_ontology_model）。"
+            "（每项含 key/display_name/aliases/description/primary_table/properties）。"
+            "新增对象必须绑定物理形状：primary_table 或 execution_dataset 至少一个，否则拒写；"
+            "属性的 column 可不填 —— 服务端按该表列元数据的业务描述自动解析（不猜）；"
+            "解析不到列或未声明主表时整体拒写并回错误原因。"
+            "已存在的同 key 对象不会被覆盖（修改请用 update_ontology_object）。"
             "改动只存**草案**，需 publish_ontology_model 发布后才生效并级联。"
-            "不接受数据源参数；物理列映射不由你手敲，由服务端对着元数据生成/校验。"
+            "不接受数据源参数。"
         ),
         "schema": {
             "model_id": Annotated[int, "目标本体模型 ID"],
-            "objects": Annotated[list, "要新增的对象数组（每项含 key/display_name/properties 等）"],
+            "objects": Annotated[list, "要新增的对象数组（每项含 key/display_name/primary_table/properties 等）"],
         },
         "handler": add_ontology_objects,
         "readonly": False,
@@ -1032,15 +1103,24 @@ TOOL_SPECS = [
     {
         "name": "update_ontology_object",
         "description": (
-            "按 key **新增或覆盖单个本体对象**（服务端合并，只动这一个对象）。"
-            "传 model_id 与 object（含 key/display_name/aliases/description/properties/links）。"
-            "**这是修改已有对象的首选工具**：不需要你持有模型的完整 JSON，"
-            "其余对象由服务端原样保留，不会抹掉它们的属性与关系。"
-            "改动只存**草案**，需 publish_ontology_model 发布后才生效。不接受数据源参数。"
+            "按 key **局部合并**单个本体对象（只动这一个对象，落草案）。"
+            "传 model_id 与 object，**只写要改的字段**：标量（display_name/description/primary_table）、"
+            "properties（按业务名合并，未提交的属性/字段保留）、links（按 type→target 合并追加）、aliases/metrics（并集）。"
+            "新增属性可不给 column（服务端按列元数据解析业务名）；已有属性的物理列、关系和未提交内容由服务端保留，"
+            "**不需要也不要**拿 get_ontology_model 摘要重建整个对象。"
+            "新增关系不必（也无法）写 join：服务端按两表同名业务列**确定性**推导单跳 join；"
+            "两表有多个同名列时可用 links[].join_on=<目标对象业务属性名> 指名关联键。"
+            "推导不出时会回 warnings（该关系不构成跨对象取数链路），不要声称“已关联”而忽略它。"
+            "注意：跨跳关系（经中间对象）不是一条关系的 join 能表达的，必须建模中间对象后逐跳建关系。"
+            "删除必须显式：remove_properties=[业务名…]、remove_links=[目标对象 key 或 type→target…]。"
+            "**这是修改已有对象的唯一正确工具**；改动只存**草案**，需 publish_ontology_model 发布后才生效。"
+            "不接受数据源参数。"
         ),
         "schema": {
             "model_id": Annotated[int, "目标本体模型 ID"],
-            "object": Annotated[dict, "要新建/覆盖的对象定义（必含 key）"],
+            "object": Annotated[dict, "要改的字段（必含 key）：display_name/description/primary_table/properties/links/aliases/metrics；links[] 可带 join_on=目标对象业务属性名"],
+            "remove_properties": Annotated[Optional[list], "要显式删除的属性业务名清单（不传=不删属性）"],
+            "remove_links": Annotated[Optional[list], "要显式删除的关系清单（目标对象 key 或 type→target；不传=不删关系）"],
         },
         "handler": update_ontology_object,
         "readonly": False,

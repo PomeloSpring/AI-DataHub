@@ -53,7 +53,8 @@ description_en: "Draft, edit and prepare publication of the business ontology (o
   | 动作 | 工具 | 权限码 |
   |---|---|---|
   | 新增对象（只增不删） | `add_ontology_objects` | `ontology:create` |
-  | 修改对象/属性/关系 | `save_ontology_model` | `ontology:save` |
+  | 修改对象/属性/关系（局部合并） | `update_ontology_object` | `ontology:save`（对象不存在时按新建要 `ontology:create`） |
+  | 整模重生成（全量 JSON） | `save_ontology_model` | `ontology:save` |
   | 发布草案（生效+级联） | `publish_ontology_model` | `ontology:publish` |
   被拒时**如实报出缺哪个权限码**，并告知可由管理员在「角色权限」里授予；
   不得把权限不足说成“域边界不允许”，也不得尝试换工具绕过。
@@ -62,9 +63,24 @@ description_en: "Draft, edit and prepare publication of the business ontology (o
   回复用户时要说清“已存草案、尚未生效”，不要把草案说成已完成。
 - **发布前必须先用 `ask_user` 向用户确认**：`publish_ontology_model` 不带 `confirmed=true`
   时只会返回确认提示。流程：存草案 → `ask_user` 问是否发布 → 同意后带 `confirmed=true` 再调。
-- **只增不删**：`add_ontology_objects` 碰到已存在的同 key 对象会**跳过不覆盖**；
-  要改已有对象请走 `save_ontology_model`。整份覆盖受破坏性护栏约束：
-  不得抹掉已有对象的属性/关系（读接口只回对象摘要，**不能拿摘要重建整份 JSON 提交**）。
+- **改已有对象只能局部提交（2026-11-25 事故后的硬口径）**：
+  `get_ontology_model` 出于脱敏只回对象摘要（属性无物理列、关系无 join），**拿摘要重建整份 JSON != 原定义**。
+  所以改对象一律用 `update_ontology_object`：只写要改的字段（标量 / properties / links / aliases），
+  服务端按**属性业务名**与**关系 `type→target`** 合并，未提交的属性、关系、物理列绑定一律保留；
+  新增属性可不给 `column`（服务端按该表列元数据的业务描述解析，不猜）。
+  删除属性/关系必须**显式**传 `remove_properties` / `remove_links`，否则服务端按“意外丢失”处理并阻断发布。
+  主表只能**换**（提交新表名），不能清空：清空等于对象失去物理绑定，写入即拒。
+- **关系必须是单跳物理 join（2026-11-26 口径）**：跨对象取数靠 `links[].join`，`planner` 只认
+  「两表之间的单跳条件」，**无 join 或含 `→` 跨跳占位符的关系只作关系上下文，不会进 SQL**。
+  新增关系**不必也不能**写 join：服务端按两端主表的同名业务列**确定性**推导；两表有多个同名列时
+  用 `links[].join_on=<目标对象业务属性名>` 指名关联键。回执 `warnings` 里出现“未生成单跳 join”时，
+  **不得**对用户说“已关联”——要么补 `join_on` 重提交，要么如实说明该关系不构成取数链路。
+  跨跳关系（A→B→C）不能用一条关系表达：先建中间对象，再逐跳加关系。
+- **整份覆盖会被拒写**：`save_ontology_model` 仅供整模重生成；提交后若与生效版对比会造成已有定义丢失，
+  服务端**直接拒写并报出丢什么**（不再“存好了却发不出去”）。新增对象用 `add_ontology_objects`，
+  且必须有物理形状（`primary_table` 或 `execution_dataset`），否则拒写——建不出可取数的对象不算建模成功。
+- **写入口就回风险**：草案写入回执带 `warnings` / `destructive`，必须原样转述给用户；
+  不要只回“已保存”。
 - **字典写工具**（`save_metric` / `save_dimension`）不受本体发布流程约束，直接生效；
   归属对象必须已在对象集内，且**不需要先绑会话数据源**。用户想「给某对象补一个指标/维度」
   时走字典写，而不是去改本体 doc。
@@ -91,10 +107,12 @@ description_en: "Draft, edit and prepare publication of the business ontology (o
 
 ### 编辑已有模型
 1. 用 `list_ontology_models` 或 `search_ontology` 找到目标模型
-2. 用 `get_ontology_model` 获取完整定义
-3. 根据用户需求修改并保存（系统本体可直接编辑生效；业务本体由用户在建模页操作）
+2. 用 `get_ontology_model`（可带 `object_key`）看清对象、属性与**关系清单**（物理列/join 不外发，也不需要你提交）
+3. 用 `update_ontology_object` **只提交要改的字段**：改标量传标量、加属性传新增项（可不带 column）、
+   加关系传 links（按 `type→target` 追加，服务端推导 join；多同名列时带 `join_on`）；确要删的用 `remove_properties` / `remove_links` 显式点名
 4. 写动作由**菜单与功能权限码把关后直执行**（无“提议→审批→执行”回路）：
-   执行前向用户说明要改什么、影响哪些对象，征得认可后执行，并把结果与告警如实回报
+   执行前向用户说明要改什么、影响哪些对象，征得认可后执行，并把返回的变更明细与告警如实回报
+5. 用户确认后再 `publish_ontology_model`（先 `ask_user`）——草案不发布会一直不生效
 
 ## 约束规则
 - **写操作（提交草案、保存、激活、导入、字典写）由菜单与功能权限码把关后直执行，执行前向用户说明意图与影响**
