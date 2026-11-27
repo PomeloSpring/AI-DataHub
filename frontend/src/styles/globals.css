@@ -2389,6 +2389,23 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
 /* 表格深浅差异已由 --muted/--border 令牌吸收,
    原 .dark .prose 规则删除(applyTheme 从不挂 .dark 类,属死代码) */
 
+/* ── 深色主色底上的文字选中态（唯一口径）──────────────────────────────
+   浏览器默认选中色是半透明蓝，压在 bg-primary + text-primary-foreground 的用户消息
+   气泡上几乎看不出来——框选后无法确认“到底选中了哪一段”（用户反馈）。
+   做法：拿这块面自己的“墨色”（--primary-foreground）当半透明薄纱垫在底下，
+   文字颜色保持不变——只变“底”，不翻转字色。选中区因此是同色系提亮/压暗一档，
+   而不是硬贴一块反色块（上一版整块不透明反色被反馈“太突兀”）。
+   墨色本身就是与底对比的那一侧，所以九套主题（含 DataFoundry 近黑主色、
+   霓虹青这类亮主色）都自动成立，不需逐主题调 alpha。
+   特异度 (0,2,1) 压得过主题层的 `.datafoundry ::selection`；按工具类组合命中而不
+   逐处挂 class：Chat 用户气泡 / 待发送问题 / AS-BOT 面板用户气泡与
+   variant="default" 按钮自动同源，新增同类面不会漏。 */
+.bg-primary.text-primary-foreground::selection,
+.bg-primary.text-primary-foreground ::selection {
+  background-color: hsl(var(--primary-foreground) / 0.3);
+  color: hsl(var(--primary-foreground));
+}
+
 /* ── 看板编辑器画布（唯一口径，page / screen 两种模式共用）────────────────
    选中/悬停分级与强调色全部走主题变量，不在组件里写裸 hex；
    见 lib/canvasTheme.ts 与 .qoder/rules/ui-vis-library-style.md */

@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
 import BrandLockup from '@/components/BrandLockup';
+import LanguageMenu from '@/components/LanguageMenu';
 import { workspaceLandingPath } from '@/components/WorkspaceRoute';
 import { useBrandStore } from '../stores/brandStore';
 import { brandNameOf } from '@/lib/brand';
@@ -19,11 +20,16 @@ import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useTranslation } from 'react-i18next';
 import { t as tr } from '@/i18n/runtime';
 
-const features = [
-  { icon: MessageSquare, title: tr('k_dd839ce128'), desc: tr('k_3adf277e99') },
-  { icon: BarChart3, title: tr('k_90f1e74a71'), desc: tr('k_453b494cda') },
-  { icon: Zap, title: tr('k_89b5cfce87'), desc: tr('k_7150b4df08') },
-  { icon: Shield, title: tr('k_e7f1aaa20f'), desc: tr('k_7a9d1811ea') },
+/**
+ * 特性清单只存图标 + 文案 key，**在渲染时**才取译文（与下方 `tr(...)` 同一惯例）。
+ * 写成模块级常量会在 import 时就冻结成首屏语言，登录页切了语言这四条还是旧文案
+ * ——「切了不生效」属于缺陷，不是降级。
+ */
+const FEATURES = [
+  { key: 'chat', icon: MessageSquare, title: 'k_dd839ce128', desc: 'k_3adf277e99' },
+  { key: 'bi', icon: BarChart3, title: 'k_90f1e74a71', desc: 'k_453b494cda' },
+  { key: 'fast', icon: Zap, title: 'k_89b5cfce87', desc: 'k_7150b4df08' },
+  { key: 'secure', icon: Shield, title: 'k_e7f1aaa20f', desc: 'k_7a9d1811ea' },
 ];
 
 /** 左侧品牌区的迷你图表剪影（纯装饰，随主色变化） */
@@ -123,6 +129,13 @@ export default function Login() {
         <div className="login-orb login-orb-delay2 absolute top-1/3 right-1/4 h-64 w-64 rounded-full bg-chart-4/15 blur-3xl" />
       </div>
 
+      {/* 语言切换（用户拍板 2026-11-27：登录页也要放一份）：复用顶栏同一个 LanguageMenu，
+          不另写一套选项。setLocale 写 localStorage + changeLanguage，登录前切的语言登录后全站沿用。
+          挂视口右上角，窄屏同样可见，不挤占双栏卡片布局。 */}
+      <div className="absolute right-3 top-3 z-20">
+        <LanguageMenu />
+      </div>
+
       {/* 主体：双栏大卡片（窄屏只留表单栏） */}
       <div className="relative z-10 w-full max-w-5xl login-rise">
         <div className="grid md:grid-cols-[1.1fr_1fr] rounded-2xl border border-border/60 bg-card shadow-2xl shadow-black/20 overflow-hidden">
@@ -144,16 +157,16 @@ export default function Login() {
                 {tr('k_04262e2fa2')}</p>
 
               <ul className="mt-8 space-y-3 max-w-[320px]">
-                {features.map((f) => {
+                {FEATURES.map((f) => {
                   const Icon = f.icon;
                   return (
-                    <li key={f.title} className="flex items-center gap-3">
+                    <li key={f.key} className="flex items-center gap-3">
                       <span className="shrink-0 w-8 h-8 rounded-lg bg-primary-foreground/10 flex items-center justify-center">
                         <Icon className="h-4 w-4" />
                       </span>
                       <span className="min-w-0">
-                        <span className="block text-[13px] font-medium leading-tight">{f.title}</span>
-                        <span className="block text-[11px] opacity-65 leading-tight mt-0.5 truncate">{f.desc}</span>
+                        <span className="block text-[13px] font-medium leading-tight">{tr(f.title)}</span>
+                        <span className="block text-[11px] opacity-65 leading-tight mt-0.5 truncate">{tr(f.desc)}</span>
                       </span>
                     </li>
                   );
