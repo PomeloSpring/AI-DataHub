@@ -2,6 +2,9 @@
 import json
 
 from backend.common.db import execute_query
+from backend.modules.mind.execution.sdk_tools.catalog_tools import (
+    MAX_TOOL_PAYLOAD_CHARS, enforce_payload_budget, payload_chars,
+)
 from backend.modules.mind.execution.sdk_tools.semantic_tools import (
     KEYWORD_REQUIRED_HINT, _prop_view, _public_aliases, _sanitize_dict_desc, build_object_hits,
     fit_metrics_payload, metric_keywords,
@@ -9,6 +12,62 @@ from backend.modules.mind.execution.sdk_tools.semantic_tools import (
 
 NAMES = {"search_metadata", "get_table_schema", "list_datasources", "search_ontology", "get_ontology_model",
          "list_ontology_models", "get_metadata_summary", "get_glossary", "get_metrics"}
+
+_MAX_ONTOLOGY_OBJECTS = 20
+_MAX_ONTOLOGY_PROPERTIES = 40
+
+
+def _clip_ontology_desc(text, limit: int = 300) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "…（说明已截断）"
+
+
+def fit_ontology_payload(out: dict, tool_name: str) -> dict:
+    """本体发现/下钻的硬预算：先压属性，再缩对象，最后显式报错。"""
+    if not isinstance(out, dict) or payload_chars(out) <= MAX_TOOL_PAYLOAD_CHARS:
+        return out
+    objects = list(out.get("objects") or [])
+    for prop_cap in (_MAX_ONTOLOGY_PROPERTIES, 20, 8, 0):
+        view = dict(out)
+        rows = []
+        for obj in objects:
+            row = dict(obj)
+            props = list(row.get("properties") or [])
+            if props:
+                row["properties"] = props[:prop_cap]
+                if len(props) > prop_cap:
+                    row["properties_truncated"] = True
+                    row["properties_shown"] = min(prop_cap, len(props))
+                    row["properties_note"] = (
+                        f"该对象共 {row.get('property_count', len(props))} 个属性，"
+                        f"本次仅下发 {min(prop_cap, len(props))} 个；未下发不代表没有。")
+            rows.append(row)
+        view["objects"] = rows
+        if payload_chars(view) <= MAX_TOOL_PAYLOAD_CHARS:
+            view["budget_limited"] = True
+            view["truncated"] = True
+            return view
+
+    for obj_cap in (10, 5, 2, 1):
+        view = dict(out)
+        if len(objects) > obj_cap:
+            view["objects"] = objects[:obj_cap]
+            view["objects_truncated"] = True
+            view["objects_shown"] = obj_cap
+            view["objects_total"] = len(objects)
+        models = list(out.get("models") or [])
+        if len(models) > obj_cap:
+            view["models"] = models[:obj_cap]
+            view["models_truncated"] = True
+            view["models_shown"] = obj_cap
+            view["models_total"] = len(models)
+        if payload_chars(view) <= MAX_TOOL_PAYLOAD_CHARS:
+            view["budget_limited"] = True
+            view["truncated"] = True
+            return view
+    return enforce_payload_budget(out, MAX_TOOL_PAYLOAD_CHARS, tool_name)
 
 
 def system_scope(ctx) -> bool:
@@ -28,6 +87,10 @@ def system_scope(ctx) -> bool:
 
 def execute(name, args, ctx, resource_scope=None):
     # resource_scope 只由设计服务校验后传入，不从工具 args 接受。
+    try:
+        result_limit = max(1, min(_MAX_ONTOLOGY_OBJECTS, int(args.get("limit") or 10)))
+    except (TypeError, ValueError):
+        result_limit = 10
     datasource_id = resource_scope["datasource_id"] if resource_scope else ctx.datasource_id
     system = resource_scope is None and system_scope(ctx)  # 能力叠加：附加系统本体可见
     # 聚合态（全球）会话：datasource_id 合法为 0（=逐站编排），不得硬拒（同 resource_guard 闸门
@@ -187,13 +250,13 @@ def execute(name, args, ctx, resource_scope=None):
             out = {"objects": [_obj_row(object_want, picked)], "total": 1,
                    "keywords": keywords, "mode": "object_full"}
             out["keyword_note"] = "object 模式：返回该对象的**全量**指标/维度（不是子集）。"
-            return _scope_note(fit_metrics_payload(out))
+            return fit_metrics_payload(_scope_note(out))
 
         from backend.modules.mind.rag import dict_index
         try:
-            top_k = max(5, min(30, int(args.get("top_k") or 12)))
+            top_k = max(5, min(30, int(args.get("top_k") or 8)))
         except (TypeError, ValueError):
-            top_k = 12
+            top_k = 8
         ranked = dict_index.rank(loaded, keywords, top_k=top_k)
         objects: dict[str, dict] = {}
         for hit in ranked["hits"]:
@@ -258,7 +321,7 @@ def execute(name, args, ctx, resource_scope=None):
                 if k not in ("object_hits", "object_hits_note"):
                     ordered[k] = v
             out = ordered
-        return _scope_note(fit_metrics_payload(out))
+        return fit_metrics_payload(_scope_note(out))
     models, candidates = [], []
     keyword = str(args.get("query") or args.get("keyword") or args.get("table_name") or "").strip().lower()
     object_key_want = str(args.get("object_key") or args.get("key") or "").strip()
@@ -272,10 +335,13 @@ def execute(name, args, ctx, resource_scope=None):
             if not display:
                 continue
             raw_props = obj.get("properties") or []
+            raw_desc = str(obj.get("description") or "").strip()
             view = {"object_key": obj.get("key"), "name": display,
                     "aliases": _public_aliases(obj.get("aliases"), obj.get("primary_table")),
-                    "description": obj.get("description") or "",
+                    "description": _clip_ontology_desc(raw_desc),
                     "property_count": len(raw_props)}
+            if len(raw_desc) > 300:
+                view["description_truncated"] = True
             if object_key_want:
                 hit = str(view.get("object_key") or "") == object_key_want
             else:
@@ -287,13 +353,12 @@ def execute(name, args, ctx, resource_scope=None):
                 hit = (not keyword) or keyword in hay
             if hit:
                 candidates.append((view, raw_props))
-    # 属性展开口径：
-    #   - search_metadata / search_ontology：发现面，命中的对象直接带属性（既有口径，不改窄）；
-    #   - get_ontology_model：全模型摘要（十几对象 × 数十属性），默认只回 property_count，
-    #     传 object_key 才展开该对象全量属性，避免一次回上千行把上下文撞满。
-    expand = bool(object_key_want) or name in ("search_metadata", "search_ontology")
+    # 发现面只回对象摘要；属性是明细，必须显式传 object_key 下钻。
+    # 旧实现把 50 个对象 × 全部属性一次展开，直接撞穿运行时输出上限。
+    expand = bool(object_key_want)
     objects = []
-    for view, raw_props in candidates[:50]:
+    candidate_limit = result_limit if name in ("search_metadata", "search_ontology") else 50
+    for view, raw_props in candidates[:candidate_limit]:
         if expand:
             props = [v for v in (_prop_view(p) for p in raw_props) if v]
             view["properties"] = props
@@ -305,6 +370,9 @@ def execute(name, args, ctx, resource_scope=None):
                                        "需要字段清单时传 object_key=该对象 key 重新调用")
         objects.append(view)
     if name == "list_ontology_models":
-        return _scope_note({"models": models})
-    return _scope_note({"objects": objects, "models": models if requested else [],
-            "view": "business_ontology", "notice": "仅提供已授权的业务本体属性，不提供物理表结构"})
+        return fit_ontology_payload(_scope_note({"models": models}), name)
+    return fit_ontology_payload(_scope_note({
+        "objects": objects, "models": models if requested else [],
+        "view": "business_ontology",
+        "notice": "仅提供已授权的业务本体摘要；属性需传 object_key 下钻，不提供物理表结构",
+    }), name)

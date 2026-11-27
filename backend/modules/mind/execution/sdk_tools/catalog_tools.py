@@ -11,10 +11,54 @@ from typing import Annotated, Optional
 
 logger = logging.getLogger(__name__)
 
+#: 检索/目录类工具的单次下发预算。按模型实际收到的紧凑 JSON 正文度量，
+#: 不是内存对象大小，也不是落库/前端展示截断长度。另留 1K 给工具边界技能细则，
+#: 保证「业务结果 + 自动附带细则」的整次工具输出仍不超过 16K。
+MAX_TOOL_RESULT_CHARS = 16000
+MAX_TOOL_PAYLOAD_CHARS = MAX_TOOL_RESULT_CHARS - 1000
 
-def _text(data, is_error: bool = False) -> dict:
-    """统一 CallToolResult 构造(content 块 + MCP 标准 isError 键)."""
-    text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+def compact_json(payload) -> str:
+    """工具下发的统一序列化口径；预算与真实正文必须同一把尺。"""
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def payload_chars(payload) -> int:
+    return len(compact_json(payload))
+
+
+def enforce_payload_budget(payload, max_chars: int, tool_name: str):
+    """硬预算：超限时显式拒绝不完整结果，绝不交给运行时静默落盘成文件指针。"""
+    if payload_chars(payload) <= max_chars:
+        return payload
+    original = payload_chars(payload)
+    logger.error("[%s] 工具输出 %s 字符，超过下发预算 %s", tool_name, original, max_chars)
+    return {
+        "error": f"{tool_name} 输出超过单次下发预算，已停止发送不完整结果；请缩小检索范围后重试。",
+        "code": "TOOL_OUTPUT_BUDGET_EXCEEDED",
+        "truncated": True,
+        "original_chars": original,
+        "max_chars": max_chars,
+    }
+
+
+def _text(data, is_error: bool = False, *, compact: bool = False,
+          max_chars: int | None = None) -> dict:
+    """统一 CallToolResult 构造(content 块 + MCP 标准 isError 键).
+
+    ``compact=True`` 用于检索/目录工具，避免 indent 空白把已通过预算的结果再次撑大；
+    ``max_chars`` 是最后一道硬闸门，超限返回可诊断错误而不是半份 JSON。
+    """
+    if max_chars is not None and not isinstance(data, str):
+        data = enforce_payload_budget(data, max_chars, "tool")
+        is_error = is_error or bool(isinstance(data, dict)
+                                   and data.get("code") == "TOOL_OUTPUT_BUDGET_EXCEEDED")
+    if isinstance(data, str):
+        text = data
+    elif compact:
+        text = compact_json(data)
+    else:
+        text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     return {"content": [{"type": "text", "text": text}], **({"isError": True} if is_error else {})}
 
 
@@ -115,7 +159,8 @@ async def search_metadata(args):
             ctx.workspace_id,
             10,
         )
-        return _text(_strip_physical_ids(result, _ds_name_map()))
+        return _text(_strip_physical_ids(result, _ds_name_map()),
+                     compact=True, max_chars=MAX_TOOL_PAYLOAD_CHARS)
     except Exception as e:
         logger.error("search_metadata error: %s", e)
         return _text({"error": str(e)}, is_error=True)

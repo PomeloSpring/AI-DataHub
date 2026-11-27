@@ -195,6 +195,36 @@ def test_qmind_retrieve_no_longer_first_hit_wins(monkeypatch, no_breaker):
         assert leak not in blob, f"qmind_retrieve 返回体泄漏内部标识：{leak}"
 
 
+def test_qmind_provider_uses_system_config_top_k(monkeypatch, no_breaker):
+    """知识库编辑页配置的 Top K 必须覆盖调用方默认值。"""
+    calls = use_cli(monkeypatch, lambda args: (cli_payload([]), ""))
+    provider = QMindProvider()
+    provider.search([{"id": 1, "name": "业务库", "kb_type": "qmind",
+                      "notebook_id": "nb-a", "cfg": {"top_k": 12}}],
+                    "指标定义", top_k=3, datasource_id=5)
+    assert calls and calls[0][calls[0].index("--max-results") + 1] == "12"
+
+
+def test_bailian_provider_uses_each_kb_system_config_top_k(monkeypatch, no_breaker):
+    """外部语料也按各自知识库配置召回，不共用调用方默认值。"""
+    seen = []
+    monkeypatch.setattr("backend.modules.mind.rag.providers.bailian._resolve_api_key",
+                        lambda cfg: ("test-key", ""))
+    provider = BailianProvider()
+    monkeypatch.setattr(provider, "_retrieve",
+                        lambda cfg, key, question, top_k: (seen.append(top_k) or ([], "")))
+    provider.search([{"id": 1, "name": "外部库", "kb_type": "cloud_rag",
+                      "cfg": {"index_id": "ix-a", "top_k": 9}}],
+                    "业务口径", top_k=3)
+    assert seen == [9]
+
+
+def test_configured_top_k_rejects_invalid_value():
+    from backend.modules.mind.rag.providers.base import configured_top_k
+    with pytest.raises(ValueError, match="Top K"):
+        configured_top_k({"name": "坏配置", "cfg": {"top_k": 0}}, 5)
+
+
 def test_bound_kb_without_channel_falls_back_but_says_so(monkeypatch, no_breaker):
     """no-silent-degradation：绑了库但没有可问通道时，回退必须带 degraded + 原因 + 可分桶标签。
 
@@ -264,6 +294,17 @@ def test_merge_rewrites_merged_rank():
 
 
 # ── B. 统一入口：并行扇出 + 逐源状态 ────────────────────────────────────────
+
+def test_knowledge_retrieve_merge_limit_uses_system_config(monkeypatch):
+    """配置 Top K=7 时，不能被默认归并上限 5 再次截断。"""
+    qm = FakeProvider("qmind", CORPUS_ORIGIN_PLATFORM_SYNCED,
+                      {"运营库": [f"片段{i}" for i in range(10)]})
+    bind(monkeypatch, [{"id": 1, "name": "运营库", "kb_type": "qmind",
+                       "cfg": {"top_k": 7}}])
+    dispatch(monkeypatch, {"qmind": qm})
+    out = kr.knowledge_retrieve("业务口径", 5, [1])
+    assert out["retrieval_top_k"] == 7 and out["count"] == 7
+
 
 def test_knowledge_retrieve_hits_both_providers_and_exposes_sources(monkeypatch):
     qm = FakeProvider("qmind", CORPUS_ORIGIN_PLATFORM_SYNCED, {"运营库": ["官网 example.com"]})

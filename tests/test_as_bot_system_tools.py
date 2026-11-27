@@ -233,6 +233,94 @@ def test_knowledge_search_multi_questions_run_concurrently(monkeypatch):
     assert all(x["retrieval_source"] == "qmind_hit" for x in out["results"])
 
 
+def test_knowledge_search_caps_long_chunks_and_marks_truncation(monkeypatch):
+    """单段 5KB+ 不能原样进上下文；截断必须保留首尾口径并显式可诊断。"""
+    from types import SimpleNamespace
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
+    from backend.modules.mind.execution.sdk_tools.catalog_tools import MAX_TOOL_PAYLOAD_CHARS
+
+    policy = SimpleNamespace(selection={"semantic": ["knowledge_search"]}, as_bot={})
+    token = set_execution_context(ExecutionContext(
+        user_id=7, workspace_id=3, datasource_id=5,
+        extra={"secure_runtime": SimpleNamespace(policy=policy),
+               "bound_knowledge_base_ids": [22]}))
+    chunks = [
+        {"title": f"文档{i}", "knowledge_base": "业务库",
+         "content": "业务背景" * 1200 + "指标定义与过滤条件" * 120 + f"末尾口径{i}"}
+        for i in range(5)
+    ]
+
+    def fake_retrieve(q, ds, kb_ids, system_scope=False):
+        return {"chunks": chunks, "count": len(chunks), "rag_source": "qmind",
+                "citations": [{"title": c["title"]} for c in chunks]}
+
+    monkeypatch.setattr("backend.modules.mind.rag.knowledge_retriever.knowledge_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
+                        lambda *a: [{"id": 22, "name": "业务库", "kb_type": "qmind"}])
+    monkeypatch.setattr(stl, "_attach_routes", lambda result: result)
+    monkeypatch.setattr(stl, "_attach_graph_relations", lambda result: result)
+    monkeypatch.setattr(stl, "_attach_dict_candidates", lambda result, question, ds_id: result)
+    monkeypatch.setattr(stl, "_attach_paths", lambda result, keywords=None: result)
+    try:
+        envelope = asyncio.run(stl.knowledge_search({"question": "指标定义"}))
+    finally:
+        ExecutionContextVar.reset(token)
+
+    out = _payload(envelope)
+    assert len(envelope["content"][0]["text"]) <= MAX_TOOL_PAYLOAD_CHARS
+    assert out["truncated"] is True and out["budget_limited"] is True
+    assert out["chunks_total"] == 5 and out["chunks_shown"] == 5
+    assert len(out["chunks"]) == 5
+    assert all(len(c["content"]) <= stl._MAX_KNOWLEDGE_CHUNK_CHARS for c in out["chunks"])
+    assert all(c.get("content_truncated") for c in out["chunks"])
+    assert "口径" in out["chunks"][0]["content"][-80:], "首尾摘录不能把文末口径切掉"
+
+
+def test_knowledge_search_batch_has_one_total_budget(monkeypatch):
+    """8 个问法并发检索也不能各回一大份；整次工具正文必须共用同一预算。"""
+    from types import SimpleNamespace
+    from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
+    from backend.modules.mind.execution.sdk_tools.catalog_tools import MAX_TOOL_PAYLOAD_CHARS
+
+    policy = SimpleNamespace(selection={"semantic": ["knowledge_search"]}, as_bot={})
+    token = set_execution_context(ExecutionContext(
+        user_id=7, workspace_id=3, datasource_id=5,
+        extra={"secure_runtime": SimpleNamespace(policy=policy),
+               "bound_knowledge_base_ids": [22]}))
+
+    def fake_retrieve(q, ds, kb_ids, system_scope=False):
+        return {"chunks": [{"title": q, "content": (q + "业务口径") * 800} for _ in range(5)],
+                "count": 5, "rag_source": "qmind", "hit_object_keys": []}
+
+    monkeypatch.setattr("backend.modules.mind.rag.knowledge_retriever.knowledge_retrieve", fake_retrieve)
+    monkeypatch.setattr("backend.modules.mind.execution.resource_guard.execute_query",
+                        lambda *a: [{"id": 22, "name": "业务库", "kb_type": "qmind"}])
+    monkeypatch.setattr(stl, "_attach_routes", lambda result: result)
+    monkeypatch.setattr(stl, "_attach_graph_relations", lambda result: result)
+    monkeypatch.setattr(stl, "_attach_dict_candidates", lambda result, question, ds_id: result)
+    monkeypatch.setattr(stl, "_attach_paths", lambda result, keywords=None: result)
+    questions = [f"问题{i}" for i in range(8)]
+    try:
+        envelope = asyncio.run(stl.knowledge_search({"questions": questions}))
+    finally:
+        ExecutionContextVar.reset(token)
+
+    out = _payload(envelope)
+    assert len(envelope["content"][0]["text"]) <= MAX_TOOL_PAYLOAD_CHARS
+    assert out["total"] == 8 and [x["question"] for x in out["results"]] == questions
+    assert all(x["truncated"] and x["chunks_shown"] <= 5 for x in out["results"])
+
+
+def test_knowledge_output_keeps_configured_top_k_when_budget_allows():
+    """Top K 由系统配置决定；预算充足时不能再用代码写死 3 段。"""
+    from backend.modules.mind.execution.sdk_tools.semantic_tools import fit_knowledge_result
+    raw = {"chunks": [{"title": f"文档{i}", "content": f"口径{i}"} for i in range(7)],
+           "count": 7, "retrieval_top_k": 7, "rag_source": "qmind"}
+    out = fit_knowledge_result(raw, "口径")
+    assert len(out["chunks"]) == 7 and out["chunks_shown"] == 7
+    assert not out.get("truncated")
+
+
 def test_get_glossary_queries_all_keywords_in_one_call(monkeypatch):
     """多关键词 = **一次**合并查询 + 未命中词显式可见。
 

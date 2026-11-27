@@ -185,9 +185,14 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
             use_projection = (name in scoped_metadata.NAMES
                               and not (name in PHYSICAL_METADATA_TOOLS and _as_bot_can_write_sql(runtime)))
             if qualified_name.startswith(("mcp__datahub_catalog__", "mcp__datahub_ontology__", "mcp__datahub_semantic__")) and use_projection:
-                import json
+                from backend.modules.mind.execution.sdk_tools.catalog_tools import (
+                    MAX_TOOL_PAYLOAD_CHARS, compact_json, enforce_payload_budget,
+                )
                 data = await run_owned_sync(scoped_metadata.execute, name, args, ctx)
-                result = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, default=str)}]}
+                data = enforce_payload_budget(data, MAX_TOOL_PAYLOAD_CHARS, name)
+                result = {"content": [{"type": "text", "text": compact_json(data)}]}
+                if isinstance(data, dict) and data.get("code") == "TOOL_OUTPUT_BUDGET_EXCEEDED":
+                    result["isError"] = True
             else:
                 import inspect
                 if inspect.iscoroutinefunction(handler):
@@ -216,7 +221,11 @@ def make_tool(backend: str, name: str, description: str, input_schema: dict,
             # 工具输出；反过来若放在之前，一份含表名的细则会把整条业务结果连带拒发）。
             # 与"常驻系统提示词"二选一：正文只在真正用到该域动作的回合到达，未用到零开销。
             from backend.modules.mind.execution.sdk_tools.skill_tools import attach_to_result
-            return attach_to_result(ctx, name, result)
+            from backend.modules.mind.execution.sdk_tools.catalog_tools import MAX_TOOL_RESULT_CHARS
+            budgeted = name in {"knowledge_search", "get_metrics", "search_metadata",
+                                "search_ontology", "get_ontology_model", "list_ontology_models"}
+            return attach_to_result(ctx, name, result,
+                                    max_chars=MAX_TOOL_RESULT_CHARS if budgeted else None)
         except ResourceScopeError as exc:
             logger.warning("工具资源范围校验拒绝: %s: %s", qualified_name, exc)
             # 范围拒绝的真因要透传（可诊断），但同样过出站守卫：文案里可能带数据源内部标识。

@@ -1253,7 +1253,9 @@ def test_metadata_projection_excludes_physical_structure(monkeypatch):
                     {"display_name": "金额", "column": "secret_col"}, {"column": "hidden_col"}]}]}}]
         return []
     monkeypatch.setattr(scoped_metadata, "execute_query", query)
-    result = scoped_metadata.execute("search_metadata", {}, ExecutionContext(datasource_id=7))
+    # 发现面不再展开全量属性；显式下钻仍必须剥掉物理列并保留业务属性名。
+    result = scoped_metadata.execute("search_metadata", {"object_key": "订单"},
+                                     ExecutionContext(datasource_id=7))
     # 口径（WS2 合并）：源本体已退役，可见域不再靠 SQL 里的 kind='source' IN 收口，
     # 改由 Python 按会话生效源(7)∩模型触达源判定；本例模型主源=7 故纳入。
     model_sql = next(c[0] for c in calls if "adh_ontology_models" in c[0])

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from .base import (Capabilities, Chunk, KnowledgeProvider, ProviderResult, SourceStatus,
-                   CORPUS_ORIGIN_PLATFORM_SYNCED)
+                   CORPUS_ORIGIN_PLATFORM_SYNCED, configured_top_k)
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,8 @@ class QMindProvider(KnowledgeProvider):
 
         ids = [nb for _kb, nb in usable]
         name_by_nb = {nb: str(kb.get("name") or "") for kb, nb in usable}
-        # 各库 top_k 取最大值作为联合召回上限：合并后无法再按库分配额度，
-        # 取最大值是保守做法（宁可多召回后截，不能让某个库拿不到名额）。
-        limit = max([int(((kb.get("cfg") or {}).get("top_k")) or top_k)
-                     for kb, _nb in usable] or [int(top_k)])
+        # 联合召回无法按库分配名额，取各库系统配置的最大值；默认值只在未配置时生效。
+        limit = max([configured_top_k(kb, top_k) for kb, _nb in usable] or [int(top_k)])
         got = qr.retrieve_notebooks(ids, question, limit)
         chunks = got["chunks"]
         stale = qr._evaluate_doc_freshness(datasource_id, chunks).get("doc_stale") if chunks else None

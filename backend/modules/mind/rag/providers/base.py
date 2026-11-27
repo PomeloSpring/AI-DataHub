@@ -48,6 +48,22 @@ INTERNAL_KEYS = frozenset({
 RRF_K = 60
 
 
+def configured_top_k(kb: dict, default: int = 5) -> int:
+    """读取知识库系统配置的召回数量；缺省才用默认值，非法配置显式拒绝。"""
+    cfg = kb.get("cfg") if isinstance(kb.get("cfg"), dict) else {}
+    raw = cfg.get("top_k")
+    if raw in (None, ""):
+        value = int(default)
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"知识库「{kb.get('name') or '未命名'}」Top K 配置无效：{raw}") from exc
+    if value < 1:
+        raise ValueError(f"知识库「{kb.get('name') or '未命名'}」Top K 必须大于 0")
+    return value
+
+
 @dataclass(frozen=True)
 class Capabilities:
     """provider 能力位：让"这个库能做什么"成为可查询的事实，而不是靠调用点猜。"""

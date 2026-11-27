@@ -10,7 +10,9 @@ import re
 import time
 from typing import Annotated, Optional
 
-from backend.modules.mind.execution.sdk_tools.catalog_tools import _text
+from backend.modules.mind.execution.sdk_tools.catalog_tools import (
+    MAX_TOOL_PAYLOAD_CHARS, _text, enforce_payload_budget, payload_chars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +114,18 @@ def _prop_view(prop) -> dict | None:
     if enum:
         out["enum"] = enum
     desc = _sanitize_dict_desc(str(prop.get("description") or ""))
+    if len(desc) > 240:
+        desc = desc[:240].rstrip() + "…（说明已截断）"
+        out["description_truncated"] = True
     if desc:
         out["description"] = desc
+    enum = prop.get("enum")
+    if isinstance(enum, dict) and len(enum) > 50:
+        out["enum"] = dict(list(enum.items())[:50])
+        out["enum_truncated"] = True
+    elif isinstance(enum, list) and len(enum) > 50:
+        out["enum"] = enum[:50]
+        out["enum_truncated"] = True
     return out
 
 
@@ -176,9 +188,9 @@ async def get_metrics(args):
 
         object_want = object_arg
         try:
-            top_k = max(5, min(30, int(args.get("top_k") or 12)))
+            top_k = max(5, min(30, int(args.get("top_k") or 8)))
         except (TypeError, ValueError):
-            top_k = 12
+            top_k = 8
         if object_want:
             picked_rows = [r for r in rows_all if r["object"] == object_want]
             if not picked_rows:
@@ -271,7 +283,8 @@ async def get_metrics(args):
                 "不得当作可查口径向用户承诺，也不得自行替换成别的指标作答；"
                 "用户问到时应说明该口径尚未完成物理绑定/待修复。")
         # 单次下发预算：泛词命中十几个对象时显式降级（见 fit_metrics_payload）
-        return _text(fit_metrics_payload(out))
+        return _text(fit_metrics_payload(out), compact=True,
+                     max_chars=_MAX_METRICS_PAYLOAD_CHARS)
     except Exception as e:
         logger.error("get_metrics error: %s", e)
         return _text({"error": str(e)}, is_error=True)
@@ -330,7 +343,7 @@ KEYWORD_REQUIRED_HINT = (
 # 随后把「没查到」说成「平台没有线索对象」——静默残缺结果又一次变成了错结论。
 # keyword 必填只挡住了「空词=整层字典」，挡不住「一堆泛词=十几个对象的全量口径」。
 # 预算按**下发口径**（紧凑 JSON）度量；超预算逐级降级并显式声明丢了什么、下一步怎么拿。
-_MAX_METRICS_PAYLOAD_CHARS = 20000
+_MAX_METRICS_PAYLOAD_CHARS = MAX_TOOL_PAYLOAD_CHARS
 # 降级档里每个对象最多带多少个名称（逐档收紧，直到收进预算）
 _METRICS_INDEX_NAME_STEPS = (8, 4, 2, 0)
 
@@ -341,7 +354,7 @@ def _compact_chars(payload) -> int:
     indent 后的字符数不代表真实下发量：同一份目录 indent=2 时 115,896 字符，
     紧凑下发是 70,598 —— 按 indent 定预算等于没设防（同 run_semantic_query 的口径）。
     """
-    return len(json.dumps(payload, ensure_ascii=False, default=str))
+    return payload_chars(payload)
 
 
 def _entry_names(rows: list) -> list:
@@ -357,17 +370,22 @@ def _entry_names(rows: list) -> list:
     return out
 
 
-def _budget_view(out: dict, objects: list, level: str) -> dict:
+def _budget_view(out: dict, objects: list, level: str,
+                 budget: int = _MAX_METRICS_PAYLOAD_CHARS) -> dict:
     """构造降级视图：**只动 objects 明细，其余字段（keywords/note/unavailable…）原样保留**。"""
     view = dict(out)
     view["objects"] = objects
     view["budget_level"] = level
+    view["truncated"] = True
+    view["budget_limited"] = True
+    next_step = ("当前已是 object 全量模式，请缩小问题或改带更窄 keyword 分批查询。"
+                 if out.get("mode") == "object_full" else
+                 "要看完整口径：get_metrics(object=\"<object>\") 取该对象全量（不必再猜关键词）；"
+                 "要换角度重排：调整 keyword 或 top_k。")
     view["_budget_note"] = (
         "目录超出单次返回预算（紧凑 JSON 上限 {budget} 字符），已按 level={level} 降级下发："
         "**命中的对象清单是全的，缺的只是明细**——某对象没有明细不代表它没有 口径。"
-        "要看完整口径：get_metrics(object=\"<object>\") 取该对象全量（不必再猜关键词）；"
-        "要换角度重排：调整 keyword 或 top_k。").format(
-            budget=_MAX_METRICS_PAYLOAD_CHARS, level=level)
+        + next_step).format(budget=budget, level=level)
     return view
 
 
@@ -378,11 +396,13 @@ def fit_metrics_payload(out: dict, budget: int = _MAX_METRICS_PAYLOAD_CHARS) -> 
     keyword_note），但泛词一次传 8 个就会命中十几个对象、每个对象回全量口径。
     运行时截断对模型是**静默**的（只剩一个读不回来的文件指针），所以必须在工具侧兜住。
 
-    三档降级（每档都带 budget_level + _budget_note，说明丢了什么、怎么拿回来）：
+    四档降级（每档都带 budget_level + _budget_note，说明丢了什么、下一步怎么拿）：
     - full  ：预算内，原样（缺省路径，口径零变化）
     - names ：只留 name（+matched_by_keyword），剥 aliases/description/enum/unit
     - index ：只留对象与口径数量 + 每对象前 N 个名称（N 逐档收紧到 0）
-    任何一档都**不得把对象从清单里删掉**：删对象 = 半本目录，模型会据此断言「平台没有」。
+    - minimal：只保留全部对象 key/数量与检索元数据，去掉关系和部署等旁路明细
+    前四档都**不得把对象从清单里删掉**：删对象 = 半本目录，模型会据此断言「平台没有」。
+    若连最小对象索引都超预算，则显式报错并要求缩小 keyword，绝不返回超限残页。
     """
     if not isinstance(out, dict):
         return out
@@ -392,6 +412,8 @@ def fit_metrics_payload(out: dict, budget: int = _MAX_METRICS_PAYLOAD_CHARS) -> 
     objects = out.get("objects") or []
     names = _budget_view(out, [
         {"object": o.get("object"),
+         "metric_total": o.get("metric_total", len(o.get("metrics") or [])),
+         "dimension_total": o.get("dimension_total", len(o.get("dimensions") or [])),
          "metrics": _entry_names(o.get("metrics")),
          "dimensions": _entry_names(o.get("dimensions"))}
         for o in objects], "names")
@@ -417,7 +439,29 @@ def fit_metrics_payload(out: dict, budget: int = _MAX_METRICS_PAYLOAD_CHARS) -> 
         index = _budget_view(out, rows, "index")
         if len(rows) == 0 or _compact_chars(index) <= budget:
             return index
-    return index
+
+    # object_hits / relations / deployments / 长 note 也可能单独撑爆预算；
+    # 这些是增强旁路，最小视图只保留对象索引与检索事实，并明确列出被省略字段。
+    minimal = {k: out[k] for k in ("total", "mode", "search", "keywords", "incomplete_scope")
+               if k in out}
+    minimal["objects"] = [
+        {"object": o.get("object"),
+         "metric_total": o.get("metric_total", len(o.get("metrics") or [])),
+         "dimension_total": o.get("dimension_total", len(o.get("dimensions") or []))}
+        for o in objects
+    ]
+    minimal.update({
+        "budget_level": "minimal",
+        "truncated": True,
+        "budget_limited": True,
+        "omitted_fields": [k for k in ("object_hits", "relations", "deployments", "unavailable")
+                           if k in out],
+        "_budget_note": (
+            f"目录已压缩到最小对象索引（预算 {budget} 字符）；对象清单未删，"
+            "但口径明细与增强关系未下发。请用更窄的 keyword 分批查询；"
+            "对象全量仍用 get_metrics(object=\"<object>\") 下钻。"),
+    })
+    return enforce_payload_budget(minimal, budget, "get_metrics")
 
 
 def metric_keywords(args: dict) -> list[str]:
@@ -774,6 +818,130 @@ def _attach_dict_candidates(result: dict, question: str, ds_id: int) -> dict:
         return {**result, "dict_candidates": [], "dict_verify": f"failed: {e}"}
 
 
+#: 召回条数由知识库系统配置决定；这里只限制单段正文与整次批量总字符。
+_MAX_KNOWLEDGE_CHUNK_CHARS = 2400
+_MAX_KNOWLEDGE_ENRICH_ITEMS = 6
+
+
+def _knowledge_excerpt(text: str, question: str, limit: int) -> tuple[str, bool]:
+    """长 chunk 取「开头 + 查询词最密区间 + 结尾」的可解释摘要。
+
+    业务口径常写在文档末尾，单纯前缀截断会把定义/约束切掉；这里同时保留首尾，
+    中段按问题词密度选窗口，且任何裁剪都在 chunk 上显式标记。
+    """
+    text = str(text or "")
+    if len(text) <= limit:
+        return text, False
+    head = max(80, limit // 3)
+    tail = max(80, limit // 3)
+    middle = max(80, limit - head - tail - 6)
+    head_text = text[:head].rstrip()
+    tail_text = text[-tail:].lstrip()
+    region = text[head:max(head, len(text) - tail)]
+    terms = set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", str(question or "").lower()))
+    for phrase in re.findall(r"[\u4e00-\u9fff]{2,}", str(question or "")):
+        terms.update(phrase[i:i + 2] for i in range(max(1, len(phrase) - 1)))
+    best_start, best_score = 0, -1
+    step = max(1, middle // 2)
+    lowered = region.lower()
+    for start in range(0, max(1, len(region)), step):
+        window = lowered[start:start + middle]
+        score = sum(window.count(term) for term in terms)
+        if score > best_score:
+            best_start, best_score = start, score
+    middle_text = region[best_start:best_start + middle].strip()
+    excerpt = f"{head_text}\n…\n{middle_text}\n…\n{tail_text}"
+    return excerpt[:limit], True
+
+
+def _knowledge_chunk_view(chunk: dict, question: str, content_limit: int) -> dict:
+    view = dict(chunk or {})
+    content, clipped = _knowledge_excerpt(view.get("content") or "", question, content_limit)
+    view["content"] = content
+    if clipped:
+        view["content_truncated"] = True
+    for key, cap in (("title", 120), ("knowledge_base", 80)):
+        if len(str(view.get(key) or "")) > cap:
+            view[key] = str(view[key])[:cap] + "…"
+    return view
+
+
+def _limit_knowledge_lists(result: dict) -> dict:
+    """增强链按信息价值封顶；来源失败状态清单一律保留，不能因预算被吞。"""
+    out = dict(result)
+    for key, cap in (("citations", _MAX_KNOWLEDGE_ENRICH_ITEMS),
+                     ("dict_candidates", _MAX_KNOWLEDGE_ENRICH_ITEMS),
+                     ("routes", _MAX_KNOWLEDGE_ENRICH_ITEMS),
+                     ("paths", _MAX_KNOWLEDGE_ENRICH_ITEMS),
+                     ("graph_relations", _MAX_KNOWLEDGE_ENRICH_ITEMS)):
+        rows = out.get(key)
+        if isinstance(rows, list) and len(rows) > cap:
+            out[key] = rows[:cap]
+            out[f"{key}_truncated"] = True
+    return out
+
+
+def fit_knowledge_result(result: dict, question: str,
+                         budget: int = MAX_TOOL_PAYLOAD_CHARS) -> dict:
+    """把单问题检索压进预算；先摘正文，再减 chunk，最后才丢增强旁路。"""
+    if not isinstance(result, dict):
+        return enforce_payload_budget(result, budget, "knowledge_search")
+    out = _limit_knowledge_lists(result)
+    chunks_all = list(out.get("chunks") or [])
+    out["chunks_total"] = len(chunks_all)
+    # 先按系统配置召回的完整条数下发；只有超字符预算时才逐档减少。
+    shown = chunks_all
+    out["chunks"] = [_knowledge_chunk_view(c, question, _MAX_KNOWLEDGE_CHUNK_CHARS)
+                      for c in shown]
+    out["chunks_shown"] = len(shown)
+    limited = (len(shown) != len(chunks_all)
+               or any(c.get("content_truncated") for c in out["chunks"])
+               or any(str(k).endswith("_truncated") and v for k, v in out.items()))
+    if limited:
+        out["truncated"] = True
+        out["budget_limited"] = True
+        out["chunks_shown"] = len(shown)
+        out["truncated_note"] = (
+            f"知识检索结果已按 {MAX_TOOL_PAYLOAD_CHARS} 字符总预算裁剪："
+            f"共 {len(chunks_all)} 段，当前 {len(shown)} 段；正文为查询词相关摘要。"
+            "需要完整上下文时，用更窄的问题单独检索，不要把同一问法重复批量提交。")
+    if payload_chars(out) <= budget:
+        return out
+
+    chunk_steps = sorted({n for n in (8, 5, 3, 2, 1) if n < len(chunks_all)}, reverse=True)
+    for chunk_count in chunk_steps:
+        for content_limit in (1600, 1000, 600, 300):
+            candidate = _limit_knowledge_lists(result)
+            candidate["chunks_total"] = len(chunks_all)
+            candidate["chunks"] = [
+                _knowledge_chunk_view(c, question, content_limit)
+                for c in chunks_all[:chunk_count]
+            ]
+            candidate.update({
+                "truncated": True, "budget_limited": True,
+                "chunks_shown": len(candidate["chunks"]),
+                "truncated_note": (
+                    f"知识检索超出本次预算，仅保留前 {len(candidate['chunks'])} 段相关摘要；"
+                    "其余片段未下发。需要完整内容请用单一窄问题重查。"),
+            })
+            if payload_chars(candidate) <= budget:
+                return candidate
+
+    # 最后只保留回答必需的出处、对象/字典候选与逐源状态；增强关系明确省略。
+    keep = ("count", "retrieval_top_k", "rag_source", "retrieval_source", "retrieval_ms", "knowledge_bases",
+            "sources", "citations", "hit_object_keys", "dict_candidates", "dict_verify",
+            "doc_stale", "degraded", "degraded_reason", "question")
+    minimal = {k: out[k] for k in keep if k in out}
+    minimal["chunks"] = [_knowledge_chunk_view(chunks_all[0], question, 300)] if chunks_all else []
+    minimal.update({
+        "chunks_total": len(chunks_all), "chunks_shown": len(minimal["chunks"]),
+        "truncated": True, "budget_limited": True,
+        "omitted_fields": [k for k in ("routes", "paths", "graph_relations") if k in out],
+        "truncated_note": "检索输出已压缩到最小证据集；增强路由/路径/关系未下发。",
+    })
+    return enforce_payload_budget(minimal, budget, "knowledge_search")
+
+
 def _retrieve_and_enrich(question: str, ds_id: int, bound_kb_ids, system_scope_flag: bool) -> dict:
     """单问题：多源知识检索 + 增强链（业务本体路由 / 图关系 / 行为路径）整体**同步**执行。
 
@@ -835,7 +1003,8 @@ async def knowledge_search(args):
                         input_text=questions[0][:200],
                         output_text=f"source={result.get('retrieval_source')} "
                                     f"count={result.get('count') or 0}")
-            return _text(result)
+            fitted = fit_knowledge_result(result, questions[0])
+            return _text(fitted, compact=True, max_chars=MAX_TOOL_PAYLOAD_CHARS)
         # 多问法**并发**检索（历史缺陷：for 循环串行，2 问=2 段检索时间直接叠加）。
         t0 = time.perf_counter()
         sem = asyncio.Semaphore(_MAX_CONCURRENT_RETRIEVE)
@@ -847,21 +1016,38 @@ async def knowledge_search(args):
 
         fetched = await asyncio.gather(*(_one(q) for q in questions))
         wall_ms = int((time.perf_counter() - t0) * 1000)
-        results = [{"question": qtext, **r} for qtext, r in zip(questions, fetched)]
+        raw_results = [{"question": qtext, **r} for qtext, r in zip(questions, fetched)]
+
+        def _batch_view(per_result_budget: int) -> dict:
+            fitted = [
+                {"question": item["question"],
+                 **fit_knowledge_result({k: v for k, v in item.items() if k != "question"},
+                                        item["question"], per_result_budget)}
+                for item in raw_results
+            ]
+            attribution: dict[str, int] = {}
+            for item in fitted:
+                label = str(item.get("retrieval_source") or "none")
+                attribution[label] = attribution.get(label, 0) + 1
+            attribution.setdefault("qmind_hit", 0)
+            attribution.setdefault("local_hybrid_fallback", 0)
+            return {"results": fitted, "total": len(fitted),
+                    "attribution": attribution,
+                    "usage": "多问题已在一次调用内并发检索；结果按总字符预算裁剪，窄问题请单独查。"}
+
+        per_result_budget = max(1000, (MAX_TOOL_PAYLOAD_CHARS - 1500) // len(raw_results))
+        batch = _batch_view(per_result_budget)
+        while payload_chars(batch) > MAX_TOOL_PAYLOAD_CHARS and per_result_budget > 800:
+            per_result_budget = max(800, int(per_result_budget * 0.75))
+            batch = _batch_view(per_result_budget)
+        batch = enforce_payload_budget(batch, MAX_TOOL_PAYLOAD_CHARS, "knowledge_search")
         # 归因按标签动态计数（多源接入后不再只有 qmind_hit），但保留旧键恒存在：
         # 历史用例与管理页读 `attribution["qmind_hit"]`，缺键会被当成统计异常。
-        attribution: dict[str, int] = {}
-        for x in results:
-            label = str(x.get("retrieval_source") or "none")
-            attribution[label] = attribution.get(label, 0) + 1
-        attribution.setdefault("qmind_hit", 0)
-        attribution.setdefault("local_hybrid_fallback", 0)
+        attribution = batch.get("attribution") or {}
         record_span(kind="retrieval", name="knowledge_search", status="success",
                     duration_ms=wall_ms, input_text=f"{len(questions)} questions",
                     output_text=" ".join(f"{k}={v}" for k, v in sorted(attribution.items())))
-        return _text({"results": results, "total": len(results),
-                      "attribution": attribution,
-                      "usage": "多问题已在一次调用内并发检索, 无需逐个重复调用。"})
+        return _text(batch, compact=True, max_chars=MAX_TOOL_PAYLOAD_CHARS)
     except Exception:
         logger.exception("知识检索失败")
         return _text({"error": "知识检索未完成，请检查 AS-BOT 知识库绑定或联系管理员"}, is_error=True)
@@ -972,7 +1158,7 @@ TOOL_SPECS = [
                    "object": Annotated[Optional[str],
                      "对象 key（下钻）：取该对象**全量**指标/维度，替代过去靠命中隐式获得的整对象补全"],
                    "top_k": Annotated[Optional[int],
-                     "命中条目上限（5~30，默认 12）；泛词命中太多时上调，要精确时下调"]},
+                     "命中条目上限（5~30，默认 8）；泛词命中太多时上调，要精确时下调"]},
         "handler": get_metrics,
     },
     {
@@ -1008,9 +1194,9 @@ TOOL_SPECS = [
             "服务端会并行检索**全部已绑定的知识库**（平台同步的 QMind 本体文档、以及企业维护的"
             "外部语料）并按名次归并，你不需要也不应该选通道。平台同步库里含**最新**本体模型文档"
             "(objects/metrics/dimensions/SQL-template variables) — 先查一次再作答。 "
-            "Pass ALL questions in ONE call via `questions` (comma-separated or JSON array); "
-            "多个问法在一次调用内**并发**检索，因此不要把候选问法拆成多次调用逐个试探——"
-            "一次就把所有同义措辞（如“官网域名/中国站网址/访问入口”）全传进去。 "
+            "优先传 1~3 个最相关问题；确需多个问法时用 `questions` 一次并发提交（最多 8 个）。"
+            "不要把大量同义措辞堆进一次调用：服务端会按总字符预算保留相关片段并在 truncated 中显式标注；"
+            "需要完整上下文时，用更窄的问题单独检索。 "
             "每条结果带 `knowledge_base`/`corpus_origin`：`platform_synced` 可作口径解释与建模上下文，"
             "`external` 只作背景与资料事实，**不得**拿它当指标/维度名称权威（名称以平台语义层文档与 get_metrics 为准）；"
             "引用结论时照 `citations` 里的标题说出处。 "
@@ -1028,7 +1214,7 @@ TOOL_SPECS = [
         ),
         "schema": {
             "question": Annotated[Optional[str], "Single natural-language question, e.g. '上个月的销售额'"],
-            "questions": Annotated[Optional[str], "Multiple questions in ONE call, comma-separated or JSON array (max 8) — results aligned by order"],
+            "questions": Annotated[Optional[str], "Prefer 1~3 focused questions; max 8 in one concurrent call — results aligned by order and capped by total char budget"],
         },
         "handler": knowledge_search,
     },

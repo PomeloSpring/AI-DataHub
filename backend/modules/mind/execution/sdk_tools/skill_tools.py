@@ -339,11 +339,12 @@ def guide_block_for_tool(ctx, tool_suffix: str) -> str:
     return ""
 
 
-def attach_to_result(ctx, tool_suffix: str, result):
+def attach_to_result(ctx, tool_suffix: str, result, max_chars: int | None = None):
     """工具边界披露的**接线点**：`compat.guarded` 在工具成功返回后调用，把该域细则挂到结果尾部。
 
     读细则失败**不掩藏**（no-silent-degradation §1）：不因此把成功的工具调用判成失败（那是拿
     口径问题掩盖业务结果），但在同一个结果里显式写明"细则没送达"，模型与复盘都能看到。
+    ``max_chars`` 是业务结果与细则的总字符上限；细则放不下时显式截断并提示按需取回。
     """
     try:
         block = guide_block_for_tool(ctx, tool_suffix)
@@ -358,6 +359,17 @@ def attach_to_result(ctx, tool_suffix: str, result):
     if not isinstance(content, list):
         content = []
         result["content"] = content
+    if max_chars is not None:
+        used = sum(len(str(item.get("text") or "")) for item in content
+                   if isinstance(item, dict))
+        remaining = max_chars - used
+        if remaining <= 0:
+            return result
+        if len(block) > remaining:
+            marker = "…（技能细则因工具结果预算已截断；完整细则请按需 load_skill_guide）"
+            block = (block[:max(0, remaining - len(marker))] + marker
+                     if remaining >= len(marker) else "…" * remaining)
+            result["guide_truncated"] = True
     content.append({"type": "text", "text": block})
     return result
 

@@ -91,7 +91,7 @@ class TestBindingScope:
 
 
 def _run_get_metrics(monkeypatch, metrics, dims, tables=(ALL_TABLES, BY_OBJECT), binding=None,
-                     args=None):
+                     args=None, return_envelope=False):
     from backend.modules.mind.execution.sdk_tools import semantic_tools as stl
 
     monkeypatch.setattr(mc, "_get_metrics", lambda ds: metrics)
@@ -104,7 +104,7 @@ def _run_get_metrics(monkeypatch, metrics, dims, tables=(ALL_TABLES, BY_OBJECT),
         out = asyncio.run(stl.get_metrics(args if args is not None else {"keyword": "页面,会话,统计,异常"}))
     finally:
         ExecutionContextVar.reset(token)
-    return json.loads(out["content"][0]["text"])
+    return out if return_envelope else json.loads(out["content"][0]["text"])
 
 
 def test_get_metrics_rejects_empty_keyword(monkeypatch):
@@ -231,6 +231,42 @@ class TestGetMetricsOutputBudget:
         # 只回命中条目，但每对象必须带全量计数（子集不冒充全量）
         assert all(o["metric_total"] == 20 for o in payload["objects"])
         assert sum(len(o["metrics"]) + len(o["dimensions"]) for o in payload["objects"]) == 30
+
+        envelope = _run_get_metrics(monkeypatch, metrics, dims,
+                                    args={"keyword": "对象", "top_k": 30}, return_envelope=True)
+        assert len(envelope["content"][0]["text"]) <= _MAX_METRICS_PAYLOAD_CHARS
+
+    def test_budget_guard_drops_oversized_side_fields_not_objects(self):
+        """relations/deployments 等旁路也能单独撑爆；最小档必须保全部对象 key。"""
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+            _compact_chars, fit_metrics_payload, _MAX_METRICS_PAYLOAD_CHARS,
+        )
+
+        out = {
+            "objects": [{"object": f"obj{i}", "metric_total": 2, "dimension_total": 1,
+                         "metrics": [{"name": f"指标{i}", "description": "x" * 1000}],
+                         "dimensions": []} for i in range(30)],
+            "relations": [{"source": "x" * 1000, "target": "y" * 1000} for _ in range(100)],
+            "deployments": [{"site": "z" * 1000} for _ in range(100)],
+        }
+        fitted = fit_metrics_payload(out)
+        assert _compact_chars(fitted) <= _MAX_METRICS_PAYLOAD_CHARS
+        assert fitted["budget_level"] == "minimal"
+        assert len(fitted["objects"]) == 30
+        assert set(fitted["omitted_fields"]) == {"relations", "deployments"}
+
+    def test_budget_guard_errors_instead_of_returning_over_limit_index(self):
+        """对象多到连最小索引都超限时，显式报错，不返回半本目录。"""
+        from backend.modules.mind.execution.sdk_tools.semantic_tools import (
+            _compact_chars, fit_metrics_payload,
+        )
+
+        out = {"objects": [{"object": f"object_{i}", "metrics": [], "dimensions": []}
+                            for i in range(5000)]}
+        fitted = fit_metrics_payload(out, budget=500)
+        assert fitted["code"] == "TOOL_OUTPUT_BUDGET_EXCEEDED"
+        assert fitted["truncated"] is True
+        assert _compact_chars(fitted) <= 500
 
     def test_budget_guard_is_second_line_and_keeps_every_object(self):
         """object 下钻（全量）仍可能超预算：fit_metrics_payload 是二道防线，且不删对象。"""

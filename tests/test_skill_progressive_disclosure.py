@@ -243,6 +243,22 @@ def test_attach_lands_in_the_tool_result_and_survives_failure(monkeypatch):
     assert "未能随本次结果下发" in out["content"][1]["text"], "失败要看得见，不得静默当没事"
 
 
+def test_attach_respects_total_tool_result_budget(monkeypatch):
+    """业务结果 + 自动附带细则共用 16K；细则超限必须显式截断。"""
+    monkeypatch.setattr("backend.modules.mind.execution.as_bots.load_skills",
+                        lambda names: [{"name": names[0], "display_name": "分析",
+                                        "description": "", "system_prompt": "细则正文" * 5000,
+                                        "requires_any": ["get_metrics"]}])
+    ctx = _attach_ctx(["data-analysis"], {"get_metrics"})
+    out = skt.attach_to_result(ctx, "get_metrics",
+                               {"content": [{"type": "text", "text": "x" * 900}]},
+                               max_chars=1000)
+    total = sum(len(block["text"]) for block in out["content"])
+    assert total <= 1000
+    assert out["guide_truncated"] is True
+    assert "预算已截断" in out["content"][1]["text"]
+
+
 # ── 4. 提示词：省了字数，且不承诺调不到的入口 ──────────────────────────────────
 def _compose(caps, skills, question):
     state: dict = {}

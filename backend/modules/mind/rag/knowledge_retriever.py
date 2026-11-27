@@ -23,13 +23,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 from backend.modules.mind.rag.providers import PROVIDERS, provider_for
 from backend.modules.mind.rag.providers.base import (Chunk, SourceStatus,
-                                                     merge_by_rank)
+                                                     configured_top_k, merge_by_rank)
 
 logger = logging.getLogger(__name__)
 
 #: provider 扇出并发上限。每路 qmind 检索会 spawn 一个 node 子进程、百炼是一路 HTTPS，
 #: 不封顶会在共享宿主上把内存打满（与 `semantic_tools._MAX_CONCURRENT_RETRIEVE` 同纪律）。
 _MAX_CONCURRENT_PROVIDERS = 4
+#: 未配置时的默认召回数量；各知识库 source_config.top_k 是系统配置真值源。
+_DEFAULT_TOP_K = 5
 
 
 def _parse_cfg(value) -> dict:
@@ -133,7 +135,7 @@ def knowledge_retrieve(
     question: str,
     datasource_id: int = 0,
     kb_ids: list | None = None,
-    top_k: int = 5,
+    top_k: int = _DEFAULT_TOP_K,
     system_scope: bool = False,
 ) -> dict:
     """多源知识检索：并行问所有绑定库，按名次归并，逐源状态可见。
@@ -143,7 +145,7 @@ def knowledge_retrieve(
         datasource_id: 会话生效源。只用于 ① 平台同步语料的新鲜度比对 ② 无命中时回退
             本地元数据按源过滤；**不作为选库依据**（绑库由 AS-BOT 与角色授权决定）。
         kb_ids: AS-BOT 绑定的知识库 id 清单（服务端注入，不进 LLM 视野）。
-        top_k: 归并后返回条数。
+        top_k: 未配置时的默认归并条数；各库 source_config.top_k 可覆盖并抬高归并上限。
         system_scope: 系统能力形态标注（能力叠加），只随结果标注供分桶归因。
 
     Returns:
@@ -154,6 +156,10 @@ def knowledge_retrieve(
     """
     from backend.modules.mind.rag import qmind_retriever as qr
 
+    top_k = int(top_k or _DEFAULT_TOP_K)
+    if top_k < 1:
+        raise ValueError("top_k 必须大于 0")
+
     def _mark_system(result: dict) -> dict:
         out = dict(result or {})
         if system_scope:
@@ -161,6 +167,8 @@ def knowledge_retrieve(
         return out
 
     kbs = _bound_kbs(kb_ids)
+    # 召回数量由知识库系统配置决定；这里的 top_k 只是未配置时的默认值。
+    merge_top_k = max([configured_top_k(kb, top_k) for kb in kbs] or [top_k])
     groups, unsupported = _group_by_provider(kbs)
 
     if not groups:
@@ -168,7 +176,7 @@ def knowledge_retrieve(
         reason = ""
         if kb_ids:
             names = "、".join(str(k.get("name") or "") for k in (kbs or unsupported) if k.get("name"))
-            reason = (f"绑定的知识库没有已接入的检索通道"
+            reason = ("绑定的知识库没有已接入的检索通道"
                       + (f"（{names}）" if names else "")
                       + f"；本批支持：{', '.join(p.kb_type for p in PROVIDERS)}")
         result = qr._fallback_graphrag(question, datasource_id, tagged=bool(kb_ids))
@@ -191,7 +199,7 @@ def knowledge_retrieve(
 
     per_source = [s for _chunks, sources, _err in ran for s in sources]
     groups_chunks = [chunks for chunks, _sources, _err in ran]
-    merged = merge_by_rank(groups_chunks, top_k)
+    merged = merge_by_rank(groups_chunks, merge_top_k)
 
     if merged:
         public = [c.to_public() for c in merged]
@@ -199,6 +207,7 @@ def knowledge_retrieve(
         out = {
             "chunks": public,
             "count": len(public),
+            "retrieval_top_k": merge_top_k,
             "rag_source": rag_source,
             "knowledge_bases": sorted({c.kb_name for c in merged if c.kb_name}),
             "sources": per_source,

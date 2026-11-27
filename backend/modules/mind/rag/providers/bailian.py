@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 
 from .base import (Capabilities, Chunk, KnowledgeProvider, ProviderResult, SourceStatus,
-                   CORPUS_ORIGIN_EXTERNAL)
+                   CORPUS_ORIGIN_EXTERNAL, configured_top_k)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,6 @@ class BailianProvider(KnowledgeProvider):
         if not ready:
             return res
 
-        limit = max(1, int(top_k))
         collected: list[dict] = []
         for kb, cfg, api_key in ready:
             name = str(kb.get("name") or "")
@@ -151,7 +150,8 @@ class BailianProvider(KnowledgeProvider):
                 res.add_source(name, SourceStatus.CIRCUIT_OPEN,
                                "百炼检索熔断中（连续失败已短路），本次未发起调用")
                 continue
-            nodes, err = self._retrieve(cfg, api_key, question, limit)
+            nodes, err = self._retrieve(cfg, api_key, question,
+                                        configured_top_k(kb, top_k))
             if err:
                 self._breaker_record(False)
                 res.add_source(name, SourceStatus.FAILED, err)

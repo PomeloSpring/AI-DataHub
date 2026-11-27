@@ -112,3 +112,32 @@ def test_object_aliases_strip_physical_table_names(monkeypatch):
     obj = out["objects"][0]
     assert obj["aliases"] == ["Order", "订单"]
     assert "t_order_records" not in json.dumps(out, ensure_ascii=False)
+    # 发现面只回摘要；属性必须显式下钻，避免 50 对象 × 全量属性撞穿上下文。
+    assert "properties" not in obj and obj["property_count"] == 3
+    assert "object_key" in obj["properties_note"]
+
+
+def test_object_drilldown_is_budgeted_and_marks_missing_properties(monkeypatch):
+    """单对象 200 属性也只下发预算内前缀，property_count 保留全量事实。"""
+    doc = {"objects": [{
+        "key": "wide", "display_name": "宽对象", "description": "x" * 1000,
+        "properties": [{"name": f"属性{i}", "type": "string",
+                        "description": "口径说明" * 100} for i in range(200)],
+    }]}
+
+    def fake_exec(sql, params=None, fetchone=False):
+        if "adh_ontology_models" in sql:
+            return [{"id": 7, "name": "宽模型", "status": "active", "kind": "business",
+                     "datasource_id": 5, "deploy_sites": None,
+                     "json_content": json.dumps(doc, ensure_ascii=False)}]
+        return []
+
+    monkeypatch.setattr(sm, "execute_query", fake_exec)
+    out = sm.execute("get_ontology_model", {"model_id": 7, "object_key": "wide"}, _ctx())
+    obj = out["objects"][0]
+    compact_len = len(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+    assert compact_len <= sm.MAX_TOOL_PAYLOAD_CHARS
+    assert obj["property_count"] == 200
+    assert obj["properties_truncated"] is True
+    assert 0 < len(obj["properties"]) <= sm._MAX_ONTOLOGY_PROPERTIES
+    assert obj["description_truncated"] is True
