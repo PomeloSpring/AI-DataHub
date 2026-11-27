@@ -589,6 +589,8 @@
     "welcome": "你好，我是{{name}}",
     "welcomeSub": "用中文提问，帮您完成知识检索和数据查询并深度分析",
     "loadEarlier": "加载更早消息",
+    "backToBottom": "回到底部",
+    "backToBottomNew": "有新内容",
     "loadedCount": "已加载 {{loaded}} / {{total}} 条",
     "cloudRefBadge": "云空间引用",
     "attCleaned": "附件已随会话清理",

@@ -601,6 +601,8 @@
     "welcome": "Hi, I'm {{name}}",
     "welcomeSub": "Ask questions to search knowledge, query data, and get in-depth analysis",
     "loadEarlier": "Load earlier messages",
+    "backToBottom": "Back to bottom",
+    "backToBottomNew": "New content",
     "loadedCount": "Loaded {{loaded}} / {{total}} messages",
     "cloudRefBadge": "Cloud space reference",
     "attCleaned": "Attachment cleaned up with the conversation",

@@ -48,6 +48,8 @@ import SlashCommandMenu, {
 import MessageActions from '../components/chat/MessageActions';
 import TurnNavigator, { jumpToTurnAnchor } from '../components/chat/TurnNavigator';
 import type { TurnNavItem } from '../components/chat/TurnNavigator';
+import BackToBottomButton from '../components/chat/BackToBottomButton';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 import DocCard from '../components/chat/DocCard';
 import DocEditorPanel from '../components/chat/DocEditorPanel';
 import CloudFileMenu, {
@@ -395,10 +397,23 @@ export default function Chat() {
     if (convId) void switchConversation(convId);
   }, []);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  // 用户是否停留在底部: 上滚查看历史时不打断, 回到底部后恢复自动跟随。
-  const stickToBottomRef = useRef(true);
+  const getScrollViewport = useCallback(
+    () => scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null,
+    []);
+  // 首页带问题进来、自动发送还没能发出的这几百毫秒（要等工作空间同步 + 站点/AS-BOT 清单定形，
+  // 否则问题会发进一个还没解析完的取数范围）：这段时间按“会话中”版式先把那句摆出来，
+  // 不能让画面停在欢迎页上——用户已经按下发送了，画面必须立刻承认收到了。
+  // 待发气泡只在本轮还没落进 store 时占位（落进后由 store 里那条用户消息接管，不得两句同文）
+  const pendingQuestion = pendingAsk?.send && messages.length === 0 ? pendingAsk.question : '';
+  // 消息列/底部输入卡片的版式开关：有历史消息、或有一句待发的提问，都走“会话中”布局。
+  // 上移到此处是因为它同时充当贴底 hook 的 rebindKey：ScrollArea 是条件挂载的，
+  // 容器出现后必须重绑 scroll 监听，否则判定恒为“贴底”，流式每帧都会把上翻查历史的
+  // 用户拽回底部（历史缺陷：监听 effect 依赖为 []，首屏容器不存在就永久没绑上）。
+  const hasTurnUI = messages.length > 0 || !!pendingQuestion;
+  // 用户是否停留在底部: 上滚查看历史时不打断, 回到底部后恢复自动跟随
+  // （判定口径唯一实现处 hooks/useStickToBottom，不在页面里另写一套）。
+  const { stickRef, atBottom, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, hasTurnUI);
 
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
@@ -533,18 +548,8 @@ export default function Chat() {
     }
   }, [selectedWorkspaceId, loadExecutionLayer, loadAsBots, loadAuthorizedSites]);
 
-  // 跟踪用户是否贴底(基于 Radix ScrollArea 的 viewport), 用于决定流式期间是否自动跟随。
-  useEffect(() => {
-    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
-    if (!viewport) return;
-    const onScroll = () => {
-      stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
-    };
-    viewport.addEventListener('scroll', onScroll, { passive: true });
-    return () => viewport.removeEventListener('scroll', onScroll);
-  }, []);
-
-  // Auto-scroll: 新消息 / 流式过程(思考、工具调用、正文)增长时跟随到底部。
+  // Auto-scroll: 自己发的新提问 → 强制滚到底并恢复跟随；流式内容增长（思考、工具调用、
+  // 正文）与助手消息入列 → 只在用户仍贴底时跟随，上翻查看历史时不打断（聊天软件口径）。
   const lastMsg = messages[messages.length - 1];
   const streamSig = lastMsg
     ? `${(lastMsg.thinking || '').length}:${(lastMsg.content || '').length}:${(lastMsg.reply || '').length}:${lastMsg.process?.length || 0}:${lastMsg.tool_calls?.length || 0}`
@@ -555,17 +560,18 @@ export default function Chat() {
     const newMessage = count > prevMsgCountRef.current;
     if (convChanged) {
       // 打开/切换历史会话: 整段消息被替换 → 直接瞬时定位到底部, 并恢复自动跟随。
-      stickToBottomRef.current = true;
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      setStick(true);
+      scrollToBottom('auto');
       // 图表/图片异步渲染撑高容器后再补一次瞬时定位, 确保真正贴底。
-      requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }));
-    } else if (newMessage) {
-      // 自己发出的新消息 → 强制跟随到底部。
-      stickToBottomRef.current = true;
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    } else if (loading && stickToBottomRef.current) {
-      // 流式内容增长 → 仅当用户仍停留在底部时跟随(瞬时, 避免 smooth 动画堆积)。
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      requestAnimationFrame(() => scrollToBottom('auto'));
+    } else if (newMessage && lastMsg?.role === 'user') {
+      // 新增的是**自己刚发的提问** → 强制跟随到底部（即便此刻正停在历史里翻看）。
+      // 助手消息入列不再走这一支：以前只看 length 增加就抢跳，生成中途会把上翻的人拽回去。
+      setStick(true);
+      scrollToBottom('smooth');
+    } else if (stickRef.current) {
+      // 流式内容增长 / 助手消息入列 → 仅当用户仍停留在底部时跟随(瞬时, 避免 smooth 动画堆积)。
+      scrollToBottom('auto');
     }
     prevMsgCountRef.current = count;
     prevConvIdRef.current = currentConvId;
@@ -578,14 +584,11 @@ export default function Chat() {
   const msgRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const getMsgAnchor = useCallback(
     (idx: number) => msgRefs.current[idx] ?? null, []);
-  const getScrollViewport = useCallback(
-    () => scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null,
-    []);
   /**
    * 往前翻一页更早的消息，并补偿滞后的滚动位置。
    *
    * 不补偿的话，prepend 会把原本在顶部的内容往下顶，用户看着像“翻不动”；
-   * 贴底跟随的判定（stickToBottomRef）也要跟着重置，否则刚拉到的旧消息会被
+   * 贴底跟随的判定也要跟着重置，否则刚拉到的旧消息会被
    * 当成“新内容”又把页面弹回底部。
    */
   const onLoadEarlierMessages = useCallback(async () => {
@@ -597,9 +600,9 @@ export default function Chat() {
       if (!box) return;
       const delta = box.scrollHeight - prevHeight;
       if (delta > 0) box.scrollTop += delta;
-      stickToBottomRef.current = false;
+      setStick(false);
     });
-  }, [getScrollViewport, loadEarlierMessages]);
+  }, [getScrollViewport, loadEarlierMessages, setStick]);
   const questionTurns: TurnNavItem[] = useMemo(() => messages
     .map((m, idx) => ({ idx, m }))
     .filter(({ m }) => m.role === 'user')
@@ -1166,11 +1169,6 @@ export default function Chat() {
   // 附件/会话文件/发送都收进卡片底行，卡片自身是唯一边框（focus 时高亮）。
   // 新对话空态下这张卡片跟着欢迎语一起居中，有消息后落回底部。
   const assistantName = asBots[0]?.display_name || asBots[0]?.name || t('page.defaultAssistantName');
-  // 首页带问题进来、自动发送还没能发出的这几百毫秒（要等工作空间同步 + 站点/AS-BOT 清单定形，
-  // 否则问题会发进一个还没解析完的取数范围）：这段时间按“会话中”版式先把那句摆出来，
-  // 不能让画面停在欢迎页上——用户已经按下发送了，画面必须立刻承认收到了。
-  // 待发气泡只在本轮还没落进 store 时占位（落进后由 store 里那条用户消息接管，不得两句同文）
-  const pendingQuestion = pendingAsk?.send && messages.length === 0 ? pendingAsk.question : '';
   const urlWsNum = Number(urlWorkspaceId);
   const pendingAskStage = pendingAsk?.sent
     ? t('page.stageSending')
@@ -1181,8 +1179,7 @@ export default function Chat() {
         : (!sitesLoaded || !asBotsLoaded)
           ? t('page.stagePreparing')
           : t('page.stageSending');
-  // 消息列/底部输入卡片的版式开关：有历史消息、或有一句待发的提问，都走“会话中”布局
-  const hasTurnUI = messages.length > 0 || !!pendingQuestion;
+  // hasTurnUI / pendingQuestion 已上移到贴底 hook 附近（它同时是监听的 rebindKey）
   // 消息列与输入卡片共用**同一根内容列**：用户气泡、AI 回复卡、输入卡片三者右边缘对齐。
   // 宽度口径 = **可用宽度的 75%**（按百分比而不是像素上限）：像素上限在窄窗口（常见
   // 1280~1440 CSS px）等于没约束，看上去“改了等于没改”。再叠一个像素上限，
@@ -1194,7 +1191,7 @@ export default function Chat() {
   const sidePanelShown = sidePanelOpen && messages.length > 0;
   const CHAT_COLUMN_W = sidePanelShown
     ? 'w-full min-w-0 max-w-[1400px]'   // 右侧那段留白已被侧栏接管，正文列再守 75% 就是双重留白
-    : 'w-[75%] min-w-0 max-w-[1400px]';
+    : 'w-[90%] min-w-0 max-w-[1400px]';
   // 锚位按版式分流（用户拍板）：
   // - **会话中**：靠左（ml-0 mr-auto），右侧那 25% 整块留给后续功能（会话产物展示等）；
   //   居中会把这块留白劈成两半，等于两边都放不下东西。
@@ -2226,11 +2223,18 @@ export default function Chat() {
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
         {/* 提问节点导航：挂在 ScrollArea 根层（不随内容滚动），占正文右侧那段留白 */}
         <TurnNavigator turns={questionTurns} getAnchor={getMsgAnchor} getViewport={getScrollViewport} />
+        {/* 回到底部：只在用户离开底部时出现（生成中文案换成「有新内容」），
+            上翻查看历史时不再被自动滚动打断，但回程要给用户自己按。 */}
+        <BackToBottomButton
+          atBottom={atBottom}
+          loading={loading}
+          onScrollToBottom={() => scrollToBottom('smooth')}
+          className={CHAT_COLUMN}
+        />
         </div>
         )}
 

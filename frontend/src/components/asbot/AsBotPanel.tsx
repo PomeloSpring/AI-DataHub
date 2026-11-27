@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { X, Send, Loader2, Bot, User, Plus, History, Trash2, ExternalLink } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,8 @@ import ProcessTimeline from '../ProcessTimeline';
 import { TurnScreenPreview } from '../ScreenPreviewEntry';
 import BotAvatar from '../chat/BotAvatar';
 import WaitingIndicator from '../chat/WaitingIndicator';
+import BackToBottomButton from '../chat/BackToBottomButton';
+import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { useAsBotStore } from '../../stores/asBotStore';
 import type { AsBotMessage } from '../../stores/asBotStore';
 import { useThemeStore, applyTheme } from '../../stores/themeStore';
@@ -68,12 +70,35 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
   // 应用主题到全屏页面
   useEffect(() => { applyTheme(theme); }, [theme]);
 
-  // Auto-scroll to bottom
+  // 滚动跟随：与工作空间 Chat 同一口径（hooks/useStickToBottom，判定不在这里重写）。
+  // 旧实现是无条件 `scrollTop = scrollHeight`，后台 3s 轮询 refreshConversation 一刷新
+  // 就把正在上翻看历史的人弹回底部——上翻不打断、只有自己的新提问才主动跳底。
+  const getScrollViewport = useCallback(() => scrollRef.current, []);
+  const { stickRef, atBottom, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, messages.length);
+  const prevMsgCountRef = useRef(0);
+  const prevConvIdRef = useRef<number | null | undefined>(undefined);
+  const lastMsg = messages[messages.length - 1];
+  const streamSig = lastMsg
+    ? `${(lastMsg.thinking || '').length}:${(lastMsg.content || '').length}:${lastMsg.tool_calls?.length || 0}`
+    : '';
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const convChanged = conversationId !== prevConvIdRef.current;
+    const newMessage = messages.length > prevMsgCountRef.current;
+    if (convChanged) {
+      // 切换/打开会话：整段转录被替换 → 瞬时定位到底部并恢复跟随。
+      setStick(true);
+      scrollToBottom('auto');
+    } else if (newMessage && lastMsg?.role === 'user') {
+      // 自己发出的新提问 → 强制跟随到底部。
+      setStick(true);
+      scrollToBottom('smooth');
+    } else if (stickRef.current) {
+      // 流式增长 / 助手消息入列 / 轮询刷新 → 仅贴底时跟随。
+      scrollToBottom('auto');
     }
-  }, [messages]);
+    prevMsgCountRef.current = messages.length;
+    prevConvIdRef.current = conversationId;
+  }, [messages.length, conversationId, streamSig]);
 
   // Focus input when panel opens
   useEffect(() => {
@@ -214,7 +239,9 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
       )}
 
       {/* Messages */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-3" ref={scrollRef}>
+      {/* 外层 relative 只承载「回到底部」悬浮层（不随内容滚动）；滚动仍只发生在一个容器里 */}
+      <div className="relative flex-1 min-h-0">
+      <div className="h-full overflow-y-auto overflow-x-hidden px-4 py-3" ref={scrollRef}>
         <div className={`space-y-4 ${contentWidth}`}>
           {messages.length === 0 && (
             <div className="text-center text-muted-foreground py-12 space-y-3">
@@ -274,6 +301,14 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
             </div>
           )}
         </div>
+      </div>
+      {/* 回到底部：上翻查看历史/后台轮询刷新时不再被拽下去，但回程要给出（与 Chat 同一组件、同一判定） */}
+      <BackToBottomButton
+        atBottom={atBottom}
+        loading={loading || stopping}
+        onScrollToBottom={() => scrollToBottom('smooth')}
+        className={`px-4 ${contentWidth}`}
+      />
       </div>
 
       {/* Input */}
