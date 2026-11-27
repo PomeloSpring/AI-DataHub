@@ -1166,15 +1166,22 @@ def _read_migration() -> str:
 
 
 def _perm_rows(sql: str) -> dict:
-    """从 INSERT INTO adh_perm_registry 块里抽出 article:* 的 (api_pattern, api_method)。"""
+    """从 INSERT INTO adh_perm_registry 块里抽出 article:* 的 (api_pattern, api_method)。
+
+    api_pattern 支持两种形态（内容中心权限分档）：
+    * 纯路径 `/api/...`（笛卡尔积，按 api_method 展开）；
+    * 方法限定 `METHOD /api/...`（含空格，只认该 method）—— 这里只抽取原文，
+      方法与路径的拆分由 `_method_pattern_pairs` 按同一口径完成。
+    元组行顶格或两空格缩进都能切（home_feed 与 content_center 两种风格并存）。
+    """
     body = sql.split("INSERT INTO adh_perm_registry", 1)[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
     out = {}
-    for seg in re.split(r"\n\s{2}\('", body):
+    for seg in re.split(r"\n\s*\('", body):
         seg = "'" + seg if not seg.startswith("--") else seg
         m = re.match(r"'(article:[a-z]+)'", seg)
         if not m:
             continue
-        pat = re.search(r"'(/api/content[^']*)'", seg)
+        pat = re.search(r"'((?:[A-Z]+ )?/api/content[^']*)'", seg)
         meth = re.search(r"'((?:GET|POST|PUT|PATCH|DELETE)(?:,(?:GET|POST|PUT|PATCH|DELETE))*)'", seg)
         menu = re.search(r"'(content:[a-z-]+)'", seg)
         ai = re.search(r"'(read|write|none)'", seg)
@@ -1267,6 +1274,172 @@ def test_every_perm_code_hangs_on_a_registered_menu():
     registered = set(re.findall(r"'(content:[a-z-]+)'", menu_block))
     for code, row in _perm_rows(sql).items():
         assert row["menu_key"] in registered, f"{code} 的 menu_key={row['menu_key']} 悬空"
+
+
+# ── 5.6 内容中心权限分档（article:create 创作档 + 只读档移入内容中心块）────────
+#
+# 本批新增迁移是独立文件（只登记自己的列，纪律同 test_migration_registers_only_…）。
+# 核心风险：api_pattern × api_method 笛卡尔积放行「POST 批量删除」——
+# 创作档必须只拿到 新建/编辑/提交/附件，删除/栏目标签/提升/审核/发布一条都不许越界。
+CREATE_TIER_MIGRATION = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "docker", "mysql", "content_create_tier_migration.sql")
+HOME_FEED_MIGRATION = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "docker", "mysql", "home_feed_migration.sql")
+
+
+def _read_file(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _method_pattern_pairs(row: dict) -> set[tuple[str, str]]:
+    """把一行权限登记解析成 (METHOD, path) 对集合（与中间件解析同口径）。
+
+    限定条目（含空格）贡献单对（不与 api_method 求积）；
+    纯路径条目按 api_method 展开（笛卡尔积，旧行为）。
+    """
+    out = set()
+    for p in row["patterns"]:
+        if " " in p:
+            method, _, path = p.partition(" ")
+            out.add((method.strip().upper(), path.strip()))
+        else:
+            for m in row["methods"]:
+                out.add((m.upper(), p))
+    return out
+
+
+def test_create_tier_matrix_allows_write_denies_delete_and_higher():
+    """创作档矩阵：允许集恰好放行、拒绝集一条都不命中（逐条断言）。"""
+    rows = _perm_rows(_read_file(CREATE_TIER_MIGRATION))
+    assert set(rows) == {"article:create"}, set(rows)
+    create = rows["article:create"]
+    pairs = _method_pattern_pairs(create)
+
+    def allowed(method: str, path: str) -> bool:
+        return any(m == method and _match_path(p, path) for m, p in pairs)
+
+    # 允许集（每档自足：读自带、写限草稿链路）
+    for method, path in [
+        ("GET", "/api/content/articles"),
+        ("GET", "/api/content/articles/a1"),
+        ("GET", "/api/content/articles/a1/releases"),
+        ("GET", "/api/content/categories"),
+        ("GET", "/api/content/tags"),
+        ("POST", "/api/content/articles"),                       # 精确新建
+        ("PUT", "/api/content/articles/a1"),                     # 编辑
+        ("POST", "/api/content/articles/a1/submit"),             # 提交审核
+        ("POST", "/api/content/articles/batch-submit"),
+        ("POST", "/api/content/articles/a1/files"),              # 附件上传
+        ("DELETE", "/api/content/articles/a1/files/9"),          # 附件删除
+        ("GET", "/api/content/articles/a1/files/9/download"),
+    ]:
+        assert allowed(method, path), f"创作档应放行 {method} {path}"
+
+    # 拒绝集（越权拦截：删除 / 栏目标签写 / 提升 / 审核 / 发布）
+    for method, path in [
+        ("DELETE", "/api/content/articles/a1"),                  # 单条删除
+        ("POST", "/api/content/articles/batch-delete"),          # 批量删除（笛卡尔积要堵的洞）
+        ("POST", "/api/content/categories"),                     # 栏目写
+        ("PUT", "/api/content/categories/c1"),
+        ("DELETE", "/api/content/categories/c1"),
+        ("POST", "/api/content/tags"),                           # 标签写
+        ("PUT", "/api/content/tags/t1"),
+        ("POST", "/api/content/promotions"),                     # 提升通道（管理档专属）
+        ("GET", "/api/content/promotions/match"),
+        ("GET", "/api/content/reviews/pending"),                 # 审核
+        ("POST", "/api/content/reviews/a1/approve"),
+        ("POST", "/api/content/reviews/a1/reject"),
+        ("POST", "/api/content/publish/a1"),                     # 发布
+        ("POST", "/api/content/publish-batch"),
+    ]:
+        assert not allowed(method, path), f"创作档不得放行 {method} {path}（越权）"
+
+    # 字段口径：api_method 保留值供菜单回填 FIND_IN_SET('GET',…)；归属「我的草稿」；AI 不接
+    assert create["methods"] == ["GET", "POST", "PUT"]
+    assert create["menu_key"] == "content:drafts"
+    assert create["ai_access"] == "none"
+
+
+def test_tier_hierarchy_read_subset_of_create_subset_of_manage():
+    """层级断言：只读的 GET 集 ⊆ 创作 ⊆ 管理（每档自足的前提）。"""
+    read = _perm_rows(_read_file(HOME_FEED_MIGRATION))["article:read"]
+    create = _perm_rows(_read_file(CREATE_TIER_MIGRATION))["article:create"]
+    manage = _apply_release_patterns(_perm_rows(_read_migration()))["article:manage"]
+
+    read_pairs = _method_pattern_pairs(read)
+    create_pairs = _method_pattern_pairs(create)
+    manage_pairs = _method_pattern_pairs(manage)
+
+    # 只读三对必须在创作档里逐字存在（创作自带只读 = 勾单档页面即可用）
+    missing = read_pairs - create_pairs
+    assert not missing, f"创作档丢了只读能力: {missing}"
+
+    # 创作的每一对都要被管理档覆盖（管理是超集）：同 method 且管理的 pattern 吃得下它
+    not_covered = [pair for pair in create_pairs
+                   if not any(m == pair[0] and _match_path(p, pair[1])
+                              for m, p in manage_pairs)]
+    assert not not_covered, f"创作档超出了管理档的覆盖范围: {not_covered}"
+
+
+def test_create_tier_migration_registers_only_its_own_row():
+    """新迁移纪律：只登记 article:create 自己的列，菜单/归属/默认授予都是幂等 UPDATE。"""
+    sql = _read_file(CREATE_TIER_MIGRATION)
+
+    # 1) VALUES 只带 article:create 一个码（多带的码会被 ON DUPLICATE 覆盖它拥有的列）
+    body = sql.split("INSERT INTO adh_perm_registry", 1)[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
+    registered = re.findall(r"^\s*\('([a-z_-]+:[a-z]+)',", body, re.M)
+    assert registered == ["article:create"], registered
+    assert "'article:manage'" not in body, "不得重写 article:manage 的行（别人的列）"
+    # ai_action_key 由本行自己拥有且初始为空：不得碰 article:manage 的 6 个 content_* 动作
+    assert "ai_action_key = VALUES(ai_action_key)" in sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
+
+    # 2) 只读档移入内容中心块（菜单行 home:feed 的 perm_code 断言在 test_home_feed_access）
+    assert re.search(r"UPDATE\s+adh_perm_registry\s+SET\s+menu_key\s*=\s*'content:manage'"
+                     r"\s+WHERE\s+perm_code\s*=\s*'article:read'", sql, re.I)
+
+    # 3) 菜单主码显式收敛（双保险，防回填语句 last-writer-wins 漂移）
+    assert re.search(r"UPDATE\s+adh_menu_registry\s+SET\s+perm_code\s*=\s*'article:create'"
+                     r"\s+WHERE\s+menu_key\s*=\s*'content:drafts'", sql, re.I)
+    assert re.search(r"UPDATE\s+adh_menu_registry\s+SET\s+perm_code\s*=\s*'article:manage'"
+                     r"\s+WHERE\s+menu_key\s*=\s*'content:manage'", sql, re.I)
+
+    # 4) 默认授予只补现状：持 manage 的角色 INSERT IGNORE 补 create；不给 viewer/analyst 扩权
+    assert "INSERT IGNORE INTO adh_role_perms" in sql
+    assert re.search(r"FROM\s+adh_role_perms\s+rp\s+WHERE\s+rp\.perm_code\s*=\s*'article:manage'",
+                     sql, re.I), "漏补授 = 只持管理档的角色丢「我的草稿」入口（回归）"
+    # 不得整表/全角色广播（不扩大默认授权）
+    assert not re.search(r"SELECT\s+r\.id\s*,\s*'article:create'\s+FROM\s+adh_roles\s+r", sql, re.I)
+
+    # 5) 菜单归属在册（content:drafts 由 content_center 迁移登记，此处不重复建菜单）
+    center = _read_migration()
+    menu_block = center.split("INSERT INTO adh_menu_registry", 1)[1].split("ON DUPLICATE KEY UPDATE", 1)[0]
+    assert "'content:drafts'" in menu_block
+    assert "INSERT INTO adh_menu_registry" not in sql, "本迁移不建菜单（菜单真值源在 content_center 迁移）"
+
+
+def test_viewer_can_edit_counts_create_tier():
+    """编辑身份判定从单码改为码集合（A.2）：创作档也算可编辑者，fail-closed 口径不变。"""
+    assert svc.EDIT_PERMS == ("article:manage", "article:create")
+    from backend.core import role_service
+
+    def _grant(codes):
+        return lambda uid, workspace_id=0: codes
+
+    orig = role_service.role_service.get_user_role_perm_codes
+    try:
+        role_service.role_service.get_user_role_perm_codes = _grant({"article:create"})
+        assert svc.viewer_can_edit({"user_id": 3}) is True, "创作档应能看/写草稿（与既有编辑者同池）"
+        role_service.role_service.get_user_role_perm_codes = _grant({"article:manage"})
+        assert svc.viewer_can_edit({"user_id": 3}) is True
+        role_service.role_service.get_user_role_perm_codes = _grant({"article:read"})
+        assert svc.viewer_can_edit({"user_id": 3}) is False, "只读档不得算可编辑者"
+        role_service.role_service.get_user_role_perm_codes = _grant(set())
+        assert svc.viewer_can_edit({"user_id": 3}) is False, "空授权 fail-closed（不解释为全量）"
+    finally:
+        role_service.role_service.get_user_role_perm_codes = orig
 
 # ── 6. 附件通道（kind=file）─────────────────────────────────────────────────────
 

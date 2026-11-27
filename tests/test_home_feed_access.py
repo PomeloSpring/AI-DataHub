@@ -27,6 +27,8 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 API_FILE = REPO / "backend/modules/platform/api/content.py"
 MIGRATION = REPO / "docker/mysql/home_feed_migration.sql"
 RELEASE_MIGRATION = REPO / "docker/mysql/content_release_migration.sql"
+#: 内容中心权限分档迁移（只读档移入内容中心块由它负责，不回改历史迁移）
+CREATE_TIER_MIGRATION = REPO / "docker/mysql/content_create_tier_migration.sql"
 
 # 与 home_feed_migration.sql 逐字对应的登记值（迁移改了这边必须同步改，否则配置漂移）
 READ_PATTERNS = ("/api/content/articles*", "/api/content/categories*", "/api/content/tags*")
@@ -207,6 +209,26 @@ def test_home_feed_menu_shape():
     assert label == "首页资讯区" and section == "首页" and module == "home"
     assert perm == "article:read", "菜单显隐真值源是 perm_code 反查，挂错码=配了不生效"
     assert sort_.isdigit()
+
+
+def test_reader_code_menu_key_moved_into_content_block():
+    """article:read 的**功能项归属** home:feed → content:manage（权限分档批负责移动）。
+
+    两条链路必须分开看：
+    * 首页资讯区显隐 = 菜单行 `home:feed.perm_code='article:read'` 反查 adh_role_perms，
+      **不动**（上面 test_home_feed_menu_shape 继续锁）；
+    * 角色页功能项分桶 = `adh_perm_registry.menu_key`，移到 content:manage 后只读档才落进
+      内容中心块（否则角色页仍是两个重名「内容中心」分组，且只读档在主块看不见）。
+    历史迁移不回改：移动由新迁移的 UPDATE 完成，这里锁那条 UPDATE 存在且指向正确。
+    """
+    sql = CREATE_TIER_MIGRATION.read_text(encoding="utf-8")
+    assert re.search(r"UPDATE\s+adh_perm_registry\s+SET\s+menu_key\s*=\s*'content:manage'"
+                     r"\s+WHERE\s+perm_code\s*=\s*'article:read'", sql, re.I), \
+        "只读档必须移入内容中心块（重名分组的修复就在这一句）"
+    # 本迁移不得顺手改 home:feed 菜单行（显隐真值源；注释里提到该字样属合法说明文字）
+    assert "('home:feed'" not in sql, "home:feed 菜单行归 home_feed 迁移所有，本批不建"
+    assert not re.search(r"UPDATE\s+adh_menu_registry[^;]*home:feed", sql, re.I | re.S), \
+        "home:feed 菜单行的 perm_code 不在本批改动范围"
 
 
 # ── 5. 期次清单与提升通道（本批新端点）──────────────────────────────────────

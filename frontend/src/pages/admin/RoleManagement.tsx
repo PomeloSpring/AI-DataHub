@@ -422,10 +422,31 @@ export default function RoleManagement() {
 
   // ── Menu & Function Permissions (权限码) ────────────────────
 
+  /**
+   * 内容中心档位级联保险：勾高档位时自动补勾低档位（只读 ⊂ 创作 ⊂ 管理）。
+   *
+   * 每档在服务端各自自足（api_pattern 已含只读 GET），级联**不是**生效前提，
+   * 只是让勾选态与层级一致 —— 防“勾了管理却漏勾创作/只读，保存后勾选态对不上”。
+   * 只在勾上时补：取消勾选不回滚依赖（保存的是整份清单，用户可按需单独收回）；
+   * 真正的裁决仍在服务端权限码，前端不另立口径。
+   */
+  const PERM_TIER_DEPS: Record<string, readonly string[]> = {
+    'article:manage': ['article:create', 'article:read'],
+    'article:create': ['article:read'],
+  };
+  const applyTierCascade = (next: Set<string>, codes: string[]) => {
+    codes.forEach(c => (PERM_TIER_DEPS[c] ?? []).forEach(d => next.add(d)));
+  };
+
   const togglePerm = (code: string) => {
     setRolePerms(prev => {
       const next = new Set(prev);
-      if (next.has(code)) next.delete(code); else next.add(code);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+        applyTierCascade(next, [code]);
+      }
       return next;
     });
   };
@@ -435,6 +456,7 @@ export default function RoleManagement() {
       const next = new Set(prev);
       const allOn = codes.length > 0 && codes.every(c => next.has(c));
       codes.forEach(c => { if (allOn) next.delete(c); else next.add(c); });
+      if (!allOn) applyTierCascade(next, codes);
       return next;
     });
   };

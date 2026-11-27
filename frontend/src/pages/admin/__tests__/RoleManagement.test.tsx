@@ -203,6 +203,77 @@ describe('角色权限 — 菜单与功能页签', () => {
       permissions: expect.arrayContaining(['kbdoc:read', 'kbdoc:write']),
     }));
   });
+
+  it('内容中心档位级联：勾管理自动补勾创作+只读，勾创作自动补勾只读', async () => {
+    // 真实登记形态：article:create 归 content:drafts；article:manage 与 article:read
+    // 同归 content:manage。级联只是勾选态保险（每档在服务端各自自足），
+    // 但保存的是整份清单 —— 补勾的码必须真的进 PUT payload。
+    const tier = (perm_code: string, label: string, menu_key: string, api_pattern: string, api_method: string) => ({
+      perm_code, label, description: '', menu_key, api_pattern, api_method,
+      ai_access: 'none', ai_effective: 'none', ai_locked: false,
+      ai_action_key: '', ai_channel: 'none', ai_note: '',
+    });
+    const extended = {
+      ...REGISTRY,
+      menu_groups: [
+        ...REGISTRY.menu_groups,
+        {
+          menu_key: 'content:drafts', label: '我的草稿', section: '我的工作台',
+          module: 'content', module_label: '内容中心', sort: 10,
+          permissions: [tier('article:create', '编写草稿并提交审核', 'content:drafts',
+            'POST /api/content/articles', 'GET,POST,PUT')],
+        },
+        {
+          menu_key: 'content:manage', label: '内容管理', section: '内容生产',
+          module: 'content', module_label: '内容中心', sort: 20,
+          permissions: [
+            tier('article:manage', '编辑内容条目', 'content:manage',
+              '/api/content/articles*', 'GET,POST,PUT,PATCH,DELETE'),
+            tier('article:read', '阅读已发布内容', 'content:manage',
+              '/api/content/articles*', 'GET'),
+          ],
+        },
+      ],
+    };
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/roles/') return { data: [{ id: 1, name: 'viewer', display_name: '查看角色', description: '', is_system: 1, is_active: 1 }] };
+      if (url === '/roles/perm-registry') return { data: extended };
+      if (url === '/roles/1/permissions') return { data: { role_id: 1, permissions: [] } };
+      return { data: [] };
+    });
+    await openFunctionsTab();
+
+    const checked = (label: RegExp) =>
+      (screen.getByRole('checkbox', { name: label }) as HTMLInputElement).checked;
+
+    // 勾管理 → 自动补勾创作 + 只读（层级：只读 ⊂ 创作 ⊂ 管理）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编辑内容条目/ }));
+    expect(checked(/编辑内容条目/)).toBe(true);
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+    expect(checked(/阅读已发布内容/)).toBe(true);
+
+    // 取消管理不回滚依赖（只在勾上时补；保存整份清单，可按需单独收回）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编辑内容条目/ }));
+    expect(checked(/编辑内容条目/)).toBe(false);
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+
+    // 单独清空后只勾创作 → 自动补勾只读（验证勾创作这一档自己的级联）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编写草稿并提交审核/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /阅读已发布内容/ }));
+    expect(checked(/编写草稿并提交审核/)).toBe(false);
+    expect(checked(/阅读已发布内容/)).toBe(false);
+    fireEvent.click(screen.getByRole('checkbox', { name: /编写草稿并提交审核/ }));
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+    expect(checked(/阅读已发布内容/)).toBe(true);
+
+    // 级联补勾的码必须真的进保存清单（勾选态可见 ≠ 后端拿到）
+    fireEvent.click(screen.getByRole('button', { name: '保存功能权限' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/roles/1/permissions', {
+      permissions: expect.arrayContaining(['article:create', 'article:read']),
+    }));
+    const payload = vi.mocked(client.put).mock.calls[0][1] as { permissions: string[] };
+    expect(payload.permissions).not.toContain('article:manage');   // 已取消的不回来
+  });
 });
 
 describe('角色权限 — AI 接入通道如实显示', () => {
