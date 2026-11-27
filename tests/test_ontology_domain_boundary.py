@@ -170,15 +170,15 @@ class TestWriteOpsEnforceDomain:
         monkeypatch.setattr(ot, "_require_write_perm", lambda *a, **k: None)
         monkeypatch.setattr(osvc, "get_model",
                             lambda mid: {"id": mid, "kind": "business",
-                                         "json_content": '{"objects":[]}'})
+                                         "json_content": '{"objects":[{"key":"case"}]}'})
         monkeypatch.setattr(osvc, "get_draft", lambda mid: {"draft": None})
         monkeypatch.setattr(osvc, "patch_object",
-                            lambda mid, key, patch, **kw: {"mode": "created", "key": key})
-        # 业务可改
+                            lambda mid, key, patch, **kw: {"mode": "updated", "key": key})
+        # 业务可改已有对象
         _patch_model(monkeypatch, [{"name": "客户域本体", "kind": "business"}])
         p = _payload(asyncio.run(ot.update_ontology_object(
             {"model_id": 1791127653486902, "object": {"key": "case"}})))
-        assert p.get("mode") in ("created", "updated")
+        assert p.get("mode") == "updated"
         # 系统不可
         _patch_model(monkeypatch, [{"name": "系统能力本体", "kind": "system"}])
         assert "系统本体" in _payload(asyncio.run(ot.update_ontology_object(

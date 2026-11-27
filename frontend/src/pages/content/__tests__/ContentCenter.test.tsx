@@ -243,6 +243,47 @@ describe('内容管理 — 清单口径与权限门', () => {
     expect(await screen.findByRole('button', { name: /新建内容/ })).toBeInTheDocument();
   });
 
+  it('创作档（article:create）：我的草稿给新建/编辑/提交，不给删除', async () => {
+    // 权限分档：只写草稿+提交审核的普通档。写入口全开、管理动作（删除）不给 ——
+    // 后端 api_pattern 逐条限定，前端只负责不展示注定 403 的入口。
+    grant(['article:create']);
+    route({
+      '/content/articles': LIST,
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
+    });
+    renderPage(<MyDrafts />);
+    await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
+    // 写：新建 + 行内编辑/提交
+    expect(screen.getByRole('button', { name: /新建内容/ })).toBeInTheDocument();
+    expect(screen.getByLabelText('编辑 种植导板精度复盘')).toBeInTheDocument();
+    expect(screen.getByLabelText('提交审核 种植导板精度复盘')).toBeInTheDocument();
+    // 管：删除不给（后端 DELETE /articles* 不在创作档里）
+    expect(screen.queryByLabelText('删除 种植导板精度复盘')).not.toBeInTheDocument();
+    // 高权限：审核/发布/同步入口全无（这些码创作档根本没持）
+    expect(screen.queryByRole('button', { name: '审核' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /发布|上架/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/同步到知识库/)).not.toBeInTheDocument();
+  });
+
+  it('创作档在内容管理页：批量只给提交审核，不给批量删除/审核/同步', async () => {
+    grant(['article:create']);
+    route({
+      '/content/articles': { ...LIST, items: [article({ status: 'in_review' })] },
+      '/content/categories': { items: [] }, '/content/tags': { items: [] },
+    });
+    renderPage(<ContentManage />);
+    await waitFor(() => expect(screen.getByText('种植导板精度复盘')).toBeInTheDocument());
+    // 行上：无删除、无审核、无同步（发布/下架本来就只给发布档）
+    expect(screen.queryByLabelText('删除 种植导板精度复盘')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '审核' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/同步到知识库/)).not.toBeInTheDocument();
+    // 批量工具条：BATCH_META 按动作分档 —— submit 类给创作档、delete 类只给管理档
+    fireEvent.click(await screen.findByRole('button', { name: /批量操作/ }));
+    expect(await screen.findByRole('button', { name: /批量提交审核/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /批量删除/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /批量上架/ })).not.toBeInTheDocument();
+  });
+
   it('内容管理空态不再指「点右上新建内容」（按钮已移走，指了就是空承诺）', async () => {
     grant(['article:manage']);
     route({

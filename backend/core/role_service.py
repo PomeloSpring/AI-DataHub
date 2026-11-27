@@ -10,8 +10,11 @@ Permission model:
   RLS Policy → uses role attributes for row filtering
 """
 
+import json
 import logging
+import re
 import time
+from contextlib import contextmanager
 from typing import Optional
 
 from backend.common.db.metadata_db import get_metadata_conn
@@ -31,6 +34,53 @@ def _invalidate_as_bot_config(reason: str) -> None:
 
 def _gen_id():
     return int(time.time() * 1000000)
+
+
+# 复制角色时逐表复制的角色级授权（表名 → 除 id/role_id 外的业务列）。
+# **不含 adh_user_roles**：一键复制是“快速造角色”，绑定用户不是角色配置的一部分，
+# 由管理员在「绑定用户」里另行指派（产品口径：复制不带人）。
+_ROLE_COPY_TABLES = {
+    "adh_role_perms": ("perm_code",),
+    "adh_role_datasource_access": ("datasource_id",),
+    "adh_role_dataset_access": ("dataset_id",),
+    "adh_role_dashboard_access": ("dashboard_id",),
+    "adh_role_rls_policies": ("policy_id",),
+    "adh_role_attributes": ("workspace_id", "attr_key", "attr_value"),
+    "adh_role_table_access": ("datasource_id", "table_name", "access_type"),
+    "adh_role_column_access": ("datasource_id", "table_name", "column_name", "access_type", "mask_pattern"),
+}
+
+
+def _as_json(value, default):
+    """JSON 列取值归一：驱动对 JSON 列可能回 str 也可能回已解码对象，两种都要能吃。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return default if value is None else value
+
+
+@contextmanager
+def _txn(cur):
+    """多语句写的显式事务：失败整体回滚，不留半态。
+
+    为什么不能靠 conn.commit()/conn.rollback()：连接池建连带 autocommit=True
+    （`backend/common/db/metadata_db.py` 的 PooledDB），每条语句各自成事务即时落库，
+    失败后再发 ROLLBACK 面对的是空事务，早前语句已经各自提交——历史缺陷就是
+    复制角色报 1264 后，角色行/已复制的授权行照样存下来（“报错但数据存下来了”）。
+    START TRANSACTION 显式把这批语句收进同一事务，COMMIT/ROLLBACK 才真实生效。
+    """
+    cur.execute("START TRANSACTION")
+    try:
+        yield
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:  # noqa: BLE001 — 回滚失败不得掩盖原始错误
+            pass
+        raise
+    cur.execute("COMMIT")
 
 
 def default_workspace_quota() -> dict:
@@ -99,13 +149,12 @@ class RoleService:
         role_id = _gen_id()
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute(
                     "INSERT INTO adh_roles (id, name, display_name, description) VALUES (%s, %s, %s, %s)",
                     (role_id, name, display_name, description)
                 )
                 # 联动创建同名 AS-BOT（角色-AS-BOT 一对一绑定）
-                import json
                 default_persona = {
                     "responsibility": f"协助 {display_name or name} 角色完成数据分析与相关任务",
                     # style 不写回复语言（语言口径唯一在提示词「回复语言」段，见 backend/common/i18n）：
@@ -140,12 +189,176 @@ class RoleService:
                      json.dumps(default_tools, ensure_ascii=False),
                      1, 1, 0, role_id, 0)
                 )
-                conn.commit()
                 logger.info(f"Created role '{name}' (id={role_id}) with associated AS-BOT")
                 _invalidate_as_bot_config(f"create_role id={role_id}")
                 return role_id
         finally:
             conn.close()
+
+    def duplicate_role(self, source_role_id: int, name: str,
+                       display_name: str = "", description: str = "") -> dict:
+        """一键复制角色（连同 AS-BOT 配置）：快速创建同配置的新角色。
+
+        复制范围 = 角色本体 + 全部角色级授权（权限码/数据源/数据集/看板/数据安全策略/
+        数据范围属性/表级/列级）+ 关联 AS-BOT 配置（提示词/persona/工具/知识库/模型/执行层）。
+        **不复制绑定用户**（adh_user_roles），新角色需重命名（name 全局唯一，同为新 AS-BOT 的
+        as_bot_key）。AS-BOT 的提示词/简介/persona/i18n 里提及原角色名处同步替换为新名称，
+        替换次数随返回值显式回报（prompt_renamed），不静默改写（no-silent-degradation）。
+
+        单事务：任一步失败整体回滚（显式 _txn，见 _txn 注释），不留半截角色；
+        来源角色不存在/重名均 fail-loud 抛 ValueError。
+        """
+        name = (name or "").strip()
+        display_name = (display_name or "").strip() or name
+        if not name:
+            raise ValueError("角色标识不能为空")
+        if len(name) > 64:
+            raise ValueError("角色标识过长（最多 64 个字符）")
+        if len(display_name) > 128:
+            raise ValueError("显示名称过长（最多 128 个字符）")
+        conn = get_metadata_conn()
+        try:
+            with conn.cursor() as cur, _txn(cur):
+                cur.execute("SELECT * FROM adh_roles WHERE id = %s", (source_role_id,))
+                source = cur.fetchone()
+                if not source:
+                    raise ValueError("来源角色不存在")
+                cur.execute("SELECT id FROM adh_roles WHERE name = %s", (name,))
+                if cur.fetchone():
+                    raise ValueError(f"角色标识「{name}」已存在，请换一个")
+                new_role_id = _gen_id()
+                cur.execute(
+                    "INSERT INTO adh_roles (id, name, display_name, description, is_system, is_active) "
+                    "VALUES (%s, %s, %s, %s, 0, 1)",
+                    (new_role_id, name, display_name, description or ""))
+                copied = {table: self._copy_role_rows(cur, table, cols, source_role_id, new_role_id)
+                          for table, cols in _ROLE_COPY_TABLES.items()}
+                as_bot = self._duplicate_as_bot(cur, source, source_role_id, new_role_id, name, display_name)
+            logger.info("Duplicated role %s -> '%s' (id=%s, perms=%s)",
+                        source_role_id, name, new_role_id, copied.get("adh_role_perms"))
+            _invalidate_as_bot_config(f"duplicate_role src={source_role_id} new={new_role_id}")
+            return {
+                "id": new_role_id, "name": name, "display_name": display_name,
+                "copied": {
+                    "permissions": copied["adh_role_perms"],
+                    "datasources": copied["adh_role_datasource_access"],
+                    "datasets": copied["adh_role_dataset_access"],
+                    "dashboards": copied["adh_role_dashboard_access"],
+                    "rls_policies": copied["adh_role_rls_policies"],
+                    "attributes": copied["adh_role_attributes"],
+                    "tables": copied["adh_role_table_access"],
+                    "columns": copied["adh_role_column_access"],
+                },
+                "as_bot_copied": as_bot["copied"],
+                "prompt_renamed": as_bot["renamed"],
+            }
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _copy_role_rows(cur, table: str, cols: tuple, source_role_id: int, new_role_id: int) -> int:
+        """把来源角色在一张授权表里的行整份复制给新角色。
+
+        id 是否显式生成看列定义：**自增列不传 id**（库生成）——各表 id 列类型不一
+        （如 adh_role_dataset_access.id 是 INT），强塞 _gen_id() 雪花值必报 1264
+        Out of range（历史缺陷：“报错但数据存下来了”的报错源）；非自增列才用
+        _gen_id() 显式生成新 id，不沿用旧 id。
+        """
+        cur.execute(f"SHOW COLUMNS FROM {table} WHERE Field = 'id'")
+        id_row = cur.fetchone()
+        id_auto = bool(id_row and "auto_increment" in str(id_row.get("Extra") or ""))
+        cur.execute(f"SELECT {', '.join(cols)} FROM {table} WHERE role_id = %s", (source_role_id,))
+        rows = cur.fetchall() or []
+        base = _gen_id()
+        for i, row in enumerate(rows):
+            vals = [row[c] for c in cols]
+            if id_auto:
+                cur.execute(f"INSERT INTO {table} (role_id, {', '.join(cols)}) "
+                            f"VALUES (%s, {', '.join(['%s'] * len(cols))})",
+                            [new_role_id] + vals)
+            else:
+                cur.execute(f"INSERT INTO {table} (id, role_id, {', '.join(cols)}) "
+                            f"VALUES (%s, %s, {', '.join(['%s'] * len(cols))})",
+                            [base + i, new_role_id] + vals)
+        return len(rows)
+
+    @staticmethod
+    def _duplicate_as_bot(cur, source: dict, source_role_id: int, new_role_id: int,
+                          name: str, display_name: str) -> dict:
+        """复制角色的一对一 AS-BOT：身份（as_bot_key/name/display_name）随新角色名，配置原样搬。
+
+        - 提示词/简介/persona/i18n 中提及原角色名处替换为新名称（长 token 先换，避免短名把
+          长名截断），替换次数显式回报给调用方，不静默改写；工具/skills/知识库/模型等纯配置不动。
+        - 新 AS-BOT 的 is_builtin 恒为 0（内置标记只属于系统角色的内置 bot）。
+        - 来源角色没有 AS-BOT 时回 copied=False，不静默补默认 AS-BOT（那会让“复制”变“新建”，
+          配置悄悄丢失——no-silent-degradation）。
+        """
+        cur.execute("SELECT * FROM adh_as_bots WHERE role_id = %s", (source_role_id,))
+        src_bot = cur.fetchone()
+        if not src_bot:
+            return {"copied": False, "renamed": 0}
+        # 旧名 → 新名 替换对（同旧名只取首个映射；短于 2 字符的不换，避免单字乱替换）
+        pairs: list = []
+        for old, new in (
+            (source.get("display_name") or "", display_name),
+            (source.get("name") or "", name),
+            (src_bot.get("display_name") or "", display_name),
+            (src_bot.get("name") or "", name),
+        ):
+            old = str(old or "").strip()
+            new = str(new or "").strip()
+            if len(old) >= 2 and old != new and all(old != o for o, _ in pairs):
+                pairs.append((old, new))
+        pairs.sort(key=lambda p: -len(p[0]))
+        # 单趟正则替换（长 token 先于短 token 匹配）：逐趟 str.replace 会把上一趟的
+        # 新文本再当旧名换掉（如 sales→sales2 后，sales_cn→sales_cn2 里的 "sales"
+        # 被二次命中变成 sales2_cn2），一次扫描只换一次才稳。
+        rename_map = dict(pairs)
+        pattern = re.compile("|".join(re.escape(old) for old, _ in pairs)) if pairs else None
+
+        renamed = 0
+
+        def _rename(value):
+            if pattern is None:
+                return value
+            if isinstance(value, str):
+                def _sub(m):
+                    nonlocal renamed
+                    renamed += 1
+                    return rename_map[m.group(0)]
+                return pattern.sub(_sub, value)
+            if isinstance(value, dict):
+                return {k: _rename(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_rename(v) for v in value]
+            return value
+
+        cur.execute(
+            """INSERT INTO adh_as_bots
+               (as_bot_key, name, display_name, description, category, system_prompt,
+                persona, tools, mcp_server_ids, knowledge_base_ids, skills, models,
+                execution_layer_id, chart_enabled, is_active, is_builtin,
+                role_id, workspace_id, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (name, name, display_name,
+             _rename(str(src_bot.get("description") or "")),
+             src_bot.get("category") or "custom",
+             _rename(str(src_bot.get("system_prompt") or "")),
+             json.dumps(_rename(_as_json(src_bot.get("persona"), {})), ensure_ascii=False),
+             json.dumps(_as_json(src_bot.get("tools"), {}), ensure_ascii=False),
+             json.dumps(_as_json(src_bot.get("mcp_server_ids"), []), ensure_ascii=False),
+             json.dumps(_as_json(src_bot.get("knowledge_base_ids"), []), ensure_ascii=False),
+             json.dumps(_as_json(src_bot.get("skills"), []), ensure_ascii=False),
+             json.dumps(_as_json(src_bot.get("models"), []), ensure_ascii=False),
+             src_bot.get("execution_layer_id"),
+             1 if src_bot.get("chart_enabled") else 0,
+             int(src_bot.get("is_active") or 0),
+             0,  # 新角色的 AS-BOT 恒为自定义（is_builtin 只属于系统角色的内置 bot）
+             new_role_id,
+             int(src_bot.get("workspace_id") or 0),
+             src_bot.get("created_by") or "admin")
+        )
+        return {"copied": True, "renamed": renamed}
 
     def update_role(self, role_id: int, data: dict) -> bool:
         """Update role metadata."""
@@ -175,7 +388,7 @@ class RoleService:
         """Delete a role (only if not system role) and its associated AS-BOT."""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("SELECT is_system, name FROM adh_roles WHERE id = %s", (role_id,))
                 role = cur.fetchone()
                 if not role or role.get("is_system"):
@@ -183,15 +396,14 @@ class RoleService:
                 # 联动删除关联 AS-BOT（角色-AS-BOT 一对一绑定）
                 cur.execute("DELETE FROM adh_as_bots WHERE role_id = %s", (role_id,))
                 logger.info(f"Deleted AS-BOT for role '{role.get('name')}' (role_id={role_id})")
-                cur.execute("DELETE FROM adh_role_attributes WHERE role_id = %s", (role_id,))
+                # 全部角色级授权一并清（与 _ROLE_COPY_TABLES 同一份清单）：历史缺陷是
+                # 只删 6 张，adh_role_perms/rls_policies/table/column 会留孤儿行。
+                for table in _ROLE_COPY_TABLES:
+                    cur.execute(f"DELETE FROM {table} WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_user_roles WHERE role_id = %s", (role_id,))
-                cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
-                cur.execute("DELETE FROM adh_role_dataset_access WHERE role_id = %s", (role_id,))
-                cur.execute("DELETE FROM adh_role_datasource_access WHERE role_id = %s", (role_id,))
                 cur.execute("DELETE FROM adh_roles WHERE id = %s", (role_id,))
-                conn.commit()
-                _invalidate_as_bot_config(f"delete_role id={role_id}")
-                return True
+            _invalidate_as_bot_config(f"delete_role id={role_id}")
+            return True
         finally:
             conn.close()
 
@@ -220,7 +432,7 @@ class RoleService:
         """Set role attributes for a workspace (replace all)."""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute(
                     "DELETE FROM adh_role_attributes WHERE role_id = %s AND workspace_id = %s",
                     (role_id, workspace_id)
@@ -230,7 +442,6 @@ class RoleService:
                         "INSERT INTO adh_role_attributes (id, role_id, workspace_id, attr_key, attr_value) VALUES (%s, %s, %s, %s, %s)",
                         (_gen_id(), role_id, workspace_id, key, str(value))
                     )
-                conn.commit()
                 _invalidate_as_bot_config(f"set_role_attributes role={role_id} ws={workspace_id}")
                 return True
         finally:
@@ -277,9 +488,8 @@ class RoleService:
         """独立事务版全局角色分配（管理接口/数据修复用）。"""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 self._apply_user_role(cur, user_id, role_name)
-            conn.commit()
             return True
         finally:
             conn.close()
@@ -293,14 +503,13 @@ class RoleService:
         """
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("SELECT name FROM adh_roles WHERE id = %s", (role_id,))
                 row = cur.fetchone()
                 if not row:
                     logger.warning("[role_service] assign_user_role 角色不存在: role_id=%s", role_id)
                     return False
                 self._apply_user_role(cur, user_id, str(row["name"]))
-                conn.commit()
                 return True
         finally:
             conn.close()
@@ -313,7 +522,7 @@ class RoleService:
         """
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute(
                     "DELETE FROM adh_user_roles WHERE user_id = %s AND role_id = %s",
                     (user_id, role_id)
@@ -321,7 +530,6 @@ class RoleService:
                 removed = cur.rowcount > 0
                 if removed:
                     self._apply_user_role(cur, user_id, "viewer")
-                conn.commit()
                 return removed
         finally:
             conn.close()
@@ -554,14 +762,13 @@ class RoleService:
         """Replace all datasource access for a role."""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("DELETE FROM adh_role_datasource_access WHERE role_id = %s", (role_id,))
                 for ds_id in datasource_ids:
                     cur.execute(
                         "INSERT INTO adh_role_datasource_access (id, role_id, datasource_id) VALUES (%s, %s, %s)",
                         (_gen_id(), role_id, ds_id)
                     )
-                conn.commit()
                 # 数据源授权是「可用数据源 / 可查站点」的唯一裁决源，变更后必须立刻
                 # 失效两个派生缓存，否则聊天端会在 TTL 窗口内看到旧范围。
                 _invalidate_datasource_derived_caches()
@@ -675,14 +882,13 @@ class RoleService:
         """Replace all dashboard visibility grants for a role (full replace, idempotent)."""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("DELETE FROM adh_role_dashboard_access WHERE role_id = %s", (role_id,))
                 for dash_id in set(dashboard_ids or []):
                     cur.execute(
                         "INSERT IGNORE INTO adh_role_dashboard_access (role_id, dashboard_id) VALUES (%s, %s)",
                         (role_id, int(dash_id))
                     )
-                conn.commit()
                 return True
         finally:
             conn.close()
@@ -776,14 +982,13 @@ class RoleService:
         """Replace all dataset visibility grants for a role (full replace, idempotent)."""
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("DELETE FROM adh_role_dataset_access WHERE role_id = %s", (role_id,))
                 for ds_id in set(dataset_ids or []):
                     cur.execute(
                         "INSERT IGNORE INTO adh_role_dataset_access (role_id, dataset_id) VALUES (%s, %s)",
                         (role_id, int(ds_id))
                     )
-                conn.commit()
                 return True
         finally:
             conn.close()
@@ -843,7 +1048,7 @@ class RoleService:
         """
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("DELETE FROM adh_role_table_access WHERE role_id = %s", (role_id,))
                 for t in tables:
                     cur.execute(
@@ -853,7 +1058,6 @@ class RoleService:
                         (_gen_id(), role_id, t.get("datasource_id", 0),
                          t["table_name"], t.get("access_type", "read"))
                     )
-                conn.commit()
                 return True
         finally:
             conn.close()
@@ -901,7 +1105,7 @@ class RoleService:
         """
         conn = get_metadata_conn()
         try:
-            with conn.cursor() as cur:
+            with conn.cursor() as cur, _txn(cur):
                 cur.execute("DELETE FROM adh_role_column_access WHERE role_id = %s", (role_id,))
                 for c in columns:
                     cur.execute(
@@ -912,7 +1116,6 @@ class RoleService:
                          c["table_name"], c["column_name"],
                          c.get("access_type", "visible"), c.get("mask_pattern", ""))
                     )
-                conn.commit()
                 return True
         finally:
             conn.close()

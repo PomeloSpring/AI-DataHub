@@ -29,9 +29,10 @@
  * 端点保留，界面不再给入口 —— 「核绑定」页签现在指向「本体建模」核对绑定，
  * 而不是把绑定问题固化成一条注定还会失败的用例。
  */
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { PaginationBar, DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
@@ -42,12 +43,9 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from '@/lib/toast';
-import { Dna, RefreshCw, Play, Check, X, Wrench, ExternalLink } from 'lucide-react';
+import { Dna, RefreshCw, Play, Check, X, ExternalLink } from 'lucide-react';
 import client from '@/api/client';
 import { useHasPerm } from '@/stores/permissionStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -58,8 +56,6 @@ import ScenarioEditorDialog, {
 } from '@/components/ScenarioEditorDialog';
 import DictTodoTab from './DictTodoTab';
 import KnowledgeUpdateDialog, { type KnowledgeProposal } from './evolution/KnowledgeUpdateDialog';
-import KbDocUpdateDialog from './evolution/KbDocUpdateDialog';
-import OntologyScalarDialog from './evolution/OntologyScalarDialog';
 
 type Kind = 'new_metric' | 'new_dimension' | 'alias' | 'binding_gap' | 'term';
 
@@ -99,9 +95,13 @@ interface Candidate {
   classify_reason: string;
   hit_count: number;
   status: string;
+  /** 决策版本：POST .../decisions 的 expected_version 来源（服务端条件更新仲裁）。 */
+  expected_version?: number;
   converted_ref?: string;
   converted_kind?: string;
   decided_by?: string;
+  decided_at?: string;
+  decision_note?: string;
   evidence?: Record<string, unknown>;
   /** 仅 status=pending 时由服务端附上（已处置行再给建议会被误读成还有事要做）。 */
   suggestion?: Suggestion;
@@ -110,6 +110,7 @@ interface Candidate {
 interface Overview {
   pending_by_kind: Record<string, number>;
   pending_by_source: Record<string, number>;
+  proposal_counts: Record<string, number>;
   outcome: Record<string, number>;
   feedback: { up: number; down: number; pending_negative: number };
   reasons: string[];
@@ -141,7 +142,7 @@ const SOURCE_LABEL: Record<string, string> = {
 
 const STATUS_LABEL: Record<string, string> = {
   pending: i18nTr('k_047109def4'), converted: i18nTr('k_c6bc4767c4'), rejected: i18nTr('k_dbf36ddc55'),
-  stale: i18nTr('k_512fdab3f8'), verified: i18nTr('k_579bd49bc6'),
+  stale: i18nTr('k_512fdab3f8'), verified: i18nTr('k_579bd49bc6'), expired: i18nTr('k_5d1e9a7c4d'),
 };
 
 // 分组顺序 = 处置成本，与 evolution_service.KIND_WEIGHT 同序（alias 一键在前）。
@@ -198,27 +199,52 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
   const navigate = useNavigate();
   // 写出口各自按权限码显隐：不渲染"点了必 403"的按钮（ontology-modeling §9.2）。
   const canSaveOntology = useHasPerm('ontology:save');
-  const canPublishOntology = useHasPerm('ontology:publish');
   const canManageMetrics = useHasPerm('metrics:manage');
   const canManageKnowledge = useHasPerm('knowledge:manage');
-  const canWriteDoc = useHasPerm('kbdoc:write');
   const canDigest = useHasPerm('evolution:manage');
 
-  // 默认落在「待建」：核绑定不是"等人什么时候愿意建"，它该由探针自己走。
-  const [tab, setTab] = useState('build');
-  // 待建/核绑定两个页签共用同一份 pending 数据，历史页签单独查——不拆的话，
-  // 在历史页选个状态就会把待办列表一起换掉（待建页签莫名空掉，最容易误判为"没待办"）。
-  const [historyStatus, setHistoryStatus] = useState('converted');
-  const [kindFilter, setKindFilter] = useState<string>('');
+  // ── 筛选状态全部入 URL query（P1-1）：刷新/返回/分享不丢现场；
+  //    任一筛选变化回第 1 页；搜索防抖后下推服务端（不在前端 filter/slice 全量）。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') || 'build';
+  const historyStatus = searchParams.get('hstatus') || 'converted';
+  const kindFilter = searchParams.get('kind') || '';
+  const proposalStatus = searchParams.get('pstatus') || 'pending';
+  const q = searchParams.get('q') || '';
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10) || 1);
+  const pageSize = parseInt(searchParams.get('psize') || '', 10) === 50 ? 50 : DEFAULT_PAGE_SIZE;
+  const setParams = useCallback((patch: Record<string, string>, keepPage = false) => {
+    const next = new URLSearchParams(searchParams);
+    Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)));
+    if (!keepPage) next.delete('page');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  const setTab = (v: string) => setParams({ tab: v });
+  const setKindFilter = (v: string) => setParams({ kind: v });
+  const setHistoryStatus = (v: string) => setParams({ hstatus: v });
+  const setProposalStatus = (v: string) => setParams({ pstatus: v });
+  const setPage = (v: number) => setParams({ page: String(v) }, true);
+  const setPageSize = (v: number) => setParams({ psize: String(v) });
+  // 搜索防抖（300ms）：停手才发请求，改搜索回第 1 页（停在旧页码 + 新关键词会拿到错位的空清单）
+  const [qInput, setQInput] = useState(q);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (qInput.trim() !== q) setParams({ q: qInput.trim() });
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput]);
   const [items, setItems] = useState<Candidate[]>([]);
+  const [total, setTotal] = useState(0);
   const [ov, setOv] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [digesting, setDigesting] = useState(false);
 
-  // 知识更新提议：全量拉一次、本地按状态筛（状态计数要跨页签用，不能随筛选丢失）
+  // 知识更新提议：服务端按状态/关键词真分页（P1-2）；跨页签计数用响应里的 counts
   const [proposals, setProposals] = useState<KnowledgeProposal[]>([]);
-  const [proposalStatus, setProposalStatus] = useState('pending');
+  const [propTotal, setPropTotal] = useState(0);
+  const [propCounts, setPropCounts] = useState<Record<string, number> | null>(null);
   const [proposalsLoading, setProposalsLoading] = useState(false);
   const [proposalsError, setProposalsError] = useState('');
   const [expanded, setExpanded] = useState<number[]>([]);
@@ -240,24 +266,34 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
   /** 从提议进入场景编辑时暂存的提议（保存成功后自动标记已处理） */
   const [proposalForScenario, setProposalForScenario] = useState<KnowledgeProposal | null>(null);
   const [rejectTarget, setRejectTarget] = useState<KnowledgeProposal | null>(null);
+  const [rejectCandidate, setRejectCandidate] = useState<Candidate | null>(null);
   const [rejectNote, setRejectNote] = useState('');
-  const [scalarOpen, setScalarOpen] = useState(false);
-  const [kbOpen, setKbOpen] = useState(false);
   const [scenarioOpen, setScenarioOpen] = useState(false);
   const [scenarioAppend, setScenarioAppend] = useState(false);
   const [scenarioPrefill, setScenarioPrefill] = useState<ScenarioPrefill | null>(null);
   const scenarioOptions = useScenarioFormOptions();
 
   const load = useCallback(async () => {
+    if (tab === 'dict' || tab === 'knowledge' || tab === 'outcome') {
+      // 字典待办自带服务端分页，知识更新单独查；候选队列只在相关页签拉取
+      return;
+    }
     setLoading(true);
     setError('');
     try {
+      const isHistory = tab === 'history';
       const { data } = await client.get('/evolution/candidates', {
-        params: tab === 'history'
-          ? { status: historyStatus, limit: 300 }
-          : { status: 'pending', kind: kindFilter, limit: 300 },
+        params: {
+          status: isHistory ? historyStatus : 'pending',
+          // 队列分流由服务端完成（queue 由 kind 的服务端映射生成，不在前端二次计算）
+          ...(isHistory ? {} : { queue: tab === 'binding' ? 'binding' : 'build' }),
+          ...(kindFilter ? { kind: kindFilter } : {}),
+          ...(q ? { q } : {}),
+          page, page_size: pageSize,
+        },
       });
       setItems(expectItems(data, tr('k_ea540c8bf9')));
+      setTotal(Number(data?.total) || 0);
     } catch (e: any) {
       const msg = e.message || e.response?.data?.detail || tr('k_22889ef6db');
       setError(msg);
@@ -265,7 +301,7 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
     } finally {
       setLoading(false);
     }
-  }, [tab, historyStatus, kindFilter]);
+  }, [tab, historyStatus, kindFilter, q, page, pageSize]);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -280,18 +316,26 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
   }, []);
 
   const loadProposals = useCallback(async () => {
+    if (tab !== 'knowledge' && tab !== 'outcome') return;
     setProposalsLoading(true);
     setProposalsError('');
     try {
-      const { data } = await client.get('/evolution/proposals', { params: { limit: 200 } });
+      const { data } = await client.get('/evolution/proposals', {
+        params: {
+          status: proposalStatus, ...(q ? { q } : {}),
+          page, page_size: pageSize,
+        },
+      });
       setProposals(expectItems(data, t('k_59b655627c')));
+      setPropTotal(Number(data?.total) || 0);
+      setPropCounts(data?.counts || null);
     } catch (e: any) {
       const msg = e.response?.data?.detail || e.message || t('k_866b795eae');
       setProposalsError(msg);
     } finally {
       setProposalsLoading(false);
     }
-  }, [t]);
+  }, [t, tab, proposalStatus, q, page, pageSize]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadOverview(); loadProposals(); }, [loadOverview, loadProposals]);
@@ -299,15 +343,52 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
   const runDigest = async () => {
     setDigesting(true);
     try {
-      const { data } = await client.post('/evolution/digest');
-      toast.success(tr('k_b280571b32', { p0: data.summary || tr('k_44f7ba5fa8') }));
+      // 异步作业：提交即返回 job_id，轮询状态；失败必须显式（“没有新待办”和“作业挂了”是两件事）
+      const { data } = await client.post('/evolution/digests');
+      const jobId = data?.job_id;
+      toast.info(tr('k_5d1e9a7c3b', { p0: jobId }));
+      for (let i = 0; i < 60; i += 1) {
+        await new Promise(r => setTimeout(r, 500));
+        const { data: job } = await client.get(`/evolution/digests/${jobId}`);
+        if (job?.status === 'succeeded') {
+          toast.success(t('k_b280571b32', { p0: job?.result?.summary || tr('k_44f7ba5fa8') }));
+          break;
+        }
+        if (job?.status === 'failed') {
+          toast.error(tr('k_5d1e9a7c3d', { p0: job?.error_message || t('k_d10b113b12') }));
+          break;
+        }
+        if (i === 59) toast.info(tr('k_5d1e9a7c3c'));
+      }
       load(); loadOverview();
     } catch (e: any) {
-      // 归纳失败必须显式：把"没有新待办"和"归纳挂了"混在一起是最危险的掩盖
-      toast.error(e.response?.data?.detail || t('k_d10b113b12'));
+      toast.error(e.response?.data?.detail
+        || tr('k_5d1e9a7c3d', { p0: e.message || t('k_d10b113b12') }));
     } finally {
       setDigesting(false);
     }
+  };
+
+  /** 处置统一走 POST .../decisions（版本 + 幂等键 subject:version:action），HTTP/AI 同链。 */
+  const postDecision = async (
+    subjectType: 'candidates' | 'proposals', id: number,
+    body: { action_key: string; expected_version: number; note?: string; applied_ref?: string; input?: any },
+  ) => {
+    const version = body.expected_version;
+    const { data } = await client.post(`/evolution/${subjectType}/${id}/decisions`, body, {
+      headers: { 'Idempotency-Key': `${subjectType}:${id}:${version}:${body.action_key}` },
+    });
+    return data;
+  };
+
+  /** 409 = 被并发改过/幂等键撞车：不覆盖既有结论，刷新后按新版本重新处置。 */
+  const handleDecisionError = (e: any) => {
+    if (e.response?.status === 409) {
+      toast.warning(tr('k_5d1e9a7c3e'));
+      load(); loadOverview(); loadProposals();
+      return;
+    }
+    toast.error(e.response?.data?.detail || e.message || t('k_3e20d5d1ce'));
   };
 
   /**
@@ -316,29 +397,37 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
    */
   const markApplied = async (proposal: KnowledgeProposal, ref: string) => {
     try {
-      const { data } = await client.post(`/evolution/proposals/${proposal.id}/applied`,
-        { applied_ref: ref });
+      const data = await postDecision('proposals', proposal.id, {
+        action_key: 'evolution_proposal.applied',
+        expected_version: proposal.expected_version || 1,
+        applied_ref: ref,
+      });
       if (data?.changed) toast.success(t('k_665ffef5b8'));
       else toast.warning(data?.message || t('k_71c30fa869'));
       loadProposals();
     } catch (e: any) {
+      if (e.response?.status === 409) { handleDecisionError(e); return; }
       toast.error(`${t('k_2969373217')}（${e.response?.data?.detail || e.message || ''}）`);
     }
   };
 
   const rejectProposal = async () => {
     if (!rejectTarget) return;
+    if (!rejectNote.trim()) { toast.error(tr('k_5d1e9a7c41')); return; }
     setBusy(true);
     try {
-      const { data } = await client.post(`/evolution/proposals/${rejectTarget.id}/reject`,
-        { note: rejectNote });
+      const data = await postDecision('proposals', rejectTarget.id, {
+        action_key: 'evolution_proposal.reject',
+        expected_version: rejectTarget.expected_version || 1,
+        note: rejectNote,
+      });
       if (data?.changed) toast.success(t('k_dbf36ddc55'));
       else toast.warning(data?.message || t('k_71c30fa869'));
       setRejectTarget(null);
       setRejectNote('');
       loadProposals();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || t('k_3e20d5d1ce'));
+      handleDecisionError(e);
     } finally {
       setBusy(false);
     }
@@ -413,12 +502,14 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
     if (!target) return;
     setBusy(true);
     try {
+      const version = target.expected_version || 1;
       if (exitKind === 'alias') {
-        const { data } = await client.post(`/evolution/candidates/${target.id}/alias`, {
-          target_type: form.target_type, target_ref: form.target_ref,
+        const data = await postDecision('candidates', target.id, {
+          action_key: 'evolution_candidate.adopt', expected_version: version,
+          input: { target_type: form.target_type, target: form.target_ref },
         });
         // 目标字典行不存在不是错误，是"该走另一个出口"：据此改按钮而不是报错
-        if (data?.success === false && data?.next_action) {
+        if (data?.changed === false && data?.next_action) {
           toast.warning(data.message || t('k_59e95054a8'));
           setExitKind('');
           openExit({ ...target, kind: data.next_action as Kind, suggestion: undefined },
@@ -427,9 +518,10 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
         }
         toast.success(t('k_c8586b2abd'));
       } else if (exitKind === 'metric') {
-        const { data } = await client.post(`/evolution/candidates/${target.id}/metric-draft`, {
-          bound_object_key: form.bound_object_key, display_name: form.display_name,
-          agg_type: form.agg_type, formula: form.formula, unit: form.unit,
+        const data = await postDecision('candidates', target.id, {
+          action_key: 'evolution_metric.create', expected_version: version,
+          input: { object: form.bound_object_key, display_name: form.display_name,
+                   agg_type: form.agg_type, formula: form.formula, unit: form.unit },
         });
         toast.success(data.message || t('k_027c9e552e'));
         if (data?.needs_completion?.length) {
@@ -437,45 +529,58 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
         }
       } else if (exitKind === 'dimension') {
         if (!form.property_name) { toast.error(t('k_fa85fe050c')); return; }
-        const { data } = await client.post(`/evolution/candidates/${target.id}/dimension-draft`, {
-          bound_object_key: form.bound_object_key, property_name: form.property_name,
-          display_name: form.display_name, category: form.category,
+        const data = await postDecision('candidates', target.id, {
+          action_key: 'evolution_dimension.create', expected_version: version,
+          input: { object: form.bound_object_key, property: form.property_name,
+                   display_name: form.display_name, category: form.category },
         });
         toast.success(data.message || t('k_37315326aa'));
       } else if (exitKind === 'term') {
-        const { data } = await client.post(`/evolution/candidates/${target.id}/to-term`, {
-          description: form.note || '',
+        const data = await postDecision('candidates', target.id, {
+          action_key: 'evolution_candidate.to_term', expected_version: version,
+          input: { description: form.note || '' },
         });
         toast.success(data.message || t('k_c85d305d6d'));
       }
       setTarget(null); setExitKind('');
       load(); loadOverview();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || t('k_a5c20b174b'));
+      handleDecisionError(e);
     } finally {
       setBusy(false);
     }
   };
 
-  const reject = async (c: Candidate) => {
+  /** 驳回候选：必须填理由（服务层同口径拒绝空理由），经统一决策链落痕不删行。 */
+  const rejectCandidateConfirm = async () => {
+    if (!rejectCandidate) return;
+    if (!rejectNote.trim()) { toast.error(tr('k_5d1e9a7c41')); return; }
+    setBusy(true);
     try {
-      await client.post(`/evolution/candidates/${c.id}/reject`);
+      await postDecision('candidates', rejectCandidate.id, {
+        action_key: 'evolution_candidate.reject',
+        expected_version: rejectCandidate.expected_version || 1,
+        note: rejectNote,
+      });
       toast.success(t('k_397ff0a184'));
+      setRejectCandidate(null);
+      setRejectNote('');
       load(); loadOverview();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || t('k_3e20d5d1ce'));
+      handleDecisionError(e);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const queueOf = (c: Candidate): Queue =>
-    c.suggestion?.queue || (c.kind === 'binding_gap' ? 'binding' : 'build');
-  const buildItems = items.filter(c => queueOf(c) === 'build');
-  const bindingItems = items.filter(c => queueOf(c) === 'binding');
+  // 队列分流由服务端 queue 参数完成（P1-2）；跨页签计数取服务端 counts，不随当前页抖动
+  const pendingProposalCount = propCounts?.pending ?? ov?.proposal_counts?.pending ?? 0;
 
-  const visibleProposals = useMemo(
-    () => proposals.filter(p => p.status === proposalStatus),
-    [proposals, proposalStatus]);
-  const pendingProposalCount = proposals.filter(p => p.status === 'pending').length;
+  // 无权限时显示缺失权限码与原因（P1-1）：按钮不渲染（点了必 403），但要说清缺什么
+  const missingActionPerms = [
+    !canSaveOntology && 'ontology:save',
+    !canManageMetrics && 'metrics:manage',
+  ].filter(Boolean) as string[];
 
   /** 提议 → 场景编辑器：预填提议标题/正文，mode 决定新建还是追加到已有。 */
   const openScenarioFromProposal = (mode: 'create' | 'append') => {
@@ -536,7 +641,12 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                         <span className="text-[11px] text-muted-foreground">≈ {c.target_ref}</span>
                       )}
                       <div className="flex-1" />
-                      {/* 写出口按各自权限码显隐：没权限就不渲染（点了必 403 的按钮是空承诺） */}
+                      {/* 详情抽屉入口：证据/建议/权限/历史决策与处置在同一上下文（P1-1） */}
+                      <Button size="sm" variant="ghost" className="h-6 text-[11px]"
+                        onClick={() => openExit(c, '')}>
+                        {t('k_4f55ee1e68')}
+                      </Button>
+                      {/* 写出口按各自权限码显隐：没权限就不渲染（点了必 403 的 按钮是空承诺） */}
                       {kind === 'alias' && canSaveOntology && (
                         <Button size="sm" variant="outline" className="h-6 text-[11px]"
                           onClick={() => openExit(c, 'alias')}>
@@ -571,8 +681,8 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                       )}
                       {canSaveOntology && (
                         <Button size="sm" variant="ghost" className="h-6 text-[11px]"
-                          onClick={() => reject(c)}>
-                          <X className="h-3 w-3 mr-1" />{t('k_32525478cd')}
+                          onClick={() => { setRejectCandidate(c); setRejectNote(''); }}>
+                          <X className="h-3 w-3 mr-1"/>{t('k_32525478cd')}
                         </Button>
                       )}
                     </div>
@@ -598,14 +708,6 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                         {t('k_e556670542', { p0: ((c.evidence as any).candidates as string[]).slice(0, 5).join('、') })}
                       </div>
                     )}
-                    {Array.isArray((c.evidence as any)?.authoritative_hits) &&
-                      ((c.evidence as any).authoritative_hits as any[]).length > 0 && (
-                      <div className="text-[11px] text-amber-700">
-                        {t('k_c4565c3782', { p0: ((c.evidence as any).authoritative_hits as any[])
-                          .map(h => tr('k_54940ce18a', { p0: h.ref, p1: h.target_table || '?', p2: h.object_key || '?' }))
-                          .join('；') })}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
@@ -627,26 +729,9 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
           </>
         )}
         <div className="flex-1" />
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm">
-              <Wrench className="h-3.5 w-3.5 mr-1" />{t('k_4f2c8dabc5')}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={!canSaveOntology} onClick={() => setScalarOpen(true)}>
-              {t('k_a80285df2d')}
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={!canManageKnowledge} onClick={() => {
-              setScenarioPrefill(null); setScenarioAppend(false); setScenarioOpen(true);
-            }}>
-              {t('k_23b0aa42b9')}
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={!canWriteDoc} onClick={() => setKbOpen(true)}>
-              {t('k_828ea6af0b')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Input value={qInput} onChange={e => setQInput(e.target.value)}
+          placeholder={tr('k_5d1e9a7c4c')}
+          className="h-8 w-44 text-xs" aria-label={tr('k_5d1e9a7c4c')} />
         <Button variant="outline" size="sm" onClick={() => { load(); loadOverview(); loadProposals(); }}>
           <RefreshCw className="h-3.5 w-3.5 mr-1" />{t('k_38108eaa1d')}
         </Button>
@@ -699,7 +784,7 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
       )}
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid grid-cols-5 w-full max-w-2xl">
+        <TabsList className="grid grid-cols-6 w-full max-w-3xl">
           <TabsTrigger value="build">{tr('k_5563318aac')}</TabsTrigger>
           <TabsTrigger value="binding">{tr('k_e0730d5ac1')}</TabsTrigger>
           <TabsTrigger value="dict">{t('k_1361bb4b8d')}</TabsTrigger>
@@ -709,6 +794,7 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
               <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{pendingProposalCount}</Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="outcome">{tr('k_5d1e9a7c44')}</TabsTrigger>
           <TabsTrigger value="history">{t("k_8416c62f82")}</TabsTrigger>
         </TabsList>
 
@@ -733,13 +819,20 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
               {t('k_fc3f31a5be', { p0: error })}
             </div>
           )}
-          {!loading && !error && buildItems.length === 0 && (
+          {!loading && !error && items.length === 0 && (
             <div className="text-xs text-muted-foreground p-4 border rounded text-center">
               {tr('k_5967365baf')}
             </div>
           )}
 
-          {renderGroups(buildItems)}
+          {renderGroups(items)}
+          {missingActionPerms.length > 0 && (
+            <div className="text-[11px] text-amber-600">
+              {tr('k_5d1e9a7c4b', { p0: missingActionPerms.join('、') })}
+            </div>
+          )}
+          <PaginationBar page={page} pageSize={pageSize} total={total} busy={loading}
+            onChange={setPage} onPageSizeChange={setPageSize} pageSizeOptions={[20, 50]} />
         </TabsContent>
 
         <TabsContent value="binding" className="space-y-3">
@@ -751,13 +844,15 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
               {t('k_fc3f31a5be', { p0: error })}
             </div>
           )}
-          {!loading && !error && bindingItems.length === 0 && (
+          {!loading && !error && items.length === 0 && (
             <div className="text-xs text-muted-foreground p-4 border rounded text-center">
               {tr('k_eeafc9afbb')}
             </div>
           )}
 
-          {renderGroups(bindingItems, false)}
+          {renderGroups(items, false)}
+          <PaginationBar page={page} pageSize={pageSize} total={total} busy={loading}
+            onChange={setPage} onPageSizeChange={setPageSize} pageSizeOptions={[20, 50]} />
         </TabsContent>
 
         {/* ── 字典待办：未归属/孤儿指标维度 + 未绑定术语（原「建模待办」工作台）── */}
@@ -791,13 +886,13 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
               {t('k_fc3f31a5be', { p0: proposalsError })}
             </div>
           )}
-          {!proposalsLoading && !proposalsError && visibleProposals.length === 0 && (
+          {!proposalsLoading && !proposalsError && proposals.length === 0 && (
             <div className="text-xs text-muted-foreground p-4 border rounded text-center">
               {proposalStatus === 'pending' ? t('k_031570527f') : t('k_36d5bbf0d4')}
             </div>
           )}
 
-          {visibleProposals.map(p => {
+          {proposals.map(p => {
             const open = expanded.includes(p.id);
             const showAll = open || (p.content || '').length <= 200;
             return (
@@ -833,7 +928,7 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                         {t('k_bfdd85e099')}
                       </Button>
                       <Button size="sm" variant="ghost" className="h-6 text-[11px]"
-                        onClick={() => void markApplied(p, '')}>
+                        onClick={() => setActiveProposal(p)}>
                         {t('k_8412b77794')}
                       </Button>
                       <Button size="sm" variant="ghost" className="h-6 text-[11px]"
@@ -877,6 +972,32 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
               </div>
             );
           })}
+          <PaginationBar page={page} pageSize={pageSize} total={propTotal} busy={proposalsLoading}
+            onChange={setPage} onPageSizeChange={setPageSize} pageSizeOptions={[20, 50]} />
+        </TabsContent>
+
+        {/* ── 闭环成效：只回答“转出去的东西到底生效了没”（与处置历史分开）── */}
+        <TabsContent value="outcome" className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+            {([
+              { key: 'converted', label: STATUS_LABEL.converted, desc: tr('k_5d1e9a7c45'), tone: 'text-amber-600' },
+              { key: 'verified', label: STATUS_LABEL.verified, desc: tr('k_5d1e9a7c46'), tone: 'text-green-700' },
+              { key: 'stale', label: STATUS_LABEL.stale, desc: tr('k_5d1e9a7c47'), tone: 'text-destructive' },
+              { key: 'rejected', label: STATUS_LABEL.rejected, desc: tr('k_5d1e9a7c48'), tone: 'text-muted-foreground' },
+              { key: 'expired', label: STATUS_LABEL.expired, desc: tr('k_5d1e9a7c49'), tone: 'text-muted-foreground' },
+            ]).map(s => (
+              <button key={s.key} type="button"
+                className="border rounded-md p-2.5 text-left transition-colors hover:bg-muted/40"
+                onClick={() => setParams({ tab: 'history', hstatus: s.key })}>
+                <div className="text-muted-foreground">{s.label}</div>
+                <div className={`mt-1 text-lg font-medium ${s.tone}`}>
+                  {(ov?.outcome || {})[s.key] ?? 0}
+                </div>
+                <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{s.desc}</div>
+              </button>
+            ))}
+          </div>
+          {!ov && <div className="text-xs text-muted-foreground p-4">{t('k_300ee3dee4')}</div>}
         </TabsContent>
 
         <TabsContent value="history" className="space-y-3">
@@ -920,33 +1041,121 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                         : c.status === 'verified' ? 'default' : 'outline'} className="text-[9px]">
                         {STATUS_LABEL[c.status] || c.status}
                       </Badge>
+                      {c.status === 'converted' && (
+                        <span className="ml-1 text-[9px] text-amber-600" title={tr('k_5d1e9a7c45')}>
+                          {tr('k_5d1e9a7c45')}
+                        </span>
+                      )}
                     </td>
                     <td className="p-2 text-muted-foreground">
                       {c.converted_ref ? `${c.converted_kind}：${c.converted_ref}` : '—'}
                     </td>
-                    <td className="p-2 text-muted-foreground">{c.decided_by || '—'}</td>
+                    <td className="p-2 text-muted-foreground">
+                      {c.decided_by || '—'}
+                      {c.decided_at ? `（${c.decided_at}）` : ''}
+                      {c.decision_note ? <div className="mt-0.5">{c.decision_note}</div> : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <PaginationBar page={page} pageSize={pageSize} total={total} busy={loading}
+            onChange={setPage} onPageSizeChange={setPageSize} pageSizeOptions={[20, 50]} />
         </TabsContent>
       </Tabs>
 
       {/* ── 候选出口（四出口，已去掉评测）────────────────────────── */}
-      <Dialog open={!!exitKind} onOpenChange={(o) => { if (!o) { setExitKind(''); setTarget(null); } }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {target && `${exitKind === 'alias' ? tr('k_4d7b245f64') : exitKind === 'metric' ? tr('k_7b3561a815')
-                : exitKind === 'dimension' ? tr('k_ce353b2d85') : tr('k_9abf0019e8')} — ${target.term}`}
-            </DialogTitle>
-          </DialogHeader>
-          {target && (
-            <div className="space-y-3 text-sm">
+      {/* 统一详情抽屉（P1-1）：左侧队列可见，右侧详情 + 处置同上下文，替代多弹窗状态漂移 */}
+      {target && (
+        <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-label={t('k_4f55ee1e68')}>
+          <div className="absolute inset-0 bg-black/30"
+            onClick={() => { setExitKind(''); setTarget(null); }} />
+          <div className="relative w-full max-w-xl h-full overflow-y-auto bg-background border-l shadow-xl">
+            <div className="sticky top-0 z-10 bg-background border-b px-4 py-3 flex items-center gap-2">
+              <span className="font-medium">{target.term}</span>
+              <Badge variant="outline" className="text-[10px]">{KIND_LABEL[target.kind]}</Badge>
+              <Badge variant="outline" className="text-[10px]">
+                {target.datasource_name || t('k_d881edb46e')}
+              </Badge>
+              <Badge variant="secondary" className="text-[10px]">
+                {STATUS_LABEL[target.status] || target.status}
+              </Badge>
+              <div className="flex-1" />
+              <Button size="sm" variant="ghost" className="h-7"
+                onClick={() => { setExitKind(''); setTarget(null); }}>{t("k_4d0b4688c7")}</Button>
+            </div>
+            <div className="p-4 space-y-3 text-sm">
               <div className="text-[11px] text-muted-foreground border-l-2 border-border pl-2">
                 {target.classify_reason}
               </div>
+              {(target.suggestion?.suggested_refs || []).length > 0 && (
+                <div className="text-[11px] text-muted-foreground">
+                  {tr('k_cb3c082bb4')}{(target.suggestion?.suggested_refs || []).join('、')}
+                </div>
+              )}
+              {Boolean((target.evidence as any)?.question) && (
+                <div className="text-[11px] text-muted-foreground">
+                  {t('k_2361a0d37b', { p0: String((target.evidence as any).question) })}
+                </div>
+              )}
+              {Array.isArray((target.evidence as any)?.candidates)
+                && ((target.evidence as any).candidates as string[]).length > 0 && (
+                <div className="text-[11px] text-muted-foreground">
+                  {t('k_e556670542', { p0: ((target.evidence as any).candidates as string[]).slice(0, 8).join('、') })}
+                </div>
+              )}
+              {(target.decided_by || target.decision_note || target.converted_ref) && (
+                <div className="rounded border p-2 text-[11px] space-y-0.5">
+                  <div className="font-medium">{tr('k_5d1e9a7c65')}</div>
+                  {(target.decided_by || target.decided_at) && (
+                    <div className="text-muted-foreground">
+                      {target.decided_by || ''}{target.decided_at ? ` · ${target.decided_at}` : ''}
+                    </div>
+                  )}
+                  {target.decision_note && <div>{target.decision_note}</div>}
+                  {target.converted_ref && <div>→ {target.converted_ref}</div>}
+                </div>
+              )}
+              {missingActionPerms.length > 0 && (
+                <div className="text-[11px] text-amber-600">
+                  {tr('k_5d1e9a7c4b', { p0: missingActionPerms.join('、') })}
+                </div>
+              )}
+              {exitKind === '' ? (
+                <div className="space-y-2 rounded border p-2">
+                  <div className="text-[11px] font-medium">{tr('k_5d1e9a7c64')}</div>
+                  <div className="flex flex-wrap gap-2">
+                    {canSaveOntology && (
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]"
+                        onClick={() => target && openExit(target, 'alias')}>{t('k_4d7b245f64')}</Button>
+                    )}
+                    {canManageMetrics && (
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]"
+                        onClick={() => target && openExit(target, 'metric')}>{t('k_7b3561a815')}</Button>
+                    )}
+                    {canManageMetrics && (
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]"
+                        onClick={() => target && openExit(target, 'dimension')}>{t('k_ce353b2d85')}</Button>
+                    )}
+                    {canSaveOntology && (
+                      <Button size="sm" variant="outline" className="h-7 text-[11px]"
+                        onClick={() => target && openExit(target, 'term')}>{t('k_9abf0019e8')}</Button>
+                    )}
+                    {canSaveOntology && (
+                      <Button size="sm" variant="destructive" className="h-7 text-[11px]"
+                        onClick={() => { if (target) { setRejectCandidate(target); setRejectNote(''); } }}>
+                        <X className="h-3 w-3 mr-1" />{t('k_32525478cd')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3 rounded border p-2">
+                  <div className="text-[11px] font-medium">
+                    {exitKind === 'alias' ? tr('k_4d7b245f64') : exitKind === 'metric' ? tr('k_7b3561a815')
+                      : exitKind === 'dimension' ? tr('k_ce353b2d85') : tr('k_9abf0019e8')}
+                  </div>
 
               {exitKind === 'alias' && (
                 <>
@@ -1061,60 +1270,72 @@ export default function EvolutionCenter({ embedded = false, onOpenModel }: {
                     placeholder={t("k_cf358d46dc")} />
                 </div>
               )}
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button variant="outline" onClick={() => setExitKind('')}>{t("k_4d0b4688c7")}</Button>
+                    <Button onClick={submit} disabled={busy}>{busy ? t('k_cf978c0252') : t('k_d575bfd288')}</Button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setExitKind(''); setTarget(null); }}>{t("k_4d0b4688c7")}</Button>
-            <Button onClick={submit} disabled={busy}>{busy ? t('k_cf978c0252') : t('k_d575bfd288')}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </div>
+      )}
 
       {/* ── 知识更新处置（三分支，写入走各域既有通道）────────────── */}
       <KnowledgeUpdateDialog
         open={!!activeProposal}
         onOpenChange={o => { if (!o) setActiveProposal(null); }}
         proposal={activeProposal}
-        canWriteDoc={canWriteDoc}
+        canMarkApplied={canManageKnowledge}
         onScenario={openScenarioFromProposal}
+        onGoKb={p => {
+          // 去目标域页面：业务名一次性携带（sessionStorage，与 AS-BOT 面板同惯例）
+          sessionStorage.setItem('evo_kb_prefill', JSON.stringify({
+            kbName: p.target_hint || '', docTitle: p.title || '', content: p.content || '',
+          }));
+          setActiveProposal(null);
+          navigate('/system/knowledge-base');
+        }}
+        onGoModel={p => {
+          sessionStorage.setItem('evo_object_prefill', JSON.stringify({
+            objectName: p.target_hint || p.title || '', description: p.content || '',
+          }));
+          setActiveProposal(null);
+          if (onOpenModel) onOpenModel(); else navigate('/data/ontology');
+        }}
         onApplied={ref => { if (activeProposal) void markApplied(activeProposal, ref); }}
       />
 
-      <Dialog open={!!rejectTarget} onOpenChange={o => { if (!o) setRejectTarget(null); }}>
+      <Dialog open={!!rejectTarget || !!rejectCandidate}
+        onOpenChange={o => { if (!o) { setRejectTarget(null); setRejectCandidate(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('k_7eb7620344')}</DialogTitle>
-            <DialogDescription>{t('k_f9ab7ea54f')}</DialogDescription>
+            <DialogTitle>{rejectCandidate ? tr('k_5d1e9a7c3f') : t('k_7eb7620344')}</DialogTitle>
+            <DialogDescription>{rejectCandidate ? tr('k_5d1e9a7c40') : t('k_f9ab7ea54f')}</DialogDescription>
           </DialogHeader>
-          {rejectTarget && (
+          {(rejectTarget || rejectCandidate) && (
             <div className="space-y-2 text-sm">
-              <div className="font-medium">{rejectTarget.title}</div>
+              <div className="font-medium">{rejectTarget?.title || rejectCandidate?.term}</div>
               <div>
                 <Label className="mb-1 block">{t('k_b8dabf9d56')}</Label>
                 <Textarea rows={3} value={rejectNote} onChange={e => setRejectNote(e.target.value)} />
+                {!rejectNote.trim() && (
+                  <p className="mt-1 text-[11px] text-destructive">{tr('k_5d1e9a7c41')}</p>
+                )}
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRejectTarget(null)}>{t("k_4d0b4688c7")}</Button>
-            <Button variant="destructive" onClick={rejectProposal} disabled={busy}>
+            <Button variant="outline" onClick={() => { setRejectTarget(null); setRejectCandidate(null); }}>{t("k_4d0b4688c7")}</Button>
+            <Button variant="destructive"
+              onClick={() => (rejectTarget ? rejectProposal() : rejectCandidateConfirm())}
+              disabled={busy || !rejectNote.trim()}>
               {t('k_32525478cd')}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── 直接维护（不经提议也能改）：三个目标域各自的既有通道 ───────── */}
-      <OntologyScalarDialog
-        open={scalarOpen}
-        onOpenChange={setScalarOpen}
-        canPublish={canPublishOntology}
-      />
-      <KbDocUpdateDialog
-        open={kbOpen}
-        onOpenChange={setKbOpen}
-        canWrite={canWriteDoc}
-      />
       <ScenarioEditorDialog
         open={scenarioOpen}
         onOpenChange={o => {

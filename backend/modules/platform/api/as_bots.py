@@ -154,21 +154,24 @@ def list_roles():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 工具目录展示元数据(供 AS-BOT 编辑器渲染): 以 TOOL_SERVER_TOOLS 为权威工具清单,
+# 工具目录展示元数据(供 AS-BOT 编辑器渲染): 以 TOOL_SERVER_TOOLS 为权威工具 清单,
 # 这里只补中文标签; 新增工具未登记标签时回退原始名(仍会展示, 不丢失)。
+# 元组第三位是能力类别(category): data=数据查询工具(答数据问题)/ platform=平台操作工具
+# (建模/看板/资产/系统，操作平台用，不用于答数据问题) / aux=辅助机制。配置页按此分区，
+# 与 LLM 发现清单的 domain 路由同口径（选工具先定域：数据问题不拿平台工具答）。
 _TOOL_GROUP_META = {
-    "catalog": ("元数据检索", "数据目录类工具(物理表/列/数据源, 对 LLM 相对敏感)"),
-    "semantic": ("业务语义", "统一语义层主路(发现对象/指标/知识 + 声明式查询)"),
-    "query": ("SQL 执行", "nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读执行(均经权限/RLS/审计)"),
-    "ontology": ("本体模型", "本体建模与元数据管理工具 + 指标/维度字典写(口径唯一权威; 本体写按权限码裁决、改动落草案需发布)"),
-    "screen": ("可视化大屏", "直建/管理数据大屏 + 字模库(逐图落数据集再挂图, 取数走治理入口)"),
-    "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)"),
-    "assets": ("工作空间资产", "会话产物与磁盘治理(资产清单/归档收藏/配额用量/两步确认清理)"),
-    "lineage": ("血缘链路", "查平台已算好的血缘：上游取自哪张表、下游影响谁、数据新不新"
-                            "（答案来自 DAG 编排/执行期 SQL/元数据关系，禁止模型自编图谱）"),
-    "memory": ("用户记忆", "个人跨会话稳定偏好/口径纠错的读写(仅作用于本人记忆行, 不返回业务数据行; 严禁存会话上下文)"),
-    "render": ("交付渲染机", "交付形态渲染机(模型在单图/整份文档间自选): 正文落受管文档对象、消息内只留引用;"
-                          " 服务端只把能力硬门与 HTML 体检, 不替模型判“该不该用整页文档”)"),
+    "catalog": ("元数据检索", "数据目录类工具(物理表/列/数据源, 对 LLM 相对敏感)", "data"),
+    "semantic": ("业务语义", "统一语义层主路(发现对象/指标/知识 + 声明式查询)", "data"),
+    "query": ("SQL 执行", "nl2sql 受治理旁路: check_sql 预检 + execute_sql 只读 执行(均经权限/RLS/审计)", "data"),
+    "ontology": ("本体模型", "本体建模与元数据管理工具 + 指标/维度字典写(口径唯 一权威; 本体写按权限码裁决、改动落草案需发布)", "platform"),
+    "screen": ("可视化大屏", "直建/管理数据大屏 + 字模库(逐图落数据集再挂图, 取 数走治理入口)", "platform"),
+    "system": ("系统运营", "本系统只读运营/可观测能力(仅管理员)", "platform"),
+    "assets": ("工作空间资产", "会话产物与磁盘治理(资产清单/归档收藏/配额用量/两步确认清理)", "platform"),
+    "lineage": ("血缘链路", "查平台已算好的血缘：上游取自哪张表、下游影响谁、数 据新不新"
+                            "（答案来自 DAG 编排/执行期 SQL/元数据关系，禁止模型自编图谱）", "data"),
+    "memory": ("用户记忆", "个人跨会话稳定偏好/口径纠错的读写(仅作用于本人记忆行, 不返回业务数据行; 严禁存会话上下文)", "aux"),
+    "render": ("交付渲染机", "交付形态渲染机(模型在单图/整份文档间自选): 正文落 受管文档对象、消息内只留引用;"
+                          " 服务端只把能力硬门与 HTML 体检, 不替模型判“该不该用 整页文档”", "aux"),
     # skills 组（技能细则按需加载）不登记标签：它是机制组，不在本目录渲染（见
     # sdk_tools.MECHANISM_GROUPS）；登记了却没消费方就是配了看不见的空承诺。
 }
@@ -199,6 +202,17 @@ _TOOL_LABELS = {
 }
 
 
+# 逐工具类别覆盖（默认跟组）：语义组里的「目录查询」三件（指标定义/术语/标签查询）
+# 2026-11-27 拍板归系统工具（操作指标/术语/标签时查定义、看口径、维护字典用），
+# 取数问答不调用（prompt SEMANTIC_QUERY_RULES「系统工具边界」同口径）。配置页与
+# LLM 域路由看到同一份分类，避免“指标定义”被当成取数链工具。
+_TOOL_CATEGORY_OVERRIDES = {
+    "get_metrics": "platform",
+    "get_glossary": "platform",
+    "query_by_tags": "platform",
+}
+
+
 @router.get("/tools/catalog")
 def tool_catalog(user: dict = Depends(get_current_user)):
     """AS-BOT 编辑器的工具目录 —— **两个正交维度分区返回**。
@@ -222,9 +236,12 @@ def tool_catalog(user: dict = Depends(get_current_user)):
     groups = [
         {"group": g,
          "source": "as_bot_config",
-         "label": _TOOL_GROUP_META.get(g, (g, ""))[0],
-         "desc": _TOOL_GROUP_META.get(g, (g, ""))[1] or "按实际工具名授权，未勾选即禁止",
-         "tools": [{"name": n, "label": _TOOL_LABELS.get(n, n)} for n in names]}
+         "label": _TOOL_GROUP_META.get(g, (g, "", "aux"))[0],
+         "desc": _TOOL_GROUP_META.get(g, (g, "", "aux"))[1] or "按实际工具名授权，未勾 选即禁止",
+         "category": _TOOL_GROUP_META.get(g, (g, "", "aux"))[2],
+         "tools": [{"name": n, "label": _TOOL_LABELS.get(n, n),
+                   "category": _TOOL_CATEGORY_OVERRIDES.get(
+                       n, _TOOL_GROUP_META.get(g, (g, "", "aux"))[2])} for n in names]}
         for g, (_, names) in TOOL_SERVER_TOOLS.items() if g not in MECHANISM_GROUPS
     ]
 

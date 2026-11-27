@@ -200,6 +200,12 @@ def _unique_slug(base: str, exclude_id: int = 0) -> str:
 
 
 # ── 行级可见性：草稿只对可编辑者可见 ──────────────────────────────────────────
+#: 编辑身份权限码集合（fail-closed：只认在册的码，多一个码都不认）。
+#: ``article:manage``（管理档，全量）与 ``article:create``（创作档，只写草稿+提交审核）
+#: 都算"可编辑者"——两档在 API 层与既有编辑者同池（本批不引入所有权模型，
+#: 见计划的诚实记账）；删除/批量/栏目标签由 API 层的 api_pattern 限定裁决。
+EDIT_PERMS = ("article:manage", "article:create")
+#: 兼容别名：旧口径的单一码（存量测试/调用方引用）。
 EDIT_PERM = "article:manage"
 
 
@@ -226,7 +232,8 @@ def viewer_can_edit(user: dict, workspace_id: int = 0) -> bool:
         return False
     try:
         from backend.core.role_service import role_service
-        return EDIT_PERM in set(role_service.get_user_role_perm_codes(uid, workspace_id))
+        return any(p in set(role_service.get_user_role_perm_codes(uid, workspace_id))
+                   for p in EDIT_PERMS)
     except Exception as exc:  # noqa: BLE001 — 拿不到权限就当不可见（fail-closed），不得默认放开
         logger.warning("[content] 读取角色权限码失败, 按不可编辑处理: %s", exc)
         return False

@@ -122,7 +122,9 @@ def create_proposal(*, target_type: str, title: str, content: str = "", rational
     title = _clean(title, MAX_TITLE)
     if not title:
         raise ValueError("标题必填（知识库文档标题 / 场景标题 / 对象业务名）")
-    text = str(content or "")
+    text = str(content or "").strip()
+    if not text:
+        raise ValueError("提议正文必填：请写清建议修改成的业务内容")
     if len(text.encode("utf-8")) > MAX_CONTENT_BYTES:
         raise ValueError(f"提议正文不能超过 {MAX_CONTENT_BYTES // 1024}KB，请拆条提交")
     new_id = _insert(
@@ -177,7 +179,12 @@ def mark_applied(proposal_id: int, applied_ref: str, actor: str) -> dict:
 
     条件 UPDATE 只放行 `pending`：重复提交（已 applied/rejected）不覆盖既有结论，
     回 `changed=False` 让前端如实提示"这条已经不是待处理状态"。
+    ``applied_ref`` 服务层再校验一次（与决策服务同口径）：空落点就是假闭环，
+    历史空落点记录不伪造补齐。
     """
+    if not _clean(applied_ref, MAX_HINT):
+        raise ValueError("applied_ref 必填：须先在目标域（知识库文档/分析场景/本体对象）"
+                         "真正落库，再回写落点业务名；没有落库不得标记已处理")
     affected = _w(
         "UPDATE adh_knowledge_update_proposals "
         "SET status='applied', applied_ref=%s, decided_by=%s, decided_at=NOW() "
@@ -194,7 +201,11 @@ def mark_applied(proposal_id: int, applied_ref: str, actor: str) -> dict:
 
 
 def reject_proposal(proposal_id: int, actor: str, note: str = "") -> dict:
-    """人判定不收：留痕（谁、为什么），不删行 —— 反复被驳回的信号本身是数据。"""
+    """人判定不收：留痕（谁、为什么），不删行 —— 反复被驳回的信号本身是数据。
+
+    驳回必须说明理由（服务层再校验，与决策服务同口径）：无理由驳回无法审计。"""
+    if not _clean(note, MAX_NOTE):
+        raise ValueError("驳回必须说明理由（note）：被驳的信号本身是数据，无理由驳回无法审计")
     affected = _w(
         "UPDATE adh_knowledge_update_proposals "
         "SET status='rejected', decided_by=%s, decided_at=NOW(), decided_note=%s "

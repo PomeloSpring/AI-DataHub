@@ -13,7 +13,8 @@ User/Company 写进草案 → 51/50 个属性的 `column` 全部丢失、13/6 �
    `_declared_link_removals`（否则发布按意外丢失阻断）；
 3. `save_draft_only(strict=True)` 遇定义丢失**直接拒写**（不再“存好了却发不出去”），
    显式 `column: ""` 只作提醒不阻断；
-4. 工具层：`update_ontology_object` 走 patch 且新建对象要 `ontology:create`；
+4. 工具层：`update_ontology_object` 只改已有对象并要 `ontology:save`；
+   新建对象只走 `add_ontology_objects` 且单独要 `ontology:create`；
    `get_ontology_model` 下发关系摘要但绝不下发 join/物理列；
    `add_ontology_objects` 拒无主表对象、按列元数据自动补列。
 
@@ -389,13 +390,36 @@ class TestToolLayer:
     def test_create_object_requires_create_perm(self, monkeypatch):
         _state(monkeypatch)
         seen = _tool_env(monkeypatch, perms={"ontology:save"})
+        out = asyncio.run(ot.add_ontology_objects({
+            "model_id": MID,
+            "objects": [{"key": "ticket", "primary_table": "t_ticket",
+                         "properties": [{"name": "工单号"}]}]}))
+        assert out.get("isError") is True
+        assert "ontology:create" in _payload(out)["error"]
+        assert seen == ["ontology:create"]
+
+    def test_update_cannot_create_object_without_save_perm(self, monkeypatch):
+        _state(monkeypatch)
+        seen = _tool_env(monkeypatch, perms=set())
         out = asyncio.run(ot.update_ontology_object({
             "model_id": MID,
             "object": {"key": "ticket", "primary_table": "t_ticket",
                        "properties": [{"name": "工单号"}]}}))
         assert out.get("isError") is True
-        assert "ontology:create" in _payload(out)["error"]
-        assert seen == ["ontology:create"]
+        assert "ontology:save" in _payload(out)["error"]
+        assert seen == ["ontology:save"]
+
+    def test_update_missing_object_directs_to_create_action(self, monkeypatch):
+        _state(monkeypatch)
+        seen = _tool_env(monkeypatch)
+        out = asyncio.run(ot.update_ontology_object({
+            "model_id": MID,
+            "object": {"key": "ticket", "primary_table": "t_ticket",
+                       "properties": [{"name": "工单号"}]}}))
+        assert out.get("isError") is True
+        assert "不存在" in _payload(out)["error"]
+        assert "add_ontology_objects" in _payload(out)["error"]
+        assert seen == ["ontology:save"]
 
     def test_get_model_exposes_links_but_never_joins_or_columns(self, monkeypatch):
         _state(monkeypatch)

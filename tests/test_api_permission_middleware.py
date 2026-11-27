@@ -144,3 +144,89 @@ def test_registry_grants_graph_sync_to_modeling_roles():
     granted = execute_query("SELECT 1 FROM adh_role_perms p JOIN adh_roles r ON r.id=p.role_id "
                             "WHERE p.perm_code='graph:manage' AND r.name='analyst'", fetchone=True)
     assert granted, "analyst 持有 ontology:activate（激活即重建图），应同时被授予手动图谱生成"
+
+
+# ── 方法限定 api_pattern（`METHOD path` 条目）───────────────────────
+#
+# 背景：一行内 api_pattern × api_method 是笛卡尔积，无法表达「允许 POST 新建、
+# 不允许 POST 批量删除」（同为 POST、同在 /articles* 前缀下）。解法是 api_pattern
+# 里形如 `METHOD path` 的条目（含空格）按该 method 精确登记、不参与求积；
+# 纯路径条目（不含空格）行为必须与旧版完全一致（向后兼容）。
+
+def _stub_role_db(monkeypatch, *, codes, registry_rows):
+    """把 _load_role_apis 的 DB 读换成假数据，走真实解析分支（不连库）。"""
+    from backend.common import db
+
+    def fake(sql, params=None, **kw):
+        if "FROM adh_roles" in sql:
+            return [{"id": 1}]
+        if "FROM adh_role_perms" in sql:
+            return [{"perm_code": c} for c in codes]
+        if "FROM adh_perm_registry" in sql:
+            return registry_rows
+        return []
+
+    monkeypatch.setattr(db, "execute_query", fake)
+    monkeypatch.setattr(ap, "_cache", {})
+
+
+def test_method_scoped_entry_hit_and_miss(monkeypatch):
+    """限定条目只放行它声明的方法×路径，不与本行 api_method 求积。"""
+    _stub_role_db(
+        monkeypatch,
+        codes=["article:create"],
+        registry_rows=[{
+            "perm_code": "article:create",
+            # 与真实 article:create 行同构：全限定条目（含空格），
+            # 纯路径零回归由下面两个用例锁（混排 / 纯路径行）
+            "api_pattern": ("POST /api/content/articles,"
+                            "GET /api/content/articles*,PUT /api/content/articles*"),
+            "api_method": "GET,POST,PUT",
+        }])
+    # 限定命中：精确新建
+    assert ap.check_api_permission("author", "POST", "/api/content/articles")
+    # 限定未命中：同为 POST 但路径不同 —— batch-delete 不在创建档里（越权拦截）
+    assert not ap.check_api_permission("author", "POST", "/api/content/articles/batch-delete")
+    # 纯路径条目行为不变：GET/PUT 靠各自限定条目放行（方法均在 api_method 里）
+    assert ap.check_api_permission("author", "GET", "/api/content/articles/a1")
+    assert ap.check_api_permission("author", "PUT", "/api/content/articles/a1")
+    # DELETE 不在 api_method 里 → 拒（单条删除不属创作档）
+    assert not ap.check_api_permission("author", "DELETE", "/api/content/articles/a1")
+    # 限定条目不得被同前缀“借方法”：POST 打到 GET 限定的路径仍拒
+    assert not ap.check_api_permission("author", "POST", "/api/content/articles/a1/files")
+
+
+def test_method_scoped_and_cartesian_rows_mixed(monkeypatch):
+    """限定条目与笛卡尔积行混排：两种解析互不串味（各自按声明生效）。"""
+    _stub_role_db(
+        monkeypatch,
+        codes=["mix:code"],
+        registry_rows=[{
+            "perm_code": "mix:code",
+            "api_pattern": "GET /api/only-get,/api/both*",
+            "api_method": "GET,POST",
+        }])
+    # 限定条目：只有 GET 能过，即使本行 api_method 含 POST
+    assert ap.check_api_permission("mix", "GET", "/api/only-get")
+    assert not ap.check_api_permission("mix", "POST", "/api/only-get")
+    assert not ap.check_api_permission("mix", "POST", "/api/only-get/child")
+    # 纯路径条目：笛卡尔积照旧（GET、POST 都过）
+    assert ap.check_api_permission("mix", "GET", "/api/both/x")
+    assert ap.check_api_permission("mix", "POST", "/api/both/x")
+    assert not ap.check_api_permission("mix", "DELETE", "/api/both/x")
+
+
+def test_plain_path_rows_zero_regression(monkeypatch):
+    """纯路径行（无空格）行为与旧版完全一致：尾斜杠、通配符、方法集合都不变。"""
+    _stub_role_db(
+        monkeypatch,
+        codes=["legacy:code"],
+        registry_rows=[{
+            "perm_code": "legacy:code",
+            "api_pattern": "/api/quality*,/api/exact",
+            "api_method": "*",
+        }])
+    assert ap.check_api_permission("legacy", "GET", "/api/quality/dashboard")
+    assert ap.check_api_permission("legacy", "GET", "/api/quality/dashboard/")  # 尾斜杠同判
+    assert ap.check_api_permission("legacy", "DELETE", "/api/exact")            # method=* 全方法
+    assert not ap.check_api_permission("legacy", "GET", "/api/other")

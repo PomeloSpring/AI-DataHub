@@ -388,6 +388,7 @@ def create_app() -> FastAPI:
     from backend.modules.platform.api.sandbox import router as sandbox_router
     from backend.modules.platform.api.content import router as content_router
     from backend.modules.platform.api.kb_docs import router as kb_docs_router
+    from backend.modules.platform.api.capability_flows import router as capability_flows_router
 
     mount("platform", mcp_servers_router, "/api/admin/mcp-servers", ["MCP Servers"])
     mount("platform", embed_router, "/api/embed", ["Embed"])
@@ -403,6 +404,7 @@ def create_app() -> FastAPI:
     mount("platform", prompts_router, "/api/admin/prompts", ["Prompts"])
     mount("platform", as_bots_router, "/api/admin/as-bots", ["AS-BOTs"])
     mount("platform", sandbox_router, "/api/sandbox", ["Sandbox"])
+    mount("platform", capability_flows_router, "/api/capability-flows", ["Capability Flows"])
     # 内容中心（一级模块 /content 的后端）: 只做 创作→审核→发布（写草稿按 article:manage,
     # 审核与发布各自独立前缀 /api/content/reviews*、/api/content/publish* 以便
     # api_pattern 单独就能裁决）。资讯门户是独立模块且尚未开发, 只消费这里发布的结果。

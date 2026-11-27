@@ -26,9 +26,12 @@ import { useTranslation } from 'react-i18next';
  *
  * `kbdoc:*` 属“知识库文档”（看/改云端 notebook 里的语料），与 `article:*`（门户内容
  * 创作→审核→发布）是两套权限：一个改的是 AS-BOT 的知识，一个改的是对外发布物。
+ *
+ * 档位层级：只读 ⊂ 创作（`article:create`，只写草稿+提交审核）⊂ 管理（`article:manage`）；
+ * 每档自足（后端 api_pattern 已含只读 GET），所以这里不做强制级联，只按码给入口。
  */
 export type ContentPerm =
-  | 'article:read' | 'article:manage' | 'article:review' | 'article:publish'
+  | 'article:read' | 'article:create' | 'article:manage' | 'article:review' | 'article:publish'
   | 'kbdoc:read' | 'kbdoc:write';
 
 /**

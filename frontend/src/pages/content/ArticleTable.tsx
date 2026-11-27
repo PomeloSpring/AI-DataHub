@@ -116,13 +116,14 @@ function batchApplies(a: ContentArticle, kind: BatchKind): boolean {
 const BATCH_META: Record<BatchKind, {
   label: string;
   verb: string;
-  perm: 'edit' | 'publish';
+  /** write=创作档及以上；manage=仅管理档；publish=发布档（与后端 api_pattern 逐条对应） */
+  perm: 'write' | 'manage' | 'publish';
   destructive?: boolean;
   /** 确认框里的口径说明，与单条弹框同一段话，不另写一套结论 */
   hint: string;
 }> = {
   submit: {
-    label: t('k_298be1b390'), verb: t('k_646db08406'), perm: 'edit',
+    label: t('k_298be1b390'), verb: t('k_646db08406'), perm: 'write',
     hint: t('k_d511bc75e2'),
   },
   publish: {
@@ -138,7 +139,7 @@ const BATCH_META: Record<BatchKind, {
     hint: t('k_d88cc3059e'),
   },
   delete: {
-    label: t('k_7fb62b3011'), verb: t('k_3755f56f2f'), perm: 'edit', destructive: true,
+    label: t('k_7fb62b3011'), verb: t('k_3755f56f2f'), perm: 'manage', destructive: true,
     hint: t('k_b88eb88ef0'),
   },
 };
@@ -160,7 +161,10 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
   const { user } = useAuthStore();
   const { categories, tags, reload: reloadTaxonomy } = useTaxonomy();
 
-  const canEdit = has('article:manage');
+  const canManage = has('article:manage');
+  // 创作档（article:create，只写草稿+提交审核）与管理档都能写：新建/编辑/提交/附件。
+  // 删（单条与批量）、栏目标签、提升只给管理档 —— 后端 api_pattern 逐条限定，这里只藏入口
+  const canWrite = has('article:create') || canManage;
   const canPublish = has('article:publish');
   // 审核与发布是两个码：原「审核发布」页已并入本页，入口按码给
   const canReview = has('article:review');
@@ -273,7 +277,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         </div>
         {/* 新建入口只给「我的草稿」：写作是作者在自己名下开工，内容管理是编排面
             （看待审/已发布/已下架 + 发布与同步），在那里放个“新建”会把两个职责混成一个 */}
-        {canEdit && scope === 'mine' && (
+        {canWrite && scope === 'mine' && (
           <Button onClick={() => { setEditingSlug(undefined); setEditorOpen(true); }}>
             <Plus className="mr-1.5 h-4 w-4" />{t('k_f048c7b9dc')}
           </Button>
@@ -337,8 +341,8 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
             {t('k_47d199fa58')}
           </Button>
         )}
-        {/* 批量入口按权限给：只读角色本来也进不了这一页（菜单按 article:manage 反查） */}
-        {(canEdit || canPublish) && (
+        {/* 批量入口按权限给：只读角色本来也进不了这一页（菜单按内容码反查） */}
+        {(canWrite || canPublish) && (
           <Button variant={batchMode ? 'default' : 'outline'} aria-pressed={batchMode}
             title={batchMode ? t('k_e9abb00400') : t('k_26752d7002')}
             onClick={() => (batchMode ? exitBatch() : setBatchMode(true))}>
@@ -355,7 +359,9 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
         <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/30 px-3 py-2">
           <span className="text-xs font-medium">{t('k_cd549520b9', { p0: picked.length })}</span>
           {BATCH_ORDER
-            .filter(k => (BATCH_META[k].perm === 'edit' ? canEdit : canPublish))
+            .filter(k => (BATCH_META[k].perm === 'write' ? canWrite
+              : BATCH_META[k].perm === 'manage' ? canManage
+              : canPublish))
             .map(k => {
               const n = picked.filter(a => batchApplies(a, k)).length;
               return (
@@ -382,7 +388,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
       {!loading && !error && items.length === 0 && (
         <EmptyState
           title={scope === 'mine' ? t('k_624d225116') : t('k_a994e5f6fb')}
-          hint={canEdit
+          hint={canWrite
             ? (scope === 'mine'
               ? t('k_70939706b4')
               : t('k_fa9de3528f'))
@@ -500,7 +506,9 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                       <Button size="sm" variant="ghost" aria-label={t('k_8bd30c24c0', { p0: a.title })} onClick={() => navigate(`/content/preview/${a.slug}`)}>
                         <Eye className="h-3.5 w-3.5" />
                       </Button>
-                      {canEdit && (
+                      {/* 写（编辑/提交）与管（删除）分档：创作档只见写入口，删除只给管理档
+                          —— 与后端 api_pattern 的限定条目一一对应，不是前端另立口径 */}
+                      {canWrite && (
                         <>
                           <Button size="sm" variant="ghost" aria-label={t('k_b6f728c315', { p0: a.title })}
                             onClick={() => { setEditingSlug(a.slug); setEditorOpen(true); }}>
@@ -516,13 +524,13 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
                               <Send className="h-3.5 w-3.5" />
                             </Button>
                           )}
-                          {!a.is_live && (
-                            <Button size="sm" variant="ghost" className="text-destructive" aria-label={t('k_4b741e296c', { p0: a.title })}
-                              onClick={() => setDeleteTarget(a)}>
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
                         </>
+                      )}
+                      {canManage && !a.is_live && (
+                        <Button size="sm" variant="ghost" className="text-destructive" aria-label={t('k_4b741e296c', { p0: a.title })}
+                          onClick={() => setDeleteTarget(a)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       )}
                       {canSyncKb && (
                         <Button size="sm" variant="ghost" aria-label={t('k_8de0f47991', { p0: a.title })}

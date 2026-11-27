@@ -22,7 +22,7 @@ import {
 import { toast } from '@/lib/toast';
 import {
   Plus, Edit, Trash2, Shield, Users, UserPlus, UserMinus,
-  Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp, Layers,
+  Database, Lock, Key, Bot, LayoutDashboard, ListChecks, ChevronDown, ChevronUp, Layers, Copy,
 } from 'lucide-react';
 import client from '@/api/client';
 import { listRLSPolicies, type RLSPolicy } from '@/api/rls';
@@ -125,6 +125,13 @@ export default function RoleManagement() {
   const [formDesc, setFormDesc] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+
+  // 一键复制角色（含 AS-BOT 配置，绑定用户不复制）：新角色需重命名
+  const [copySource, setCopySource] = useState<Role | null>(null);
+  const [copyName, setCopyName] = useState('');
+  const [copyDisplayName, setCopyDisplayName] = useState('');
+  const [copyDesc, setCopyDesc] = useState('');
+  const [copying, setCopying] = useState(false);
 
   // Permission config state
   const [permTarget, setPermTarget] = useState<Role | null>(null);
@@ -244,6 +251,36 @@ export default function RoleManagement() {
       await client.delete(`/roles/${deleteTarget.id}`);
       toast.success(t('k_5cc232620c')); setDeleteTarget(null); loadRoles();
     } catch (e: any) { toast.error(e.response?.data?.detail || t('k_acf0664a54')); }
+  };
+
+  // ── Duplicate Role（一键复制） ───────────────────────────────
+
+  /** 打开复制弹窗：新角色标识/显示名预填为“原名+副本后缀”，描述沿用来源角色，可改。 */
+  const openCopy = (role: Role) => {
+    setCopySource(role);
+    setCopyName(`${role.name}_copy`);
+    setCopyDisplayName(`${role.display_name}${t('k_0428b36ab1')}`);
+    setCopyDesc(role.description || '');
+  };
+
+  const handleCopy = async () => {
+    if (!copySource) return;
+    if (!copyName || !copyDisplayName) { toast.error(t('k_8f7d256f87')); return; }
+    setCopying(true);
+    try {
+      const { data } = await client.post(`/roles/${copySource.id}/duplicate`, {
+        name: copyName, display_name: copyDisplayName, description: copyDesc,
+      });
+      toast.success(t('k_cd539c7f34', { p0: copyDisplayName || copyName }));
+      // 提示词里的旧角色名被替换了多少处，显式告知（不静默改写）
+      if (data?.prompt_renamed > 0) toast.info(t('k_19826885e0', { p0: data.prompt_renamed }));
+      setCopySource(null);
+      loadRoles();
+    } catch (e: any) {
+      toast.error(e.response?.data?.detail || t('k_d98b876671'));
+    } finally {
+      setCopying(false);
+    }
   };
 
   // ── Permission Config ────────────────────────────────────────────
@@ -422,10 +459,31 @@ export default function RoleManagement() {
 
   // ── Menu & Function Permissions (权限码) ────────────────────
 
+  /**
+   * 内容中心档位级联保险：勾高档位时自动补勾低档位（只读 ⊂ 创作 ⊂ 管理）。
+   *
+   * 每档在服务端各自自足（api_pattern 已含只读 GET），级联**不是**生效前提，
+   * 只是让勾选态与层级一致 —— 防“勾了管理却漏勾创作/只读，保存后勾选态对不上”。
+   * 只在勾上时补：取消勾选不回滚依赖（保存的是整份清单，用户可按需单独收回）；
+   * 真正的裁决仍在服务端权限码，前端不另立口径。
+   */
+  const PERM_TIER_DEPS: Record<string, readonly string[]> = {
+    'article:manage': ['article:create', 'article:read'],
+    'article:create': ['article:read'],
+  };
+  const applyTierCascade = (next: Set<string>, codes: string[]) => {
+    codes.forEach(c => (PERM_TIER_DEPS[c] ?? []).forEach(d => next.add(d)));
+  };
+
   const togglePerm = (code: string) => {
     setRolePerms(prev => {
       const next = new Set(prev);
-      if (next.has(code)) next.delete(code); else next.add(code);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+        applyTierCascade(next, [code]);
+      }
       return next;
     });
   };
@@ -435,6 +493,7 @@ export default function RoleManagement() {
       const next = new Set(prev);
       const allOn = codes.length > 0 && codes.every(c => next.has(c));
       codes.forEach(c => { if (allOn) next.delete(c); else next.add(c); });
+      if (!allOn) applyTierCascade(next, codes);
       return next;
     });
   };
@@ -583,6 +642,10 @@ export default function RoleManagement() {
                       <Button variant="outline" size="sm" onClick={() => setDeleteTarget(role)}><Trash2 className="h-4 w-4" /></Button>
                     </>
                   )}
+                  {/* 一键复制（含 AS-BOT 配置，不带绑定用户）：系统角色也可作为模板快速造新角色 */}
+                  <Button variant="outline" size="sm" onClick={() => openCopy(role)} title={t('k_daf2a08370')}>
+                    <Copy className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             </div>
@@ -841,6 +904,26 @@ export default function RoleManagement() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Duplicate Role Dialog ──────────────────────────── */}
+      <Dialog open={!!copySource} onOpenChange={open => { if (!open) setCopySource(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('k_5b9e49beec')}</DialogTitle>
+            <DialogDescription>{t('k_11b5915433')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">{t('k_dcb2fcb7cc', { p0: copySource?.display_name })}</p>
+            <div><Label>{t('k_939050e252')}</Label><Input value={copyName} onChange={e => setCopyName(e.target.value)} placeholder={t('k_cb86f05180')} /></div>
+            <div><Label>{t('k_f75459f6f0')}</Label><Input value={copyDisplayName} onChange={e => setCopyDisplayName(e.target.value)} placeholder={t('k_47ebb1f096')} /></div>
+            <div><Label>{t('k_412f54dc38')}</Label><Textarea value={copyDesc} onChange={e => setCopyDesc(e.target.value)} rows={2} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCopySource(null)}>{t('k_4d0b4688c7')}</Button>
+            <Button onClick={handleCopy} disabled={copying}>{copying ? t('k_169412f7b5') : t('k_d987a67e3b')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── User Assignment Dialog ──────────────────────────────── */}
       <Dialog open={!!userTarget} onOpenChange={() => setUserTarget(null)}>
         <DialogContent className="max-w-lg">
@@ -964,12 +1047,9 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
           {!capped && perm.ai_note}
         </p>
       )}
-      {/* 无消费方时显式提醒（no-silent-degradation §1）：不得让人以为选了级别 AI 就能用。
+      {/* 无消费方信号收敛到徽标「未接入」+ 悬浮说明（不再在行内铺长文案）：
+          不让人以为选了级别 AI 就能用（no-silent-degradation §1）；
           角色级开关是左侧勾选框（收回权限码 = 该码下所有 AI 动作带原因不可用）。 */}
-      {channel === 'none' && (
-        <p className="text-[10px] pl-6 text-amber-600">
-          {t('k_ee3147d034', { p0: tr('k_f1eafb83c8', { p0: AI_LEVEL_LABEL[effective] }) })}</p>
-      )}
       {expanded && patterns.length > 0 && (
         <div className="mt-1 ml-6 space-y-0.5">
           {patterns.map((pat, i) => (

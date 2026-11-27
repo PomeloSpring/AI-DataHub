@@ -104,9 +104,20 @@ def dict_filters(
 
 
 @router.get("/asset-pool")
-def get_asset_pool():
-    """未归属资产池聚合(指标/维度/术语/回流候选 + 计数)。必须注册在 /{metric_id} 之前。"""
-    return metrics_service.asset_pool()
+def get_asset_pool(
+    queue: Optional[str] = Query(None, description="metric|dimension|term；空=全部队列"),
+    q: str = Query("", description="业务名/英文名/分类/说明搜索"),
+    page: int = Query(1, ge=1, description="页码（传 page_size 时生效）"),
+    page_size: Optional[int] = Query(
+        None, ge=1, le=metrics_service._ASSET_POOL_MAX_PAGE_SIZE,
+        description="传则返回服务端真分页信封；不传则返回全量聚合（选择/计数面）"),
+):
+    """未归属/孤儿字典资产池；候选由进化中心独立查询，本接口不返回候选。"""
+    try:
+        return metrics_service.asset_pool(
+            queue=queue or "", q=q, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/dimensions")

@@ -761,17 +761,18 @@ def resolve_property_column(*, bound_object_key: str, datasource_name: str,
             if not table:
                 raise ValueError(f"对象 {bound_object_key!r} 没有主表绑定，无法为其建维度")
             cur.execute("SELECT column_name, business_desc FROM adh_column_metadata "
-                        "WHERE table_name = %s ORDER BY column_name", (table,))
+                        "WHERE table_name = %s AND is_active = 1 "
+                        "AND (datasource_id = %s OR datasource_id = 0) ORDER BY column_name",
+                        (table, ds_id))
             rows = [dict(r) for r in (cur.fetchall() or [])]
     finally:
         conn.close()
     want = _clean(property_name)
     by_biz = {str(r.get("business_desc") or "").strip(): str(r.get("column_name") or "")
-              for r in rows}
-    by_col = {str(r.get("column_name") or ""): str(r.get("column_name") or "") for r in rows}
-    column = by_biz.get(want) or by_col.get(want)
+              for r in rows if str(r.get("business_desc") or "").strip()}
+    column = by_biz.get(want)
     if not column:
-        options = sorted({k for k in by_biz if k})[:20]
+        options = sorted(by_biz)[:20]
         raise ValueError(
             f"业务属性 {want!r} 在对象 {bound_object_key!r} 主表上找不到对应列；"
             f"请从可用业务属性中选择（示例: {options}），不得手填物理列名")
@@ -829,16 +830,17 @@ def create_dimension_draft(*, term: str, bound_object_key: str, datasource_name:
             "datasource_id": col["datasource_id"], "category": _clean(category, 32) or "属性",
             "description": description or "自进化候选归纳生成的维度草稿",
             "aliases": [term] if _clean(term) != biz else [],
-            "workspace_id": 0}
+            "is_active": 0, "workspace_id": 0}
     res = create_dimension(data)
     if candidate_id:
         _w("UPDATE adh_evolution_candidates SET status='converted', "
            "converted_kind='dimension', converted_ref=%s, decided_by=%s, decided_at=NOW() "
            "WHERE id=%s", (biz, _clean(decided_by, 64), int(candidate_id)))
     return {"success": True, "id": res.get("id"), "name": biz,
-            "target_column": col["target_column"],
-            "message": "维度草稿已创建并已绑定对象属性列（字典行即刻生效，"
-                       "如口径不符请在维度中心修正或退役）"}
+            "is_active": 0,
+            "needs_completion": ["业务属性复核"],
+            "message": "维度草稿已创建（未启用）并绑定对象业务属性；"
+                       "请在维度中心复核口径后启用，未启用前语义层不会广告该维度。"}
 
 
 def to_business_term(*, term: str, datasource_name: str, decided_by: str = "",
@@ -1109,16 +1111,19 @@ def property_options(*, bound_object_key: str, datasource_name: str) -> list[dic
         with conn.cursor() as cur:
             table = _object_primary_table(cur, _clean(bound_object_key, 128), ds_id)
             cur.execute("SELECT column_name, business_desc FROM adh_column_metadata "
-                        "WHERE table_name = %s ORDER BY column_name", (table,))
+                        "WHERE table_name = %s AND is_active = 1 "
+                        "AND (datasource_id = %s OR datasource_id = 0) ORDER BY column_name",
+                        (table, ds_id))
             rows = [dict(r) for r in (cur.fetchall() or [])]
     finally:
         conn.close()
     out = []
     for r in rows:
-        label = _clean(r.get("business_desc") or r.get("column_name"))
+        label = _clean(r.get("business_desc"))
         if label:
-            out.append({"property": label, "column_name": r.get("column_name")})
-    return out
+            out.append({"property": label})
+    return sorted({item["property"]: item for item in out}.values(),
+                  key=lambda item: item["property"])
 
 
 def overview() -> dict:

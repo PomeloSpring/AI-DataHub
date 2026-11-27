@@ -40,6 +40,12 @@ class UpdateRoleRequest(BaseModel):
     is_active: Optional[int] = None
 
 
+class DuplicateRoleRequest(BaseModel):
+    name: str
+    display_name: Optional[str] = ""
+    description: Optional[str] = ""
+
+
 class AssignUserRoleRequest(BaseModel):
     user_id: int
     workspace_id: int = 0
@@ -306,6 +312,26 @@ def create_role(req: CreateRoleRequest, admin: dict = Depends(require_admin)):
     except Exception:  # noqa: BLE001 — duplicate name / constraint violation
         raise HTTPException(status_code=400, detail="角色名已存在或创建失败")
     return {"success": True, "id": role_id}
+
+
+@router.post("/{role_id}/duplicate")
+def duplicate_role(role_id: int, req: DuplicateRoleRequest, admin: dict = Depends(require_admin)):
+    """一键复制角色(仅 admin)：连同 AS-BOT 配置一起复制，绑定用户不复制。
+
+    权限配置(权限码/数据源/数据集/看板/数据安全策略/数据范围)整份复制到新角色；
+    新角色需重命名(name 全局唯一，同为新 AS-BOT 的 as_bot_key)，AS-BOT 提示词/简介中
+    提及原角色名处同步替换(替换次数在 prompt_renamed 里显式回报)。
+    复制是单事务：失败整体回滚，不留半截角色。
+    """
+    try:
+        result = role_service.duplicate_role(
+            role_id, (req.name or "").strip(), req.display_name or "", req.description or ""
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 — 复制失败要可诊断(如重名竞态撞唯一键)，不吞错冒充成功
+        raise HTTPException(status_code=500, detail=f"复制角色失败：{e}")
+    return {"success": True, **result}
 
 
 @router.put("/{role_id}")

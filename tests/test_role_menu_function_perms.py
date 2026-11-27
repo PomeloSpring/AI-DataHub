@@ -235,6 +235,55 @@ def test_admin_unrestricted_sees_all_menus(store):
                    "unrestricted": True}
 
 
+# ── P4.5 内容中心权限分档的菜单反查（只读 / 创作 / 管理）──────────────
+#
+# 形态来自真实登记：article:read.menu_key='content:manage'（只读档移入内容中心块）、
+# article:create.menu_key='content:drafts'（创作档入口）、content:manage 主码=article:manage。
+# 这里不改全局 REGISTRY/MENUS（会波及上面按形状断言的用例），测试内局部扩充。
+
+def test_content_tier_menu_lookup_and_no_overreach(store, monkeypatch):
+    """持码 → 菜单：create→content:drafts；read→content:manage+home:feed；互不越界。"""
+    import sys
+    mod = sys.modules[__name__]
+    extra_perms = [
+        {"perm_code": "article:create", "label": "编写草稿并提交审核", "module": "content",
+         "module_label": "内容中心", "description": "", "menu_key": "content:drafts", "sort": 811,
+         "api_pattern": "POST /api/content/articles", "api_method": "GET,POST,PUT"},
+        {"perm_code": "article:manage", "label": "编辑内容条目", "module": "content",
+         "module_label": "内容中心", "description": "", "menu_key": "content:manage", "sort": 811,
+         "api_pattern": "/api/content/articles*", "api_method": "GET,POST,PUT,PATCH,DELETE"},
+        {"perm_code": "article:read", "label": "阅读已发布内容", "module": "content",
+         "module_label": "内容中心", "description": "", "menu_key": "content:manage", "sort": 810,
+         "api_pattern": "/api/content/articles*", "api_method": "GET"},
+    ]
+    extra_menus = [
+        {"menu_key": "content:drafts", "label": "我的草稿", "section": "我的工作台",
+         "module": "content", "sort": 10, "perm_code": "article:create"},
+        {"menu_key": "content:manage", "label": "内容管理", "section": "内容生产",
+         "module": "content", "sort": 20, "perm_code": "article:manage"},
+        {"menu_key": "home:feed", "label": "首页资讯区", "section": "首页",
+         "module": "home", "sort": 10, "perm_code": "article:read"},
+    ]
+    monkeypatch.setattr(mod, "REGISTRY", REGISTRY + extra_perms)
+    monkeypatch.setattr(mod, "MENUS", MENUS + extra_menus)
+
+    # 创作档：只拿到「我的草稿」（主码+归属双来源都是它），不得越界到内容管理/首页资讯区
+    store.perms[7] = {"article:create"}
+    res = roles_api.get_current_user_permissions(user=VIEWER)
+    assert set(res["menus"]) == {"content:drafts"}, res["menus"]
+
+    # 只读档：归属反查拿到 content:manage（只读浏览入口）+ 主码反查拿到 home:feed；
+    # 不得拿到 content:drafts（创作入口）
+    store.perms[7] = {"article:read"}
+    res = roles_api.get_current_user_permissions(user=VIEWER)
+    assert set(res["menus"]) == {"content:manage", "home:feed"}, res["menus"]
+
+    # 管理档：主码在 content:manage；补授 create 后经主码拿到 content:drafts（迁移的补授口径）
+    store.perms[7] = {"article:manage", "article:create"}
+    res = roles_api.get_current_user_permissions(user=VIEWER)
+    assert {"content:manage", "content:drafts"} <= set(res["menus"]), res["menus"]
+
+
 # ── P5 PUT 后中间件缓存失效 ───────────────────────────────────────────
 
 

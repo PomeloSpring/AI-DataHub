@@ -5,7 +5,7 @@
 - scope=unbound → 只查空绑定; 缺省 → 旧全局行为不变;
 - 模型无对象 → 短路空集(不得回退成"不过滤");
 - 指标字典不按 workspace 分域(列表不过滤/查重全局/写入恒 ws=0);
-- asset_pool → unbound/orphan 分类 + suggestions 未迁移容错。
+- asset_pool → unbound/orphan 分类、服务端真分页，候选不再进入字典资产池。
 """
 import sys
 import os
@@ -17,15 +17,19 @@ from backend.modules.catalog.services import metrics_service as ms
 
 
 class _Cur:
-    def __init__(self, script):
+    def __init__(self, script, grouped_counts=None):
         self.script = script   # list[(sql_sub, rows)] 按调用顺序消费
+        self.grouped_counts = grouped_counts or []
         self.rows = []
         self.calls = []
 
     def execute(self, sql, params=None):
         self.calls.append((sql, list(params or [])))
-        if "COUNT(*)" in sql:          # 分页总数查询统一回 0, 不影响 SQL 断言
-            self.rows = [{"total": 0}]
+        if "COUNT(*)" in sql:
+            if "GROUP BY queue" in sql:
+                self.rows = self.grouped_counts
+            else:
+                self.rows = [{"total": 0}]
             return
         for sub, rows in self.script:
             if sub in sql and not getattr(self, "_used", {}).get(sub, False):
@@ -49,8 +53,8 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, script):
-        self.cur = _Cur(script)
+    def __init__(self, script, grouped_counts=None):
+        self.cur = _Cur(script, grouped_counts)
 
     def cursor(self):
         return self.cur
@@ -229,40 +233,76 @@ class TestBoundObjectFilter:
 
 
 class TestAssetPool:
-    def test_pool_classifies_and_counts(self, monkeypatch):
-        script = [
-            ("FROM adh_metrics", [{"name": "退号数", "bound_object_key": "", "pool_reason": "unbound"}]),
-            ("FROM adh_dimensions", [{"name": "旧维度", "bound_object_key": "ward", "pool_reason": "orphan"}]),
-            ("FROM adh_business_terms", [{"term_cn": "活跃用户", "target_table": ""}]),
-        ]  # 候选表未迁移 → 查询异常路径
-        conn = _Conn(script)
+    def test_pool_classifies_and_counts_without_candidate_payload(self, monkeypatch):
+        rows = [
+            {"queue": "metric", "id": 1, "title": "退号数", "name_en": "refund",
+             "aliases": "[]", "bound_object_key": "", "pool_reason": "unbound",
+             "unit": "", "agg_type": "COUNT", "category": "业务", "description": "",
+             "datasource_id": 0, "term_type": ""},
+            {"queue": "dimension", "id": 2, "title": "旧维度", "name_en": "",
+             "aliases": "[]", "bound_object_key": "gone", "pool_reason": "orphan",
+             "unit": "", "agg_type": "", "category": "属性", "description": "",
+             "datasource_id": 0, "term_type": ""},
+            {"queue": "term", "id": 3, "title": "活跃用户", "name_en": "active",
+             "aliases": "[]", "bound_object_key": "", "pool_reason": "unbound",
+             "unit": "", "agg_type": "", "category": "术语", "description": "",
+             "datasource_id": 0, "term_type": "术语"},
+        ]
+        counts = [{"queue": "metric", "n": 1}, {"queue": "dimension", "n": 1},
+                  {"queue": "term", "n": 1}]
+        conn = _Conn([("FROM adh_metrics", rows)], grouped_counts=counts)
         monkeypatch.setattr(ms, "DBConnection", lambda: conn)
         out = ms.asset_pool()
-        assert out["counts"]["metrics"] == 1 and out["counts"]["dimensions"] == 1
-        assert out["counts"]["terms"] == 1
-        assert out["counts"]["total"] == 3   # suggestions 容错为空
+        assert out["counts"] == {"metrics": 1, "dimensions": 1, "terms": 1, "total": 3}
         assert out["metrics"][0]["pool_reason"] == "unbound"
+        assert out["terms"][0]["term_cn"] == "活跃用户"
+        assert "suggestions" not in out
+        assert not any("adh_evolution_candidates" in sql for sql, _ in conn.cur.calls)
         msql = [c for c in conn.cur.calls if "FROM adh_metrics"][0][0]
         assert "NOT IN" in msql and "adh_ontology_objects" in msql
-        # 候选必须走本函数自己的 DBConnection，不能委托给另开连接的 service，
-        # 否则下面这个"表未迁移"容错用例会在真库上跑、永远测不到异常分支
-        assert any("adh_evolution_candidates" in c[0] for c in conn.cur.calls), \
-            "资产池未在本连接上查候选表"
 
-    def test_suggestions_table_missing_is_tolerated(self, monkeypatch):
+    def test_paginated_mode_uses_count_limit_offset_and_server_filters(self, monkeypatch):
+        counts = [{"queue": "metric", "n": 7}]
+        rows = [{"queue": "metric", "id": 9, "title": "退号数", "name_en": "refund",
+                 "aliases": "[]", "bound_object_key": "", "pool_reason": "unbound",
+                 "description": "含退款", "datasource_id": 0}]
+        conn = _Conn([("FROM adh_metrics", rows)], grouped_counts=counts)
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        out = ms.asset_pool(queue="metric", q="退", page=3, page_size=2)
+        assert out["total"] == 7 and len(out["items"]) == 1
+        assert out["page"] == 3 and out["page_size"] == 2
+        count_sql, count_params = conn.cur.calls[0]
+        item_sql, item_params = conn.cur.calls[1]
+        assert "COUNT(*)" in count_sql and "GROUP BY queue" in count_sql
+        assert count_params == ["%退%"] * 4
+        assert "LIMIT %s OFFSET %s" in item_sql
+        assert item_params[-2:] == [2, 4]
+        assert "title LIKE %s" in item_sql and item_params[:4] == ["%退%"] * 4
+        assert "ORDER BY" in item_sql and "id" in item_sql.split("ORDER BY", 1)[1]
+        assert "FROM adh_dimensions" not in item_sql and "FROM adh_business_terms" not in item_sql
+        assert "adh_evolution_candidates" not in item_sql
+
+    def test_page_size_is_clamped_and_invalid_queue_is_rejected(self, monkeypatch):
+        conn = _Conn([], grouped_counts=[])
+        monkeypatch.setattr(ms, "DBConnection", lambda: conn)
+        out = ms.asset_pool(page_size=100)
+        assert out["page_size"] == 50
+        with pytest.raises(ValueError, match="queue 无效"):
+            ms.asset_pool(queue="suggestion")
+
+    def test_candidate_table_is_never_queried_or_silently_tolerated(self, monkeypatch):
         class _Boom(_Conn):
             def cursor(self):
                 c = super().cursor()
                 orig = c.execute
                 def boom(sql, params=None):
-                    # 自进化候选表（旧名 adh_alias_suggestions 已退役为冻结表）
                     if "adh_evolution_candidates" in sql:
-                        raise RuntimeError("table doesn't exist")
+                        raise RuntimeError("candidate table must not be queried")
                     return orig(sql, params)
                 c.execute = boom
                 return c
-        conn = _Boom([("FROM adh_metrics", []), ("FROM adh_dimensions", []),
-                      ("FROM adh_business_terms", [])])
+        conn = _Boom([], grouped_counts=[])
         monkeypatch.setattr(ms, "DBConnection", lambda: conn)
-        out = ms.asset_pool()   # 不抛异常
-        assert out["suggestions"] == []
+        out = ms.asset_pool(page_size=20)
+        assert out["items"] == [] and out["total"] == 0
+        assert "suggestions" not in out

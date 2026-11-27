@@ -20,6 +20,10 @@
 
 import re
 
+from backend.modules.mind.execution.capability_contracts import (
+    build_action_contracts, contract_digest, validate_document_contracts,
+)
+
 
 def _p(col: str, name: str, typ: str, key: bool = False, desc: str = "") -> tuple:
     return (col, name, typ, key, desc)
@@ -94,10 +98,26 @@ OBJECTS: list[dict] = [
             _l("data_product", "published_as", "N:N", "对象经数据产品对外提供稳定契约"),
         ],
         [
-            _a("ontology.generate", "生成本体草案",
-               "按数据源元数据生成草案（只产草案，不激活）", risk="medium"),
-            _a("ontology.save", "保存本体模型",
-               "保存 canonical 内容；生效态编辑会重展开对象并重建图谱", risk="medium"),
+            _a("ontology.search", "搜索本体对象",
+               "按业务关键词检索对象与业务属性投影", read_only=True),
+            _a("ontology.get_model", "查看本体模型",
+               "读取模型摘要、业务属性与关系（不下发物理列）", read_only=True),
+            _a("ontology.list_models", "列出本体模型",
+               "列出可见本体模型及状态", read_only=True),
+            _a("ontology.metadata_summary", "查看元数据摘要",
+               "读取表、列、术语、指标与生效模型计数", read_only=True),
+            _a("ontology.generate_material", "获取本体归纳素材",
+               "分批读取建模素材与结构规范；不调用 LLM、不直接写草案", risk="low"),
+            _a("ontology.save_draft", "保存归纳草案",
+               "把会话归纳出的业务对象确定性合并落草案（不激活）", risk="medium"),
+            _a("ontology.save_model", "保存本体模型",
+               "保存完整 canonical 内容到草案；不激活、不级联", risk="medium"),
+            _a("ontology.create_object", "新增本体对象",
+               "向业务本体草案新增对象；已有对象不覆盖", risk="medium"),
+            _a("ontology.update_object", "修改本体对象",
+               "按业务名局部合并已有对象并保留未提交定义", risk="medium"),
+            _a("ontology.publish", "发布本体草案",
+               "确认后发布草案并级联对象表、图谱与知识库", risk="high"),
             _a("ontology.activate", "激活本体模型",
                "旧 active 归档、本模型生效（含动作/规则/场景投影）", risk="high"),
             _a("ontology.import_yaml", "导入 Palantir YAML",
@@ -408,6 +428,8 @@ OBJECTS: list[dict] = [
             _a("dict.save_metric", "保存指标",
                "创建/更新指标字典行（只落库+审计；图谱与知识库需显式同步）",
                risk="medium", params={"required": ["display_name", "bound_object_key", "agg_type"]}),
+            _a("evolution_metric.create", "从候选建指标草稿",
+               "创建未启用指标草稿并返回待补项", risk="medium"),
         ],
     ),
     _obj(
@@ -435,6 +457,8 @@ OBJECTS: list[dict] = [
             _a("dict.save_dimension", "保存维度",
                "创建/更新维度字典行（只落库+审计；图谱与知识库需显式同步）",
                risk="medium", params={"required": ["display_name", "bound_object_key"]}),
+            _a("evolution_dimension.create", "从候选建维度草稿",
+               "按业务属性解析物理列并创建未启用维度草稿", risk="medium"),
         ],
     ),
     _obj(
@@ -764,6 +788,10 @@ OBJECTS: list[dict] = [
             _l("datasource", "scoped_to", "N:1", "术语按数据源分桶（空=全局）"),
             _l("tag", "tagged_by", "N:N", "术语归类标签"),
         ],
+        [
+            _a("evolution_candidate.to_term", "候选转业务术语",
+               "把候选转入授权数据源的术语缓冲区", risk="low"),
+        ],
     ),
     _obj(
         "alias_suggestion", "别名建议", ["未识别词", "ALIAS_SUGGESTION"],
@@ -783,6 +811,14 @@ OBJECTS: list[dict] = [
             _l("ontology_model", "suggests_for", "N:1", "建议补充到哪个本体的对象/字典"),
         ],
         [
+            _a("evolution_queue.list", "查看进化中心待办",
+               "分页查询角色授权域内候选与知识更新提议", read_only=True),
+            _a("evolution_candidate.adopt", "收编进化候选",
+               "把候选业务词收编到既有对象或字典别名", risk="medium"),
+            _a("evolution_candidate.reject", "驳回进化候选",
+               "记录人工驳回理由，不删除候选证据", risk="low"),
+            _a("evolution_digest.run", "执行进化归纳",
+               "异步采集反馈、复核候选与闭环成效", risk="medium"),
             _a("alias.approve", "采纳别名建议",
                "把被拒词写回对象/字典 aliases（需 ontology:save）", risk="low",
                params={"required": ["term", "target_type"]}),
@@ -825,6 +861,31 @@ OBJECTS: list[dict] = [
             _a("evolution_proposal.reject", "驳回知识更新提议",
                "判定不采纳并写原因（需 evolution:manage）",
                risk="low", params={"required": ["title"]}),
+        ],
+    ),
+    _obj(
+        "capability_flow", "能力流程", ["流程运行", "任务流运行", "能力任务"],
+        "受控能力流程的运行实例（auto 场景的执行记录）：按场景 flow 逐步执行自动步骤"
+        "（每步过动作自身权限码），人工步骤停 waiting_human 由人完成，全程留事件账。"
+        "发起/观察/取消用 capability:run 编排权限（创建前预检全部自动步骤权限，缺任一即拒）；"
+        "同步/DAG/UDF/物化等数据工程动作永远进不了流程。",
+        "",
+        [
+            _p("run_id", "运行标识", "bigint", True),
+            _p("scenario", "场景", "varchar", False, "系统本体场景 key"),
+            _p("status", "运行状态", "enum",
+               False, "pending/running/waiting_human/succeeded/failed/cancelled"),
+            _p("current_step", "当前步序", "int"),
+            _p("error_code", "错误码", "varchar", False, "安全错误码，不含堆栈与正文"),
+            _p("created_at", "创建时间", "datetime"),
+            _p("finished_at", "结束时间", "datetime"),
+        ],
+        None,
+        [
+            _a("capability.run_flow", "运行能力流程",
+               "按场景发起受控流程：自动步骤按序执行且逐步过权限码，"
+               "人工步骤停 waiting_human（AI 不得代做）",
+               risk="medium", params={"required": ["scenario", "input"]}),
         ],
     ),
     _obj(
@@ -1280,6 +1341,9 @@ CAPABILITY_PERM_CODES: dict[str, tuple[str, ...]] = {
     # 知识更新提议：提交（knowledge:manage）与处置（evolution:manage）是两个不同的人职责，
     # 不能合并成一个码——否则「能提」就等于「能批」
     "knowledge_proposal": ("knowledge:manage", "evolution:manage"),
+    # 能力流程：capability:run 是编排入口（发起/观察/取消），不是执行权限——
+    # 每步执行仍由动作自身权限码再裁（capability_runtime 内 require_write_perm）
+    "capability_flow": ("capability:run",),
     "sensitive_field": ("sensitive:read", "sensitive:manage"),
     "rls_policy": ("rls:read", "rls:manage"),
     "data_standard": ("standard:read", "standard:manage"),
@@ -1318,47 +1382,10 @@ CAPABILITY_NO_OWN_CODE: dict[str, str] = {
 #   channel=ai    —— AS-BOT 有工具可直接调用（功能动作 function_tools / 本体动作 ontology_tools）；
 #   channel=human —— 只有人能操作的界面或 HTTP 端点（AI 无工具，必须显式交给人）。
 # 改本表必须同批跑 tests/test_system_ontology_catalog.py 的真值交叉校验。
-ACTION_PERM_CODES: dict[str, dict] = {
-    # ── 本体（ontology_tools，经 require_write_perm 把关）──
-    "ontology.generate": {"code": "ontology:generate", "channel": "ai"},
-    "ontology.save": {"code": "ontology:save", "channel": "ai"},
-    "ontology.activate": {"code": "ontology:activate", "channel": "ai"},
-    "ontology.import_yaml": {"code": "ontology:import", "channel": "ai"},
-    "dict.save_metric": {"code": "ontology:save", "channel": "ai"},
-    "dict.save_dimension": {"code": "ontology:save", "channel": "ai"},
-    # ── 功能动作（function_tools.FUNCTION_ACTION_SPECS，key 与工具一一对应）──
-    "knowledge_base.list": {"code": "kb:read", "channel": "ai"},
-    "datasource.list_safe": {"code": "datasource:read", "channel": "ai"},
-    "report.list": {"code": "report:read", "channel": "ai"},
-    "report.generate": {"code": "report:manage", "channel": "ai"},
-    "report.save": {"code": "report:manage", "channel": "ai"},
-    "dashboard.list": {"code": "dashboard:read", "channel": "ai"},
-    # 发布看板只有 HTTP（dashboard_design_service 的 require_write_perm），AI 无工具
-    "dashboard.publish": {"code": "dashboard:manage", "channel": "human"},
-    "scheduled_task.list": {"code": "scheduled:read", "channel": "ai"},
-    "scheduled_task.create": {"code": "scheduled:manage", "channel": "ai"},
-    "quality_rule.list": {"code": "quality:read", "channel": "ai"},
-    "quality_rule.run_check": {"code": "quality:manage", "channel": "ai"},
-    "dataset.list": {"code": "dataset:read", "channel": "ai"},
-    # 契约变更在数据产品页由人提交（require_write_perm dataset:manage），AI 无工具
-    "product.contract_change": {"code": "dataset:manage", "channel": "human"},
-    "content_article.list": {"code": "article:manage", "channel": "ai"},
-    "content_article.get": {"code": "article:manage", "channel": "ai"},
-    "content_draft.create": {"code": "article:manage", "channel": "ai"},
-    "content_draft.update": {"code": "article:manage", "channel": "ai"},
-    "content_review.submit": {"code": "article:manage", "channel": "ai"},
-    # 发布是人的动作：只有 POST /api/content/publish*（article:publish, ai_access=none）
-    "content_review.publish": {"code": "article:publish", "channel": "human"},
-    "knowledge_proposal.create": {"code": "knowledge:manage", "channel": "ai"},
-    "evolution_proposal.applied": {"code": "evolution:manage", "channel": "ai"},
-    "evolution_proposal.reject": {"code": "evolution:manage", "channel": "ai"},
-    "content_taxonomy.list": {"code": "article:manage", "channel": "ai"},
-    "decision.list": {"code": "decision:read", "channel": "ai"},
-    "decision.evaluate": {"code": "decision:read", "channel": "ai"},
-    # 别名采纳/驳回只有 HTTP（/api/as-bot/alias-suggestions*），AI 无工具
-    "alias.approve": {"code": "ontology:save", "channel": "human"},
-    "alias.reject": {"code": "ontology:save", "channel": "human"},
-}
+# 动作契约由真实功能/本体注册表与人工入口声明派生；这里不再维护第二份 Schema。
+ACTION_CONTRACTS: dict[str, dict] = build_action_contracts()
+# 兼容既有图谱/上云投影与测试读取；值与完整契约同一对象。
+ACTION_PERM_CODES: dict[str, dict] = ACTION_CONTRACTS
 
 
 _PERM_CODE_RE = re.compile(r"^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)+$")
@@ -1408,9 +1435,22 @@ def _attach_action_bindings(objects: list[dict]) -> list[dict]:
     out = _copy.deepcopy(objects)
     for obj in out:
         for act in (obj.get("actions") or []):
-            meta = ACTION_PERM_CODES.get(str(act.get("key") or "")) or {}
-            act["perm_code"] = str(meta.get("code") or "")
-            act["channel"] = str(meta.get("channel") or "")
+            key = str(act.get("key") or "")
+            contract = ACTION_CONTRACTS.get(key)
+            if contract is None:
+                raise ValueError(f"动作 {key} 未在真实注册表登记")
+            act.update(_copy.deepcopy(contract))
+            act["params_schema"] = _copy.deepcopy(contract["input_schema"])
+        actions = obj.get("actions") or []
+        if not actions:
+            mode = "informational"
+        elif all(str(a.get("channel") or "") == "human" for a in actions):
+            mode = "human_only"
+        elif all(bool(a.get("read_only")) for a in actions):
+            mode = "queryable"
+        else:
+            mode = "actionable"
+        obj["capability_mode"] = mode
     return out
 
 
@@ -1426,10 +1466,18 @@ def _attach_flow_bindings(scenarios: list[dict], objects: list[dict]) -> list[di
     for scn in out:
         for step in (scn.get("flow") or []):
             key = str(step.get("action") or "")
-            meta = ACTION_PERM_CODES.get(key) or {}
-            step["perm_code"] = str(meta.get("code") or "")
-            step["channel"] = str(meta.get("channel") or "")
+            contract = ACTION_CONTRACTS.get(key) or {}
+            step["action_key"] = key
+            step["perm_code"] = str(contract.get("perm_code") or "")
+            step["required_perm_codes"] = _copy.deepcopy(contract.get("required_perm_codes") or [])
+            step["channel"] = str(contract.get("channel") or "")
             step["action_label"] = labels.get(key, "")
+            step["executor_ref"] = str(contract.get("executor_ref") or "")
+            step["input_schema"] = _copy.deepcopy(contract.get("input_schema") or {})
+            step["output_schema"] = _copy.deepcopy(contract.get("output_schema") or {})
+            step["idempotency"] = str(contract.get("idempotency") or "none")
+            step["timeout_ms"] = int(contract.get("timeout_ms") or 0)
+            step["auto_executable"] = bool(contract.get("auto_executable"))
     return out
 
 
@@ -1510,7 +1558,7 @@ RULES: list[dict] = [
                      "激活/归档/恢复 ontology:activate、生成 ontology:generate、导入 ontology:import；"
                      "发布是独立动作与独立码，不得被激活码带过。",
         "source": "ontology-modeling §9.2",
-        "enforcement": {"subject": "role:*", "action": "ontology.save", "level": "allow",
+        "enforcement": {"subject": "role:*", "action": "ontology.save_model", "level": "allow",
                           "perm_code": "ontology:save"},
     },
     {
@@ -1598,7 +1646,7 @@ SCENARIOS: list[dict] = [
         "goal": "回答业务方「本体建到哪了、还缺什么」",
         "actors": ["role:admin"],
         "uses_objects": ["ontology_model", "dataset"],
-        "uses_actions": ["ontology.generate"],
+        "uses_actions": ["ontology.generate_material", "ontology.save_draft"],
         "uses_rules": ["perm_admin_full_by_role_perms"],
         "eval_seed": ["本体建模进度如何？还有哪些表没有进本体？"],
     },
@@ -1695,19 +1743,56 @@ SCENARIOS: list[dict] = [
         "uses_actions": ["content_draft.create", "content_review.submit",
                          "content_review.publish"],
         "uses_rules": ["constraint_content_review_before_publish"],
+        # P3-1 机器绑定（自动执行试点，且唯一）：execution.mode=auto + 白名单 +
+        # 特性开关三条同时满足才执行（ontology-modeling §10.6）；机器执行只认
+        # input_bindings/output_bindings 表达式（consumes/produces 仅可读说明）。
+        "execution": {
+            "mode": "auto",
+            "enabled": True,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "内容标题"},
+                    "body": {"type": "string", "description": "正文 Markdown"},
+                    "category": {"type": "string", "description": "栏目 key"},
+                },
+                "required": ["title", "body"],
+            },
+            "allowlist": ["content_draft.create", "content_review.submit",
+                          "content_review.publish"],
+        },
         "flow": [
             {"order": 1, "action": "content_draft.create",
              "purpose": "先落草稿，线上内容不受影响",
-             "produces": "待审核草稿"},
+             "produces": "待审核草稿",
+             "input_bindings": {"title": "input.title", "body": "input.body",
+                                "category": "input.category"},
+             "output_bindings": {"article.slug": "output.slug"},
+             "retry": {"max_attempts": 1},
+             "timeout_ms": 120000,
+             "idempotency_key": "ops_content_publish:draft:{input.title}",
+             "on_failure": "fail"},
             {"order": 2, "action": "content_review.submit",
              "purpose": "提交审核，审核通过后才发布",
              "consumes": "待审核草稿",
              "produces": "已提交审核的内容",
+             "input_bindings": {"slug": "ctx.article.slug"},
+             "output_bindings": {"review.status": "output.status"},
+             "retry": {"max_attempts": 2},
+             "timeout_ms": 60000,
+             "idempotency_key": "ops_content_publish:submit:{ctx.article.slug}",
+             "on_failure": "fail",
              "gated_by": ["constraint_content_review_before_publish"]},
             {"order": 3, "action": "content_review.publish",
              "purpose": "审核通过后由发布人在内容中心发布上线（AI 无发布工具，不得代发）",
              "consumes": "已提交审核的内容",
              "produces": "已上线内容",
+             "input_bindings": {"ident": "ctx.article.slug"},
+             "output_bindings": {},
+             "retry": {"max_attempts": 0},
+             "timeout_ms": 0,
+             "idempotency_key": "",
+             "on_failure": "fail",
              "gated_by": ["constraint_content_review_before_publish"]},
         ],
         "eval_seed": ["怎么发布一篇平台公告？"],
@@ -1969,12 +2054,17 @@ def build_system_ontology_doc() -> dict:
     problems = validate_catalog(objects)
     if problems:
         raise ValueError("系统本体目录自检失败: " + "; ".join(problems[:20]))
-    return {
+    doc = {
         "domain": SYSTEM_DOMAIN,
         "description": SYSTEM_DESCRIPTION,
         "kind": "system",
         "sources": [],
+        "contract_digest": contract_digest(ACTION_CONTRACTS),
         "objects": objects,
         "rules": copy.deepcopy(RULES),
         "scenarios": _attach_flow_bindings(SCENARIOS, objects),
     }
+    drift = validate_document_contracts(doc)
+    if drift:
+        raise ValueError("系统本体动作契约漂移: " + "; ".join(drift[:20]))
+    return doc

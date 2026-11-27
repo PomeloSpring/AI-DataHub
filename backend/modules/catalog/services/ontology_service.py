@@ -2996,15 +2996,30 @@ def discard_draft(model_id: int, discarded_by: str = "") -> dict:
             **draft_diff(model_id)}
 
 
-def publish_draft(model_id: int, published_by: str = "") -> dict:
+def publish_draft(model_id: int, published_by: str = "", *,
+                  allow_full_regenerate: bool = False,
+                  expected_active_fingerprint: str | None = None) -> dict:
     """把草案提升为生效版并级联（两段式第二段）。
 
     并发保护：草案写入时记录了生效内容指纹；若发布前生效版已被他人改动，
     本次发布会被拒（宁阻断勿覆盖他人工作），需重新基于最新生效版做草案。
+
+    `allow_full_regenerate` / `expected_active_fingerprint`（**仅服务端发布编排
+    可用，函数关键字参数、不对外暴露**）：前者见 save_draft 同名参数（整份
+    重算的系统本体派生通道）；后者是乐观戳——调用方钉住“我基于哪个生效版
+    发布”，期间被他人改动即拒。普通 API/AS-BOT 工具通道不转发这两个参数，
+    LLM 无从设置（调用点由源码级用例锁定，只有 ontology_release_service
+    与 refresh_system_ontology 脚本这一受信任维护通道）。
     """
     model = get_model(model_id)
     if not model:
         raise ValueError("模型不存在")
+    if expected_active_fingerprint is not None:
+        # 乐观戳：发布前生效版指纹必须与调用方钉住的一致，否则拒
+        if expected_active_fingerprint != _doc_fingerprint(model.get("json_content") or ""):
+            raise ValueError(
+                "生效版在发布准备期间已被改动，本次发布已阻断（不覆盖他人工作）；"
+                "请基于最新生效版重新操作")
     # 草案列不进 _row_to_model 白名单（避免随 API 响应外泄），这里单独取
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
@@ -3020,7 +3035,7 @@ def publish_draft(model_id: int, published_by: str = "") -> dict:
             "生效版在草案写入后已被改动，本次发布已阻断（不覆盖他人工作）。"
             "请基于最新生效版重新做草案后再发布")
     # 落地 + 级联（重展开 objects / 重建图谱 / 同步知识库）
-    result = save_draft(model_id, draft)
+    result = save_draft(model_id, draft, allow_full_regenerate=allow_full_regenerate)
     with get_metadata_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE adh_ontology_models SET draft_json_content=NULL, "

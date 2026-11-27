@@ -80,7 +80,7 @@ const MODEL = {
 
 /** 内存服务端：草案/生效版正文与状态互相一致，动作后必须重拉才对得上 */
 const state = {
-  hasDraft: true, baseStale: false, parseError: false,
+  hasDraft: true, baseStale: false, parseError: false, modelKind: 'business',
   effective: EFF_DOC as any,
 };
 
@@ -112,7 +112,7 @@ function mockApi() {
     if (url === '/datasources') return { data: [{ id: 5, name: 'prd-sls-cn', db_type: 'mysql' }] } as any;
     if (url === '/knowledge-bases') return { data: [] } as any;
     if (url === '/catalog/ontology/models') {
-      return { data: { items: [{ ...MODEL, has_draft: state.hasDraft }] } } as any;
+      return { data: { items: [{ ...MODEL, kind: state.modelKind, has_draft: state.hasDraft }] } } as any;
     }
     if (url === '/catalog/ontology/models/901/draft/content') {
       return {
@@ -128,7 +128,7 @@ function mockApi() {
       return { data: { graph: { state: 'synced', objects: 2 }, kb: { state: 'synced', targets: 1 } } } as any;
     }
     if (url.startsWith('/catalog/ontology/models/')) {
-      return { data: { ...MODEL, json_content: JSON.stringify(state.effective) } } as any;
+      return { data: { ...MODEL, kind: state.modelKind, json_content: JSON.stringify(state.effective) } } as any;
     }
     if (url === '/catalog/ontology/generate/tasks') return { data: { items: [] } } as any;
     // 进化中心（页内页签）挂载即拉候选/大盘/提议；缺分支会让面板进错误态
@@ -171,7 +171,7 @@ function mockApi() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  Object.assign(state, { hasDraft: true, baseStale: false, parseError: false, effective: EFF_DOC });
+  Object.assign(state, { hasDraft: true, baseStale: false, parseError: false, modelKind: 'business', effective: EFF_DOC });
   usePermissionStore.setState({ perms: null, allowedMenus: null, unrestricted: true, loaded: false });
   mockApi();
 });
@@ -391,6 +391,21 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.queryByText('待发布')).toBeNull();
     // 无草案时编辑入口照常开放（生效版即编辑基线，不存在顶掉草案的风险）
     expect(screen.getByRole('button', { name: /新建对象/ })).toBeTruthy();
+  });
+
+  it('系统本体只读：隐藏全部人工维护入口且不发起写请求', async () => {
+    state.modelKind = 'system';
+    await pickModel();
+    expect(await screen.findAllByText('系统能力本体由平台版本发布维护，只读。')).not.toHaveLength(0);
+    expect(screen.queryByRole('button', { name: /新建对象/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /编辑对象/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /生成本体/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /导入 YAML/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /发布草案/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /变更对比/ })).toBeNull();
+    expect(vi.mocked(client.put)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.post)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.delete)).not.toHaveBeenCalled();
   });
 
   it('进化中心并入建模页：点左侧入口只切画布，不跳独立路由', async () => {

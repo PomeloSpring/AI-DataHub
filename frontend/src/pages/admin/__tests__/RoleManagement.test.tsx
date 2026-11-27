@@ -203,6 +203,77 @@ describe('角色权限 — 菜单与功能页签', () => {
       permissions: expect.arrayContaining(['kbdoc:read', 'kbdoc:write']),
     }));
   });
+
+  it('内容中心档位级联：勾管理自动补勾创作+只读，勾创作自动补勾只读', async () => {
+    // 真实登记形态：article:create 归 content:drafts；article:manage 与 article:read
+    // 同归 content:manage。级联只是勾选态保险（每档在服务端各自自足），
+    // 但保存的是整份清单 —— 补勾的码必须真的进 PUT payload。
+    const tier = (perm_code: string, label: string, menu_key: string, api_pattern: string, api_method: string) => ({
+      perm_code, label, description: '', menu_key, api_pattern, api_method,
+      ai_access: 'none', ai_effective: 'none', ai_locked: false,
+      ai_action_key: '', ai_channel: 'none', ai_note: '',
+    });
+    const extended = {
+      ...REGISTRY,
+      menu_groups: [
+        ...REGISTRY.menu_groups,
+        {
+          menu_key: 'content:drafts', label: '我的草稿', section: '我的工作台',
+          module: 'content', module_label: '内容中心', sort: 10,
+          permissions: [tier('article:create', '编写草稿并提交审核', 'content:drafts',
+            'POST /api/content/articles', 'GET,POST,PUT')],
+        },
+        {
+          menu_key: 'content:manage', label: '内容管理', section: '内容生产',
+          module: 'content', module_label: '内容中心', sort: 20,
+          permissions: [
+            tier('article:manage', '编辑内容条目', 'content:manage',
+              '/api/content/articles*', 'GET,POST,PUT,PATCH,DELETE'),
+            tier('article:read', '阅读已发布内容', 'content:manage',
+              '/api/content/articles*', 'GET'),
+          ],
+        },
+      ],
+    };
+    vi.mocked(client.get).mockImplementation(async (url: string) => {
+      if (url === '/roles/') return { data: [{ id: 1, name: 'viewer', display_name: '查看角色', description: '', is_system: 1, is_active: 1 }] };
+      if (url === '/roles/perm-registry') return { data: extended };
+      if (url === '/roles/1/permissions') return { data: { role_id: 1, permissions: [] } };
+      return { data: [] };
+    });
+    await openFunctionsTab();
+
+    const checked = (label: RegExp) =>
+      (screen.getByRole('checkbox', { name: label }) as HTMLInputElement).checked;
+
+    // 勾管理 → 自动补勾创作 + 只读（层级：只读 ⊂ 创作 ⊂ 管理）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编辑内容条目/ }));
+    expect(checked(/编辑内容条目/)).toBe(true);
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+    expect(checked(/阅读已发布内容/)).toBe(true);
+
+    // 取消管理不回滚依赖（只在勾上时补；保存整份清单，可按需单独收回）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编辑内容条目/ }));
+    expect(checked(/编辑内容条目/)).toBe(false);
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+
+    // 单独清空后只勾创作 → 自动补勾只读（验证勾创作这一档自己的级联）
+    fireEvent.click(screen.getByRole('checkbox', { name: /编写草稿并提交审核/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /阅读已发布内容/ }));
+    expect(checked(/编写草稿并提交审核/)).toBe(false);
+    expect(checked(/阅读已发布内容/)).toBe(false);
+    fireEvent.click(screen.getByRole('checkbox', { name: /编写草稿并提交审核/ }));
+    expect(checked(/编写草稿并提交审核/)).toBe(true);
+    expect(checked(/阅读已发布内容/)).toBe(true);
+
+    // 级联补勾的码必须真的进保存清单（勾选态可见 ≠ 后端拿到）
+    fireEvent.click(screen.getByRole('button', { name: '保存功能权限' }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/roles/1/permissions', {
+      permissions: expect.arrayContaining(['article:create', 'article:read']),
+    }));
+    const payload = vi.mocked(client.put).mock.calls[0][1] as { permissions: string[] };
+    expect(payload.permissions).not.toContain('article:manage');   // 已取消的不回来
+  });
 });
 
 describe('角色权限 — AI 接入通道如实显示', () => {
@@ -223,12 +294,15 @@ describe('角色权限 — AI 接入通道如实显示', () => {
     expect(within(gate).getByText('权限码把关').getAttribute('title')).toContain('真实生效');
   });
 
-  it('无消费方的功能显式提示「配置暂不生效」，不让人以为选了级别就开通', async () => {
+  it('无消费方的功能只留紧凑信号：徽标「未接入」+悬浮说明，不铺实现长文案', async () => {
     await openFunctionsTab();
     const none = rowOf('删除本体');
-    expect(within(none).getByText(/尚未接入 AI/)).toBeInTheDocument();
-    expect(within(none).getByText(/不会开通任何接口能力/)).toBeInTheDocument();
-    // 已登记工具与已接码把关的功能不得出现该提示
+    const badge = within(none).getByText('未接入');
+    // 悬浮说明仍要说清“选了级别也不生效”，但行内不再刷长文案
+    expect(badge.getAttribute('title')).toContain('暂无消费方');
+    expect(within(none).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
+    expect(within(none).queryByText(/FUNCTION_ACTION_SPECS/)).not.toBeInTheDocument();
+    // 已登记工具与已接码把关的功能同样不得出现旧提示
     expect(within(rowOf('查看报告清单')).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
   });
 });
@@ -442,5 +516,43 @@ describe('角色权限 — 菜单与功能区一键全选/反选', () => {
     expect(payload.permissions.sort()).toEqual([
       'kbdoc:read', 'kbdoc:write', 'legacy:code', 'ontology:delete', 'report:read', 'report:view',
     ]);
+  });
+});
+
+describe('角色一键复制（含 AS-BOT 配置，不带绑定用户）', () => {
+  it('点复制按钮打开弹窗：标识/显示名预填副本后缀、描述沿用来源角色', async () => {
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    expect(await screen.findByText('一键复制角色')).toBeInTheDocument();
+    expect(screen.getByText('复制自：查看角色')).toBeInTheDocument();
+    expect((screen.getByPlaceholderText('如 sales_cn') as HTMLInputElement).value).toBe('viewer_copy');
+    expect((screen.getByPlaceholderText('如 中国区销售') as HTMLInputElement).value).toBe('查看角色副本');
+  });
+
+  it('确认复制按新名称提交 duplicate 请求，成功后关闭弹窗并刷新列表', async () => {
+    vi.mocked(client.post).mockResolvedValue({ data: { success: true, id: 2, prompt_renamed: 0 } } as any);
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    fireEvent.change(await screen.findByPlaceholderText('如 sales_cn'), { target: { value: 'viewer_apac' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认复制' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/roles/1/duplicate', {
+      name: 'viewer_apac', display_name: '查看角色副本', description: '',
+    }));
+    await waitFor(() => expect(screen.queryByText('一键复制角色')).toBeNull());
+    // 复制后列表要重取（新角色要出现在清单里）
+    expect(vi.mocked(client.get).mock.calls.filter(c => c[0] === '/roles/').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('服务端拒绝（如重名）时保留弹窗并透出原因，不假装复制成功', async () => {
+    vi.mocked(client.post).mockRejectedValue({
+      response: { data: { detail: '角色标识「viewer_copy」已存在，请换一个' } },
+    });
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认复制' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(1));
+    // 弹窗必须还在（失败不静默关掉装作成功），列表不重取
+    expect(screen.getByText('一键复制角色')).toBeInTheDocument();
+    expect(vi.mocked(client.get).mock.calls.filter(c => c[0] === '/roles/').length).toBe(1);
   });
 });

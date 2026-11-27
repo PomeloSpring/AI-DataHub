@@ -17,6 +17,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { metricsApi, type DictObjectFacet } from '@/api/metrics';
 import { Button } from '@/components/ui/button';
+import { PaginationBar, DEFAULT_PAGE_SIZE } from '@/components/PaginationBar';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -45,6 +46,7 @@ interface DictRow {
   agg_type?: string;
   category?: string;
   description?: string;
+  datasource_id?: number;
 }
 
 interface TermRow {
@@ -90,6 +92,25 @@ const TONE_CLS: Record<string, string> = {
   amber: 'border-amber-500/40 text-amber-600',
   red: 'border-red-500/40 text-red-600',
 };
+
+/** 信封混排行（queue/title/aliases JSON 数组）→ 各队列旧行形状（buildTasks 口径不变）。 */
+function toDictRow(r: any): DictRow {
+  return {
+    id: Number(r.id), name: String(r.title || ''), name_en: r.name_en || '',
+    aliases: Array.isArray(r.aliases) ? r.aliases : [],
+    bound_object_key: r.bound_object_key || '', pool_reason: r.pool_reason,
+    unit: r.unit || '', agg_type: r.agg_type || '', category: r.category || '',
+    description: r.description || '', datasource_id: Number(r.datasource_id || 0),
+  };
+}
+
+function toTermRow(r: any): TermRow {
+  return {
+    id: Number(r.id), term_cn: String(r.title || ''), term_en: r.name_en || '',
+    term_type: r.term_type || '', datasource_id: Number(r.datasource_id || 0),
+    description: r.description || '',
+  };
+}
 
 function buildTasks(d: PoolData | null): Task[] {
   if (!d) return [];
@@ -188,6 +209,20 @@ export default function DictTodoTab({ onChanged }: {
   const [loadError, setLoadError] = useState('');
   const [queue, setQueue] = useState<QueueKey | 'all'>('all');
   const [kw, setKw] = useState('');
+  // 服务端真分页（P1-2）：queue/q 下推 SQL，total 来自 COUNT，不在前端 filter/slice 全量
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [serverCounts, setServerCounts] = useState<Record<string, number> | null>(null);
+  const [kwd, setKwd] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (kwd.trim() !== kw.trim()) { setKwd(kw.trim()); setPage(1); }
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kw]);
+  useEffect(() => { setPage(1); }, [queue]);
   const [busyId, setBusyId] = useState('');
   const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
   const [handled, setHandled] = useState(0);
@@ -200,13 +235,20 @@ export default function DictTodoTab({ onChanged }: {
     setLoading(true);
     setLoadError('');
     try {
-      const { data } = await metricsApi.assetPool();
-      // 只取字典三块；suggestions 归进化中心，本页签不消费（否则又是一份候选清单）
-      setPool({
-        metrics: Array.isArray(data?.metrics) ? data.metrics : [],
-        dimensions: Array.isArray(data?.dimensions) ? data.dimensions : [],
-        terms: Array.isArray(data?.terms) ? data.terms : [],
+      const { data } = await metricsApi.assetPool({
+        queue: queue === 'all' ? undefined : queue,
+        q: kwd || undefined,
+        page, page_size: pageSize,
       });
+      // 信封 items 是三队列混排行；suggestions 归进化中心，本页签不消费（避免第二份候选真源）
+      const rows: any[] = Array.isArray(data?.items) ? data.items : [];
+      setPool({
+        metrics: rows.filter((r) => r.queue === 'metric').map(toDictRow),
+        dimensions: rows.filter((r) => r.queue === 'dimension').map(toDictRow),
+        terms: rows.filter((r) => r.queue === 'term').map(toTermRow),
+      });
+      setTotal(Number(data?.total) || 0);
+      setServerCounts(data?.counts || null);
       setPickedIds(new Set());
     } catch (e: any) {
       // 失败即暴露：不把接口错误渲染成"待办已清空"
@@ -215,7 +257,7 @@ export default function DictTodoTab({ onChanged }: {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queue, kwd, page, pageSize]);
 
   const loadOptions = useCallback(async () => {
     try {
@@ -230,20 +272,17 @@ export default function DictTodoTab({ onChanged }: {
   useEffect(() => { void load(); void loadOptions(); }, [load, loadOptions]);
 
   const tasks = useMemo(() => buildTasks(pool), [pool]);
-  const counts = useMemo(() => {
-    const m: Record<string, number> = {};
-    tasks.forEach((x) => { m[x.queue] = (m[x.queue] || 0) + 1; });
-    return m;
-  }, [tasks]);
+  // 队列徽章用服务端 counts（覆盖全部队列，不随当前队列/页码抖动）
+  const counts = useMemo(() => ({
+    metric: serverCounts?.metrics ?? 0,
+    dimension: serverCounts?.dimensions ?? 0,
+    term: serverCounts?.terms ?? 0,
+  }), [serverCounts]);
 
-  const visible = useMemo(() => {
-    const k = kw.trim().toLowerCase();
-    return tasks
-      .filter((x) => (queue === 'all' || x.queue === queue)
-        && (!k || x.title.toLowerCase().includes(k) || (x.sub || '').toLowerCase().includes(k)
-          || x.meta.some((m) => m.value.toLowerCase().includes(k))))
-      .sort((a, b) => a.title.localeCompare(b.title, 'zh'));
-  }, [tasks, queue, kw]);
+  // 队列/关键词已下推服务端（P1-2）：这里只做展示排序，不再前端 filter 全量
+  const visible = useMemo(
+    () => [...tasks].sort((a, b) => a.title.localeCompare(b.title, 'zh')),
+    [tasks]);
 
   const assignable = useMemo(
     () => visible.filter((x) => x.queue === 'metric' || x.queue === 'dimension'),
@@ -316,8 +355,6 @@ export default function DictTodoTab({ onChanged }: {
     if (task.queue === 'metric') await metricsApi.delete(Number(task.dict!.id));
     else await metricsApi.deleteDimension(Number(task.dict!.id));
   }, t('k_b873150c44', { p0: task.title }));
-
-  const total = tasks.length;
 
   return (
     <div className="space-y-3">
@@ -509,6 +546,12 @@ export default function DictTodoTab({ onChanged }: {
                   })}
                 </div>
               </ScrollArea>
+            )}
+            {pool && (
+              <PaginationBar page={page} pageSize={pageSize} total={total} busy={loading}
+                onChange={setPage}
+                onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+                pageSizeOptions={[20, 50]} className="mt-2" />
             )}
           </CardContent>
         </Card>

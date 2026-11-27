@@ -24,13 +24,19 @@ import { toast } from '@/lib/toast';
 vi.mock('@/api/client', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }));
-vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 
 const CANDIDATES = [
   {
     id: 33, term: '渠道', kind: 'alias', source: 'parse_fail', datasource_name: 'prd-cn',
     target_ref: '应用渠道', target_type: 'dimension', classify_reason: '已命中权威归属',
     hit_count: 4, status: 'pending',
+    // 证据里故意夹带物理表/列（历史缺陷）：页面任何位置都不得渲染它们
+    evidence: {
+      question: '渠道怎么算？', candidates: ['应用渠道'],
+      target_table: 'pc_case', column_name: 'status',
+      authoritative_hits: [{ ref: '应用渠道', target_table: 'pc_case', object_key: 'case' }],
+    },
     suggestion: {
       suggested_kind: 'alias', queue: 'build', tier: 'act', confidence: 'high',
       ambiguous: false, drift: false, hit_count: 4,
@@ -87,6 +93,7 @@ const CANDIDATES = [
 const OVERVIEW = {
   pending_by_kind: { alias: 1, new_dimension: 2, new_metric: 1, binding_gap: 1 },
   pending_by_source: { parse_fail: 5 },
+  proposal_counts: { pending: 2, applied: 1, rejected: 0, superseded: 0 },
   outcome: {},
   feedback: { up: 0, down: 0, pending_negative: 0 },
   reasons: [], kinds: ['new_metric', 'new_dimension', 'alias', 'binding_gap', 'term'],
@@ -132,19 +139,28 @@ const renderPage = () => render(<MemoryRouter><EvolutionCenter /></MemoryRouter>
 beforeEach(() => {
   vi.clearAllMocks();
   usePermissionStore.setState({ perms: null, allowedMenus: null, unrestricted: true, loaded: true });
-  vi.mocked(client.get).mockImplementation(async (url: string) => {
-    if (url === '/evolution/candidates') return { data: { items: CANDIDATES } } as any;
+  // 服务端真分页语义（P1-2）：queue/status/q 由请求参数下推，total 来自响应
+  vi.mocked(client.get).mockImplementation(async (url: string, cfg?: any) => {
+    const params = cfg?.params || {};
+    if (url === '/evolution/candidates') {
+      let rows = CANDIDATES.filter((c: any) => c.status === (params.status || 'pending'));
+      if (params.queue === 'build') rows = rows.filter((c: any) => c.suggestion?.queue !== 'binding');
+      if (params.queue === 'binding') rows = rows.filter((c: any) => c.suggestion?.queue === 'binding');
+      return { data: { items: rows, total: rows.length, page: params.page || 1 } } as any;
+    }
     if (url === '/evolution/overview') return { data: OVERVIEW } as any;
     if (url === '/evolution/proposals') {
-      return { data: { items: PROPOSALS, counts: PROPOSAL_COUNTS } } as any;
+      const rows = PROPOSALS.filter((p) => p.status === (params.status || 'pending'));
+      return { data: { items: rows, counts: PROPOSAL_COUNTS, total: rows.length } } as any;
     }
     if (url === '/eval/suites') return { data: { suites: [], capabilities: [] } } as any;
     if (url === '/metrics/asset-pool') {
+      const items = [{ queue: 'metric', id: 401, title: '近30天成交金额', name_en: '',
+        aliases: [], bound_object_key: '', pool_reason: 'unbound', unit: '', agg_type: 'SUM',
+        category: '', description: '', datasource_id: 0, term_type: '' }];
       return {
-        data: {
-          metrics: [{ id: 401, name: '近30天成交金额', agg_type: 'SUM', pool_reason: 'unbound' }],
-          dimensions: [], terms: [],
-        },
+        data: { items, total: items.length, page: 1, page_size: 20,
+          counts: { metrics: 1, dimensions: 0, terms: 0, total: 1 } },
       } as any;
     }
     return { data: { items: [] } } as any;
@@ -287,6 +303,13 @@ describe('进化中心：知识更新页签（提议只是备忘录）', () => {
     const row = screen.getByText('返利口径说明').closest('div.border') as HTMLElement;
     await userEvent.click(within(row).getByText('标记已处理'));
 
+    // applied_ref 必填：落点为空时确认按钮禁用（空落点假闭环在服务层也会被拒 422）
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: '标记已处理' });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByPlaceholderText(/落点业务名/), '业务知识库 · 返利口径');
+    await userEvent.click(confirm);
+
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     const msg = vi.mocked(toast.error).mock.calls[0][0] as string;
     expect(msg).toContain('已写入目标资产，但提议未标记为已处理');
@@ -305,5 +328,91 @@ describe('进化中心：知识更新页签（提议只是备忘录）', () => {
     await userEvent.click(await screen.findByText('追加到已有场景（保留原内容）'));
     expect(await screen.findByRole('combobox', { name: '选择要追加到的场景 *' })).toBeInTheDocument();
     expect(screen.getByText(/正文会拼到所选场景正文之后/)).toBeInTheDocument();
+  });
+});
+
+describe('进化中心：服务端真分页 / URL 状态 / 决策安全（P1-1/P1-2）', () => {
+  const grant = (perms: string[]) => usePermissionStore.setState({
+    perms, allowedMenus: null, unrestricted: false, loaded: true,
+  });
+
+  it('翻页发服务端请求（page=2），total 来自响应（共 N 条，不是页长）', async () => {
+    grant(['evolution:read', 'ontology:save']);
+    // 响应 total=50、页内只有 2 条：分页条必须显示服务端 total，不得拿页长充数
+    vi.mocked(client.get).mockImplementation(async (url: string, cfg?: any) => {
+      const params = cfg?.params || {};
+      if (url === '/evolution/candidates') {
+        const rows = CANDIDATES.filter((c: any) => c.status === 'pending'
+          && c.suggestion?.queue !== 'binding');
+        return { data: { items: rows.slice(0, 2), total: 50, page: params.page || 1 } } as any;
+      }
+      if (url === '/evolution/overview') return { data: OVERVIEW } as any;
+      return { data: { items: [] } } as any;
+    });
+    renderPage();
+    await screen.findByText('渠道');
+    expect(screen.getByText(/共 50 条/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await waitFor(() => {
+      const pages = vi.mocked(client.get).mock.calls
+        .filter(([u]) => u === '/evolution/candidates')
+        .map(([, cfg]) => (cfg as any)?.params?.page);
+      expect(pages).toContain(2);
+    });
+  });
+
+  it('搜索防抖后下推服务端并回第 1 页', async () => {
+    grant(['evolution:read', 'ontology:save']);
+    renderPage();
+    await screen.findByText('avg_cases_per_device');
+    await userEvent.type(screen.getByRole('textbox', { name: /搜索业务词/ }), 'DAU');
+    await waitFor(() => {
+      const calls = vi.mocked(client.get).mock.calls
+        .filter(([u]) => u === '/evolution/candidates')
+        .map(([, cfg]) => (cfg as any)?.params);
+      expect(calls.some((p: any) => p?.q === 'DAU')).toBe(true);
+      expect(calls[calls.length - 1]?.page).toBe(1);
+    }, { timeout: 2000 });
+  });
+
+  it('决策 409（被并发改动）→ 显式提示并刷新列表，不覆盖既有结论', async () => {
+    grant(['evolution:read', 'ontology:save']);
+    vi.mocked(client.post).mockRejectedValue({
+      response: { status: 409, data: { detail: '该条已被并发决策修改' } },
+    });
+    renderPage();
+    await screen.findByText('avg_cases_per_device');
+
+    await userEvent.click(screen.getAllByRole('button', { name: '驳回' })[0]);
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.type(within(dialog).getByRole('textbox'), '不是真实业务叫法');
+    await userEvent.click(within(dialog).getByRole('button', { name: '驳回' }));
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    expect(vi.mocked(toast.warning).mock.calls[0][0]).toContain('已被并发决策修改');
+  });
+
+  it('驳回理由必填：空理由时确认按钮禁用（与服务层同口径）', async () => {
+    grant(['evolution:read', 'ontology:save']);
+    renderPage();
+    await screen.findByText('avg_cases_per_device');
+
+    await userEvent.click(screen.getAllByRole('button', { name: '驳回' })[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: '驳回' })).toBeDisabled();
+  });
+
+  it('「直接维护」入口不存在，物理表/列字段不渲染', async () => {
+    grant(['evolution:read', 'ontology:save', 'metrics:manage', 'knowledge:manage']);
+    renderPage();
+    await screen.findByText('avg_cases_per_device');
+
+    // P1-1：进化中心不再承载本体/知识库/场景的第二套维护界面
+    expect(screen.queryByText('直接维护')).toBeNull();
+    expect(screen.queryByText('更新本体对象')).toBeNull();
+    // 证据里的物理表/列（含 authoritative_hits.target_table）任何位置都不渲染
+    expect(screen.queryByText(/pc_case/)).toBeNull();
+    expect(screen.queryByText(/column_name/)).toBeNull();
   });
 });

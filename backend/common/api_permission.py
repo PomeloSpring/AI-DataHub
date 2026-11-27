@@ -11,6 +11,10 @@
     4. 支持 * 通配符: '/api/ontology/*' 匹配 '/api/ontology/models/123'
     5. method='*' 匹配所有方法; 否则精确匹配
     6. 白名单路径(登录/健康检查)始终放行
+    7. **方法限定条目**: api_pattern 里形如 ``METHOD path`` 的条目（含空格）按该
+       method 精确登记, 不与本行 api_method 求笛卡尔积 —— 用于表达
+       "允许 POST 新建、不允许 POST 批量删除"这类同路径不同方法的分档;
+       纯路径条目(不含空格)行为与旧版完全一致(向后兼容), 不动任何既有登记。
 """
 
 import fnmatch
@@ -134,9 +138,21 @@ def _load_role_apis(role_name: str) -> list[dict]:
                 if not (code in codes or "*" in codes or code.split(":", 1)[0] + ":*" in codes):
                     continue
                 for pattern in (row.get("api_pattern") or "").split(","):
+                    pattern = pattern.strip()
+                    if not pattern:
+                        continue
+                    if " " in pattern:
+                        # 方法限定条目: "METHOD path" —— method 精确、只认这一条路径,
+                        # 不与本行 api_method 求积(笛卡尔积正是没法拆档位的根因)。
+                        # 含空格才走此分支, 纯路径条目维持旧解析(逐 method 展开)。
+                        method, _, path_pattern = pattern.partition(" ")
+                        method, path_pattern = method.strip().upper(), path_pattern.strip()
+                        if method and path_pattern:
+                            rules.append({"pattern": path_pattern, "method": method, "allowed": True})
+                        continue
                     for method in (row.get("api_method") or "*").split(","):
-                        if pattern.strip() and method.strip():
-                            rules.append({"pattern": pattern.strip(), "method": method.strip().upper(), "allowed": True})
+                        if method.strip():
+                            rules.append({"pattern": pattern, "method": method.strip().upper(), "allowed": True})
     except Exception as e:
         logger.warning("[ApiPerm] Failed to load rules for role=%s: %s", role_name, e)
         rules = []
