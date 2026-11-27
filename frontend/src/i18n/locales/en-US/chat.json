@@ -362,6 +362,7 @@
     "citations": "Knowledge citations",
     "windowMeta": "Window {{value}}",
     "siteMeta": "Site {{value}}",
+    "siteMetaMore": "Sites {{value}} ({{count}} total)",
     "unregisteredObject": "Unregistered object",
     "jumpFallbackObject": "this query",
     "metricChip": "Metric",
@@ -379,7 +380,12 @@
     },
     "citationObject": "Business object · {{name}}",
     "citationModel": "Ontology model · {{name}}",
-    "citationFragment": "Knowledge base fragment"
+    "citationFragment": "Knowledge base fragment",
+    "citationShow": "Show hit content of \"{{title}}\"",
+    "citationHide": "Hide hit content of \"{{title}}\"",
+    "citationKb": "From {{name}}",
+    "citationClipped": "Excerpt truncated · see that turn's execution process for the full text",
+    "citationContentMissing": "Full text not stored with this conversation (that turn's result was truncated) · see that turn's execution process"
   },
   "docEditor": {
     "selectTextFirst": "Select the text in the document whose font size you want to change first",

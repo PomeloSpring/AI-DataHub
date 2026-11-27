@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.modules.mind.execution.stream_utils import (
     DEFAULT_TOOL_DISPLAY_LIMIT,
     ToolEventTracker,
+    _CITATION_EXCERPT_CHARS,
+    _extract_citation_summary,
     cap_arguments,
     extract_result_text,
     tool_display_limit,
@@ -81,6 +83,75 @@ class TestCapArguments:
     def test_non_dict_returns_empty(self):
         assert cap_arguments("raw") == {}
         assert cap_arguments(None) == {}
+
+
+# ── 引用摘要（侧栏「查看命中内容」的事实源）──────────────────────
+
+class TestCitationSummary:
+    """citation_summary 必须在原始结果上抽出正文，否则侧栏内容对多数会话是空的。"""
+
+    @staticmethod
+    def _raw(chunks):
+        import json
+        return json.dumps({"question": "联耀是什么客户", "chunks": chunks})
+
+    def test_excerpt_kb_and_truncation_flag(self):
+        raw = self._raw([{
+            "title": "用户对象",
+            "knowledge_base": "平台数据字典",
+            "content": "别名: User, 用户\n描述: 平台注册用户。",
+        }])
+        got = _extract_citation_summary(raw)
+        assert len(got) == 1
+        src = got[0]["sources"][0]
+        assert src["title"] == "用户对象"
+        assert src["knowledge_base"] == "平台数据字典"
+        assert "平台注册用户" in src["excerpt"]
+        assert src["excerpt_truncated"] is False
+
+    def test_long_content_is_clipped_and_flagged(self):
+        raw = self._raw([{"title": "长文档", "content": "x" * (_CITATION_EXCERPT_CHARS + 500)}])
+        src = _extract_citation_summary(raw)[0]["sources"][0]
+        assert len(src["excerpt"]) == _CITATION_EXCERPT_CHARS
+        assert src["excerpt_truncated"] is True
+
+    def test_title_derived_from_heading_when_missing(self):
+        raw = self._raw([{"title": "", "content": "## 业务对象: User (user)\n别名: User"}])
+        assert _extract_citation_summary(raw)[0]["sources"][0]["title"] == "业务对象 · User"
+
+    def test_same_title_from_different_kbs_are_two_sources(self):
+        raw = self._raw([
+            {"title": "口径说明", "knowledge_base": "库A", "content": "a"},
+            {"title": "口径说明", "knowledge_base": "库B", "content": "b"},
+        ])
+        sources = _extract_citation_summary(raw)[0]["sources"]
+        assert [s["knowledge_base"] for s in sources] == ["库A", "库B"]
+
+    def test_sources_capped_at_six(self):
+        raw = self._raw([
+            {"title": f"文档{i}", "content": "正文"} for i in range(10)
+        ])
+        assert len(_extract_citation_summary(raw)[0]["sources"]) == 6
+
+    def test_bad_json_and_empty_yield_no_summary(self):
+        assert _extract_citation_summary("") == []
+        assert _extract_citation_summary('{"results": [{"question": "截断') == []
+
+    def test_tracker_stores_summary_before_display_truncation(self):
+        """result 被限长截断成半截 JSON 时，摘要仍要带正文（不随截断丢内容）。"""
+        import json
+        t = ToolEventTracker()
+        t.on_tool_use(_Block("tu3", "knowledge_search", {"question": "联耀"}))
+        raw = json.dumps({
+            "question": "联耀是什么客户",
+            "chunks": [{"title": "用户对象", "knowledge_base": "字典库", "content": "正文" * 3000}],
+        })
+        res = t.on_tool_result(_Result("tu3", [{"text": raw}]))
+        assert res["output"].startswith('{"question"') and res["output"].endswith("(truncated)")
+        meta = {}
+        t.update_meta(meta)
+        src = meta["tool_calls"][0]["citation_summary"][0]["sources"][0]
+        assert src["excerpt"] and src["excerpt_truncated"] is True
 
 
 # ── 事件跟踪器 ──────────────────────────────────────────────────

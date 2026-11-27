@@ -104,6 +104,70 @@ describe('ConversationSidePanel', () => {
     expect(screen.queryByText(/prod/)).toBeNull();
   });
 
+  it('知识引用可展开查看正文（排查知识质量/学习），库名与截断都标出来', async () => {
+    renderPanel({
+      messages: [{
+        role: 'assistant', content: '结论',
+        tool_calls: [{
+          tool: 'mcp__datahub_semantic__knowledge_search',
+          result: JSON.stringify({
+            question: '联耀是什么客户',
+            chunks: [{
+              title: '业务对象 · User', knowledge_base: '平台数据字典',
+              content: '别名: User, 用户\n描述: 平台注册用户。',
+            }],
+          }),
+        }],
+      } as ChatMessage],
+    });
+    expect(screen.getByText('业务对象 · User')).toBeInTheDocument();
+    // 默认收起：正文不平铺（侧栏只放关系主干，点开才看明细）
+    expect(screen.queryByText(/平台注册用户/)).toBeNull();
+    await userEvent.click(screen.getByTitle('查看「业务对象 · User」的命中内容'));
+    expect(screen.getByText(/平台注册用户/)).toBeInTheDocument();
+    expect(screen.getByText('来自 平台数据字典')).toBeInTheDocument();
+    await userEvent.click(screen.getByTitle('收起「业务对象 · User」的命中内容'));
+    expect(screen.queryByText(/平台注册用户/)).toBeNull();
+  });
+
+  it('旧会话只存了标题：正文未留存要显式说明，不给点不开的展开键', () => {
+    renderPanel({
+      messages: [{
+        role: 'assistant', content: '结论',
+        tool_calls: [{
+          tool: 'mcp__datahub_semantic__knowledge_search',
+          result: '{"results": [{"question": "截断',
+          citation_summary: [{ question: '联耀是什么客户', sources: ['业务对象 · User'] }],
+        }],
+      } as ChatMessage],
+    });
+    expect(screen.getByText('正文未随会话留存（该轮检索结果超长被截断）· 原文见该轮执行过程')).toBeInTheDocument();
+    expect(screen.queryByTitle(/查看「/)).toBeNull();
+  });
+
+  it('跨站 fan-out 的同款口径只摆一张卡，站点并列（超 3 站收成「等共 N 站」）', () => {
+    const sites = ['中国', '新加坡', '欧洲', '英国', '日本'];
+    renderPanel({
+      messages: [{
+        role: 'assistant', content: '结论',
+        tool_calls: [{
+          tool: 'mcp__datahub_semantic__run_semantic_query',
+          arguments: { intents_json: JSON.stringify(sites.map(site => ({
+            object: 'app_usage_event', metrics: ['应用使用事件数'],
+            filters: [{ dim: '事件形态', op: 'eq', value: 'click' }],
+            time_window: '30d', site,
+          }))) },
+        }],
+      } as ChatMessage],
+    });
+    // 5 个站点 = 5 条 intent，但口径只有一份 → 不再 5 张同款卡刷屏
+    expect(screen.getAllByText('app_usage_event')).toHaveLength(1);
+    expect(screen.getByText(/窗口 30d · 站点 中国\/新加坡\/欧洲 等共 5 站/)).toBeInTheDocument();
+    // 完整站点清单不丢（title），对象名不被 meta 挤掉
+    expect(screen.getByTitle('窗口 30d · 站点 中国/新加坡/欧洲/英国/日本')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^定位到/ })).toHaveLength(1);
+  });
+
   it('工具返回被截断时侧栏不出提示（只列引用，详情看该轮执行过程）', () => {
     renderPanel();
     expect(screen.queryByRole('alert')).toBeNull();

@@ -1,8 +1,9 @@
 // 会话侧栏派生契约（零 token：只从已落库的会话消息里摘）
 // ① 产物 = 消息上的 doc / reportDraft（含归档回执）；
 // ② 关键知识 = 本次口径（run_semantic_query 的 intent）+ 命中的字典口径 + 知识引用出处；
-// ③ 字段白名单：术语的 target_table/target_column、目录检索的物理表名、知识库片段正文
-//    一律不得进入侧栏数据（护栏 §7：物理标识不对客户端渲染）；
+// ③ 字段白名单：术语的 target_table/target_column、目录检索的物理表名/数据源名、SQL 产物
+//    一律不得进入侧栏数据（护栏 §7）；知识片段正文是用户点名要看的内容（排查知识质量/学习），
+//    只落在 sources[].excerpt 里且必须显式标注截断，与执行过程同一份文本（不新增信息面）；
 // ④ 结果被截断时必须数出来（unparsed），不能静默当成"没有知识"；
 // ⑤ 会话技能 = 回合 meta 的三条通道（常驻/附带/取回），计"回合数"不等同"条目数"，
 //    字段整份缺失是历史会话（未记录），绝不等于"没加载"。
@@ -104,7 +105,7 @@ describe('collectKnowledge', () => {
       idx: 1, object: 'rum_event',
       metrics: ['独立用户数'],
       dimensions: ['应用名称', '应用环境'],
-      timeWindow: '12M', site: '中国',
+      timeWindow: '12M', sites: ['中国'],
     });
     // 过滤值必须解成字典枚举的业务标签（字典行在 intent 之后才出现也要能解到），
     // 算子也不能把内部码 `eq` 直接面用户
@@ -118,6 +119,55 @@ describe('collectKnowledge', () => {
     expect((got as any).dicts).toBeUndefined();
   });
 
+  it('知识引用带正文：标题 + 知识库 + 摘录，供排查知识质量与学习', () => {
+    expect(got.citations).toHaveLength(1);
+    const cit = got.citations[0];
+    expect(cit.question).toContain('联耀是什么客户');
+    expect(cit.sources.map(s => s.title)).toContain('业务对象 · User');
+    expect(cit.chunks).toBe(1);
+    const src = cit.sources[0];
+    expect(src.kb).toBe('');           // 该片段没带库名就不编造
+    expect(src.excerpt).toContain('平台注册用户');
+    expect(src.clipped).toBe(false);
+    expect(cit.contentMissing).toBe(false);
+  });
+
+  it('result 被截断时回退服务端摘要：新形态带正文，旧会话只存标题也要认', () => {
+    const truncated = assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__knowledge_search',
+        result: '{"results": [{"question": "截断',
+        citation_summary: [{
+          question: '联耀是什么客户',
+          sources: [{
+            title: '业务对象 · User', knowledge_base: '平台数据字典',
+            excerpt: '别名: User, 用户', excerpt_truncated: true,
+          }],
+        }],
+      }],
+    });
+    const fresh = collectKnowledge([truncated] as any);
+    expect(fresh.citations).toHaveLength(1);
+    expect(fresh.citations[0].sources[0]).toMatchObject({
+      title: '业务对象 · User', kb: '平台数据字典', excerpt: '别名: User, 用户', clipped: true,
+    });
+    expect(fresh.citations[0].contentMissing).toBe(false);
+    // 摘要兜住了正文，就不能再报“未解析”
+    expect(fresh.unparsed).toBe(0);
+
+    // 旧会话：摘要的 sources 还是纯标题字符串
+    const legacy = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__knowledge_search',
+        result: '{"results": [{"question": "截断',
+        citation_summary: [{ question: '联耀是什么客户', sources: ['业务对象 · User'] }],
+      }],
+    })] as any);
+    expect(legacy.citations[0].sources[0]).toMatchObject({ title: '业务对象 · User', excerpt: '' });
+    // 正文没留存必须显式说出来，不能摆个点不开的展开键装作有内容
+    expect(legacy.citations[0].contentMissing).toBe(true);
+  });
+
   it('字典里没登记枚举时原样给码值（不编造标签）', () => {
     const bare = collectKnowledge([assistant({
       tool_calls: [{
@@ -128,11 +178,86 @@ describe('collectKnowledge', () => {
     expect(bare.scopes[0].filters).toEqual(['渠道 = asweb']);
   });
 
-  it('知识引用只到出处标题，正文与物理表名不进侧栏数据', () => {
-    expect(got.citations).toHaveLength(1);
-    expect(got.citations[0].question).toContain('联耀是什么客户');
-    expect(got.citations[0].sources).toContain('业务对象 · User');
-    expect(got.citations[0].chunks).toBe(1);
+  it('跨站查询除站点外口径相同 → 合并成一张卡，站点按序列出（不按站点刷屏）', () => {
+    const sites = ['中国', '新加坡', '欧洲', '英国', '日本'];
+    const intent = (site: string) => ({
+      object: 'app_usage_event', metrics: ['应用使用事件数'],
+      filters: [{ dim: '事件形态', op: 'eq', value: 'click' }],
+      time_window: '30d', site,
+    });
+    const got = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__run_semantic_query',
+        arguments: { intents_json: JSON.stringify(sites.map(intent)) },
+      }],
+    })] as any);
+    expect(got.scopes).toHaveLength(1);
+    expect(got.scopes[0].sites).toEqual(sites);
+    // 跳转锚点取首次出现的那一轮（合并不改变定位口径）
+    expect(got.scopes[0].idx).toBe(0);
+  });
+
+  it('只有站点差异才合并：维度/时间窗不同是不同口径，仍分两张卡', () => {
+    const base = {
+      object: 'app_usage_event', metrics: ['应用使用事件数'],
+      filters: [{ dim: '事件形态', op: 'eq', value: 'click' }], time_window: '30d', site: '中国',
+    };
+    const got = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__run_semantic_query',
+        arguments: { intents_json: JSON.stringify([
+          base,
+          { ...base, dimensions: ['操作目标'] },   // 多一个分组维度 = 不同口径
+          { ...base, time_window: '7d' },          // 不同窗口 = 不同口径
+        ]) },
+      }],
+    })] as any);
+    expect(got.scopes).toHaveLength(3);
+    expect(got.scopes.map(s => s.sites)).toEqual([['中国'], ['中国'], ['中国']]);
+  });
+
+  it('完全相同的 intent 重复出现（同站点）只算一条，站点不重复登记', () => {
+    const intent = {
+      object: 'case', dimensions: ['渠道'],
+      filters: [{ dim: '渠道', op: 'eq', value: 'asweb' }], site: '中国',
+    };
+    const got = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__run_semantic_query',
+        arguments: { intents_json: JSON.stringify([intent, intent, { ...intent }]) },
+      }],
+    })] as any);
+    expect(got.scopes).toHaveLength(1);
+    expect(got.scopes[0].sites).toEqual(['中国']);
+  });
+
+  it('指标/过滤顺序不同不代表口径不同（排序归一，不拆成两张卡）', () => {
+    const got = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__run_semantic_query',
+        arguments: { intents_json: JSON.stringify([
+          { object: 'case', metrics: ['工单量', '结案率'], filters: [
+            { dim: '渠道', op: 'eq', value: 'asweb' }, { dim: '状态', op: 'eq', value: 'open' },
+          ] },
+          { object: 'case', metrics: ['结案率', '工单量'], filters: [
+            { dim: '状态', op: 'eq', value: 'open' }, { dim: '渠道', op: 'eq', value: 'asweb' },
+          ] },
+        ]) },
+      }],
+    })] as any);
+    expect(got.scopes).toHaveLength(1);
+    expect(got.scopes[0].metrics).toEqual(['工单量', '结案率']);
+    expect(got.scopes[0].filters).toEqual(['渠道 = asweb', '状态 = open']);
+  });
+
+  it('没有站点的 intent 不占站点位（站点清单只列真带站点的）', () => {
+    const got = collectKnowledge([assistant({
+      tool_calls: [{
+        tool: 'mcp__datahub_semantic__run_semantic_query',
+        arguments: { intent_json: JSON.stringify({ object: 'case', dimensions: ['渠道'] }) },
+      }],
+    })] as any);
+    expect(got.scopes[0].sites).toEqual([]);
   });
 
   it('截断的结果被数出来（unparsed），不静默当成没有知识', () => {
@@ -140,13 +265,23 @@ describe('collectKnowledge', () => {
   });
 
   it('物理标识与 SQL 一律不出现在侧栏数据里（护栏 §7）', () => {
-    const blob = JSON.stringify(got);
+    // 知识正文是用户点名要看的内容：只允许落在 sources[].excerpt（与执行过程同一份文本），
+    // 其余字段（口径卡、标题、库名、问题）仍不得带内部标识与查询产物。
+    const withoutExcerpt = JSON.stringify({
+      ...got,
+      citations: got.citations.map(c => ({
+        ...c,
+        sources: c.sources.map(s => ({ ...s, excerpt: '' })),
+      })),
+    });
     for (const forbidden of [
       'pc_isv_info', 'isv_code', 'target_table', 'target_column',
       't_user_customer', 'observability_rum', 'SELECT', 'prd-sls-cn',
     ]) {
-      expect(blob, `侧栏数据不应包含 ${forbidden}`).not.toContain(forbidden);
+      expect(withoutExcerpt, `侧栏数据（正文摘录除外）不应包含 ${forbidden}`).not.toContain(forbidden);
     }
+    // 正文本身允许出现（用户展开即看，不新增信息面）
+    expect(got.citations[0].sources[0].excerpt).toContain('t_user_customer');
   });
 });
 

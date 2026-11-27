@@ -362,6 +362,7 @@
     "citations": "知识引用出处",
     "windowMeta": "窗口 {{value}}",
     "siteMeta": "站点 {{value}}",
+    "siteMetaMore": "站点 {{value}} 等共 {{count}} 站",
     "unregisteredObject": "未登记对象",
     "jumpFallbackObject": "该查询",
     "metricChip": "指标",
@@ -374,7 +375,12 @@
     "op": { "in": "属于", "not_in": "不属于", "like": "包含", "between": "区间" },
     "citationObject": "业务对象 · {{name}}",
     "citationModel": "本体模型 · {{name}}",
-    "citationFragment": "知识库片段"
+    "citationFragment": "知识库片段",
+    "citationShow": "查看「{{title}}」的命中内容",
+    "citationHide": "收起「{{title}}」的命中内容",
+    "citationKb": "来自 {{name}}",
+    "citationClipped": "内容已截断 · 完整原文见该轮执行过程",
+    "citationContentMissing": "正文未随会话留存（该轮检索结果超长被截断）· 原文见该轮执行过程"
   },
   "docEditor": {
     "selectTextFirst": "请先在文档里选中要改字号的文字",

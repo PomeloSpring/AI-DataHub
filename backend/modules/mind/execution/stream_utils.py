@@ -84,6 +84,11 @@ _KNOWLEDGE_TOOLS = {"knowledge_search", "search_business_knowledge"}
 # 从 chunk 正文提取标题（与前端 sourceTitleOf 同口径）
 _HEADING_OBJ = re.compile(r"^##\s*业务对象[:：]\s*([^(（\n]+)", re.MULTILINE)
 _HEADING_MODEL = re.compile(r"^#\s*本体模型[:：]\s*(.+)$", re.MULTILINE)
+#: 每段命中正文随摘要落库的长度。侧栏「查看命中内容」要能读到一段像样的文字
+#: （排查知识是否不全/错误、或直接学习），但不能把 3×2400 的检索结果整份再存一遍；
+#: 上界 = 6 段 × (标题 60 + 库名 80 + 正文 400)，完整原文仍在该轮执行过程里。
+_CITATION_EXCERPT_CHARS = 400
+_CITATION_MAX_SOURCES = 6
 
 
 def _is_knowledge_tool(name: str) -> bool:
@@ -93,8 +98,12 @@ def _is_knowledge_tool(name: str) -> bool:
 def _extract_citation_summary(raw: str) -> list[dict]:
     """从 knowledge_search 原始 JSON 提取轻量引用摘要。
 
-    返回 [{question, sources: [title, ...]}]，总体积极小（几百字节），
-    不受 CONV_TOOL_RESULT_MAX_CHARS 截断影响。
+    返回 ``[{question, sources: [{title, knowledge_base, excerpt, excerpt_truncated}]}]``。
+
+    必须在**原始结果**上抽取（早于展示限长与落库截断）：`result` 对知识检索几乎
+    总被截断（3 段 × 2400 字 > 4000 上限 → JSON 半截解析不了），只存标题的话
+    侧栏「查看知识内容」对绝大多数会话都是空的。体积受 `_CITATION_MAX_SOURCES` ×
+    `_CITATION_EXCERPT_CHARS` 封顶，不受 CONV_TOOL_RESULT_MAX_CHARS 截断影响。
     """
     if not raw:
         return []
@@ -109,24 +118,37 @@ def _extract_citation_summary(raw: str) -> list[dict]:
         if not isinstance(g, dict):
             continue
         question = str(g.get("question") or "").strip()[:80]
-        sources: list[str] = []
+        sources: list[dict] = []
+        seen: set[tuple] = set()
         for chunk in (g.get("chunks") or []):
-            title = ""
-            if isinstance(chunk, dict):
-                title = str(chunk.get("title") or "").strip()[:60]
-                if not title:
-                    content = str(chunk.get("content") or "")
-                    m = _HEADING_OBJ.search(content)
-                    if m:
-                        title = f"业务对象 · {m.group(1).strip()[:40]}"
-                    else:
-                        m2 = _HEADING_MODEL.search(content)
-                        if m2:
-                            title = f"本体模型 · {m2.group(1).strip()[:40]}"
-            if title and title not in sources:
-                sources.append(title)
+            if not isinstance(chunk, dict):
+                continue
+            title = str(chunk.get("title") or "").strip()[:60]
+            content = str(chunk.get("content") or "")
+            if not title:
+                m = _HEADING_OBJ.search(content)
+                if m:
+                    title = f"业务对象 · {m.group(1).strip()[:40]}"
+                else:
+                    m2 = _HEADING_MODEL.search(content)
+                    if m2:
+                        title = f"本体模型 · {m2.group(1).strip()[:40]}"
+            kb = str(chunk.get("knowledge_base") or "").strip()[:80]
+            # 同标题不同库是两处出处，不能按标题合并掉（与 _citations_of 同口径）
+            key = (title, kb)
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            text = content.strip()
+            excerpt = text[:_CITATION_EXCERPT_CHARS]
+            sources.append({
+                "title": title,
+                "knowledge_base": kb,
+                "excerpt": excerpt,
+                "excerpt_truncated": len(text) > len(excerpt),
+            })
         if sources:
-            out.append({"question": question, "sources": sources[:6]})
+            out.append({"question": question, "sources": sources[:_CITATION_MAX_SOURCES]})
     return out
 
 

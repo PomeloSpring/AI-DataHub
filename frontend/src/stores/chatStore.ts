@@ -27,8 +27,20 @@ export interface ToolCall {
   result_truncated?: boolean;
   result_omitted?: boolean;
   knowledge?: KnowledgeResult;
-  /** 服务端轻量引用摘要（knowledge_search 结果被截断时的回退数据源） */
-  citation_summary?: { question: string; sources: string[] }[];
+  /**
+   * 服务端轻量引用摘要（在 knowledge_search **原始结果**上抽取，早于展示限长与落库截断）。
+   * 新形态 `sources` 是对象（带正文 excerpt，供侧栏「查看命中内容」）；旧会话是纯标题字符串 ——
+   * 读侧两种都得认，不得把旧数据当成“没有出处”。
+   */
+  citation_summary?: {
+    question: string;
+    sources: Array<string | {
+      title: string;
+      knowledge_base?: string;
+      excerpt?: string;
+      excerpt_truncated?: boolean;
+    }>;
+  }[];
   error?: string;
   elapsed?: number;
 }

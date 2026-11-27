@@ -9,10 +9,10 @@
  * 「会话技能」列的是回合 meta 里的装载事实（常驻/附带/取回），不是模型自述，
  * 也不与技能**绑定清单**混为一谈：没加载的技能不进这一节（侧栏只报“真读过哪些细则”）。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
-  Archive, ArrowLeftRight, BarChart3, Blocks, BookOpen, Crosshair, FileBarChart, FileType,
-  FolderOpen, Loader2, PanelRightClose, Sparkles,
+  Archive, ArrowLeftRight, BarChart3, Blocks, BookOpen, ChevronDown, ChevronRight,
+  Crosshair, FileBarChart, FileType, FolderOpen, Loader2, PanelRightClose, Sparkles,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -112,12 +112,22 @@ function SkillRow({ card, label, onJump }: { card: SkillUsageCard; label: string
   );
 }
 
+/** 站点并列展示的上限：meta 行是 shrink-0，站点全量铺开会把对象名挤没（name 必须可见），
+ *  超出就收成「等 N 站」，完整清单放 title。 */
+const SITES_META_MAX = 3;
+
 function ScopeRow({ card, onJump }: { card: ScopeCard; onJump: (i: number) => void }) {
   const { t } = useTranslation('chat');
-  const meta = [
-    card.timeWindow ? t('sidePanel.windowMeta', { value: card.timeWindow }) : '',
-    card.site ? t('sidePanel.siteMeta', { value: card.site }) : '',
-  ].filter(Boolean);
+  const windowMeta = card.timeWindow ? t('sidePanel.windowMeta', { value: card.timeWindow }) : '';
+  const siteMetaFull = card.sites.length ? t('sidePanel.siteMeta', { value: card.sites.join('/') }) : '';
+  const siteMeta = !siteMetaFull ? '' : card.sites.length > SITES_META_MAX
+    ? t('sidePanel.siteMetaMore', {
+      value: card.sites.slice(0, SITES_META_MAX).join('/'), count: card.sites.length,
+    })
+    : siteMetaFull;
+  const meta = [windowMeta, siteMeta].filter(Boolean);
+  // 收起后的完整口径进 title（站点清单不因展示上限而丢）
+  const metaFull = [windowMeta, siteMetaFull].filter(Boolean);
   return (
     <li className="space-y-1 rounded-md border border-border/60 bg-card p-2">
       <div className="flex items-center gap-1.5">
@@ -125,7 +135,10 @@ function ScopeRow({ card, onJump }: { card: ScopeCard; onJump: (i: number) => vo
           {card.object || t('sidePanel.unregisteredObject')}
         </span>
         {meta.length > 0 && (
-          <span className="shrink-0 text-[10px] text-muted-foreground">{meta.join(' · ')}</span>
+          <span className="max-w-[55%] shrink-0 truncate text-[10px] text-muted-foreground"
+            title={metaFull.join(' · ')}>
+            {meta.join(' · ')}
+          </span>
         )}
         <JumpButton idx={card.idx} onJump={onJump} label={t('sidePanel.jumpTo', { title: card.object || t('sidePanel.jumpFallbackObject') })} />
       </div>
@@ -150,6 +163,8 @@ function ScopeRow({ card, onJump }: { card: ScopeCard; onJump: (i: number) => vo
 
 function CitationRow({ card, onJump }: { card: CitationCard; onJump: (i: number) => void }) {
   const { t } = useTranslation('chat');
+  // 一次展开一条出处：知识正文是排查“知识不全/错误”与学习的入口，逐条看才不刷屏
+  const [openTitle, setOpenTitle] = useState<string | null>(null);
   return (
     <li className="space-y-1 rounded-md border border-border/60 bg-card p-2">
       <div className="flex items-start gap-1.5">
@@ -158,15 +173,50 @@ function CitationRow({ card, onJump }: { card: CitationCard; onJump: (i: number)
         </span>
         <JumpButton idx={card.idx} onJump={onJump} label={t('sidePanel.jumpToCitation')} />
       </div>
-      {/* 只到出处标题：片段正文含物理表名（内部 md），侧栏不把它当"业务卡片"端出来 */}
       <ul className="space-y-0.5">
-        {card.sources.map(s => (
-          <li key={s} className="flex items-center gap-1 text-[11px] text-muted-foreground">
-            <BookOpen className="h-3 w-3 shrink-0" />
-            <span className="min-w-0 truncate" title={s}>{s}</span>
-          </li>
-        ))}
+        {card.sources.map(s => {
+          const expandable = !!s.excerpt;
+          const open = openTitle === s.title;
+          return (
+            <li key={s.title}>
+              <button
+                type="button"
+                disabled={!expandable}
+                onClick={() => setOpenTitle(open ? null : s.title)}
+                title={expandable
+                  ? t(open ? 'sidePanel.citationHide' : 'sidePanel.citationShow', { title: s.title })
+                  : s.title}
+                className="flex w-full items-center gap-1 rounded px-0.5 py-0.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              >
+                <BookOpen className="h-3 w-3 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                {expandable && (open
+                  ? <ChevronDown className="h-3 w-3 shrink-0" />
+                  : <ChevronRight className="h-3 w-3 shrink-0" />)}
+              </button>
+              {open && (
+                <div className="mt-0.5 space-y-1 rounded border border-border/60 bg-muted/40 p-1.5">
+                  {s.kb && (
+                    <p className="text-[10px] text-muted-foreground">
+                      {t('sidePanel.citationKb', { name: s.kb })}
+                    </p>
+                  )}
+                  <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">
+                    {s.excerpt}
+                  </p>
+                  {s.clipped && (
+                    <p className="text-[10px] text-muted-foreground">{t('sidePanel.citationClipped')}</p>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
+      {/* 旧会话的摘要只存了标题：明确说正文没留存，不摆个点不开的展开键装作有内容 */}
+      {card.contentMissing && (
+        <p className="text-[10px] text-muted-foreground">{t('sidePanel.citationContentMissing')}</p>
+      )}
       <p className="text-[10px] text-muted-foreground">{t('sidePanel.citationHits', { count: card.chunks })}</p>
     </li>
   );
