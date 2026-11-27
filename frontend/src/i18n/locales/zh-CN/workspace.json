@@ -510,9 +510,11 @@
   "filterByCategory": "栏目筛选",
   "filterByKind": "形态筛选",
   "filterByLang": "语言筛选",
+  "filterByTag": "标签筛选",
   "allCategories": "全部栏目",
   "allKinds": "全部形态",
   "allLanguages": "全部语言",
+  "allTags": "全部标签",
   "langZhBody": "中文正文",
   "langEnBody": "English 正文",
   "createArticle": "新建内容"

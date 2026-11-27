@@ -512,9 +512,11 @@
   "filterByCategory": "Filter by category",
   "filterByKind": "Filter by format",
   "filterByLang": "Filter by language",
+  "filterByTag": "Filter by tag",
   "allCategories": "All categories",
   "allKinds": "All formats",
   "allLanguages": "All languages",
+  "allTags": "All tags",
   "langZhBody": "Chinese body",
   "langEnBody": "English body",
   "createArticle": "New article"

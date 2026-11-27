@@ -158,7 +158,7 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
   const [sp] = useSearchParams();
   const { has } = useContentPerms();
   const { user } = useAuthStore();
-  const { categories, reload: reloadTaxonomy } = useTaxonomy();
+  const { categories, tags, reload: reloadTaxonomy } = useTaxonomy();
 
   const canEdit = has('article:manage');
   const canPublish = has('article:publish');
@@ -182,6 +182,8 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
   const [category, setCategory] = useState(ALL);
   const [kind, setKind] = useState(KIND_ALL);
   const [lang, setLang] = useState<'' | 'zh-CN' | 'en-US'>('');
+  // 标签筛：选项取自受控词表 useTaxonomy（不硬编码），上送事实源名 tag（服务端 LIKE 精确元素匹配）
+  const [tag, setTag] = useState(ALL);
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(true);
@@ -218,6 +220,8 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
       kind: kind === KIND_ALL ? '' : kind,
       // 双语条目：按正文语言筛（受控清单外值服务端 400；空串 = 不筛）
       lang,
+      // 哨兵不外传：空串 = 不筛；服务端按文章 tags JSON 的精确元素匹配
+      tag: tag === ALL ? '' : tag,
       q,
       page,
       page_size: pageSize,
@@ -226,12 +230,12 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
       .then(res => { setItems(res.data.items); setTotal(res.data.total); })
       .catch(err => { setError(contentError(err)); setItems([]); setTotal(0); })
       .finally(() => setLoading(false));
-  }, [scope, user?.username, status, expired, category, kind, lang, q, page, pageSize]);
+  }, [scope, user?.username, status, expired, category, kind, lang, tag, q, page, pageSize]);
 
   useEffect(load, [load]);
 
   // 换筛选条件或翻页就清勾选：勾选属于“这一页这份清单”，带过去等于让用户对没看到的条目下手
-  useEffect(() => { setSelected([]); setBatchResult(null); }, [status, expired, category, kind, lang, q, page, pageSize]);
+  useEffect(() => { setSelected([]); setBatchResult(null); }, [status, expired, category, kind, lang, tag, q, page, pageSize]);
 
   const picked = items.filter(a => selected.includes(a.slug));
   const allPicked = items.length > 0 && picked.length === items.length;
@@ -297,6 +301,14 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
             {categories.map(c => <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>)}
           </SelectContent>
         </Select>
+        {/* 标签筛：选项来自受控词表（与列表行 TagChips 同一事实源名），选中即服务端过滤 */}
+        <Select value={tag} onValueChange={v => { setTag(v); setPage(1); }}>
+          <SelectTrigger className="w-[150px]" aria-label={t("workspace:filterByTag", tr('k_c5e81f37'))}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>{t("workspace:allTags", tr('k_9a2d6b40'))}</SelectItem>
+            {tags.map(g => <SelectItem key={g.tag} value={g.tag}>{g.tag}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={kind} onValueChange={v => { setKind(v); setPage(1); }}>
           <SelectTrigger className="w-[130px]" aria-label={t("workspace:filterByKind", tr('k_9e015a509b'))}><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -310,7 +322,9 @@ export default function ArticleTable({ scope }: { scope: 'all' | 'mine' }) {
           <SelectContent>
             <SelectItem value="all">{t("workspace:allLanguages", tr('k_e701cb9a7c'))}</SelectItem>
             <SelectItem value="zh-CN">{t("workspace:langZhBody", tr('k_b1ef48e0dd'))}</SelectItem>
-            <SelectItem value="en-US">{t('k_464fbc58b4')}</SelectItem>
+            {/* 与 zh-CN 对称走语义 key（32081d6 收尾时只 hash 化了 en 侧，造成两处文案漂移、
+                语言筛用例红）：workspace 语义 key 优先，hash key 只作兑底 */}
+            <SelectItem value="en-US">{t("workspace:langEnBody", tr('k_464fbc58b4'))}</SelectItem>
           </SelectContent>
         </Select>
         <Button variant="outline" onClick={() => { setQ(qInput.trim()); setPage(1); }}>{t("common:action.search", tr('k_f04090805c'))}</Button>
