@@ -15,6 +15,12 @@ aiohttp>=3.12.15,<4
 # - pandas
 # - numpy
 qodercn-agent-sdk>=1.0.15
+# claude 后端(执行层 layer_type=cli / cli_name=claude)的 Anthropic 协议直连 SDK，
+# wheel 自带 bundled Claude Code 二进制(见 anthropic_direct.claude_bundled_cli)。
+# 与 qodercn-agent-sdk 是两条独立模型通道: sdk_tools.compat.load_sdk 按后端 import,
+# 缺包不会回退 qoder(fail-loud)，默认 Harness 指向 claude 层时整个 AS-BOT 问答会报
+# ModuleNotFoundError，故必须与 qodercn-agent-sdk 一同声明，不能只靠宿主机残留安装。
+claude-agent-sdk>=0.1.0
 
 # Multimodal processing (chat attachments)
 opencv-python-headless>=4.8.0
