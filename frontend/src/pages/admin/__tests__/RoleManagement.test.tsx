@@ -515,3 +515,41 @@ describe('角色权限 — 菜单与功能区一键全选/反选', () => {
     ]);
   });
 });
+
+describe('角色一键复制（含 AS-BOT 配置，不带绑定用户）', () => {
+  it('点复制按钮打开弹窗：标识/显示名预填副本后缀、描述沿用来源角色', async () => {
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    expect(await screen.findByText('一键复制角色')).toBeInTheDocument();
+    expect(screen.getByText('复制自：查看角色')).toBeInTheDocument();
+    expect((screen.getByPlaceholderText('如 sales_cn') as HTMLInputElement).value).toBe('viewer_copy');
+    expect((screen.getByPlaceholderText('如 中国区销售') as HTMLInputElement).value).toBe('查看角色副本');
+  });
+
+  it('确认复制按新名称提交 duplicate 请求，成功后关闭弹窗并刷新列表', async () => {
+    vi.mocked(client.post).mockResolvedValue({ data: { success: true, id: 2, prompt_renamed: 0 } } as any);
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    fireEvent.change(await screen.findByPlaceholderText('如 sales_cn'), { target: { value: 'viewer_apac' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认复制' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/roles/1/duplicate', {
+      name: 'viewer_apac', display_name: '查看角色副本', description: '',
+    }));
+    await waitFor(() => expect(screen.queryByText('一键复制角色')).toBeNull());
+    // 复制后列表要重取（新角色要出现在清单里）
+    expect(vi.mocked(client.get).mock.calls.filter(c => c[0] === '/roles/').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('服务端拒绝（如重名）时保留弹窗并透出原因，不假装复制成功', async () => {
+    vi.mocked(client.post).mockRejectedValue({
+      response: { data: { detail: '角色标识「viewer_copy」已存在，请换一个' } },
+    });
+    render(<MemoryRouter><RoleManagement /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '复制角色' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认复制' }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(1));
+    // 弹窗必须还在（失败不静默关掉装作成功），列表不重取
+    expect(screen.getByText('一键复制角色')).toBeInTheDocument();
+    expect(vi.mocked(client.get).mock.calls.filter(c => c[0] === '/roles/').length).toBe(1);
+  });
+});

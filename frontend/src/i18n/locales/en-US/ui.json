@@ -4942,5 +4942,15 @@
   "k_0eae1be41b": "Only the latest 100 of {{p0}} records are loaded; delete in batches",
   "k_f8de3dbe92": "Deleting",
   "k_d1ebd112e1": "Select the records to delete first",
-  "k_b70cd14cf7": "Unexpected response shape from the quality rules API (the backend may not have been restarted); please restart and retry"
+  "k_b70cd14cf7": "Unexpected response shape from the quality rules API (the backend may not have been restarted); please restart and retry",
+  "k_daf2a08370": "Copy role",
+  "k_5b9e49beec": "Duplicate role",
+  "k_11b5915433": "Copies all permission settings (menus & features, datasources, datasets, dashboards, security policies, data scope) and AS-BOT configuration (prompts, persona, tools, knowledge bases, models) to the new role. Assigned users are NOT copied. Occurrences of the old role name in prompts/description are replaced with the new names.",
+  "k_dcb2fcb7cc": "Copying from: {{p0}}",
+  "k_d987a67e3b": "Duplicate",
+  "k_169412f7b5": "Duplicating...",
+  "k_cd539c7f34": "Role duplicated as \"{{p0}}\": permissions and AS-BOT configuration copied; assigned users were not copied.",
+  "k_19826885e0": "{{p0}} occurrence(s) of the old role name in prompts/description were replaced with the new name.",
+  "k_d98b876671": "Failed to duplicate role",
+  "k_0428b36ab1": " (Copy)"
 }

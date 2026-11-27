@@ -553,8 +553,10 @@ _CONFIG_TABLES = ("adh_as_bots", "adh_role_perms", "adh_perm_registry",
                   "adh_role_attributes", "adh_roles")
 _WRITE_RE = re.compile(
     r"\b(INSERT INTO|UPDATE|DELETE FROM)\s+(" + "|".join(_CONFIG_TABLES) + r")\b", re.I)
-# 经这些 helper 间接失效（helper 自己必须接 invalidate，由下一条测试保证）
-_DELEGATES = ("write_user_role_binding", "_apply_user_role")
+# 经这些 helper 间接失效（失效由调用方接线，由下一条测试保证）：
+# _duplicate_as_bot 是 duplicate_role 的内部 helper，配置写在 _txn 里，
+# 提交后由 duplicate_role 调 _invalidate_as_bot_config。
+_DELEGATES = ("write_user_role_binding", "_apply_user_role", "_duplicate_as_bot")
 # 显式登记豁免（写的是配置表，但不落任何被缓存字段 / 不在服务进程内）
 _INVALIDATE_EXCEPTIONS = {
     # 只回写 source_config 里的 notebook_id（重建 notebook），缓存字段 id/name/kb_type/status 不变
@@ -602,3 +604,5 @@ def test_delegating_helpers_actually_invalidate():
     body = _func_source(role_service_module, "_apply_user_role")
     assert "write_user_role_binding" in body and "adh_user_roles" not in body, (
         "绕过唯一写入口自己改绑定行 = 失效钩子失效")
+    assert "invalidate" in _func_source(role_service_module, "duplicate_role"), (
+        "_duplicate_as_bot 的配置写必须由调用方 duplicate_role 在提交后失效")
