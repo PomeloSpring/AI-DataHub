@@ -74,7 +74,7 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
   // 旧实现是无条件 `scrollTop = scrollHeight`，后台 3s 轮询 refreshConversation 一刷新
   // 就把正在上翻看历史的人弹回底部——上翻不打断、只有自己的新提问才主动跳底。
   const getScrollViewport = useCallback(() => scrollRef.current, []);
-  const { stickRef, atBottom, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, messages.length);
+  const { stickRef, showJumpButton, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, messages.length);
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
   const lastMsg = messages[messages.length - 1];
@@ -302,9 +302,9 @@ export default function AsBotPanel({ fullscreen = false }: { fullscreen?: boolea
           )}
         </div>
       </div>
-      {/* 回到底部：上翻查看历史/后台轮询刷新时不再被拽下去，但回程要给出（与 Chat 同一组件、同一判定） */}
+      {/* 回到底部：离开底部够远才给（与 Chat 同一组件、同一判定）；后台轮询刷新不再把上翻的人拽下去 */}
       <BackToBottomButton
-        atBottom={atBottom}
+        show={showJumpButton}
         loading={loading || stopping}
         onScrollToBottom={() => scrollToBottom('smooth')}
         className={`px-4 ${contentWidth}`}

@@ -413,7 +413,7 @@ export default function Chat() {
   const hasTurnUI = messages.length > 0 || !!pendingQuestion;
   // 用户是否停留在底部: 上滚查看历史时不打断, 回到底部后恢复自动跟随
   // （判定口径唯一实现处 hooks/useStickToBottom，不在页面里另写一套）。
-  const { stickRef, atBottom, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, hasTurnUI);
+  const { stickRef, showJumpButton, scrollToBottom, setStick } = useStickToBottom(getScrollViewport, hasTurnUI);
 
   const prevMsgCountRef = useRef(0);
   const prevConvIdRef = useRef<number | null | undefined>(undefined);
@@ -2227,10 +2227,10 @@ export default function Chat() {
         </ScrollArea>
         {/* 提问节点导航：挂在 ScrollArea 根层（不随内容滚动），占正文右侧那段留白 */}
         <TurnNavigator turns={questionTurns} getAnchor={getMsgAnchor} getViewport={getScrollViewport} />
-        {/* 回到底部：只在用户离开底部时出现（生成中文案换成「有新内容」），
-            上翻查看历史时不再被自动滚动打断，但回程要给用户自己按。 */}
+        {/* 回到底部：离开底部够远才出现（生成中箭头脉冲），上翻查看历史时不再被自动滚动打断，
+            但回程要给用户自己按。 */}
         <BackToBottomButton
-          atBottom={atBottom}
+          show={showJumpButton}
           loading={loading}
           onScrollToBottom={() => scrollToBottom('smooth')}
           className={CHAT_COLUMN}

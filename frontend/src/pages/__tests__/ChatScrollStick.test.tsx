@@ -38,13 +38,18 @@ const ai = (content: string) => ({ role: 'assistant', content });
 /** 滚动几何（注入值，与下方 defineProperty 对应） */
 const SCROLL_HEIGHT = 2000;
 const CLIENT_HEIGHT = 600;
-/** 距底 80px 以内算贴底（阈值真值源 hooks/useStickToBottom.NEAR_BOTTOM_PX） */
-const AT_BOTTOM_TOP = SCROLL_HEIGHT - CLIENT_HEIGHT;
 
 /** 会话正文里始终存在的标记（用它认出“消息区那个” viewport） */
 const CONV_MARKER = '你好';
 
-const scrollTo = vi.fn();
+const scrollTo = vi.fn(function (this: HTMLElement, opts?: { top?: number; behavior?: string }) {
+  // 桩成真实浏览器行为：把 scrollTop 落到目标并派发回声事件。
+  // 回声必须成对消费，否则 hook 会把下一次用户滚动当成回声吞掉。
+  const geo = (this as unknown as { __geo?: { scrollTop: number } }).__geo;
+  if (!geo || typeof opts?.top !== 'number') return;
+  geo.scrollTop = Math.min(opts.top, SCROLL_HEIGHT - CLIENT_HEIGHT);
+  this.dispatchEvent(new Event('scroll'));
+});
 
 /**
  * 取消息区的 ScrollArea viewport。
@@ -58,21 +63,32 @@ function getViewport(): HTMLElement {
   return vp!;
 }
 
-/**
- * 注入几何并把用户置到指定位置（jsdom 无布局，同 TurnNavigator.test.tsx 口径：
- * scrollTop 接到可变 state 上，再派发 scroll 事件让监听器读到事实）。
- */
-function placeUser(vp: HTMLElement, atBottom: boolean) {
-  const geo = { scrollTop: atBottom ? AT_BOTTOM_TOP : 0 };
-  Object.defineProperty(vp, 'scrollHeight', { configurable: true, get: () => SCROLL_HEIGHT });
-  Object.defineProperty(vp, 'clientHeight', { configurable: true, get: () => CLIENT_HEIGHT });
-  Object.defineProperty(vp, 'scrollTop', {
+/** 给元素注入几何（只做一次，把 scrollTop 接到可变 state 上） */
+function geoOf(box: HTMLElement): { scrollTop: number } {
+  const held = (box as unknown as { __geo?: { scrollTop: number } }).__geo;
+  if (held) return held;
+  const geo = { scrollTop: 0 };
+  Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => SCROLL_HEIGHT });
+  Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => CLIENT_HEIGHT });
+  Object.defineProperty(box, 'scrollTop', {
     configurable: true,
     get: () => geo.scrollTop,
     set: (v: number) => { geo.scrollTop = v; },
   });
-  act(() => { vp.dispatchEvent(new Event('scroll')); });
+  (box as unknown as { __geo: typeof geo }).__geo = geo;
+  return geo;
 }
+
+/** 把用户放到“距底部 gap 像素”的位置（jsdom 无布局，同 TurnNavigator.test.tsx 口径） */
+function placeGap(box: HTMLElement, gap: number) {
+  const geo = geoOf(box);
+  act(() => {
+    geo.scrollTop = SCROLL_HEIGHT - CLIENT_HEIGHT - gap;
+    box.dispatchEvent(new Event('scroll'));
+  });
+}
+
+const placeUser = (box: HTMLElement, atBottom: boolean) => placeGap(box, atBottom ? 0 : 1400);
 
 function mount() {
   render(<MemoryRouter><Chat /></MemoryRouter>);
@@ -120,6 +136,30 @@ describe('生成中上翻查看历史：不被拽回底部', () => {
     pushMessages([user('你好'), ai('')]);
     expect(scrollTo).not.toHaveBeenCalled();
   });
+
+  it('轻微上翻（距底 150px）不弹回程按钮，但也不再自动跟随', () => {
+    mount();
+    placeGap(getViewport(), 150);
+    expect(screen.queryByRole('button', { name: '有新内容' })).not.toBeInTheDocument();
+    scrollTo.mockClear();
+    pushMessages([user('你好'), ai('在的，我是助手，正在为你查询本季度的销售数据')]);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('只翻 20px（仍在 80px 阈值内）也算上翻：方向优先，立即停止跟随', () => {
+    mount();
+    const vp = getViewport();
+    placeGap(vp, 100);
+    placeGap(vp, 40);        // 往下滚到距底 40px：重新挂上跟随
+    scrollTo.mockClear();
+    pushMessages([user('你好'), ai('在的，我是助手，结果快出来了')]);
+    expect(scrollTo).toHaveBeenCalled();      // 对照组：阈值内确实会跟随
+
+    placeGap(vp, 60);        // 往上翻 20px（仍在 80px 阈值内）
+    scrollTo.mockClear();
+    pushMessages([user('你好'), ai('在的，我是助手，结果快出来了，已关联三个数据源')]);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
 });
 
 describe('自己发出新问题：主动滚到底', () => {
@@ -161,11 +201,18 @@ describe('回到底部按钮：回程交给用户按', () => {
     expect(scrollTo).toHaveBeenCalled();
   });
 
-  it('非生成态文案是「回到底部」，贴底时不渲染', () => {
+  it('非生成态也有回程按钮（只有箭头，文案只进无障碍名），贴底时不渲染', () => {
     act(() => { useChatStore.setState({ loading: false } as never); });
     mount();
     expect(screen.queryByRole('button', { name: '回到底部' })).not.toBeInTheDocument();
     placeUser(getViewport(), false);
-    expect(screen.getByRole('button', { name: '回到底部' })).toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: '回到底部' });
+    expect(btn).toBeInTheDocument();
+    // 不写可见文字：按钮里只有一个箭头图标，没任何文本节点
+    expect(btn.textContent).toBe('');
+    expect(btn.querySelector('svg')).toBeTruthy();
+    // 形态（用户拍板）：圆形主题色底，与发送钮同一个 Button 默认变体
+    expect(btn.className).toContain('rounded-full');
+    expect(btn.className).toContain('bg-primary');
   });
 });
