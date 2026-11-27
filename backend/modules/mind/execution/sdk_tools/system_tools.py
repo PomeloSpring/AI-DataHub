@@ -265,8 +265,6 @@ async def system_capability_plan(args):
         }, is_error=True)
 
     rules = {str(r.get("key") or ""): r for r in (doc.get("rules") or [])}
-    actions = {str(a.get("key") or ""): a
-               for o in (doc.get("objects") or []) for a in (o.get("actions") or [])}
     try:
         from backend.core.role_service import role_service
         role_perms = role_service.get_user_role_ai_perms(
@@ -288,36 +286,21 @@ async def system_capability_plan(args):
                     "回答即可，不得自行编造步骤顺序。",
         })
 
-    def _order(st) -> int:
-        try:
-            return int(st.get("order"))
-        except (TypeError, ValueError):
-            return 99
-
+    # P2：步骤执行契约（精确工具名/executor/Schema/幂等/超时）由 capability_runtime
+    # 从 active 本体契约展开；这里只叠加“当前身份能不能做”，不重复裁决。
+    from backend.modules.mind.execution import capability_runtime as caprt
+    try:
+        # doc 直接展开（描述通道）：执行链的指纹硬校验在 capability_runtime.execute_action
+        plan = caprt.build_capability_plan(scn, doc=doc)
+    except caprt.CapabilityRuntimeError as e:
+        logger.error("[system_capability_plan] 能力计划展开失败: %s", e)
+        return _text({"error": f"系统能力计划不可用：{e}"}, is_error=True)
     steps = []
-    for st in sorted(flow, key=_order):
-        action_key = str(st.get("action") or "")
-        act = actions.get(action_key) or {}
-        code = str(st.get("perm_code") or "")
+    for st in plan["steps"]:
         channel = str(st.get("channel") or "")
-        read_only = bool(act.get("read_only"))
-        can, why = _step_runnable(channel, code, read_only, role_perms)
-        steps.append({
-            "order": st.get("order"),
-            "action": action_key,
-            "label": st.get("action_label") or act.get("label") or action_key,
-            "purpose": st.get("purpose") or "",
-            "channel": channel,
-            "perm_code": code,
-            "read_only": read_only,
-            "consumes": st.get("consumes") or "",
-            "produces": st.get("produces") or "",
-            "rule_gates": [{"key": str(rk),
-                            "statement": (rules.get(str(rk)) or {}).get("statement", "")}
-                           for rk in (st.get("gated_by") or [])],
-            "you_can_run": can,
-            "why_not": why,
-        })
+        code = str(st.get("perm_code") or "")
+        can, why = _step_runnable(channel, code, bool(st.get("read_only")), role_perms)
+        steps.append({**st, "you_can_run": can, "why_not": why})
 
     return _text({
         "scenario": header,

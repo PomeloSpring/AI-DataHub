@@ -47,7 +47,7 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 
 ## 7. 解析行为守则（确定性编译层）
 - 名字解析优先级固定：字典精确名(name/name_en) → 字典别名 → `binding.column_map` → 物理列业务名(business_desc) → 物理列名兜底；每一档必须记录 `resolution_source` 入 provenance。
-- **包含式模糊只回抛候选（`fuzzy_rejected` + `fuzzy_hint`），绝不静默绑定**——错数比无答案危害大（宁缺勿错）；被拒词自动落入 `adh_alias_suggestions`（见 FDE 规则）。
+- **包含式模糊只回抛候选（`fuzzy_rejected` + `fuzzy_hint`），绝不静默绑定**——错数比无答案危害大（宁缺勿错）；被拒词自动落入候选真源 `adh_evolution_candidates`（旧 `adh_alias_suggestions` 仅冻结历史，处置统一走进化决策服务，见 FDE 规则）。
 - 解析失败/未解析提示只允许出现业务名候选与字典清单，**不得含任何物理表/列名**（有 no_leak 用例把门）。
 
 ## 8. 建模回归门禁
@@ -171,9 +171,18 @@ description: 本体建模规范（Ontology Modeling Spec）。本体是唯一语
 | AS-BOT 工具 | `sdk_tools/system_tools.py:system_capability_plan` | 只读计划（admin-only），每步回 `you_can_run`/`why_not`（channel=human 恒 false；ai 按持码 + `perm_link.effective_level`）；它是**描述**，真调用仍由 `require_write_perm` fail-closed 裁决 |
 | 提示词 | `prompt_composer.CAPABILITY_PLAN_RULES` | 多步任务先取计划；`channel=human` 只能交给人；`you_can_run=false` 不得声称已完成。**只在本会话注册了 `system_capability_plan` 时注入**（`has_capability_plan`）：它属 `system` 组，与 `screen` 组是两套授权，写进 `SCREEN_DIRECT_RULES` 会出现「有 screen 没 system」时教模型调不存在的工具（空承诺） |
 
-### 10.6 反模式
+### 10.6 执行边界：flow 默认是声明式计划，自动执行是显式受控例外
+- **默认（plan）**：`flow` 只是声明式计划（`execution.mode=plan` 或缺省）。执行仍逐步由 模型显式调用、逐步过权限码。
+- **受控自动执行（auto）**仅当以下三条**同时**成立才可执行，缺一即拒（fail-loud，回 plan 语义）：
+  1. 场景显式声明 `execution: {mode: "auto", enabled: true, input_schema, allowlist}`；
+  2. 场景 key 命中服务端白名单（`CAPABILITY_FLOW_SCENARIOS`，当前且唯一试点：`ops_content_publish`）；
+  3. 特性开关 `CAPABILITY_FLOW_AUTO_ENABLED=true`（默认 false）。
+- 自动执行走 P2 运行时逐动作契约执行：每步权限码再裁、人工步骤停在 `waiting_human`（AI 不得代做）、绑定表达式（`input_bindings`/`output_bindings`）是机器执行的唯一依据（`consumes`/`produces` 只是可读说明）。
+
+### 10.7 反模式
 - ❌ flow 里手写 perm_code/channel（两套清单必然漂移）；
 - ❌ 步骤 `consumes` 一个没有任何前置 `produces` 的东西（串联是假的）；
 - ❌ 动作标 `ai` 但既不在功能工具、本体工具里也没有该码的写码把关（模型会去调不存在的工具）；
 - ❌ 别名不登记、不回归一就上云（模型拿口语名取不到计划，联动入口等于不存在）；
-- ❌ 拿 `flow` 当执行器（在服务端按 `order` 自动连跑动作）——执行必须逐步由模型显式调用、逐步过权限码。
+- ❌ 未显式声明 `execution.mode=auto` 却在服务端按 `order` 自动连跑动作（默认就是声明式计划）；
+- ❌ 开关关闭/白名单未命中时仍执行自动流程，或对人工步骤自动执行、跳过 `waiting_human`。

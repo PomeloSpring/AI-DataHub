@@ -19,6 +19,8 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core import perm_link
+from backend.modules.catalog.services import evolution_decision_service as decide
+from backend.modules.catalog.services import evolution_query_service as queries
 from backend.modules.catalog.services import evolution_service as evo
 from backend.modules.catalog.services import knowledge_update_service as kus
 from backend.modules.mind.execution import function_tools as ft
@@ -44,12 +46,20 @@ def _payload(result) -> dict:
 
 
 def _fake_ctx():
-    return SimpleNamespace(user_id=1, workspace_id=0)
+    return SimpleNamespace(user_id=1, workspace_id=22)
+
+
+def _fake_evo_ctx():
+    return SimpleNamespace(user_id=1, workspace_id=22, actor="tester", channel="ai",
+                           datasource_names=("es_prod",), allowed_datasources=(5,),
+                           datasource_options=({"id": 5, "name": "es_prod",
+                                                 "db_type": "mysql"},))
 
 
 def _wire_handler(monkeypatch):
-    """把身份/权限/审计换成测试替身，只留业务分支。"""
-    monkeypatch.setattr(ft, "_evo_context", lambda: (_fake_ctx(), "tester"))
+    """把身份/权限/审计换成测试替身，只留业务分支（决策/查询走服务层薄适配）。"""
+    monkeypatch.setattr(ft, "_evo_query_context",
+                        lambda: (_fake_ctx(), _fake_evo_ctx(), "tester"))
     monkeypatch.setattr(ft, "_evo_audit", lambda *a, **k: None)
     monkeypatch.setattr(perm_link, "require_write_perm", lambda *a, **k: None)
 
@@ -121,18 +131,23 @@ def test_internal_id_args_are_rejected(monkeypatch):
 
 
 def test_queue_projection_has_no_internal_ids(monkeypatch):
+    """队列投影走 query 服务：内部 id/版本不出现在 AI 视图里。"""
     cand = {"id": 42, "term": "渠道", "kind": "new_dimension", "source": "feedback",
             "datasource_name": "", "hit_count": 3, "status": "pending",
-            "created_at": None, "evidence": {}}
-    monkeypatch.setattr(evo, "list_candidates", lambda **kw: [cand])
-    monkeypatch.setattr(evo, "overview", lambda: {"pending_by_kind": {"new_dimension": 1}})
-    monkeypatch.setattr(evo, "suggest_action", lambda c: {
-        "suggested_kind": "new_dimension", "queue": "build", "tier": "act"})
-    monkeypatch.setattr(kus, "list_proposals", lambda **kw: {
+            "decision_version": 1, "expected_version": 1,
+            "created_at": "2026-11-20 10:00:00", "evidence": {}}
+    _wire_handler(monkeypatch)
+    monkeypatch.setattr(queries, "list_candidates", lambda ctx, **kw: {
+        "items": [cand], "total": 1, "page": 1, "page_size": 30})
+    monkeypatch.setattr(queries, "list_proposals", lambda ctx, **kw: {
         "items": [{"id": 7, "title": "补一段口径", "target_type": "kb_doc",
                    "target_hint": "", "source": "chat", "datasource_name": "",
-                   "created_at": "2026-11-20 10:00", "rationale": "r"}],
-        "counts": {"pending": 1}})
+                   "created_at": "2026-11-20 10:00:00", "rationale": "r",
+                   "decision_version": 1, "expected_version": 1}],
+        "total": 1, "page": 1, "page_size": 30})
+    monkeypatch.setattr(queries, "overview", lambda ctx: {
+        "pending_by_kind": {"new_dimension": 1},
+        "proposal_counts": {"pending": 1}})
 
     out = _payload(ft._list_evolution_review_queue({}))
     assert out["candidates"][0]["term"] == "渠道"
@@ -142,65 +157,74 @@ def test_queue_projection_has_no_internal_ids(monkeypatch):
 
 
 def test_dimension_draft_hides_physical_column_and_ids(monkeypatch):
+    """维度草稿只把业务属性名送进决策服务，物理列不出现在工具输出里。"""
     _wire_handler(monkeypatch)
-    monkeypatch.setattr(ft, "_evo_find_candidate", lambda *a, **k: {
-        "id": 9, "term": "渠道", "datasource_name": "es_prod"})
-    monkeypatch.setattr(evo, "object_options", lambda ds: [
-        {"key": "case", "display_name": "案例"}])
-    monkeypatch.setattr(evo, "property_options", lambda **kw: [
-        {"property": "客户等级", "column_name": "customer_level"}])
     captured = {}
 
-    def _create(**kwargs):
+    def _decide(ctx, **kwargs):
         captured.update(kwargs)
-        return {"success": True, "id": 77, "name": "渠道",
-                "target_column": "channel", "message": "已绑定"}
+        return {"changed": True, "term": "渠道", "domain_ref": "渠道",
+                "property": "客户等级", "message": "维度草稿已创建（未启用）"}
 
-    monkeypatch.setattr(evo, "create_dimension_draft", _create)
+    monkeypatch.setattr(decide, "decide_candidate_by_name", _decide)
 
     out = _payload(ft._create_dimension_from_evolution(
         {"term": "渠道", "object": "案例", "property": "客户等级"}))
     assert out["dimension"] == "渠道" and out["property"] == "客户等级"
     assert "target_column" not in out and "id" not in out
     assert "channel" not in json.dumps(out, ensure_ascii=False)
-    # 物理列只由服务端映射：入参拿到的是业务属性名
-    assert captured["property_name"] == "客户等级"
+    # 物理列只由服务端映射：入参到决策服务的只有业务属性名
+    assert captured["action_key"] == "evolution_dimension.create"
+    assert captured["input_data"]["property"] == "客户等级"
 
 
 def test_unknown_object_lists_options_instead_of_guessing(monkeypatch):
+    """对象查不到时不猜测：错误里原样带可选清单（决策服务语义，handler 不吞原因）。"""
     _wire_handler(monkeypatch)
-    monkeypatch.setattr(ft, "_evo_find_candidate", lambda *a, **k: {
-        "id": 9, "term": "渠道", "datasource_name": "es_prod"})
-    monkeypatch.setattr(evo, "object_options", lambda ds: [
-        {"key": "case", "display_name": "案例"}])
+
+    def _missing(ctx, **kwargs):
+        raise decide.EvolutionDecisionError(
+            "归属对象 '不存在的对象' 不在清单里。可选：['案例']",
+            code="OBJECT_NOT_FOUND")
+
+    monkeypatch.setattr(decide, "decide_candidate_by_name", _missing)
     out = _payload(ft._create_metric_from_evolution(
         {"term": "渠道", "object": "不存在的对象"}))
     assert "不在清单里" in out["error"] and "案例" in out["error"]
+    assert out["code"] == "OBJECT_NOT_FOUND"
 
 
 # ── 4. 候选 / 提议解析：业务名定位，歧义与缺失都给可操作原因 ─────────────────
 
 def test_candidate_resolution_reports_ambiguity_and_missing(monkeypatch):
+    """业务名定位：歧义与缺失都给可操作原因（决策服务复用 query 服务解析）。"""
     rows = [
-        {"id": 1, "term": "渠道", "kind": "new_dimension", "datasource_name": "a"},
-        {"id": 2, "term": "渠道", "kind": "new_dimension", "datasource_name": "b"},
+        {"id": 1, "term": "渠道", "kind": "new_dimension", "datasource_name": "a",
+         "status": "pending", "decision_version": 1, "evidence": {}},
+        {"id": 2, "term": "渠道", "kind": "new_dimension", "datasource_name": "b",
+         "status": "pending", "decision_version": 1, "evidence": {}},
     ]
+    state = {"rows": rows}
+    monkeypatch.setattr(queries, "_q", lambda sql, params=(): state["rows"])
+    ctx = _fake_evo_ctx()
+    ctx = queries.EvolutionContext(
+        user_id=1, workspace_id=22, actor="tester", channel="ai",
+        allowed_datasources=(5,), datasource_names=("a", "b"),
+        datasource_options=({"id": 5, "name": "a", "db_type": "mysql"},
+                            {"id": 6, "name": "b", "db_type": "mysql"}))
 
-    def _rows(**kwargs):
-        ds = str(kwargs.get("datasource_name") or "")
-        return [r for r in rows if not ds or r["datasource_name"] == ds]
+    with pytest.raises(queries.EvolutionQueryError) as ei:
+        queries.resolve_candidate(ctx, term="渠道")
+    assert ei.value.code == "CANDIDATE_AMBIGUOUS"
 
-    monkeypatch.setattr(evo, "list_candidates", _rows)
-    with pytest.raises(ValueError) as ei:
-        ft._evo_find_candidate("渠道")
-    assert "多个数据源" in str(ei.value)
+    state["rows"] = []
+    with pytest.raises(queries.EvolutionQueryError) as ei2:
+        queries.resolve_candidate(ctx, term="不存在的词")
+    assert ei2.value.code == "CANDIDATE_NOT_FOUND" and "不存在的词" in str(ei2.value)
 
-    with pytest.raises(ValueError) as ei2:
-        ft._evo_find_candidate("不存在的词")
-    assert "没有业务词" in str(ei2.value) and "渠道" in str(ei2.value)
-
-    # kind 只用于缩范围：传错 kind 不得把同词候选藏掉
-    assert ft._evo_find_candidate("渠道", kind="alias", datasource="a")["id"] == 1
+    # 指定数据源后唯一命中
+    state["rows"] = [rows[0]]
+    assert queries.resolve_candidate(ctx, term="渠道", datasource_name="a")["id"] == 1
 
 
 def test_proposal_actions_require_evidence(monkeypatch):
@@ -212,13 +236,20 @@ def test_proposal_actions_require_evidence(monkeypatch):
 
 
 def test_proposal_resolution_reports_ambiguous_title(monkeypatch):
-    monkeypatch.setattr(kus, "list_proposals", lambda **kw: {"items": [
-        {"id": 1, "title": "补口径", "target_type": "kb_doc"},
-        {"id": 2, "title": "补口径", "target_type": "scenario"},
-    ], "counts": {}})
-    with pytest.raises(ValueError) as ei:
-        ft._evo_find_proposal("补口径")
-    assert "多条待审提议" in str(ei.value)
+    """提议标题定位：同名多条必须指定落点域，不猜。"""
+    monkeypatch.setattr(queries, "_q", lambda sql, params=(): [
+        {"id": 1, "title": "补口径", "target_type": "kb_doc", "status": "pending",
+         "decision_version": 1, "content": ""},
+        {"id": 2, "title": "补口径", "target_type": "scenario", "status": "pending",
+         "decision_version": 1, "content": ""},
+    ])
+    ctx = queries.EvolutionContext(
+        user_id=1, workspace_id=22, actor="tester", channel="ai",
+        allowed_datasources=(5,), datasource_names=("a",),
+        datasource_options=({"id": 5, "name": "a", "db_type": "mysql"},))
+    with pytest.raises(queries.EvolutionQueryError) as ei:
+        queries.resolve_proposal(ctx, title="补口径")
+    assert ei.value.code == "PROPOSAL_AMBIGUOUS"
 
 
 # ── 5. 双闸：少一道即拒，拒绝原因可解释 ──────────────────────────────────────

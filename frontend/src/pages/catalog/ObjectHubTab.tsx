@@ -94,6 +94,8 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
   focus?: { key: string; tab?: InspTab; seq: number };
 }) {
   const { t } = useTranslation('ui');
+  const readOnly = modelKind === 'system' || !canEdit;
+  const canEditHub = !readOnly && !!onSave && jsonContent != null;
   const [selKey, setSelKey] = useState<string>('');
   // 就地编辑中的对象 key：检查器本身切成编辑表单，不再弹居中对话框（2026-11-19 拍板）
   const [editingKey, setEditingKey] = useState<string>('');
@@ -111,6 +113,10 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
     setSelKey(k);
     setInspOpen(true);
   };
+
+  useEffect(() => {
+    if (!canEditHub) setEditingKey('');
+  }, [canEditHub]);
 
   // 切模型重置画布状态：否则旧模型的选中行/编辑态会套到新模型同名对象上（保存写错行）
   useEffect(() => {
@@ -343,8 +349,13 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
+      {modelKind === 'system' && (
+        <div className="rounded-md border border-sky-500/30 bg-sky-500/5 px-2 py-1.5 text-[11px] text-sky-700">
+          {t('k_system_ontology_readonly')}
+        </div>
+      )}
       {/* 内联新建行：就地展开在画布顶部（设计稿 .inline-new），不弹居中对话框 */}
-      {creating && jsonContent && onSave && onCreateDone && onCreateCancel && (
+      {canEditHub && creating && jsonContent && onSave && onCreateDone && onCreateCancel && (
         <ObjectNewRow
           jsonContent={jsonContent}
           onSave={onSave}
@@ -465,7 +476,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                           ) : null}
                         </td>
                         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-                          {canEdit && onSave && jsonContent != null && (
+                          {canEditHub && (
                             <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
                               onClick={() => { selectObject(o.key); setEditingKey(o.key); }}>
                               <Pencil className="h-3 w-3 mr-1" />{t('k_a7f814c0a4')}
@@ -492,7 +503,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
         {obj && (
           <aside className={`flex min-h-0 shrink-0 flex-col border-l pl-3
             ${editingKey === obj.key ? 'w-[520px]' : 'w-[380px]'}`}>
-            {editingKey === obj.key && jsonContent && onSave ? (
+            {canEditHub && editingKey === obj.key && jsonContent && onSave ? (
               <div className="min-h-0 flex-1 overflow-auto pr-0.5">
                 <ObjectEditPanel
                   key={obj.key}
@@ -524,7 +535,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                     </div>
                     <div className="truncate font-mono text-[11px] text-muted-foreground">adh:obj:{obj.key}</div>
                   </div>
-                  {canEdit && onSave && jsonContent != null && (
+                  {canEditHub && (
                     <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs"
                       onClick={() => { setInspTab('overview'); setEditingKey(obj.key); }}>
                       <Pencil className="h-3 w-3 mr-1" />{t('k_b7eb43c06d')}
@@ -682,7 +693,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                         display_name: o.display_name || String(o.key),
                       }))}
                       /* 写权限沿用本页编辑闸（字典写入当前无独立权限码，与指标中心页同口径） */
-                      canEdit={canEdit}
+                      canEdit={!readOnly}
                     />
                   )}
 
@@ -695,7 +706,7 @@ export default function ObjectHubTab({ modelId, objects, issues = [], jsonConten
                         key: String(o.key),
                         display_name: o.display_name || String(o.key),
                       }))}
-                      canEdit={canEdit}
+                      canEdit={!readOnly}
                     />
                   )}
                 </div>

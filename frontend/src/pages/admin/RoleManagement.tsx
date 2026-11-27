@@ -1047,12 +1047,9 @@ function PermRow({ perm, checked, expanded, onToggle, onToggleApi, onAiAccess }:
           {!capped && perm.ai_note}
         </p>
       )}
-      {/* 无消费方时显式提醒（no-silent-degradation §1）：不得让人以为选了级别 AI 就能用。
+      {/* 无消费方信号收敛到徽标「未接入」+ 悬浮说明（不再在行内铺长文案）：
+          不让人以为选了级别 AI 就能用（no-silent-degradation §1）；
           角色级开关是左侧勾选框（收回权限码 = 该码下所有 AI 动作带原因不可用）。 */}
-      {channel === 'none' && (
-        <p className="text-[10px] pl-6 text-amber-600">
-          {t('k_ee3147d034', { p0: tr('k_f1eafb83c8', { p0: AI_LEVEL_LABEL[effective] }) })}</p>
-      )}
       {expanded && patterns.length > 0 && (
         <div className="mt-1 ml-6 space-y-0.5">
           {patterns.map((pat, i) => (

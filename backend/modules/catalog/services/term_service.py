@@ -2,6 +2,7 @@
 
 import logging
 import time as _time
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -12,6 +13,26 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def _write_connection(connection=None):
+    """复用调用方事务；自有连接仍由 DBConnection 提交/回滚。"""
+    if connection is not None:
+        yield connection
+        return
+    from backend.common.db import DBConnection
+    with DBConnection() as conn:
+        yield conn
+
+
+def _clear_term_cache(datasource_id: int) -> None:
+    """术语缓存是读侧旁路；失效失败只告警，不掩盖已提交的写入。"""
+    try:
+        from backend.modules.mind.rag.terminology_manager import clear_cache
+        clear_cache(int(datasource_id or 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("术语缓存失效失败: %s", exc)
 
 
 def _emit_graph_sync(event_type: str, data: dict):
@@ -144,32 +165,37 @@ class TermService:
             conn.close()
 
     @staticmethod
-    def create_term(data: dict) -> dict:
-        """创建业务术语。"""
-        conn = get_metadata_conn()
-        try:
+    def create_term(data: dict, *, connection=None, return_existing: bool = False) -> dict:
+        """创建业务术语；同名术语按数据源分桶，决策服务可复用同一事务。"""
+        datasource_id = int(data.get("datasource_id") or 0)
+        with _write_connection(connection) as conn:
             with conn.cursor() as cur:
-                # 检查 term_cn 重复
-                cur.execute("SELECT id FROM adh_business_terms WHERE term_cn = %s", (data["term_cn"],))
-                if cur.fetchone():
-                    return {"success": False, "message": f"术语 '{data['term_cn']}' 已存在"}
+                cur.execute(
+                    "SELECT id FROM adh_business_terms "
+                    "WHERE term_cn = %s AND COALESCE(datasource_id, 0) = %s LIMIT 1",
+                    (data["term_cn"], datasource_id))
+                existing = cur.fetchone()
+                if existing:
+                    if return_existing:
+                        return {"success": True, "id": int(existing["id"]), "created": False}
+                    return {"success": False, "id": int(existing["id"]),
+                            "message": f"术语 '{data['term_cn']}' 已存在"}
 
                 now = _now()
                 row_id = int(_time.time() * 1000000)
-
                 cur.execute(
                     "INSERT INTO adh_business_terms "
                     "(id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, calculation, description, "
-                    "usage_count, is_active, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s)",
+                    "usage_count, is_active, created_at, updated_at, datasource_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 1, %s, %s, %s)",
                     (row_id, data["term_cn"], data.get("term_en") or "", data.get("term_aliases") or "",
                      data.get("term_type", "dimension"), data.get("target_table") or "", data.get("target_column") or "",
-                     data.get("calculation") or "", data.get("description") or "", now, now),
+                     data.get("calculation") or "", data.get("description") or "", now, now, datasource_id),
                 )
-            conn.commit()
 
-            # 同步到图谱
+        if connection is None:
+            _clear_term_cache(datasource_id)
             _emit_graph_sync("term_created", {
                 "term_cn": data["term_cn"],
                 "term_en": data.get("term_en"),
@@ -179,20 +205,17 @@ class TermService:
                 "calculation": data.get("calculation"),
                 "description": data.get("description"),
             })
-
-            return {"success": True, "id": row_id}
-        finally:
-            conn.close()
+        return {"success": True, "id": row_id, "created": True}
 
     @staticmethod
-    def update_term(row_id: int, data: dict) -> dict:
-        """更新业务术语。"""
-        conn = get_metadata_conn()
-        try:
+    def update_term(row_id: int, data: dict, *, connection=None) -> dict:
+        """更新业务术语；保留数据源归属与创建时间，缓存/图谱在提交后处理。"""
+        with _write_connection(connection) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT term_cn, term_en, term_aliases, term_type, "
-                    "target_table, target_column, calculation, description, usage_count, is_active "
+                    "target_table, target_column, calculation, description, usage_count, is_active, "
+                    "created_at, COALESCE(datasource_id, 0) AS datasource_id "
                     "FROM adh_business_terms WHERE id = %s", (row_id,),
                 )
                 row = cur.fetchone()
@@ -217,17 +240,17 @@ class TermService:
                     "INSERT INTO adh_business_terms "
                     "(id, term_cn, term_en, term_aliases, term_type, "
                     "target_table, target_column, calculation, description, "
-                    "usage_count, is_active, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "usage_count, is_active, created_at, updated_at, datasource_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (row_id, fields["term_cn"], fields["term_en"], fields["term_aliases"],
                      fields["term_type"], fields["target_table"], fields["target_column"],
                      fields["calculation"], fields["description"],
-                     row.get("usage_count", 0), row.get("is_active", 1), now, now),
+                     row.get("usage_count", 0), row.get("is_active", 1),
+                     row.get("created_at") or now, now, int(row.get("datasource_id") or 0)),
                 )
-            conn.commit()
-            return {"success": True}
-        finally:
-            conn.close()
+        if connection is None:
+            _clear_term_cache(int(row.get("datasource_id") or 0))
+        return {"success": True}
 
     @staticmethod
     def delete_term(row_id: int) -> dict:
@@ -236,14 +259,14 @@ class TermService:
         try:
             with conn.cursor() as cur:
                 # 先获取术语信息用于图谱同步
-                cur.execute("SELECT term_cn FROM adh_business_terms WHERE id = %s", (row_id,))
+                cur.execute("SELECT term_cn, COALESCE(datasource_id, 0) AS datasource_id "
+                            "FROM adh_business_terms WHERE id = %s", (row_id,))
                 term = cur.fetchone()
 
                 cur.execute("DELETE FROM adh_business_terms WHERE id = %s", (row_id,))
             conn.commit()
-
-            # 同步到图谱
             if term:
+                _clear_term_cache(int(term.get("datasource_id") or 0))
                 _emit_graph_sync("term_deleted", {"term_cn": term["term_cn"]})
 
             return {"success": True}
@@ -294,6 +317,7 @@ class TermService:
                      full_row.get("datasource_id") or 0),
                 )
             conn.commit()
+            _clear_term_cache(int(full_row.get("datasource_id") or 0))
             return {"success": True, "is_active": new_val}
         finally:
             conn.close()

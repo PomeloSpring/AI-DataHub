@@ -156,6 +156,19 @@ describe('ObjectHubTab — 页面内编辑对象（2026-10-27 开放，不再仅
     expect(screen.queryByRole('button', { name: '编辑对象' })).toBeNull();
   });
 
+  it('系统本体即使调用方误传 canEdit/onSave/creating 也保持只读', () => {
+    const onSave = vi.fn();
+    render(
+      <ObjectHubTab modelId={1} modelKind="system" objects={hub} canEdit
+        jsonContent={JSON.stringify(doc, null, 2)} onSave={onSave} creating
+        onCreateDone={vi.fn()} onCreateCancel={vi.fn()} />,
+    );
+    expect(screen.getByText('系统能力本体由平台版本发布维护，只读。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '编辑对象' })).toBeNull();
+    expect(screen.queryByPlaceholderText('对象 key（唯一标识，不可改）')).toBeNull();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it('canEdit 时渲染编辑入口，保存后只改标量字段、不整份覆盖属性/关系', async () => {
     const onSave = vi.fn();
     render(

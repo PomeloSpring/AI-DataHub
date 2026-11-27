@@ -40,8 +40,9 @@ import { toast } from '@/lib/toast';
 import {
   Activity, Archive, BookMarked, BookOpen, CheckCircle2, Dna, FileText, GitCompare, History,
   Layers, LayoutGrid, Loader2, MapPin, Pencil, Plus, RefreshCw, ScrollText, Share2, Sparkles,
-  Tags, Trash2, Undo2, Upload, Zap,
+  Tags, Trash2, Undo2, Upload, Workflow, Zap,
 } from 'lucide-react';
+import CapabilityFlowsTab from './CapabilityFlowsTab';
 import OntologyWorkbench, { type WbRailSection, type WbTray } from './OntologyWorkbench';
 import CanonicalDocPanel from './CanonicalDocPanel';
 import ObjectHubTab, { type HubObject, type InspTab } from './ObjectHubTab';
@@ -120,6 +121,7 @@ export default function OntologyModeling() {
   const [showArchived, setShowArchived] = useState(false);
 
   const handleImportYaml = async () => {
+    if (model?.kind === 'system') return;
     if (!datasourceId) {
       toast.warning(t('k_acac930033'));
       return;
@@ -233,6 +235,7 @@ export default function OntologyModeling() {
   /** 图谱重建 / 知识库同步计数：据此重挂图面板并重取同步徽章（否则「需重建 / 待同步」还挂着，图仍是旧的） */
   const [graphTick, setGraphTick] = useState(0);
   const draftPending = !!draftStatus?.has_draft;
+  const systemReadOnly = model?.kind === 'system';
 
   const loadDraftStatus = useCallback(async (id: number) => {
     try {
@@ -335,6 +338,7 @@ export default function OntologyModeling() {
   }, [loadModels, loadModel, openTaskConversation]);
 
   const handleGenerate = async () => {
+    if (model?.kind === 'system') return;
     if (!datasourceId) {
       toast.warning(t('k_192dc9f17f'));
       return;
@@ -381,7 +385,7 @@ export default function OntologyModeling() {
   // 2026-10-26 拍板：存草案，**不碰生效内容、不级联**；发布（ontology:publish）才生效。
   // 基线纪律：有未发布草案时，编辑基线**只能是草案**（拿生效版整份提交会顶掉 AS-BOT/他人已写的草案）。
   const saveDocFromTab = useCallback(async (nextJson: string, opts?: { stay?: boolean }) => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     if (viewMode !== 'draft' && draftPending) {
       // 顶栏已禁用编辑入口，走到这里只可能是旧组件缓存的回调：不静默覆盖，显式引导
       toast.warning(t('k_7dd74b20b9'));
@@ -409,7 +413,7 @@ export default function OntologyModeling() {
 
   // ── 发布（两段式第二段）：生效 + 级联，需 ontology:publish 权限 ──
   const handlePublish = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     setPublishing(true);
     try {
       const { data } = await ontologyApi.publishDraft(model.id);
@@ -444,12 +448,12 @@ export default function OntologyModeling() {
 
   /** 撤销草案（丢弃整份草案回到生效版）：动作收敛在页面，审阅面板与底部托盘都走这里 */
   const requestDiscardDraft = useCallback(() => {
-    if (!model || !draftPending) return;
+    if (!model || model.kind === 'system' || !draftPending) return;
     setDiscardOpen(true);
   }, [model, draftPending]);
 
   const confirmDiscardDraft = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     setDiscarding(true);
     try {
       await ontologyApi.discardDraft(model.id);
@@ -470,7 +474,7 @@ export default function OntologyModeling() {
 
   // ── 激活 ──
   const handleActivate = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     setActivating(true);
     try {
       await ontologyApi.activate(model.id);
@@ -493,7 +497,7 @@ export default function OntologyModeling() {
 
   // ── 归档 / 删除 ──
   const handleArchive = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     try {
       await ontologyApi.archive(model.id);
       toast.success(t('k_e77d15aefc'));
@@ -506,7 +510,7 @@ export default function OntologyModeling() {
 
   // ── 还原归档模型为草案（归档数据可逆） ──
   const handleRestore = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     try {
       const { data } = await ontologyApi.restore(model.id);
       setModel(data);
@@ -521,7 +525,7 @@ export default function OntologyModeling() {
   // ── 派生重建动作（图谱生成 / 同步知识库）就放在状态徽章旁：同看同建一处，做完立刻回显。
 
   const handleDelete = async () => {
-    if (!model) return;
+    if (!model || model.kind === 'system') return;
     try {
       await ontologyApi.remove(model.id);
       toast.success(t('k_66ca4c11c7'));
@@ -556,6 +560,7 @@ export default function OntologyModeling() {
 
   // 回滚：激活某个历史/归档版本（服务端自动归档当前 active）
   const handleRestoreVersion = async (id: number) => {
+    if (model?.kind === 'system') return;
     try {
       await ontologyApi.activate(id);
       try {
@@ -585,13 +590,13 @@ export default function OntologyModeling() {
   const docObjectOptions = useMemo(
     () => hubObjects.filter((o) => !!o.key).map((o) => ({ key: o.key, name: o.display_name || o.key })),
     [hubObjects]);
-  const editable = !!model && model.status !== 'archived';
+  const editable = !!model && model.status !== 'archived' && !systemReadOnly;
   /** 草案视图下对象清单的引导文案：说清“此处编辑落在哪”，避免用户以为在改线上口径 */
   const draftHint = t('k_f8f48c2e2b');
   /** 生效版视图且已有草案：编辑入口关闭（要改必须切草案，否则整份提交会顶掉草案） */
-  const liveLocked = viewMode === 'live' && draftPending;
-  /** 编辑入口是否可用：生效版不可直接改（线上口径），有未发布草案时必须先到草案视图 */
-  const canEditDoc = editable && hasPerm('ontology:save') && !liveLocked;
+  const liveLocked = !systemReadOnly && viewMode === 'live' && draftPending;
+  /** 编辑入口是否可用：系统本体由平台版本发布维护，任何人工维护入口均关闭 */
+  const canEditDoc = editable && model.kind !== 'system' && hasPerm('ontology:save') && !liveLocked;
   /** 草案里待发布的变更数（顶部标记与页签标记） */
   const pendingChangeCount = draftPending
     ? (draftStatus?.added.length || 0) + (draftStatus?.changed.length || 0) + (draftStatus?.removed.length || 0)
@@ -641,9 +646,12 @@ export default function OntologyModeling() {
   // 还没选模型时落在「全部模型」总览 —— 模型名是入口（按名字选，不按 id 选），不另造左侧模型列表。
   // 进化中心是跨模型视图，未选模型时也必须可达（优先于其它回落）；无 evolution:read 回落总览
   const canViewEvolution = hasPerm('evolution:read');
+  // 能力流程页签（P3-5）：仅系统能力本体 + capability:run 可见（编排入口权限）
+  const canRunFlows = hasPerm('capability:run');
   const activeTab = tab === 'evolution' ? (canViewEvolution ? 'evolution' : 'models')
+    : tab === 'flows' ? ((systemReadOnly && canRunFlows) ? 'flows' : 'models')
     : !model ? 'models'
-      : (tab === 'changes' && !draftPending) || (tab === 'sites' && !siteScope) ? 'hub' : tab;
+      : (tab === 'changes' && (!draftPending || systemReadOnly)) || (tab === 'sites' && !siteScope) ? 'hub' : tab;
 
   // 跨模型入口（全部模型 / 进化中心）：未选模型时也必须可达
   const crossItems: WbRailSection['items'] = [
@@ -678,6 +686,10 @@ export default function OntologyModeling() {
           { key: 'rules', label: t('k_ed904c685a'), icon: <ScrollText className="h-3.5 w-3.5" />, count: docCounts.rules },
           { key: 'scenarios', label: t('k_625b392c7b'), icon: <Sparkles className="h-3.5 w-3.5" />, count: docCounts.scenarios },
         ] : []),
+        // 能力流程（运行台账）：只在系统能力本体视图 + 有 capability:run 时出现
+        ...(systemReadOnly && canRunFlows ? [
+          { key: 'flows', label: t('k_5d1e9a7c50'), icon: <Workflow className="h-3.5 w-3.5" /> },
+        ] : []),
         ...(siteScope ? [{ key: 'sites', label: t('k_c308156eae'), icon: <MapPin className="h-3.5 w-3.5" /> }] : []),
       ],
     },
@@ -696,7 +708,7 @@ export default function OntologyModeling() {
     },
     {
       title: t('k_82bf9384b6'),
-      items: draftPending ? [
+      items: draftPending && !systemReadOnly ? [
         { key: 'changes', label: t('k_8d535108e6'), icon: <GitCompare className="h-3.5 w-3.5" />, count: pendingChangeCount, warn: true },
       ] : [],
     },
@@ -709,7 +721,7 @@ export default function OntologyModeling() {
     { title: t('k_41e04e5dda'), items: crossItems },
   ];
 
-  const tray: WbTray | null = draftPending ? {
+  const tray: WbTray | null = !systemReadOnly && draftPending ? {
     pending: pendingChangeCount,
     added: draftStatus?.added.length || 0,
     changed: draftStatus?.changed.length || 0,
@@ -762,6 +774,7 @@ export default function OntologyModeling() {
           </Button>
         )}
       </div>
+      {systemReadOnly && <div className="text-[11px] text-sky-700">{t('k_system_ontology_readonly')}</div>}
       {liveLocked && <div className="text-[11px] text-muted-foreground">{t('k_4652cc5256')}</div>}
       {viewMode === 'draft' && (
         <div className="text-[11px] text-amber-600">{t('k_4385768c31')}</div>
@@ -779,6 +792,7 @@ export default function OntologyModeling() {
           : activeTab === 'm234' ? headTitle(t('k_c09395949f'), docCounts.actions)
             : activeTab === 'rules' ? headTitle(t('k_ed904c685a'), docCounts.rules)
               : activeTab === 'scenarios' ? headTitle(t('k_625b392c7b'), docCounts.scenarios)
+                : activeTab === 'flows' ? headTitle(t('k_5d1e9a7c50'))
                 : activeTab === 'sites' ? headTitle(t('k_c308156eae'))
                   : activeTab === 'models' ? headTitle(t('k_688facc5f5'), models.length, t('k_bd92232894'))
                     : null;
@@ -880,15 +894,19 @@ export default function OntologyModeling() {
     </div>
   ) : activeTab === 'm234' ? (
     <div className="h-full overflow-hidden p-2">
-      <ModelActionsTab jsonContent={activeJson} onSave={saveDocFromTab} />
+      <ModelActionsTab jsonContent={activeJson} onSave={saveDocFromTab} readonly={systemReadOnly} />
     </div>
   ) : activeTab === 'rules' ? (
     <div className="h-full overflow-hidden p-2">
-      <ModelRulesTab jsonContent={activeJson} onSave={saveDocFromTab} />
+      <ModelRulesTab jsonContent={activeJson} onSave={saveDocFromTab} readonly={systemReadOnly} />
     </div>
   ) : activeTab === 'scenarios' ? (
     <div className="h-full overflow-hidden p-2">
-      <ModelScenariosTab jsonContent={activeJson} onSave={saveDocFromTab} />
+      <ModelScenariosTab jsonContent={activeJson} onSave={saveDocFromTab} readonly={systemReadOnly} />
+    </div>
+  ) : activeTab === 'flows' ? (
+    <div className="h-full overflow-hidden">
+      <CapabilityFlowsTab />
     </div>
   ) : activeTab === 'sites' ? (
     <div className="h-full overflow-hidden p-2">
@@ -925,6 +943,8 @@ export default function OntologyModeling() {
         }}
         tools={(
           <>
+            {systemReadOnly && <div className="text-[11px] text-sky-700">{t('k_system_ontology_readonly')}</div>}
+            {!systemReadOnly && <>
             <Select value={datasourceId ? String(datasourceId) : ''}
               onValueChange={(v) => setDatasourceId(Number(v))}>
               <SelectTrigger className="h-8 w-56 text-xs">
@@ -965,8 +985,9 @@ export default function OntologyModeling() {
                 </div>
               </PopoverContent>
             </Popover>
+            </>}
             {/* 生成/进度/取消都按 ontology:generate 裁决（无码不渲染点了必 403 的按钮） */}
-            {hasPerm('ontology:generate') && (
+            {!systemReadOnly && hasPerm('ontology:generate') && (
               <>
                 <Button size="sm" className="h-8" onClick={handleGenerate} disabled={running || !datasourceId}>
                   {running ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
@@ -985,7 +1006,7 @@ export default function OntologyModeling() {
               </>
             )}
             {/* 导入 YAML 属独立写码 ontology:import（不能蹭保存码） */}
-            {hasPerm('ontology:import') && (
+            {!systemReadOnly && hasPerm('ontology:import') && (
               <Button size="sm" variant="outline" className="h-8" onClick={() => setYamlOpen(true)} disabled={!datasourceId}>
                 <Upload className="h-3.5 w-3.5 mr-1" />{t('k_2916bd30b8')}
               </Button>
@@ -1003,12 +1024,12 @@ export default function OntologyModeling() {
               </span>
             )}
             {/* 图谱重建入口就放在「图谱 未生成 · 需重建」旁边：徽章说缺，按钮给处置（同看同建一处） */}
-            {model && (
+            {!systemReadOnly && model && (
               <GraphRebuildButton kind={model.kind} datasourceId={model.datasource_id ?? undefined}
                 className="h-8" onRebuilt={() => setGraphTick((v) => v + 1)} />
             )}
             {/* 同步知识库与图谱生成同屏：徽章说「待同步」，这里给处置（kb:manage 把关、仅生效模型可点） */}
-            {model && (
+            {!systemReadOnly && model && (
               <KbSyncButton modelId={model.id} active={model.status === 'active'}
                 onSynced={() => setGraphTick((v) => v + 1)} />
             )}
@@ -1019,6 +1040,7 @@ export default function OntologyModeling() {
             <Button size="sm" variant="outline" className="h-8" onClick={handleOpenVersions}>
               <History className="h-3.5 w-3.5 mr-1" />{t('k_fe86275d4d')}
             </Button>
+            {!systemReadOnly && <>
             {(model.status === 'draft' || model.status === 'archived') && hasPerm('ontology:activate') && (
               <Button size="sm" className="h-8" onClick={() => setActivateOpen(true)}>
                 <CheckCircle2 className="h-3.5 w-3.5 mr-1" />{t('k_4366cd37a7')}
@@ -1041,6 +1063,7 @@ export default function OntologyModeling() {
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             )}
+            </>}
           </>
         ) : undefined}
         railSections={railSections}
@@ -1054,7 +1077,7 @@ export default function OntologyModeling() {
 
       <CanonicalDocPanel open={docOpen} onOpenChange={setDocOpen} modelId={model?.id} modelName={model?.name}
         modelKind={model?.kind} datasourceId={model?.datasource_id ?? undefined}
-        liveVersion={liveDocVersion} draftCount={draftPending ? pendingChangeCount : 0}
+        liveVersion={liveDocVersion} draftCount={!systemReadOnly && draftPending ? pendingChangeCount : 0}
         objectOptions={docObjectOptions}
         onOpenGraph={() => { setDocOpen(false); setTab('graph'); }}
         onOpenDraft={() => { setDocOpen(false); setTab('changes'); if (viewMode !== 'draft') void switchView('draft'); }} />
@@ -1182,7 +1205,7 @@ export default function OntologyModeling() {
                         >
                           {t('k_f7acefd2d4')}
                         </Button>
-                        {v.status !== 'active' && (
+                        {!systemReadOnly && v.status !== 'active' && (
                           <Button size="sm" variant="outline" onClick={() => handleRestoreVersion(v.id)}>
                             {t('k_83a991d77c')}
                           </Button>

@@ -247,24 +247,28 @@ def test_ai_channel_actions_have_real_tooling():
     实际只有 HTTP 端点、没有 AI 工具——这种「配了但 AI 做不了」必须显式标 human，
     否则模型会照计划去调一个根本不存在的工具。
     """
-    import inspect
-
     from backend.modules.mind.execution.function_tools import FUNCTION_ACTION_SPECS
     from backend.modules.mind.execution.sdk_tools import ontology_tools
 
-    onto_src = inspect.getsource(ontology_tools)
+    onto_specs = {str(spec.get("action_key") or ""): spec for spec in ontology_tools.TOOL_SPECS}
     drift = []
     for key, meta in catalog.ACTION_PERM_CODES.items():
         code, channel = str(meta["code"]), str(meta["channel"])
         spec = FUNCTION_ACTION_SPECS.get(key)
-        if channel == "ai":
-            if spec is not None:
+        if spec is None:
+            spec = onto_specs.get(key)
+            if channel == "ai" and spec is not None:
                 if str(spec.get("perm_code") or "") != code:
-                    drift.append(f"{key}: 本体标 {code}，功能工具实际 {spec.get('perm_code')}")
-            elif f'_require_write_perm("{code}"' not in onto_src:
-                drift.append(f"{key}: 既不在功能工具，本体工具里也没有 {code} 的写码把关")
+                    drift.append(f"{key}: 本体标 {code}，本体工具实际 {spec.get('perm_code')}")
+                if str(spec.get("name") or "") != str(meta.get("tool_name") or ""):
+                    drift.append(f"{key}: 本体工具名与真实注册表不一致")
+        if channel == "ai":
+            if spec is None:
+                drift.append(f"{key}: 标成 AI，但真实注册表没有 executor")
+            elif str(spec.get("perm_code") or "") != code:
+                drift.append(f"{key}: 本体标 {code}，真实工具实际 {spec.get('perm_code')}")
         elif spec is not None:
-            drift.append(f"{key}: 标成 human，但功能工具注册了它（AI 其实能做）")
+            drift.append(f"{key}: 标成 human，但真实注册表 executor 存在（AI 其实能做）")
     assert drift == [], "动作通道与真实工具不一致: " + "; ".join(drift)
 
 

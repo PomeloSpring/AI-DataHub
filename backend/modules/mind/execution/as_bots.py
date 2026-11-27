@@ -263,6 +263,23 @@ def collect_mcp_tool_selection(as_bots: list[dict]) -> dict:
     return merged
 
 
+def collect_allowed_scenarios(as_bots: list[dict]) -> list[str]:
+    """合并去重所有生效 AS-BOT 声明的可编排场景 key 白名单。
+
+    存储在 `tools.scenarios`（JSON 内声明，无需迁移）或顶层 `allowed_scenarios`；
+    **空清单 = 未声明 = AI 通道不得启动任何流程**（fail-closed，编排层域边界）。
+    人工通道不受此限（只受 capability:run 权限码把关）。
+    """
+    seen: list[str] = []
+    for w in as_bots or []:
+        raw = w.get("allowed_scenarios") or (w.get("tools") or {}).get("scenarios") or []
+        for key in raw:
+            name = str(key or "").strip()
+            if name and name not in seen:
+                seen.append(name)
+    return seen
+
+
 def collect_knowledge_base_ids(as_bots: list[dict]) -> list[int]:
     """合并去重所有生效 AS-BOT 引用的知识库 ID."""
     seen: list[int] = []

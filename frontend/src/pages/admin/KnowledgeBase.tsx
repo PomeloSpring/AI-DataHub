@@ -890,10 +890,14 @@ function EditKnowledgeBaseDialog({
   onSaved: () => void;
 }) {
   const { t } = useTranslation('ui');
+  // 状态随表单可编辑（原缺陷：状态列只读展示，页面上没有任何启停入口）。
+  // error 是最近一次探测的运行态，不是可选项 —— 打开弹窗时归入「启用」，
+  // 用户显式选「停用」才写 inactive。
   const [form, setForm] = useState({
     name: knowledgeBase.name,
     description: knowledgeBase.description || '',
     source_config: knowledgeBase.source_config || {},
+    status: knowledgeBase.status === 'inactive' ? 'inactive' : 'active',
   });
   const [saving, setSaving] = useState(false);
 
@@ -933,6 +937,24 @@ function EditKnowledgeBaseDialog({
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
             />
+          </div>
+          <div className="space-y-2">
+            <Label>{t('k_62e951a692')}</Label>
+            <Select
+              value={form.status}
+              onValueChange={(v) => setForm({ ...form, status: v })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">{t('k_d4e9ca3dd4')}</SelectItem>
+                <SelectItem value="inactive">{t('k_5c56a88945')}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {t('k_9b7c2e1f01')}
+            </p>
           </div>
           <SourceConfigForm
             kbType={knowledgeBase.kb_type}

@@ -186,7 +186,19 @@ def test_act_on_missing_proposal_raises(monkeypatch):
     with pytest.raises(ValueError):
         kus.mark_applied(404, "x", "admin")
     with pytest.raises(ValueError):
-        kus.reject_proposal(404, "admin")
+        kus.reject_proposal(404, "admin", "理由")
+
+
+def test_empty_applied_ref_and_missing_note_rejected_at_service_layer(monkeypatch):
+    """空落点 / 无理由驳回直接拒（与决策服务同口径，禁止空落点假闭环）。"""
+    _, writes, _ = _install(monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        kus.mark_applied(9, "   ", "admin")
+    assert "applied_ref 必填" in str(exc.value)
+    with pytest.raises(ValueError) as exc2:
+        kus.reject_proposal(9, "admin", "")
+    assert "必须说明理由" in str(exc2.value)
+    assert not writes, "校验失败不得落库"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

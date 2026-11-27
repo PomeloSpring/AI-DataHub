@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -17,6 +18,16 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextmanager
+def _write_connection(connection=None):
+    """领域写入可复用调用方事务；自有连接仍由 DBConnection 提交/回滚。"""
+    if connection is not None:
+        yield connection
+        return
+    with DBConnection() as conn:
+        yield conn
 
 
 def _sync_kb_after_dict_write(datasource_id=0) -> None:
@@ -520,7 +531,7 @@ def _iter_active_docs() -> list:
     return docs
 
 
-def create_metric(data: dict) -> dict:
+def create_metric(data: dict, *, connection=None) -> dict:
     """Create a new metric.
 
     Args:
@@ -549,7 +560,7 @@ def create_metric(data: dict) -> dict:
     if certified and not str(data.get("owner") or "").strip():
         raise ValueError("认证口径必须指定 owner（口径责任人）：没有责任人的口径不叫认证")
 
-    with DBConnection() as conn:
+    with _write_connection(connection) as conn:
         with conn.cursor() as cur:
             # Check duplicate (同名中文名或英文标识) —— **全局唯一**，不按 workspace 分域：
             # 语义层按 name 解析指标（planner/get_metrics），同名跨空间多条会造成口径歧义；
@@ -615,7 +626,8 @@ def create_metric(data: dict) -> dict:
                 ),
             )
 
-    _sync_kb_after_dict_write(data.get("datasource_id", 0))
+    if connection is None:
+        _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return {"id": row_id, "success": True}
 
 
@@ -760,7 +772,7 @@ def _require_object_keys(cur, keys) -> None:
     raise ValueError(f"归属对象不存在或已失效: {', '.join(bad)}（请先在本体模型中创建并激活对象）")
 
 
-def update_metric(metric_id: int, data: dict) -> bool:
+def update_metric(metric_id: int, data: dict, *, connection=None) -> bool:
     """Update a metric.
 
     Args:
@@ -770,7 +782,7 @@ def update_metric(metric_id: int, data: dict) -> bool:
     Returns:
         True if updated, False if not found
     """
-    with DBConnection() as conn:
+    with _write_connection(connection) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM adh_metrics WHERE id = %s", (metric_id,))
             if not cur.fetchone():
@@ -846,7 +858,8 @@ def update_metric(metric_id: int, data: dict) -> bool:
 
             cur.execute(f"UPDATE adh_metrics SET {', '.join(fields)} WHERE id = %s", params)
 
-    _sync_kb_after_dict_write(data.get("datasource_id", 0))
+    if connection is None:
+        _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return True
 
 
@@ -1177,7 +1190,7 @@ def dict_facets(model_id: Optional[int] = None,
     return out
 
 
-def create_dimension(data: dict) -> dict:
+def create_dimension(data: dict, *, connection=None) -> dict:
     """独立创建维度字典行（与 create_metric 对称，供 AS-BOT 工具与前端复用）。
 
     data 字段：
@@ -1207,7 +1220,7 @@ def create_dimension(data: dict) -> dict:
     if certified and not owner_role:
         raise ValueError("认证口径必须指定 owner（口径责任人）：没有责任人的口径不叫认证")
 
-    with DBConnection() as conn:
+    with _write_connection(connection) as conn:
         with conn.cursor() as cur:
             # 查重（同中文名或同英文标识）
             cur.execute(
@@ -1247,7 +1260,8 @@ def create_dimension(data: dict) -> dict:
                     owner_role or None,
                 ),
             )
-    _sync_kb_after_dict_write(data.get("datasource_id", 0))
+    if connection is None:
+        _sync_kb_after_dict_write(data.get("datasource_id", 0))
     return {"id": row_id, "success": True}
 
 
@@ -1291,7 +1305,7 @@ def _normalize_dim_physical_binding(row: dict, payload: dict) -> None:
     payload["target_column"] = ok_col or col
 
 
-def update_dimension(dim_id: int, data: dict) -> bool:
+def update_dimension(dim_id: int, data: dict, *, connection=None) -> bool:
     """编辑全局维度字典白名单列。
 
     aliases: list[str]; value_labels: dict[str,str] — 以 JSON 列存储。
@@ -1302,7 +1316,7 @@ def update_dimension(dim_id: int, data: dict) -> bool:
     is_active 开放: 启用/停用（停用 = 不参与语义检索与取数，与 AS-BOT 未发布同义），
     入参归一为 0/1 整数（布尔/'1'/'0' 均可），不得把 True/'1' 直写进 TINYINT 列。
     """
-    with DBConnection() as conn:
+    with _write_connection(connection) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, target_table, target_column, bound_object_key, "
@@ -1311,6 +1325,7 @@ def update_dimension(dim_id: int, data: dict) -> bool:
             row = cur.fetchone()
             if not row:
                 return False
+            sync_ds = int(data.get("datasource_id") or row.get("datasource_id") or 0)
             payload = dict(data)
             _normalize_dim_physical_binding(row, payload)
             data = payload
@@ -1345,7 +1360,8 @@ def update_dimension(dim_id: int, data: dict) -> bool:
             params.append(dim_id)
             cur.execute(f"UPDATE adh_dimensions SET {', '.join(fields)} WHERE id = %s", params)
 
-    _sync_kb_after_dict_write(data.get("datasource_id", 0))
+    if connection is None:
+        _sync_kb_after_dict_write(sync_ds)
     return True
 
 
@@ -1371,67 +1387,138 @@ def delete_dimension(dim_id: int) -> bool:
     return True
 
 
-def asset_pool() -> dict:
-    """聚合所有"尚未归属/悬空"的建模资产, 供工作区左栏资产池与各页计数徽章。
+_ASSET_POOL_QUEUES = ("metric", "dimension", "term")
+_ASSET_POOL_MAX_PAGE_SIZE = 50
+_ASSET_POOL_DEFAULT_PAGE_SIZE = 20
 
-    - metrics/dimensions: bound_object_key 为空(unbound) 或指向已不再生效对象的孤儿(orphan);
-    - terms: 未绑定任何表的黑话(target_table 为空);
-    - suggestions: 进化候选（adh_evolution_candidates pending：待收编别名/待建指标维度/待核绑定）。
-    只读聚合, 治理动作(归属/收编/退回)由各自既有写入口完成。
-    """
-    out: dict = {"metrics": [], "dimensions": [], "terms": [], "suggestions": [], "counts": {}}
+
+def _asset_pool_union(queues: tuple[str, ...]) -> str:
+    """字典待办统一 UNION 构造；关键词由外层同一谓词同时约束 COUNT 与当前页。"""
     orphan_cond = (
         "(COALESCE(bound_object_key, '') = '' OR bound_object_key NOT IN "
         "(SELECT object_key FROM adh_ontology_objects WHERE is_active = 1))")
     reason_case = ("CASE WHEN COALESCE(bound_object_key, '') = '' "
-                   "THEN 'unbound' ELSE 'orphan' END AS pool_reason")
+                   "THEN 'unbound' ELSE 'orphan' END")
+    selects: list[str] = []
+    for queue in queues:
+        if queue in ("metric", "dimension"):
+            table = "adh_metrics" if queue == "metric" else "adh_dimensions"
+            agg = "COALESCE(agg_type, '') AS agg_type" if queue == "metric" else "'' AS agg_type"
+            unit = "COALESCE(unit, '') AS unit" if queue == "metric" else "'' AS unit"
+            selects.append(
+                f"SELECT '{queue}' AS queue, id, COALESCE(name, '') AS title, "
+                f"COALESCE(name_en, '') AS name_en, COALESCE(aliases, '[]') AS aliases, "
+                f"COALESCE(bound_object_key, '') AS bound_object_key, {reason_case} AS pool_reason, "
+                f"{unit}, {agg}, COALESCE(category, '') AS category, "
+                "COALESCE(description, '') AS description, COALESCE(datasource_id, 0) AS datasource_id, "
+                "'' AS term_type "
+                f"FROM {table} WHERE is_active = 1 AND {orphan_cond}")
+        else:
+            selects.append(
+                "SELECT 'term' AS queue, id, COALESCE(term_cn, '') AS title, "
+                "COALESCE(term_en, '') AS name_en, COALESCE(term_aliases, '[]') AS aliases, "
+                "'' AS bound_object_key, 'unbound' AS pool_reason, '' AS unit, '' AS agg_type, "
+                "COALESCE(term_type, '') AS category, COALESCE(description, '') AS description, "
+                "COALESCE(datasource_id, 0) AS datasource_id, COALESCE(term_type, '') AS term_type "
+                "FROM adh_business_terms WHERE is_active = 1 "
+                "AND COALESCE(target_table, '') = ''")
+    return " UNION ALL ".join(selects)
+
+
+def _asset_pool_keyword_condition(keyword: str) -> tuple[str, tuple]:
+    if not keyword:
+        return "", ()
+    like = f"%{keyword}%"
+    return (" AND (title LIKE %s OR name_en LIKE %s OR category LIKE %s "
+            "OR description LIKE %s)", (like, like, like, like))
+
+
+def _asset_pool_normalize(row: dict) -> dict:
+    out = dict(row)
+    out["id"] = int(out.get("id") or 0)
+    out["datasource_id"] = int(out.get("datasource_id") or 0)
+    out["aliases"] = _json_list(out.get("aliases"))
+    return out
+
+
+def _asset_pool_legacy_groups(rows: list[dict]) -> dict:
+    """不传 page_size 的兼容选择面；不挂分页条，仍由同一 UNION/筛选构造产出。"""
+    groups: dict[str, list] = {"metrics": [], "dimensions": [], "terms": []}
+    for raw in rows:
+        row = _asset_pool_normalize(raw)
+        if row["queue"] == "term":
+            groups["terms"].append({
+                "id": row["id"], "term_cn": row["title"], "term_en": row["name_en"],
+                "term_aliases": row["aliases"], "term_type": row["term_type"],
+                "datasource_id": row["datasource_id"], "description": row["description"],
+            })
+        else:
+            item = {k: row.get(k) for k in (
+                "id", "name_en", "aliases", "bound_object_key", "pool_reason", "unit",
+                "agg_type", "category", "description", "datasource_id")}
+            item["name"] = row["title"]
+            groups["metrics" if row["queue"] == "metric" else "dimensions"].append(item)
+    return groups
+
+
+def asset_pool(*, queue: str = "", q: str = "", page: int = 1,
+               page_size: int | None = None) -> dict:
+    """未归属/孤儿字典资产池；候选有独立真源，本接口不再返回 suggestions。
+
+    传 ``page_size`` = 服务端真分页信封；不传 = 兼容计数/选择面全量聚合。
+    两种形态共用 UNION 筛选、COUNT 与稳定排序，不在前端 filter/slice。
+    """
+    queue = str(queue or "").strip()
+    if queue and queue not in _ASSET_POOL_QUEUES:
+        raise ValueError(f"queue 无效，应为 {list(_ASSET_POOL_QUEUES)}")
+    keyword = str(q or "").strip()[:128]
+    try:
+        current_page = int(1 if page in (None, "") else page)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("page 必须为正整数") from exc
+    if current_page < 1:
+        raise ValueError("page 必须 ≥ 1")
+    paged = page_size is not None
+    if paged:
+        try:
+            size = int(page_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("page_size 必须为正整数") from exc
+        if size < 1:
+            raise ValueError("page_size 必须 ≥ 1")
+        size = min(size, _ASSET_POOL_MAX_PAGE_SIZE)
+
+    # 关键词在 UNION 派生表上统一过滤；计数仍覆盖全部队列，便于左栏徽章不随当前队列抖动。
+    base_sql = _asset_pool_union(_ASSET_POOL_QUEUES)
+    keyword_sql, keyword_params = _asset_pool_keyword_condition(keyword)
+    count_sql = f"SELECT queue, COUNT(*) AS n FROM ({base_sql}) AS pool WHERE 1 = 1{keyword_sql} GROUP BY queue"
+    selected_queues = (queue,) if queue else _ASSET_POOL_QUEUES
+    base_item_sql = _asset_pool_union(selected_queues)
+    item_sql = f"SELECT * FROM ({base_item_sql}) AS pool WHERE 1 = 1{keyword_sql}"
+    order_sql = (" ORDER BY CASE queue WHEN 'metric' THEN 0 WHEN 'dimension' THEN 1 "
+                 "ELSE 2 END, title, queue, id")
+    item_sql += order_sql
+    item_params = keyword_params
+    if paged:
+        item_sql += " LIMIT %s OFFSET %s"
+        item_params = keyword_params + (size, (current_page - 1) * size)
+
     with DBConnection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT {_ALIAS_SELECT}, {reason_case} FROM adh_metrics "
-                f"WHERE is_active = 1 AND {orphan_cond} ORDER BY name LIMIT 200")
-            out["metrics"] = _isoformat(cur.fetchall())
-            cur.execute(
-                f"SELECT {_DIM_SELECT}, {reason_case} FROM adh_dimensions "
-                f"WHERE is_active = 1 AND {orphan_cond} ORDER BY name LIMIT 200")
-            out["dimensions"] = cur.fetchall()
-            cur.execute(
-                "SELECT id, datasource_id, term_cn, term_en, term_aliases, term_type, "
-                "       target_table, target_column, description "
-                "FROM adh_business_terms WHERE is_active = 1 "
-                "  AND COALESCE(target_table, '') = '' ORDER BY term_cn LIMIT 200")
-            out["terms"] = cur.fetchall()
-    try:
-        # 进化候选（已收口到单一事实源）：旧 adh_alias_suggestions 退役为冻结表，
-        # 本面不再读它，避免两处真值源飘移。
-        # 故意在本函数自己的连接里查，不委托 evolution_service：那里会另开一条
-        # 元库连接，既绕开本函数的连接生命周期（调用方/测试只能 mock DBConnection），
-        # 又把"表未迁移 → 容错为空"这条现有语义弄丢。
-        with DBConnection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, term, kind, source, datasource_name, object_hint, "
-                    "       target_type, target_ref, classify_reason, evidence, "
-                    "       hit_count, updated_at "
-                    "FROM adh_evolution_candidates WHERE status = 'pending' "
-                    "ORDER BY hit_count DESC, updated_at DESC LIMIT 100")
-                rows = cur.fetchall() or []
-                for r in rows:
-                    ev = r.get("evidence")
-                    if isinstance(ev, str):
-                        try:
-                            ev = json.loads(ev)
-                        except (TypeError, ValueError):
-                            ev = {}
-                    r["evidence"] = ev if isinstance(ev, dict) else {}
-                    # 候选表里带近似候选，旧前端字段名是 candidates，保持兼容
-                    r["candidates"] = r["evidence"].get("candidates") or []
-                out["suggestions"] = rows
-    except Exception as e:  # noqa: BLE001 — 候选表未迁移属正常, 不报错
-        logger.debug("[asset_pool] suggestions skipped: %s", e)
-    out["counts"] = {k: len(out[k]) for k in ("metrics", "dimensions", "terms", "suggestions")}
-    out["counts"]["total"] = sum(out["counts"].values())
-    return out
+            cur.execute(count_sql, keyword_params)
+            count_rows = cur.fetchall() or []
+            cur.execute(item_sql, item_params)
+            rows = [_asset_pool_normalize(r) for r in (cur.fetchall() or [])]
+
+    counts = {name: 0 for name in ("metrics", "dimensions", "terms")}
+    queue_to_group = {"metric": "metrics", "dimension": "dimensions", "term": "terms"}
+    for row in count_rows:
+        counts[queue_to_group[str(row.get("queue") or "")]] = int(row.get("n") or 0)
+    counts["total"] = (counts[queue_to_group[queue]] if queue else sum(counts.values()))
+    if paged:
+        return {"items": rows, "total": counts["total"], "page": current_page,
+                "page_size": size, "counts": counts}
+    return {**_asset_pool_legacy_groups(rows), "counts": counts}
 
 
 # ── 口径认证（P4）：区分「可信口径」与「草稿口径」 ─────────────────

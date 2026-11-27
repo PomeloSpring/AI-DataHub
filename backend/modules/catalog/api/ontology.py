@@ -1128,6 +1128,36 @@ def get_object_column_options(model_id: int, object_key: str, table: str = "",
             "dataset_ref": dataset_ref, "columns": columns, "note": note}
 
 
+@router.put("/models/{model_id}/objects/{object_key}/scalars")
+def update_object_scalars(model_id: int, object_key: str, req: dict,
+                          user: dict = Depends(get_current_user)):
+    """更新对象标量（显示名/说明/别名）：本体标量编辑的唯一 HTTP 落点（P1-5）。
+
+    只改三个字段（合并语义、别名取并集），落草案不生效；发布仍是独立
+    ``ontology:publish`` 动作。权限：API 中间件按 ``ontology:save`` 码把关，
+    服务层再过 ``require_write_perm`` 双重把关（HTTP/AI 同口径）。
+    系统能力本体由声明目录维护，服务层直接拒（merge_object_scalars 同口径）。
+    """
+    from backend.core.perm_link import require_write_perm
+
+    user_id = int(user.get("user_id") or 0)
+    try:
+        require_write_perm(user_id, 0, "ontology:save", "更新本体对象标量")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    patch = {k: v for k, v in (req or {}).items()
+             if k in ("display_name", "description", "aliases") and v is not None}
+    if not patch:
+        raise HTTPException(status_code=400,
+                            detail="至少提供 display_name/description/aliases 之一")
+    try:
+        return ontology_service.merge_object_scalars(
+            model_id, object_key, patch,
+            created_by=str(user.get("username") or user.get("name") or ""))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.put("/models/{model_id}/sites")
 def update_model_sites(model_id: int, req: dict, user: dict = Depends(get_current_user)):
     """保存业务本体适用站点 + 对象级站点白名单（权限由 API 中间件按 ontology:save 码把关）。

@@ -79,9 +79,6 @@ def _object_exists(model_id: int, object_key: str) -> bool:
 
 async def search_ontology(args):
     """搜索本体对象."""
-    from backend.modules.mind.execution.sdk_tools.context import get_execution_context
-
-    ctx = get_execution_context()
     try:
         from backend.modules.catalog.services import ontology_service
 
@@ -600,12 +597,11 @@ async def update_ontology_object(args):
     try:
         _reject_datasource_arg(args)
         _assert_model_editable(model_id)   # 系统本体不可编辑（业务本体放行）
-        # 新建对象与修改对象是两个权限码：不能靠“改”的码新建对象（fail-closed）
-        exists = await asyncio.to_thread(_object_exists, model_id, object_key)
-        if exists:
-            _require_write_perm("ontology:save", "修改本体对象")
-        else:
-            _require_write_perm("ontology:create", "新增本体对象")
+        # 新建与修改是两个稳定动作：update 只允许已有对象，新建统一走 add_ontology_objects。
+        _require_write_perm("ontology:save", "修改本体对象")
+        if not await asyncio.to_thread(_object_exists, model_id, object_key):
+            raise ValueError(f"对象 {object_key} 不存在；新增对象请使用 add_ontology_objects")
+
     except (ValueError, PermissionError) as e:
         return _text({"error": str(e)}, is_error=True)
 
@@ -948,6 +944,9 @@ TOOL_SPECS = [
     # 只读工具
     {
         "name": "search_ontology",
+        "action_key": "ontology.search",
+        "perm_code": "ontology:read",
+        "object_key": "ontology_model",
         "description": (
             "Search ontology objects by keyword. Returns matching object classes, "
             "their display names, aliases and descriptions. Pass object_key to expand "
@@ -966,6 +965,9 @@ TOOL_SPECS = [
     },
     {
         "name": "get_ontology_model",
+        "action_key": "ontology.get_model",
+        "perm_code": "ontology:read",
+        "object_key": "ontology_model",
         "description": (
             "Get details of a specific ontology model by ID. Returns model metadata "
             "and a summary of its objects (key, display_name, property_count, link_count). "
@@ -983,6 +985,9 @@ TOOL_SPECS = [
     },
     {
         "name": "list_ontology_models",
+        "action_key": "ontology.list_models",
+        "perm_code": "ontology:read",
+        "object_key": "ontology_model",
         "description": (
             "List all ontology models. Returns id, name, status, object_count for each. "
             "Use to browse available models before viewing details."
@@ -996,6 +1001,9 @@ TOOL_SPECS = [
     },
     {
         "name": "get_metadata_summary",
+        "action_key": "ontology.metadata_summary",
+        "perm_code": "ontology:read",
+        "object_key": "ontology_model",
         "description": (
             "Get a summary of metadata statistics: table count, column count, "
             "business terms count, metrics count, active ontology models count."
@@ -1009,6 +1017,9 @@ TOOL_SPECS = [
     # 写操作工具 (菜单与功能权限码把关, 直执行)
     {
         "name": "generate_ontology_draft",
+        "action_key": "ontology.generate_material",
+        "perm_code": "ontology:generate",
+        "object_key": "ontology_model",
         "description": (
             "Fetch one batch of modeling material (tables, columns, known relations, "
             "business terms/metrics) for ontology draft induction, plus the required "
@@ -1025,6 +1036,9 @@ TOOL_SPECS = [
     },
     {
         "name": "save_ontology_draft",
+        "action_key": "ontology.save_draft",
+        "perm_code": "ontology:generate",
+        "object_key": "ontology_model",
         "description": (
             "Submit induced ontology objects to create/replace the ontology draft of the "
             "session's bound source. Server-side deterministic validation merges duplicate "
@@ -1042,6 +1056,9 @@ TOOL_SPECS = [
     },
     {
         "name": "save_ontology_model",
+        "action_key": "ontology.save_model",
+        "perm_code": "ontology:save",
+        "object_key": "ontology_model",
         "description": (
             "Save a **complete** ontology model JSON into the draft (does NOT take effect, no cascade). "
             "Use ONLY for whole-model regeneration where you legitimately hold the full doc. To change an "
@@ -1060,6 +1077,9 @@ TOOL_SPECS = [
     },
     {
         "name": "activate_ontology_model",
+        "action_key": "ontology.activate",
+        "perm_code": "ontology:activate",
+        "object_key": "ontology_model",
         "description": (
             "Activate an ontology model. The previous active model will be archived. "
             "Objects will be written to the metadata DB and the knowledge graph rebuilt."
@@ -1072,6 +1092,9 @@ TOOL_SPECS = [
     },
     {
         "name": "import_ontology_yaml",
+        "action_key": "ontology.import_yaml",
+        "perm_code": "ontology:import",
+        "object_key": "ontology_model",
         "description": (
             "Import Palantir Ontology YAML files as an active ontology model."
         ),
@@ -1083,6 +1106,9 @@ TOOL_SPECS = [
     },
     {
         "name": "add_ontology_objects",
+        "action_key": "ontology.create_object",
+        "perm_code": "ontology:create",
+        "object_key": "ontology_model",
         "description": (
             "在本体模型中**新增对象**（只增不删，落草案）。传 model_id 与 objects 数组"
             "（每项含 key/display_name/aliases/description/primary_table/properties）。"
@@ -1102,6 +1128,9 @@ TOOL_SPECS = [
     },
     {
         "name": "update_ontology_object",
+        "action_key": "ontology.update_object",
+        "perm_code": "ontology:save",
+        "object_key": "ontology_model",
         "description": (
             "按 key **局部合并**单个本体对象（只动这一个对象，落草案）。"
             "传 model_id 与 object，**只写要改的字段**：标量（display_name/description/primary_table）、"
@@ -1127,6 +1156,9 @@ TOOL_SPECS = [
     },
     {
         "name": "publish_ontology_model",
+        "action_key": "ontology.publish",
+        "perm_code": "ontology:publish",
+        "object_key": "ontology_model",
         "description": (
             "发布本体草案（生效 + 级联：重展开对象/重建图谱/同步知识库）。"
             "**发布前必须先用 ask_user 向用户确认**：不带 confirmed=true 调用只会返回"
@@ -1142,6 +1174,9 @@ TOOL_SPECS = [
     },
     {
         "name": "save_metric",
+        "action_key": "dict.save_metric",
+        "perm_code": "ontology:save",
+        "object_key": "metric",
         "description": (
             "创建/更新**指标字典行**（adh_metrics，指标口径的唯一权威）。传 id 则更新，不传则创建。"
             "必填：display_name(业务名)、bound_object_key(归属对象，必须是已激活对象)、"
@@ -1171,6 +1206,9 @@ TOOL_SPECS = [
     },
     {
         "name": "save_dimension",
+        "action_key": "dict.save_dimension",
+        "perm_code": "ontology:save",
+        "object_key": "dimension",
         "description": (
             "创建/更新**维度字典行**（adh_dimensions）。传 id 则更新，不传则创建。"
             "必填：display_name(业务名)、bound_object_key(归属对象)；"

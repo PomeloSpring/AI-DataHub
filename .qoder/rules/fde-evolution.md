@@ -25,8 +25,8 @@ description: FDE 迭代方法论（Forward Deployed Engineer）。本项目按 P
 - 执行成功 ≠ 全系统一致：涉及派生系统（图谱/qmind 文档/绑定表）的动作必须走服务层级联（见 ontology-modeling §1/§6），并有水位线或对账兜底（`reconcile()`）。
 
 ## 3. 失败数据驱动建模 backlog（自进化闭环）
-- 解析失败/模糊被拒的业务词自动落入 `adh_alias_suggestions`（planner `unresolved_terms` → `alias_suggestion.record_unresolved_terms`，best-effort 永不影响取数主链路）；**建模待办由失败数据生成，不靠拍脑袋堆别名**。
-- 审核经别名直审端点写回（`POST /api/as-bot/alias-suggestions/{id}/approve|reject`，`ontology:save` 把关后直执行）：字典行 aliases 或 active 模型对象 aliases（后者走 `save_draft` 级联重建图谱+重推知识库）。闭环 = 落入 → 审核(eval 佐证) → 回写 → 重评。
+- 解析失败/模糊被拒的业务词经 `evolution_service.record_parse_fail_terms` 落入**候选真源** `adh_evolution_candidates`（planner `unresolved_terms`，best-effort 永不影响取数主链路）；旧 `adh_alias_suggestions` 仅冻结历史（搬迁已完成），不得再当真源读写；**建模待办由失败数据生成，不靠拍脑袋堆别名**。
+- 候选/提议处置统一走 `POST /api/evolution/{candidates,proposals}/{id}/decisions`（`evolution_decision_service`：版本仲裁 + 幂等账本 + 领域写入，HTTP/AI 同一条决策链）；进化 API 的旧 `/alias` `/metric-draft` `/dimension-draft` `/to-term` `/reject` `/applied` 等动作端点已退役，不得再引用。收编别名写回字典行 aliases（`metrics_service.update_*`）或 active 模型对象 aliases（`merge_object_scalars` 落草案，发布独立）；字典草稿落 `is_active=0` 待人工启用。闭环 = 落入 → 决策(eval 佐证) → 回写 → 重评。
 - 反复"未绑定走旁路/找不到对象"的对象缺口，应转化为本体建模项而不是检索侧 hack；巡检 `backend/scripts/check_alias_projection.py` 输出派生物漂移报告。
 
 ## 4. Fail-safe 与降级守则

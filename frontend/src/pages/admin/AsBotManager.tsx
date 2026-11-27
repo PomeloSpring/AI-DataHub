@@ -19,7 +19,15 @@ import { t as tr } from '@/i18n/runtime';
 
 // ── 常量:与后端 sdk_tools 工具组 / tool_catalog 标准工具 / 图表类型对齐 ──
 // 工具权限采用"逐个工具"粒度:每个进程内 MCP server 的工具可单独勾选。
-const MCP_TOOL_GROUPS: { group: string; label: string; desc: string; tools: { name: string; label: string }[] }[] = [
+// category: data=数据查询工具（答数据问题）/ platform=平台操作工具（建模/看板/资产/系统，
+// 操作平台用）/ aux=辅助机制；真值源是后端 tool_catalog 的 category 字段，
+// 这里的映射只兜底（后端未带时不让分组丢失）。
+const CATEGORY_BY_GROUP: Record<string, string> = {
+  catalog: 'data', semantic: 'data', query: 'data', lineage: 'data',
+  ontology: 'platform', screen: 'platform', system: 'platform', assets: 'platform',
+  memory: 'aux', render: 'aux',
+};
+const MCP_TOOL_GROUPS: { group: string; label: string; desc: string; category?: string; tools: { name: string; label: string; category?: string }[] }[] = [
   {
     group: 'catalog', label: tr('k_4c288b61f7'), desc: tr('k_4f9f9225bf'),
     tools: [
@@ -226,10 +234,15 @@ export default function AsBotManager() {
     const cur = form.tools?.mcp?.[group] || [];
     setMcp(group, cur.includes(tool) ? cur.filter((x) => x !== tool) : [...cur, tool]);
   };
-  const toggleMcpGroup = (group: string, all: string[]) => {
-    const cur = form.tools?.mcp?.[group] || [];
-    setMcp(group, cur.length === all.length ? [] : [...all]);
+  /** 卡级全选/取消：只动本卡的工具（一个组可能跨能力区，如语义组的目录三件已归系统工具）。 */
+  const toggleCard = (group: string, names: string[]) => {
+    const cur: string[] = form.tools?.mcp?.[group] || [];
+    const allOn = names.length > 0 && names.every((n) => cur.includes(n));
+    setMcp(group, allOn ? cur.filter((x) => !names.includes(x)) : Array.from(new Set([...cur, ...names])));
   };
+  /** 逐工具类别（真值源 = tool_catalog 的 category，缺省回落到组类别）。 */
+  const toolCat = (g: { group: string; category?: string }, t: { category?: string }) =>
+    t.category || g.category || CATEGORY_BY_GROUP[g.group] || 'aux';
 
   const handleSave = async () => {
     if (!form.name.trim() && !form.as_bot_key.trim()) { toast.error(t('k_1b3acf6993')); return; }
@@ -405,32 +418,60 @@ export default function AsBotManager() {
               <p className="text-sm text-muted-foreground">{t('k_9a34d7c03d')}</p>
               <p className="text-xs text-destructive">{t("k_8ee6487a9b")}</p>
               
-              <div className="space-y-3">
-                {toolGroups.map((g) => {
-                  const sel = form.tools?.mcp?.[g.group] || [];
-                  const all = g.tools.map((t) => t.name);
-                  const allOn = sel.length === all.length;
+              {/* 能力分区：平台能力 vs 数据工具显式区分（与后端 tool_catalog.category 同源）
+                  data=答数据问题 / platform=操作平台资产（不用于答数据问题）/ aux=辅助机制 */}
+              <div className="space-y-4">
+                {([
+                  { key: 'data', label: tr('k_5d1e9a7c70'), desc: tr('k_5d1e9a7c73') },
+                  { key: 'platform', label: tr('k_5d1e9a7c71'), desc: tr('k_5d1e9a7c74') },
+                  { key: 'aux', label: tr('k_5d1e9a7c72'), desc: '' },
+                ]).map((sec) => {
+                  // 按逐工具类别分桶：组可能跨区（语义组的 get_metrics/get_glossary/query_by_tags
+                  // 已归系统工具，2026-11-27 拍板），跨区时一个组拆成两张卡、勾选互不干扰
+                  const cards = toolGroups
+                    .map((g) => ({ g, tools: g.tools.filter((t) => toolCat(g, t) === sec.key) }))
+                    .filter((c) => c.tools.length > 0);
+                  if (!cards.length) return null;
                   return (
-                    <div key={g.group} className="border border-border rounded-lg p-2.5">
-                      <button
-                        type="button"
-                        className="flex items-center gap-2 text-sm font-medium w-full text-left"
-                        onClick={() => toggleMcpGroup(g.group, all)}
-                        title={g.desc}
-                      >
-                        <span className={`inline-block w-3.5 h-3.5 rounded border ${allOn ? 'bg-primary border-primary' : 'border-muted-foreground/40'}`} />
-                        {g.label}
-                        <span className="text-xs text-muted-foreground">({sel.length}/{all.length})</span>
-                      </button>
-                      <div className="flex flex-wrap gap-2 mt-2 pl-5">
-                        {g.tools.map((t) => {
-                          const active = sel.includes(t.name);
+                    <div key={sec.key}>
+                      <div className="text-xs font-semibold">
+                        {sec.label}
+                        {sec.desc && (
+                          <span className="ml-2 font-normal text-muted-foreground">{sec.desc}</span>
+                        )}
+                      </div>
+                      <div className="space-y-3 mt-1.5">
+                        {cards.map(({ g, tools }) => {
+                          const groupSel: string[] = form.tools?.mcp?.[g.group] || [];
+                          const sel = groupSel.filter((n) => tools.some((t) => t.name === n));
+                          const all = tools.map((t) => t.name);
+                          const allOn = all.length > 0 && sel.length === all.length;
                           return (
-                            <Badge key={t.name} variant={active ? 'default' : 'outline'} className="cursor-pointer"
-                              title={t.name}
-                              onClick={() => toggleMcpTool(g.group, t.name)}>
-                              {t.label}
-                            </Badge>
+                            <div key={g.group} className="border border-border rounded-lg p-2.5">
+                              <button
+                                type="button"
+                                className="flex items-center gap-2 text-sm font-medium w-full text-left"
+                                onClick={() => toggleCard(g.group, all)}
+                                title={g.desc}
+                              >
+                                <span className={`inline-block w-3.5 h-3.5 rounded border ${allOn ? 'bg-primary border-primary' : 'border-muted-foreground/40'}`} />
+                                {/* 组被跨区拆分时子集卡换标题（如语义组的目录三件在平台区叫「目录查询」） */}
+                                {tools.length < g.tools.length ? tr('k_5d1e9a7c76') : g.label}
+                                <span className="text-xs text-muted-foreground">({sel.length}/{all.length})</span>
+                              </button>
+                              <div className="flex flex-wrap gap-2 mt-2 pl-5">
+                                {tools.map((t) => {
+                                  const active = sel.includes(t.name);
+                                  return (
+                                    <Badge key={t.name} variant={active ? 'default' : 'outline'} className="cursor-pointer"
+                                      title={t.name}
+                                      onClick={() => toggleMcpTool(g.group, t.name)}>
+                                      {t.label}
+                                    </Badge>
+                                  );
+                                })}
+                              </div>
+                            </div>
                           );
                         })}
                       </div>

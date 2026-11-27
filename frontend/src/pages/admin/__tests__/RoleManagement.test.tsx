@@ -294,12 +294,15 @@ describe('角色权限 — AI 接入通道如实显示', () => {
     expect(within(gate).getByText('权限码把关').getAttribute('title')).toContain('真实生效');
   });
 
-  it('无消费方的功能显式提示「配置暂不生效」，不让人以为选了级别就开通', async () => {
+  it('无消费方的功能只留紧凑信号：徽标「未接入」+悬浮说明，不铺实现长文案', async () => {
     await openFunctionsTab();
     const none = rowOf('删除本体');
-    expect(within(none).getByText(/尚未接入 AI/)).toBeInTheDocument();
-    expect(within(none).getByText(/不会开通任何接口能力/)).toBeInTheDocument();
-    // 已登记工具与已接码把关的功能不得出现该提示
+    const badge = within(none).getByText('未接入');
+    // 悬浮说明仍要说清“选了级别也不生效”，但行内不再刷长文案
+    expect(badge.getAttribute('title')).toContain('暂无消费方');
+    expect(within(none).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
+    expect(within(none).queryByText(/FUNCTION_ACTION_SPECS/)).not.toBeInTheDocument();
+    // 已登记工具与已接码把关的功能同样不得出现旧提示
     expect(within(rowOf('查看报告清单')).queryByText(/尚未接入 AI/)).not.toBeInTheDocument();
   });
 });

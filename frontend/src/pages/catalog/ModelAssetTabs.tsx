@@ -884,15 +884,15 @@ function ItemOps({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => voi
 
 /** 页签工具条：标题 + 新建按钮（与业务术语模块同款交互）。 */
 function TabToolbar({ title, count, unit, onCreate, createLabel }: {
-  title: string; count: number; unit: string; onCreate: () => void; createLabel: string;
+  title: string; count: number; unit: string; onCreate?: () => void; createLabel: string;
 }) {
   return (
     <div className="flex items-center gap-2 mb-3">
       <Badge variant="outline">{title}</Badge>
       <span className="text-sm font-medium">{count} {unit}</span>
-      <Button size="sm" className="ml-auto" onClick={onCreate}>
+      {onCreate && <Button size="sm" className="ml-auto" onClick={onCreate}>
         <Plus className="h-4 w-4 mr-1" />{createLabel}
-      </Button>
+      </Button>}
     </div>
   );
 }
@@ -924,7 +924,7 @@ function CheckList({ options, value, onChange, empty }: {
 }
 
 /** M2 行为页签：对象级分析/操作行为（支持新建/编辑/删除，落库走 save_draft 级联）。 */
-export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+export function ModelActionsTab({ jsonContent, onSave, readonly = false }: { jsonContent: string; onSave: (next: string) => void; readonly?: boolean }) {
   const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
@@ -940,6 +940,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
   const totalActs = actionsByObj.reduce((n, x) => n + x.acts.length, 0);
 
   const submit = () => {
+    if (readonly) return;
     if (!editing || !editing.key.trim() || !editing.objectKey) return;
     applyEdit(jsonContent, (d) => {
       const obj = (d.objects || []).find((o: any) => o.key === editing.objectKey);
@@ -964,6 +965,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
   };
 
   const remove = (objKey: string, akey: string) => {
+    if (readonly) return;
     if (!window.confirm(t('k_b83544c032', { p0: akey }))) return;
     applyEdit(jsonContent, (d) => {
       const obj = (d.objects || []).find((o: any) => o.key === objKey);
@@ -976,7 +978,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
       <div className="p-4">
         <TabToolbar title={t("k_eb4d32abb7")} count={totalActs} unit={t('k_d55ccdf498')}
           createLabel={t('k_d474378d6e')}
-          onCreate={() => setEditing({
+          onCreate={readonly ? undefined : () => setEditing({
             mode: 'create', objectKey: objects[0]?.key || '', key: '', label: '',
             effect: '', read_only: true, risk: 'medium', requires_approval: true,
           })} />
@@ -997,6 +999,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                     <span className={a.read_only ? 'text-muted-foreground' : 'text-amber-600'}>
                       {a.read_only ? t('k_981506ab42') : t('k_acfe9ff42a', { p0: a.risk ? `(${a.risk})` : '' })}
                     </span>
+                    {!readonly && <>
                     <button className="text-muted-foreground hover:text-foreground" title={t("k_a7f814c0a4")}
                       onClick={() => setEditing({
                         mode: 'edit', origKey: a.key, objectKey: obj.key || '', key: a.key || '',
@@ -1009,6 +1012,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
                       onClick={() => remove(obj.key || '', a.key || '')}>
                       <Trash2 className="h-3 w-3" />
                     </button>
+                    </>}
                   </span>
                 ))}
               </div>
@@ -1017,7 +1021,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
         </div>
       </div>
 
-      <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
+      <Dialog open={!readonly && !!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>{editing?.mode === 'edit' ? t('k_c3f5a25f12') : t('k_d474378d6e')}</DialogTitle>
@@ -1087,7 +1091,7 @@ export function ModelActionsTab({ jsonContent, onSave }: { jsonContent: string; 
 }
 
 /** M3 规则页签：口径/约束/质量/权限规则（支持新建/编辑/删除）。 */
-export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+export function ModelRulesTab({ jsonContent, onSave, readonly = false }: { jsonContent: string; onSave: (next: string) => void; readonly?: boolean }) {
   const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
@@ -1123,6 +1127,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
   };
 
   const remove = (rkey: string) => {
+    if (readonly) return;
     if (!window.confirm(t('k_a00da004f0', { p0: rkey }))) return;
     applyEdit(jsonContent, (d) => {
       d.rules = (d.rules || []).filter((r: any) => r.key !== rkey);
@@ -1134,7 +1139,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
       <div className="p-4">
         <TabToolbar title={t("k_9f21293dc9")} count={rules.length} unit={t('k_ecb4f20944')}
           createLabel={t('k_f10ed4681f')}
-          onCreate={() => setEditing({
+          onCreate={readonly ? undefined : () => setEditing({
             mode: 'create', key: '', type: 'business_constraint', statement: '', source: '',
             subject: 'role:admin', action: '*', level: 'allow', applies_to: [],
           })} />
@@ -1146,16 +1151,18 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
                 <Badge variant="secondary">{ruleBadge(r.type)}</Badge>
                 {r.enforcement?.level && <Badge variant="outline">{r.enforcement.level}</Badge>}
                 <span className="text-xs text-muted-foreground">{r.key}</span>
-                <ItemOps
-                  onEdit={() => setEditing({
-                    mode: 'edit', origKey: r.key, key: r.key || '', type: r.type || 'business_constraint',
-                    statement: r.statement || '', source: r.source || '',
-                    subject: r.enforcement?.subject || 'role:admin',
-                    action: r.enforcement?.action || '*',
-                    level: r.enforcement?.level || 'allow',
-                    applies_to: r.enforcement?.applies_to || [],
-                  })}
-                  onDelete={() => remove(r.key || '')} />
+                {!readonly && (
+                  <ItemOps
+                    onEdit={() => setEditing({
+                      mode: 'edit', origKey: r.key, key: r.key || '', type: r.type || 'business_constraint',
+                      statement: r.statement || '', source: r.source || '',
+                      subject: r.enforcement?.subject || 'role:admin',
+                      action: r.enforcement?.action || '*',
+                      level: r.enforcement?.level || 'allow',
+                      applies_to: r.enforcement?.applies_to || [],
+                    })}
+                    onDelete={() => remove(r.key || '')} />
+                )}
               </div>
               <div className="text-sm mt-1.5">{r.statement || t('k_42957a482d')}</div>
               {r.enforcement?.subject && (
@@ -1169,7 +1176,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
         </div>
       </div>
 
-      <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
+      <Dialog open={!readonly && !!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-md max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>{editing?.mode === 'edit' ? t('k_a1d940b0dc') : t('k_f10ed4681f')}</DialogTitle>
@@ -1241,7 +1248,7 @@ export function ModelRulesTab({ jsonContent, onSave }: { jsonContent: string; on
 }
 
 /** M4 场景页签：使用场景（支持新建/编辑/删除）。 */
-export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string; onSave: (next: string) => void }) {
+export function ModelScenariosTab({ jsonContent, onSave, readonly = false }: { jsonContent: string; onSave: (next: string) => void; readonly?: boolean }) {
   const { t } = useTranslation('ui');
   const doc = parseM234(jsonContent);
   const [editing, setEditing] = useState<null | {
@@ -1301,6 +1308,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
   };
 
   const remove = (skey: string) => {
+    if (readonly) return;
     if (!window.confirm(t('k_eef5c7f5c8', { p0: skey }))) return;
     applyEdit(jsonContent, (d) => {
       d.scenarios = (d.scenarios || []).filter((s: any) => s.key !== skey);
@@ -1312,7 +1320,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
       <div className="p-4">
         <TabToolbar title={t("k_b1d78e638d")} count={scenarios.length} unit={t('k_a256b2d857')}
           createLabel={t('k_a5cab13a74')}
-          onCreate={() => setEditing({
+          onCreate={readonly ? undefined : () => setEditing({
             mode: 'create', key: '', title: '', goal: '',
             uses_objects: [], uses_actions: [], uses_rules: [], eval_seed: '',
             route_sources: [], join_hint: '',
@@ -1326,16 +1334,18 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
                   {s.title || s.key}
                   <span className="text-xs text-muted-foreground ml-2">{s.key}</span>
                 </div>
-                <ItemOps
-                  onEdit={() => setEditing({
-                    mode: 'edit', origKey: s.key, key: s.key || '', title: s.title || '',
-                    goal: s.goal || '', uses_objects: s.uses_objects || [],
-                    uses_actions: s.uses_actions || [], uses_rules: s.uses_rules || [],
-                    eval_seed: (s.eval_seed || []).join('\n'),
-                    route_sources: (s.route?.sources || []).map((e) => e.source_ontology || '').filter(Boolean),
-                    join_hint: s.route?.join_hint || '',
-                  })}
-                  onDelete={() => remove(s.key || '')} />
+                {!readonly && (
+                  <ItemOps
+                    onEdit={() => setEditing({
+                      mode: 'edit', origKey: s.key, key: s.key || '', title: s.title || '',
+                      goal: s.goal || '', uses_objects: s.uses_objects || [],
+                      uses_actions: s.uses_actions || [], uses_rules: s.uses_rules || [],
+                      eval_seed: (s.eval_seed || []).join('\n'),
+                      route_sources: (s.route?.sources || []).map((e) => e.source_ontology || '').filter(Boolean),
+                      join_hint: s.route?.join_hint || '',
+                    })}
+                    onDelete={() => remove(s.key || '')} />
+                )}
               </div>
               {s.goal && <div className="text-sm text-muted-foreground mt-1">{s.goal}</div>}
               <div className="flex flex-wrap gap-1.5 mt-2">
@@ -1365,7 +1375,7 @@ export function ModelScenariosTab({ jsonContent, onSave }: { jsonContent: string
         </div>
       </div>
 
-      <Dialog open={!!editing} onOpenChange={(v) => !v && setEditing(null)}>
+      <Dialog open={!readonly && !!editing} onOpenChange={(v) => !v && setEditing(null)}>
         <DialogContent className="max-w-xl max-h-[88vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader>
             <DialogTitle>{editing?.mode === 'edit' ? t('k_583eb8ba99') : t('k_a5cab13a74')}</DialogTitle>

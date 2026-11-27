@@ -117,6 +117,9 @@ PERM_GATED_ACTION_PERMS = frozenset({
     # 进化候选建指标/维度草稿：执行期 require_write_perm("metrics:manage") 真把关
     # （HTTP 端点一直是这一把尺，AI 通道沿用，不另造判断）。
     "metrics:manage",
+    # 能力流程（P3）：capability:run 是编排入口码（创建/观察/取消流程），
+    # 与 ai_action_key=capability.run_flow 构成双通道；每步执行仍由动作自身域码再裁。
+    "capability:run",
 })
 
 AI_CHANNEL_FUNCTION_ACTION = "function_action"

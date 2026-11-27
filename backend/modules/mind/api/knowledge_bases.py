@@ -506,8 +506,17 @@ async def update_knowledge_base(kb_id: int, request: KnowledgeBaseUpdate):
                     _load_cfg(existing.get("source_config")), incoming_cfg)))
 
             if request.status is not None:
+                # 启停是二值状态机：error 是探测运行态、其它字符串一概非法。
+                # 不校验就会把任意值写进 status 列（实测 {"status":"bogus"} 被 200 接受），
+                # 后续 Badge 显隐、缓存剔除全按未知值走错分支 —— 非法值必须 400 拒收。
+                status = str(request.status).strip().lower()
+                if status not in ("active", "inactive"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="状态取值不合法（只支持 active/inactive）",
+                    )
                 updates.append("status = %s")
-                params.append(request.status)
+                params.append(status)
 
             if updates:
                 sql = f"UPDATE adh_knowledge_bases SET {', '.join(updates)} WHERE id = %s"

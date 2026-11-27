@@ -52,6 +52,39 @@ export interface MetricListQuery {
   scope?: 'model' | 'unbound';
 }
 
+export type AssetPoolQueue = 'metric' | 'dimension' | 'term';
+
+export interface AssetPoolRow {
+  queue: AssetPoolQueue;
+  id: number;
+  title: string;
+  name_en?: string;
+  aliases?: string[];
+  bound_object_key?: string;
+  pool_reason?: 'unbound' | 'orphan';
+  unit?: string;
+  agg_type?: string;
+  category?: string;
+  description?: string;
+  datasource_id?: number;
+  term_type?: string;
+}
+
+export interface AssetPoolPage {
+  items: AssetPoolRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  counts: { metrics: number; dimensions: number; terms: number; total: number };
+}
+
+export interface AssetPoolQuery {
+  queue?: AssetPoolQueue;
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
 export const metricsApi = {
   list: (params?: MetricListQuery) => client.get('/metrics', { params }),
   create: (data: any) => client.post('/metrics', data),
@@ -77,6 +110,7 @@ export const metricsApi = {
   // 字典筛选词表: 指标/维度两个 Tab 共用一次拉取(选项必须来自全量集聚合, 见 lib/dictLabels)
   filters: (params?: { model_id?: number; scope?: 'model' | 'unbound' }) =>
     client.get('/metrics/filters', { params }),
-  // 未归属资产池(指标/维度/术语/回流候选 + 计数徽章)
-  assetPool: () => client.get('/metrics/asset-pool'),
+  // 字典待办：传 page_size 为服务端真分页；不传为兼容计数/选择面全量聚合。
+  // 候选不再混入本接口，唯一真源是 /evolution/candidates。
+  assetPool: (params?: AssetPoolQuery) => client.get('/metrics/asset-pool', { params }),
 };

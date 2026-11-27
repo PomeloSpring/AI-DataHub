@@ -62,7 +62,22 @@ beforeEach(() => {
   resetPool();
   usePermissionStore.setState({ perms: null, allowedMenus: null, unrestricted: true, loaded: false });
 
-  vi.mocked(metricsApi.assetPool).mockImplementation(async () => ({ data: JSON.parse(JSON.stringify(pool)) } as any));
+  vi.mocked(metricsApi.assetPool).mockImplementation(async () => {
+    // 服务端真分页信封（P1-2）：items 是三队列混排行，counts 覆盖全部队列
+    const data = JSON.parse(JSON.stringify(pool));
+    const items = [
+      ...data.metrics.map((r: any) => ({ ...r, queue: 'metric', title: r.name, aliases: r.aliases || [] })),
+      ...data.dimensions.map((r: any) => ({ ...r, queue: 'dimension', title: r.name, aliases: r.aliases || [] })),
+      ...data.terms.map((r: any) => ({ ...r, queue: 'term', title: r.term_cn, name_en: r.term_en, term_type: r.term_type })),
+    ];
+    return { data: {
+      items, total: items.length, page: 1, page_size: 20,
+      counts: {
+        metrics: data.metrics.length, dimensions: data.dimensions.length,
+        terms: data.terms.length, total: items.length,
+      },
+    } } as any;
+  });
   vi.mocked(metricsApi.filters).mockResolvedValue({ data: { objects: OBJ_FACETS } } as any);
   vi.mocked(metricsApi.update).mockImplementation(async (id: number) => { dropMetric(id); return { data: { success: true } } as any; });
   vi.mocked(metricsApi.delete).mockImplementation(async (id: number) => { dropMetric(id); return { data: { success: true } } as any; });
