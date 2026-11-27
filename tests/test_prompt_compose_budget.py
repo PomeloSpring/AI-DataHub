@@ -17,6 +17,7 @@ import pytest
 
 from backend.modules.mind.execution.prompt_composer import (
     MAX_SKILL_BODIES,
+    _datasource_topology_lines,
     _select_skill_bodies,
     compose_system_prompt,
 )
@@ -418,26 +419,31 @@ def test_shipped_time_window_directive_matches_implementation():
     arms = bodies["arms-observability"]
     assert "time_window" in arms and "静默丢掉" in arms, "观测域缺窗口口径与静默丢参告警"
 
-# ── 工具自主编排 + 歧义闸门（常驻段）与三个剧本的「入口分诊」（本次优化）────────
-# 取向：工具选择权归模型，提示词只给判断依据与预算；歧义必须先问、不许拿默认值跑数。
+# ── 工具自主编排 + 取数前语义确认（常驻段）与三个剧本的「入口分诊」────────
+# 取向：工具选择权归模型，提示词只给判断依据与预算；关键语义缺失/多义必须先问。
 
-def test_orchestration_and_ambiguity_rules_are_always_injected():
-    """工具选择权归模型：给判断依据与预算，不给工具白名单；歧义必须先问不先猜。"""
+def test_orchestration_and_semantic_confirmation_rules_are_always_injected():
+    """工具选择权归模型；目录命中不算确认，缺项/多义先问且不拿默认值跑数。"""
     caps = _caps("mcp__datahub_semantic__get_metrics", "mcp__datahub_semantic__run_semantic_query")
     prompt = compose_system_prompt(None, [], username="u", user_role="viewer", capabilities=caps)
-    assert "## 工具自主编排" in prompt and "## 歧义闸门" in prompt
+    assert "## 工具自主编排" in prompt and "## 取数前语义确认" in prompt
     assert "不规定你必须调用哪几个工具" in prompt          # 反白名单：由模型自己判断查哪件
-    assert "先 `ask_user` 再取数" in prompt                 # 两种解读给出不同数字 → 不许猜
+    assert "先 `ask_user` 再取数" in prompt                 # 缺项/多义 → 不许猜
     assert "不要先按某个默认值跑出结果再解释" in prompt
-    assert "别把能自己定的事推给用户" in prompt             # 反问不是免责，过度澄清同样扣分
+    assert "目录命中只证明名称存在，不等于用户已经确认该口径" in prompt
+    assert "`dimensions=[]`" in prompt and "不得自己补一个“最贴近”的维度" in prompt
+    assert "个人记忆不得自动补时间、维度或范围" in prompt
+    assert "建议补知识、补建模或联系管理员" in prompt
     # 回答体量必须匹配问题（实测缺陷：问「官网地址是什么」被答成对照表 + 三条推销 + 37s）
     assert "## 回答体量必须匹配问题" in prompt
     assert "**事实型**" in prompt and "1~2 句把答案给完" in prompt
     assert "你可能还想看" in prompt and "判不准时按**更轻**的那档答" in prompt
-    assert "回显所用口径" in prompt                         # 自己定的口径必须让用户能纠偏
+    assert "回显所用口径" in prompt                         # 已执行口径必须让用户能纠偏
     assert "不管该做的消歧" in prompt                       # 预算只管无目的重复
-    # 历史缺陷回潮检测：旧措辞把纯口径问题挡在检索之外，模型不搜就回"不知道"
+    assert "## 取数执行最后检查（收尾复述）" in prompt
+    # 历史缺陷回潮检测：旧措辞把纯口径问题挡在检索之外，或允许模型自行补近似口径
     assert "两种情况才" not in prompt
+    assert "选最贴近的重试" not in prompt
 
 
 def test_semantic_rules_open_knowledge_questions_to_retrieval():
@@ -450,7 +456,7 @@ def test_semantic_rules_open_knowledge_questions_to_retrieval():
 
 
 def test_shipped_skills_open_with_triage_before_exploration():
-    """三个分析剧本都以「入口分诊」开宗明义：先判要什么、有无第二种解读，再决定编排。"""
+    """三个分析剧本都以「入口分诊」开宗明义：先判要什么、关键语义是否缺失/多义。"""
     from backend.modules.mind.execution.as_bots import load_skills
 
     bodies = {r["name"]: (r.get("system_prompt") or "")
@@ -459,7 +465,9 @@ def test_shipped_skills_open_with_triage_before_exploration():
     for name, body in bodies.items():
         assert "## 〇、入口分诊" in body, f"{name} 缺入口分诊"
         assert body.index("## 〇、入口分诊") < body.index("## 一、"), f"{name} 分诊段位置不对"
-        assert "第二种合理解读" in body and "ask_user" in body, f"{name} 缺歧义闸门"
+        assert "关键语义是否缺失或多义" in body and "ask_user" in body, f"{name} 缺语义确认闸门"
+        assert "个人记忆不得自动补时间、维度或范围" in body, f"{name} 缺禁止默认补参"
+        assert "`dimensions=[]`" in body, f"{name} 缺总量不自动补维度口径"
         assert "回显所用口径" in body, f"{name} 缺口径回显"
         assert "无目的重复" in body, f"{name} 缺「消歧不算浪费」的预算口径"
         # 输出规范只服务分析型交付：事实型/解释型不得被套上「结论+图+下一步」模板
@@ -467,6 +475,59 @@ def test_shipped_skills_open_with_triage_before_exploration():
         assert body.index("适用前提") > body.index("## 六、输出规范"), f"{name} 适用前提位置不对"
         assert "至多 2 个值得继续深挖" in body or "主动提出下一步" not in body, \
             f"{name} 的下一步推销未限定在分析型交付"
+
+
+def test_pinned_scene_missing_inputs_ask_before_partial_query():
+    """场景输入缺失时先问，禁止先取方案的一部分再暴露歧义。"""
+    quick_paths = [{"title": "订单分析", "content": "按订单对象分析", "pinned": True}]
+    prompt = compose_system_prompt(None, [], username="u", user_role="analyst",
+                                   capabilities=_caps("mcp__datahub_semantic__run_semantic_query"),
+                                   quick_paths=quick_paths)
+    assert "先 `ask_user` 一次问清" in prompt
+    assert "不得先按方案取能取的一部分" in prompt
+    assert "先按方案取能取的部分" not in prompt
+
+
+def test_query_execution_tail_only_when_query_tool_available():
+    """收尾复述只给有真实取数/取图能力的会话，避免纯目录角色白付指令。"""
+    with_query = compose_system_prompt(
+        None, [], username="u", user_role="analyst",
+        capabilities=_caps("mcp__datahub_semantic__run_semantic_query"))
+    without_query = compose_system_prompt(
+        None, [], username="u", user_role="viewer",
+        capabilities=_caps("mcp__datahub_semantic__get_metrics"))
+    assert "## 取数执行最后检查（收尾复述）" in with_query
+    assert "## 取数执行最后检查（收尾复述）" not in without_query
+
+
+def test_multi_site_topology_probes_before_fanout():
+    """聚合态与显式跨站都必须先试取一站，通过后才自动扩散。"""
+    sites = [
+        {"site_code": "cn", "display_name": "中国站", "datasources": [{"name": "src-cn"}], "is_aggregate": 0},
+        {"site_code": "intl", "display_name": "国际站", "datasources": [{"name": "src-intl"}], "is_aggregate": 0},
+        {"site_code": "global", "display_name": "全球", "datasources": [], "is_aggregate": 1},
+    ]
+    for current in ("global", "cn"):
+        text = "\n".join(_datasource_topology_lines(current, sites))
+        assert "先取一个目标站点试取" in text
+        assert "校验结果契约通过后自动续取其余目标站点" in text or "自动续取其余目标站点" in text
+        assert "试取不通过立即停止扩散" in text
+        assert "对每个可查站点各调一次" not in text
+
+
+def test_multi_site_skills_probe_before_fanout():
+    """多站技能不得再教模型直接把每个站点都查/建一遍。"""
+    from backend.modules.mind.execution.as_bots import load_skills
+
+    bodies = {r["name"]: (r.get("system_prompt") or "")
+              for r in load_skills(["data-analysis", "platform-request-log", "screen-builder"])}
+    assert "先选一个目标站点试取" in bodies["data-analysis"]
+    assert "每个站点各调一次" not in bodies["data-analysis"]
+    assert "先取一个目标站点试取" in bodies["platform-request-log"]
+    assert "逐站各取一次（中国站 + 国际站）" not in bodies["platform-request-log"]
+    assert "先用一个目标站点试取" in bodies["screen-builder"]
+    for name in ("data-analysis", "platform-request-log", "screen-builder"):
+        assert "试取不通过" in bodies[name] and "停止扩散" in bodies[name]
 
 
 if __name__ == "__main__":
