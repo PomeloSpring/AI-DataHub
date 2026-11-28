@@ -190,6 +190,12 @@ interface DashboardState {
   refreshing: boolean;
   refreshingChartIds: Set<number>;
   /**
+   * 整板**服务端**刷新进行中的看板 id（顶栏「刷新数据」→ 后端异步任务）。
+   * 任务在服务端跑、不再逐图发浏览器请求，若图面毫无反应，用户会以为"点了没反应"
+   * —— 图表卡片的单独刷新按钮据此同步转动（反馈是状态展示，不是逐图查询）。
+   */
+  refreshingBoardIds: Set<number>;
+  /**
    * 实时取数覆盖层（chartId -> data_cache JSON）。
    * 图表数据有四个渲染面（编辑器 / 看板浏览页 / 大屏播放 / 弹窗页），后三者把 GET
    * 到的看板详情存在各自组件里；刷新结果只写 dashboards 时它们读不到，按钮点了
@@ -244,6 +250,8 @@ interface DashboardState {
   resetParams: (dashboardId?: number) => Promise<boolean>;
   refreshCharts: (dashboardId?: number, charts?: DashboardChart[]) => Promise<boolean>;
   refreshSingleChart: (chartId: number, extra?: ChartRefreshExtra) => Promise<boolean>;
+  /** 顶栏整板刷新的置位/清除：图面据此显示"正在刷新"，与服务端任务同起同落 */
+  setBoardRefreshing: (dashboardId: number, on: boolean) => void;
   /** 退出页面 / 切换看板时调用：未执行的图表查询直接丢弃，执行中的直接中止 */
   cancelChartRefresh: () => void;
 }
@@ -305,6 +313,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   pageParamValues: {},
   refreshing: false,
   refreshingChartIds: new Set(),
+  refreshingBoardIds: new Set(),
   chartCache: {},
   paramDiagnostics: {},
 
@@ -316,7 +325,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       listFilters: {},
       currentId: null, currentWorkspaceId: 0, loading: false, error: null,
       globalFilters: {}, crossFilters: [], paramValues: {}, pageParams: [], pageParamValues: {}, refreshing: false,
-      refreshingChartIds: new Set(), chartCache: {}, paramDiagnostics: {} });
+      refreshingChartIds: new Set(), refreshingBoardIds: new Set(), chartCache: {}, paramDiagnostics: {} });
   },
 
   loadDashboards: async (workspaceId?: number) => {
@@ -640,6 +649,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     ++sessionVersion;
     refreshVersions.clear();
     set({ refreshing: false, refreshingChartIds: new Set() });
+  },
+
+  setBoardRefreshing: (dashboardId, on) => {
+    const id = Number(dashboardId) || 0;
+    if (!id) return;
+    set(state => {
+      const ids = new Set(state.refreshingBoardIds);
+      if (on) ids.add(id); else ids.delete(id);
+      return { refreshingBoardIds: ids };
+    });
   },
 
   refreshSingleChart: async (chartId, extra?) => {

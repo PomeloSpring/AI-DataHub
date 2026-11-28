@@ -1908,7 +1908,11 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   const theme = useThemeStore(s => s.theme);
   const isDark = visual?.mode ? visual.mode === 'dark' : IS_DARK[theme];
   const refreshing = useDashboardStore(s => chartId != null && s.refreshingChartIds.has(chartId));
-  const isLoading = loading ?? refreshing;
+  // 整板服务端刷新（顶栏「刷新数据」）进行中：本板每张图的单独刷新按钮同步转起来。
+  // 任务在服务端跑、浏览器不再逐图发请求，图面静止会让用户以为"点了没反应"——
+  // 这里只展示状态（不发起任何查询），与单图刷新共用同一套 loading 视觉。
+  const boardRefreshing = useDashboardStore(s => chartId != null && dashboardId != null && s.refreshingBoardIds.has(dashboardId));
+  const isLoading = loading ?? (refreshing || boardRefreshing);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -2568,12 +2572,52 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
   }
 
   if (!view.columns?.length || !view.rows?.length) {
+    // 空态也必须是 chart-cell 容器：刷新按钮的 hover 显隐（.chart-cell:hover）与
+    // absolute 定位都挂在这个类上，裸文本会让按钮永远选不到（历史缺陷）。
+    const emptyIsWidget = chartType.startsWith('widget_');
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        position: 'absolute', inset: 0, color: '#999',
-      }}>
-        暂无数据
+      <div
+        className="chart-cell"
+        style={{ position: 'absolute', inset: 0, overflow: 'hidden', ...style }}
+      >
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          position: 'absolute', inset: 0, color: '#999',
+        }}>
+          暂无数据
+        </div>
+        {chartId != null && !emptyIsWidget && (
+          <button
+            className={`chart-refresh-btn${isLoading ? ' is-active' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName });
+            }}
+            title={t("k_a6ce897c8e")}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              style={isLoading ? { animation: 'spin 1s linear infinite' } : undefined}>
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 16h5v5" />
+            </svg>
+          </button>
+        )}
+        {isLoading && (
+          <div style={{
+            position: 'absolute', inset: 0, zIndex: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: isDark ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.6)',
+            borderRadius: 'inherit',
+            backdropFilter: 'blur(2px)',
+          }}>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style={{ animation: 'spin 1s linear infinite' }}>
+              <circle cx="12" cy="12" r="10" stroke={isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.1)'} strokeWidth="3" />
+              <path d="M12 2a10 10 0 0 1 10 10" stroke="hsl(var(--primary))" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+          </div>
+        )}
       </div>
     );
   }
@@ -2705,7 +2749,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
         )}
         {showRefreshBtn && (
           <button
-            className="chart-refresh-btn"
+            className={`chart-refresh-btn${isLoading ? ' is-active' : ''}`}
             onClick={(e) => {
               e.stopPropagation();
               useDashboardStore.getState().refreshSingleChart(chartId!, { dashboardId, chartName });
@@ -2883,7 +2927,7 @@ function DashboardChartInner({ chartType, data, config, style, loading, chartId,
     >
       {chartId != null && !isWidget && (
         <button
-          className="chart-refresh-btn"
+          className={`chart-refresh-btn${isLoading ? ' is-active' : ''}`}
           onClick={(e) => {
             e.stopPropagation();
             useDashboardStore.getState().refreshSingleChart(chartId, { dashboardId, chartName });

@@ -112,10 +112,28 @@ def _install(monkeypatch, log, charts=(), stored_row=None):
 
 
 def _sets(update_entry):
-    """把 UPDATE 语句的 SET 列名与参数对齐成 dict（参数顺序与列名一致）。"""
+    """把 UPDATE 语句的 SET 段与参数对齐成 dict。
+
+    同时支持两种赋值：`col`=%s（按序消耗参数）与字面量 `col`=NULL（记 None、不消耗参数）。
+    """
     sql, params = update_entry
-    cols = [seg.split("`")[1] for seg in sql.split("SET")[1].split("WHERE")[0].split(",") if "`" in seg]
-    return dict(zip(cols, params))
+    out, idx = {}, 0
+    for seg in sql.split("SET", 1)[1].split("WHERE", 1)[0].split(","):
+        seg = seg.strip()
+        if "=" not in seg:
+            continue
+        col, _, val = seg.partition("=")
+        col = col.strip().strip("`").strip()
+        if not col:
+            continue
+        if val.strip() == "%s":
+            out[col] = params[idx]
+            idx += 1
+        elif val.strip().upper() == "NULL":
+            out[col] = None
+        else:
+            out[col] = val.strip()
+    return out
 
 
 def _writes(log):
@@ -325,7 +343,11 @@ def test_update_demo_chart_declared_live_clears_without_extra_read(monkeypatch):
 def test_appearance_update_on_real_chart_keeps_cache(monkeypatch):
     """无示例标记的存量图表改样式：不得顺手清空真实 data_cache。"""
     log = []
-    _install(monkeypatch, log, [{**demo_chart(), "config": json.dumps({"xCol": "dt"})}])
+    # stored_row = 库里旧行（取数口径签名判定要回读比对）：config 只有样式键，
+    # 本次 patch 也只改样式键 → 签名不变 → 保留缓存。
+    stored = {**demo_chart(), "config": json.dumps({"xCol": "dt"})}
+    _install(monkeypatch, log, [{**demo_chart(), "config": json.dumps({"xCol": "dt"})}],
+             stored_row=stored)
     dash.chart_service.update_chart(10, 21, {"config": {"xCol": "dt", "yCol": "sales"}, "position": {"x": 1, "y": 2, "w": 3, "h": 4}})
     update = _writes(log)[-1]
     assert "data_cache" not in update[0]

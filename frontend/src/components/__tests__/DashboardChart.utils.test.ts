@@ -1093,3 +1093,94 @@ describe('渲染失败必须可见', () => {
     expect(alert).toHaveTextContent('目标')
   })
 })
+
+// 整板刷新已服务端化（浏览器不再逐图发请求）：任务跑在后端时若图面毫无反应，
+// 用户盯着静止的图表会以为"点了没反应"。图表卡片的单独刷新按钮必须同步转起来，
+// 且刷新中要脱离 hover 常显（鼠标不在卡片上时也看得见）。
+describe('图表卡片刷新按钮 — 刷新进行中必须看得见在转', () => {
+  const tableData = {
+    columns: ['case_id', 'cnt'],
+    rows: [{ case_id: 'C1', cnt: 1 }],
+    unpaged: true,
+  }
+  const renderChart = (dashboardId: number) => render(createElement(DashboardChart, {
+    chartType: 'table_value', chartId: 7, dashboardId, config: {}, data: tableData,
+  }))
+
+  afterEach(() => {
+    cleanup()
+    useDashboardStore.getState().reset()
+  })
+
+  it('本板整板刷新进行中：按钮带 is-active（常显）且图标转入 spin', () => {
+    useDashboardStore.getState().setBoardRefreshing(3, true)
+    const { container } = renderChart(3)
+    const btn = container.querySelector('.chart-refresh-btn')!
+    expect(btn.className).toContain('is-active')
+    expect(btn.querySelector('svg')!.getAttribute('style')).toContain('spin')
+  })
+
+  it('按 dashboardId 精确置位：别的看板在刷新不牵连本图', () => {
+    useDashboardStore.getState().setBoardRefreshing(99, true)
+    const { container } = renderChart(3)
+    const btn = container.querySelector('.chart-refresh-btn')!
+    expect(btn.className).not.toContain('is-active')
+    expect(btn.querySelector('svg')!.getAttribute('style') || '').not.toContain('spin')
+  })
+
+  it('任务终态清除后按钮回到静止态（不留常转的假状态）', () => {
+    useDashboardStore.getState().setBoardRefreshing(3, true)
+    const { container, rerender } = renderChart(3)
+    expect(container.querySelector('.chart-refresh-btn')!.className).toContain('is-active')
+    useDashboardStore.getState().setBoardRefreshing(3, false)
+    rerender(createElement(DashboardChart, {
+      chartType: 'table_value', chartId: 7, dashboardId: 3, config: {}, data: tableData,
+    }))
+    const btn = container.querySelector('.chart-refresh-btn')!
+    expect(btn.className).not.toContain('is-active')
+    expect(btn.querySelector('svg')!.getAttribute('style') || '').not.toContain('spin')
+  })
+})
+
+// 空数据图表（暂无数据）曾是裸文本 return：没有 chart-cell 容器，
+// 刷新按钮的 hover 显隐（.chart-cell:hover）与 absolute 定位全落空 → 按钮永远选不到。
+// 空态恰恰最需要单独刷新（数据可能只是本次没取到），必须可点、刷新中可见在转。
+describe('暂无数据图表的单独刷新按钮', () => {
+  const emptyData = { columns: [], rows: [] }
+  const renderEmpty = (over: Record<string, unknown> = {}) => render(createElement(DashboardChart, {
+    chartType: 'line', chartId: 7, dashboardId: 3, config: {}, data: emptyData, ...over,
+  }))
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    useDashboardStore.getState().reset()
+  })
+
+  it('空态渲染 chart-cell 容器与可点的刷新按钮（不再是选不到的裸文本）', () => {
+    const { container } = renderEmpty()
+    expect(container.querySelector('.chart-cell')).not.toBeNull()
+    expect(container.textContent).toContain('暂无数据')
+    expect(container.querySelector('.chart-refresh-btn')).not.toBeNull()
+  })
+
+  it('点击刷新按钮调 refreshSingleChart（带 dashboardId/chartName）', () => {
+    const spy = vi.spyOn(useDashboardStore.getState(), 'refreshSingleChart').mockResolvedValue(true)
+    const { container } = renderEmpty({ chartName: '销售趋势' })
+    fireEvent.click(container.querySelector('.chart-refresh-btn')!)
+    expect(spy).toHaveBeenCalledWith(7, { dashboardId: 3, chartName: '销售趋势' })
+  })
+
+  it('整板刷新中：空态按钮 is-active 常显且图标转入 spin', () => {
+    useDashboardStore.getState().setBoardRefreshing(3, true)
+    const { container } = renderEmpty()
+    const btn = container.querySelector('.chart-refresh-btn')!
+    expect(btn.className).toContain('is-active')
+    expect(btn.querySelector('svg')!.getAttribute('style')).toContain('spin')
+  })
+
+  it('widget 控件空态不出刷新按钮（控件无取数口径，刷新无意义）', () => {
+    const { container } = renderEmpty({ chartType: 'widget_label' })
+    expect(container.querySelector('.chart-refresh-btn')).toBeNull()
+  })
+})

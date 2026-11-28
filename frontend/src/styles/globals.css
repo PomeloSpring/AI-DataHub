@@ -910,6 +910,11 @@
 .chart-cell:hover .chart-refresh-btn {
   opacity: 1;
 }
+/* 刷新进行中：按钮必须脱离 hover 常显——鼠标不在卡片上时看不到转动，
+   用户就无法确认这张图正在刷新（单图刷新与整板服务端刷新同用） */
+.chart-refresh-btn.is-active {
+  opacity: 1;
+}
 .chart-refresh-btn:hover {
   background: hsl(var(--primary) / 0.15);
   color: hsl(var(--primary));

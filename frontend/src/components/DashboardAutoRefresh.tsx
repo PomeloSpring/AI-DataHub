@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/lib/toast';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import client from '@/api/client';
+import { useDashboardStore } from '@/stores/dashboardStore';
 
 export interface DashboardRefreshConfig {
   dashboard_id: number;
@@ -103,6 +104,9 @@ export default function DashboardAutoRefresh({
   const refresh = useCallback(async () => {
     if (busy || loading) return;
     setBusy(true); setFailed(false);
+    // 整板任务在服务端跑：图面必须同步显示"在刷新"，否则用户盯着静止的图表不知道点了有没有生效
+    // （置位与任务同起同落，终态/失败/组件卸载都在 finally 里清除，不留常转的假状态）
+    useDashboardStore.getState().setBoardRefreshing(dashboardId, true);
     try {
       const { data } = await client.post<DashboardRefreshRun>(`/dashboard/${dashboardId}/refresh`);
       if (data.cache_hit || data.status === 'cache_hit') {
@@ -116,6 +120,7 @@ export default function DashboardAutoRefresh({
         toast.error(error?.response?.data?.detail || t('autoRefresh.failedToast'));
       }
     } finally {
+      useDashboardStore.getState().setBoardRefreshing(dashboardId, false);
       if (mounted.current) setBusy(false);
     }
   }, [busy, dashboardId, loading, pollRun, t]);

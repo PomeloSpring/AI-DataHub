@@ -503,13 +503,72 @@ def _chart_cache_json(chart: dict, columns, rows, extra: dict | None = None) -> 
     return text
 
 
+# 图表 config 里随意图一起存的取数口径键（直建通道写入）：刷新时补回数据集入参。
+# 相对时间窗（近 7 天/本月/今年）必须每次刷新按**当前时刻**重算 —— 把绝对日期
+# 固化进数据集/图表就等于“建屏时对、第二天错”。
+_INTENT_PASSTHROUGH_KEYS = ("time_window", "time_column", "time_grain",
+                            "time_range", "time_start", "time_end")
+
+
+# 取数口径的 config 键白名单：只有这些键会改变取数结果（其余全是样式/展示键）。
+# 样式变更必须保留 data_cache（用户只改图表样式时数据直接套新样式生效），
+# 而口径变更必须清缓存（宁清勿错数）—— 判定依据就是这份清单。
+_QUERY_CONFIG_KEYS = ("pageSize", "limit", "filters", "order", "dimensions",
+                      "measures", "metrics", "datasource", "datasource_id",
+                      "as_bot_design") + _INTENT_PASSTHROUGH_KEYS
+# adh_charts 行上影响取数结果的字段（config 之外）。
+_QUERY_ROW_FIELDS = ("chart_type", "source_type", "source_id",
+                     "semantic_query", "query_source", "sql_query")
+# update_chart patch 里可能改变取数口径的字段（含 config 整份）。
+_QUERY_PATCH_FIELDS = _QUERY_ROW_FIELDS + ("config",)
+
+
+def _query_config_view(config) -> dict:
+    """config 里真正参与取数的键（样式键不进缓存键/签名，否则改样式必丢缓存）。"""
+    cfg = _json_loads_safe(config)
+    if not isinstance(cfg, dict):
+        return {}
+    return {k: cfg[k] for k in _QUERY_CONFIG_KEYS if k in cfg}
+
+
+def _query_signature(row: dict) -> str:
+    """图表行的取数口径签名：只有口径变化才改变它（样式变化不改）。"""
+    payload = {
+        "chart_type": str(row.get("chart_type") or ""),
+        "source_type": str(row.get("source_type") or ""),
+        "source_id": row.get("source_id"),
+        "semantic_query": _json_loads_safe(row.get("semantic_query")) or None,
+        "query_source": str(row.get("query_source") or ""),
+        "sql_query": str(row.get("sql_query") or ""),
+        "config": _query_config_view(row.get("config")),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"), default=str)
+
+
+def _read_query_row(dashboard_id: int, chart_id: int) -> dict | None:
+    """回读图表行的取数口径字段（判定本次 patch 是否改口径用）。
+
+    读不到（连接异常/行不存在）返回 None → 调用方按“无法判定”清缓存（宁清勿错数）。
+    """
+    try:
+        return execute_query(
+            "SELECT chart_type, source_type, source_id, semantic_query, query_source, "
+            "sql_query, config FROM adh_charts WHERE id = %s AND dashboard_id = %s",
+            (chart_id, dashboard_id), fetchone=True) or None
+    except Exception as e:  # noqa: BLE001 — 读失败必须可观测且走保守分支
+        logger.warning("update_chart 回读口径失败，按口径变更清缓存（dashboard=%s chart=%s: %s）",
+                       dashboard_id, chart_id, e)
+        return None
+
+
 def _chart_cache_key(chart: dict, params: dict | None = None, scope: str = "") -> str:
-    """图表级缓存键：图表口径 + 默认参数 + 安全作用域。"""
+    """图表级缓存键：图表取数口径 + 默认参数 + 安全作用域（样式键不进键）。"""
     raw = json.dumps({
         "chart_id": int(chart.get("id") or 0),
         "source_type": chart.get("source_type"),
         "source_id": chart.get("source_id"),
-        "config": _json_loads_safe(chart.get("config")) or {},
+        "config": _query_config_view(chart.get("config")),
         "semantic_query": _json_loads_safe(chart.get("semantic_query")) or {},
         "params": params or {},
         "scope": scope or "",
@@ -657,13 +716,6 @@ def _dataset_bound_args(dataset_id: int, params: dict) -> tuple[dict, dict]:
         return {}, {"unbound": [], "notes": [], "skipped": 0}
     values = {k: v for k, v in params.items() if k not in _NON_PARAM_KEYS}
     return param_plan.bound_args(ds, values)
-
-
-# 图表 config 里随意图一起存的取数口径键（直建通道写入）：刷新时补回数据集入参。
-# 相对时间窗（近 7 天/本月/今年）必须每次刷新按**当前时刻**重算 —— 把绝对日期
-# 固化进数据集/图表就等于“建屏时对、第二天错”。
-_INTENT_PASSTHROUGH_KEYS = ("time_window", "time_column", "time_grain",
-                            "time_range", "time_start", "time_end")
 
 
 def _chart_effective_source(data: dict, chart_id: int) -> dict:
@@ -1992,6 +2044,27 @@ class ChartService:
         assert_chart_data_source(payload, identity or {}, chart_id=chart_id)
         data = self._apply_demo_to_live_transition(dashboard_id, chart_id, payload)
 
+        # 缓存去留按**取数口径签名**判定（宁清勿错数）：
+        # - 显式 data_cache=None（demo 转真实等）→ 清；
+        # - 口径字段出现 → 回读旧行比签名，变了才清（只改样式 → 保留缓存，
+        #   数据直接套新样式生效）；读不到旧行 = 无法判定 → 清（fail-safe）；
+        # - 未动口径 → 不清。
+        # 判定在打开写连接之前完成，避免同池嵌套占位（与闸门回读同一时机）。
+        if "data_cache" in data and data.get("data_cache") is None:
+            clear_cache = True
+        elif any(field in data for field in _QUERY_PATCH_FIELDS):
+            old_row = _read_query_row(dashboard_id, chart_id)
+            if old_row is None:
+                clear_cache = True
+            else:
+                merged = dict(old_row)
+                for field in _QUERY_PATCH_FIELDS:
+                    if field in data:
+                        merged[field] = data[field]
+                clear_cache = _query_signature(merged) != _query_signature(old_row)
+        else:
+            clear_cache = False
+
         conn = get_metadata_conn()
         try:
             with conn.cursor() as cur:
@@ -2021,9 +2094,7 @@ class ChartService:
                         value = json.dumps(value, ensure_ascii=False) if value is not None else None
                     sets.append(f"`{field}`=%s")
                     params.append(value)
-                if any(field in data for field in (
-                        "chart_type", "config", "source_type", "source_id", "semantic_query", "query_source")) \
-                        or ("data_cache" in data and data.get("data_cache") is None):
+                if clear_cache:
                     sets.extend(("data_cache=NULL", "data_cache_at=NULL", "data_cache_key=NULL",
                                  "data_cache_scope=NULL"))
                 if sets:

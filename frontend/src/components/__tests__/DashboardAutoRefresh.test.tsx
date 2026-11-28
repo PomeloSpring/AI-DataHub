@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DashboardAutoRefresh, { type DashboardRefreshConfig } from '../DashboardAutoRefresh';
 import { TooltipProvider } from '../ui/tooltip';
 import client from '@/api/client';
+import { useDashboardStore } from '@/stores/dashboardStore';
 
 vi.mock('@/api/client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() } }));
 
@@ -26,7 +27,7 @@ const renderControl = (props: Partial<ComponentProps<typeof DashboardAutoRefresh
   render(<TooltipProvider><DashboardAutoRefresh dashboardId={10} refreshManageable config={config} {...props} /></TooltipProvider>);
 
 beforeEach(() => { vi.clearAllMocks(); });
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); useDashboardStore.getState().reset(); });
 
 describe('服务端看板刷新控制', () => {
   it('无管理权限不渲染整板刷新，但保留更多操作菜单', () => {
@@ -75,5 +76,17 @@ describe('服务端看板刷新控制', () => {
     fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
     await waitFor(() => expect(client.get).toHaveBeenCalledWith('/dashboard/10/refresh-runs/1'));
     await waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
+  });
+
+  it('刷新进行中置位整板刷新状态（图表按钮据此转动），终态后清除', async () => {
+    vi.mocked(client.post).mockResolvedValue({ data: { run_id: 1, status: 'queued' } });
+    // 任务未到终态前不回包：模拟服务端异步跑，期间图面必须显示在刷新
+    let resolveRun!: (value: any) => void;
+    vi.mocked(client.get).mockReturnValue(new Promise(resolve => { resolveRun = resolve; }) as any);
+    renderControl();
+    fireEvent.click(screen.getByRole('button', { name: '刷新数据' }));
+    await waitFor(() => expect(useDashboardStore.getState().refreshingBoardIds.has(10)).toBe(true));
+    resolveRun({ data: { run_id: 1, status: 'success' } });
+    await waitFor(() => expect(useDashboardStore.getState().refreshingBoardIds.has(10)).toBe(false));
   });
 });

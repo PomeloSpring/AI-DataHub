@@ -57,16 +57,28 @@ class FakeConn:
         self.closed = True
 
 
-def _install(monkeypatch, log, *, rowcount=1, fetchone_result=None, fetchall_result=None):
+def _install(monkeypatch, log, *, rowcount=1, fetchone_result=None, fetchall_result=None,
+             stored_row=None):
     cur = FakeCursor(log, rowcount=rowcount, fetchone_result=fetchone_result, fetchall_result=fetchall_result)
     conn = FakeConn(cur)
     monkeypatch.setattr(dash, "get_metadata_conn", lambda: conn)
+    # 闸门回读与缓存口径签名判定都走模块级 execute_query（离线用例不得碰真库）。
+    # stored_row=None = 库里无此图 → 口径签名判定走“无法判定→清缓存”的保守分支。
+    monkeypatch.setattr(dash, "execute_query", lambda *a, **k: stored_row)
     return conn
+
+
+def _row(**over):
+    """库里旧行的最小口径形状（source_type=template 免数据集闸门）。"""
+    row = {"name": "C", "chart_type": "bar", "source_type": "template", "source_id": None,
+           "sql_query": "", "query_source": "raw_sql", "semantic_query": None, "config": "{}"}
+    row.update(over)
+    return row
 
 
 def test_update_chart_only_visual_preserves_query_and_cache(monkeypatch):
     log = []
-    _install(monkeypatch, log, rowcount=1)
+    _install(monkeypatch, log, rowcount=1, stored_row=_row())
     ok = dash.chart_service.update_chart(10, 5, {
         "config": {"vis": {"version": 1}}, "position": {"x": 0, "y": 0, "w": 4, "h": 3},
     })
@@ -75,10 +87,62 @@ def test_update_chart_only_visual_preserves_query_and_cache(monkeypatch):
     # 只写入 config/position/updated_at, 绝不出现 name/sql_query/data_cache/semantic_query 赋值
     assert "SET" in sql
     assert "`name`=" not in sql and "`sql_query`=" not in sql
-    assert "`data_cache`=" not in sql and "`semantic_query`=" not in sql
+    # 缓存保留（含字面量 data_cache=NULL 清缓存写法）：只改样式必须套新样式用旧数据
+    assert "data_cache" not in sql
+    assert "`semantic_query`=" not in sql
     assert "`config`=%s" in sql and "`position`=%s" in sql
     # config/position 被序列化, 未提交的字段不进入 params
     assert json.loads(params[0]) == {"vis": {"version": 1}}
+
+
+def test_update_chart_cache_key_ignores_style_but_tracks_query(monkeypatch):
+    """缓存键只吃取数口径：样式差异同键（旧缓存不失配），口径差异异键。"""
+    base = {"id": 5, "source_type": "dataset", "source_id": 9,
+            "config": {"limit": 100}, "semantic_query": None}
+    styled = dict(base, config={"limit": 100, "vis": {"color": "#f00"}, "title": "x"})
+    assert dash._chart_cache_key(base) == dash._chart_cache_key(styled)
+    # 口径键（limit/filters/time_window）变化必须换键 → 读侧失配才不会拿旧数据充数
+    assert dash._chart_cache_key(base) != dash._chart_cache_key(dict(base, config={"limit": 500}))
+    assert dash._chart_cache_key(base) != dash._chart_cache_key(
+        dict(base, config={"limit": 100, "filters": [{"col": "a"}]}))
+    assert dash._chart_cache_key(base) != dash._chart_cache_key(
+        dict(base, config={"limit": 100, "time_window": "7d"}))
+
+
+def test_update_chart_query_change_clears_cache(monkeypatch):
+    """口径键变更必须清缓存（宁清勿错数）：改 limit 后旧分页数据不得当新口径结果。"""
+    log = []
+    _install(monkeypatch, log, rowcount=1, stored_row=_row(config=json.dumps({"limit": 100})))
+    dash.chart_service.update_chart(10, 5, {"config": {"limit": 500}})
+    sql = log[0][0]
+    assert "data_cache=NULL" in sql and "data_cache_key=NULL" in sql
+
+
+def test_update_chart_chart_type_change_clears_cache(monkeypatch):
+    """图型变更必须清缓存：表值图的 20 行分页缓存当全量趋势是错数。"""
+    log = []
+    _install(monkeypatch, log, rowcount=1, stored_row=_row(chart_type="table_value"))
+    dash.chart_service.update_chart(10, 5, {"chart_type": "line"})
+    assert "data_cache=NULL" in log[0][0]
+
+
+def test_update_chart_unreadable_old_row_clears_cache(monkeypatch):
+    """回读不到旧行 = 无法判定口径是否变化 → 保守清缓存（fail-safe，宁清勿错数）。"""
+    log = []
+    _install(monkeypatch, log, rowcount=1, stored_row=None)
+    dash.chart_service.update_chart(10, 5, {"config": {"vis": {"version": 2}}})
+    assert "data_cache=NULL" in log[0][0]
+
+
+def test_update_chart_rename_without_query_fields_keeps_cache(monkeypatch):
+    """改名/挪位不带任何口径字段：不回读也不清缓存（零额外库读）。"""
+    log = []
+    _install(monkeypatch, log, rowcount=1, stored_row=None)
+    dash.chart_service.update_chart(10, 5, {"name": "新标题", "position": {"x": 1, "y": 1, "w": 2, "h": 2}})
+    sql = log[0][0]
+    assert "data_cache" not in sql
+    # 回读只经 execute_query（已被 fake，不进 log）：log 里不得出现口径 SELECT
+    assert not [e for e in log if e[0].startswith("SELECT chart_type")]
 
 
 def test_update_chart_rejects_empty_required_metadata(monkeypatch):
