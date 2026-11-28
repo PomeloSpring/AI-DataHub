@@ -1023,13 +1023,17 @@ export default function OntologyModeling() {
                 <SyncBadges modelId={model.id} kind={model.kind} refreshKey={graphTick} />
               </span>
             )}
-            {/* 图谱重建入口就放在「图谱 未生成 · 需重建」旁边：徽章说缺，按钮给处置（同看同建一处） */}
-            {!systemReadOnly && model && (
+            {/* 图谱重建入口就放在「图谱 未生成 · 需重建」旁边：徽章说缺，按钮给处置（同看同建一处）。
+                系统本体也必须给：systemReadOnly 只挡 canonical doc 编辑（生成/导入/保存/发布），
+                重建只重写派生命名图不写 doc（graph:manage 把关），藏掉它会让系统本体的
+                「滞后·需重建」徽章变成无人可处置的死提示（历史缺陷 4712ae9 过度收口）。 */}
+            {model && (
               <GraphRebuildButton kind={model.kind} datasourceId={model.datasource_id ?? undefined}
                 className="h-8" onRebuilt={() => setGraphTick((v) => v + 1)} />
             )}
-            {/* 同步知识库与图谱生成同屏：徽章说「待同步」，这里给处置（kb:manage 把关、仅生效模型可点） */}
-            {!systemReadOnly && model && (
+            {/* 同步知识库与图谱生成同屏：徽章说「待同步」，这里给处置（kb:manage 把关、仅生效模型可点）。
+                同上，系统本体的库同步是派生推送（后端按 kind 路由到系统知识库），不写 doc，不随只读隐藏 */}
+            {model && (
               <KbSyncButton modelId={model.id} active={model.status === 'active'}
                 onSynced={() => setGraphTick((v) => v + 1)} />
             )}

@@ -403,6 +403,11 @@ describe('本体建模 · 草案工作区（双视图 + 可视化审阅）', () 
     expect(screen.queryByRole('button', { name: /导入 YAML/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /发布草案/ })).toBeNull();
     expect(screen.queryByRole('tab', { name: /变更对比/ })).toBeNull();
+    // 只读只挡 canonical doc 编辑；派生处置入口（重建图/同步库，graph:manage、kb:manage 把关）
+    // 必须照常给出——否则系统本体的「滞后·需重建」徽章成了无人可处置的死提示
+    // （历史缺陷：4712ae9 给工具栏加 !systemReadOnly 连派生动作一起藏了）
+    expect(screen.getByRole('button', { name: /图谱生成/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /同步知识库/ })).toBeTruthy();
     expect(vi.mocked(client.put)).not.toHaveBeenCalled();
     expect(vi.mocked(client.post)).not.toHaveBeenCalled();
     expect(vi.mocked(client.delete)).not.toHaveBeenCalled();
