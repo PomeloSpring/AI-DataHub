@@ -144,9 +144,10 @@ def test_slash_options_scenes_are_subject_filtered():
     """`/` 面板候选与注入同源：不能只在前端藏，服务端下发前就得过滤。"""
     src = (ROOT / "backend/modules/mind/api/chat.py").read_text(encoding="utf-8")
     block = src.split("def list_chat_slash_options")[1].split("# ── 会话上下文用量")[0]
-    assert "list_visible_paths(allowed_subjects=allowed_subjects" in block
+    assert "list_visible_paths(" in block and "allowed_subjects=allowed_subjects" in block
     assert "visible_subject_keys" in block          # 候选用与注入同一派生口径
     assert "scenes_hidden" in block                  # 被隐去的条数要下发，不静默少返
+    assert "datasource_id=datasource_id" in block    # 候选也按会话生效源过滤
 
 
 def test_selected_scenes_flows_through_both_chat_entries():
@@ -156,6 +157,8 @@ def test_selected_scenes_flows_through_both_chat_entries():
         assert "selected_scenes" in src, rel
     svc = (ROOT / "backend/modules/mind/services/chat_service.py").read_text(encoding="utf-8")
     assert '("selected_scenes"' in svc
+    sdk = (ROOT / "backend/modules/mind/execution/secure_sdk.py").read_text(encoding="utf-8")
+    assert "workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id" in sdk
 
 
 # ── 4. 写入点拦住"配了没生效" ─────────────────────────────────────────────

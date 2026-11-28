@@ -226,7 +226,8 @@ def build_options(adapter, task, backend):
                                    allowed_subjects=allowed_subjects)
     # 用户用 `/` 显式选中的场景：不看触发词也强制注入；被拒的连同原因交给提示词显式告知
     _pinned, _scene_rejected = paths_by_ids(
-        list(ctx.extra.get("selected_scenes") or []), allowed_subjects=allowed_subjects)
+        list(ctx.extra.get("selected_scenes") or []), allowed_subjects=allowed_subjects,
+        workspace_id=ctx.workspace_id, datasource_id=ctx.datasource_id)
     _seen_ids = {str(p.get("id")) for p in _pinned}
     # 合并时保留 pinned 标记（paths_by_ids 已打）且置顶：提示词据此分档措辞——
     # “用户点名的场景”不能跟“触发词猜中的建议”混成同一口径，否则模型会把它当噪音

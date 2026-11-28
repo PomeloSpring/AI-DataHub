@@ -56,19 +56,25 @@ class OntologyTraversalStrategy(RetrievalStrategy):
 
         graph = OxigraphStore.graph_uri(datasource_id)
 
-        # ① 入口 seed: 知识库命中的对象 key 优先注入(T7, 云端向量检索补词法召回缺口),
-        # 不足 _MAX_SEEDS 时再补纯词法 CONTAINS 命中(确定性解析, 无 LLM/无向量)。
+        # ① 入口 seed: 知识库对象 key 优先，其次用调用方明确选中的表名精确反查本体对象，
+        # 最后再补纯词法 CONTAINS 命中。三者都是确定性入口，不使用 LLM/向量猜测。
         key_seeds = self._resolve_key_seeds(client, graph, extra_object_keys or [])
+        candidate = selected_tables or target_tables or []
+        table_seeds = self._find_table_seeds(client, graph, candidate)
         tokens = [_clean_token(t) for t in _search_tokens(question, keywords)]
         tokens = [t for t in tokens if t]
         seeds = list(key_seeds)
+        for seed in table_seeds:
+            if len(seeds) >= _MAX_SEEDS:
+                break
+            if all(seed["iri"] != current["iri"] for current in seeds):
+                seeds.append(seed)
         if len(seeds) < _MAX_SEEDS and tokens:
             for s in self._find_seeds(client, graph, tokens):
                 if all(s["iri"] != k["iri"] for k in seeds):
                     seeds.append(s)
         if not seeds:
             # 词法无命中：若有候选表提示则交下游按名 hydration，否则空
-            candidate = selected_tables or target_tables or []
             res = empty_result("ontology_traversal:no_seed")
             if candidate:
                 res = self._hydrate(candidate, [], res, datasource_id)
@@ -305,6 +311,42 @@ SELECT DISTINCT ?from ?to ?join ?card WHERE {{
             out.append(pt)
         out.extend(sorted(extra_tables or []))
         return out
+
+    def _find_table_seeds(self, client: OxigraphClient, graph: str,
+                          tables: list[str]) -> list[dict]:
+        """把显式候选表精确映射到声明了 primaryTable 的对象类，作为可靠图种子。"""
+        safe_tables = list(dict.fromkeys(_clean_token(str(t).split(".")[-1]).lower()
+                                         for t in (tables or []) if _clean_token(str(t))))
+        if not safe_tables:
+            return []
+        table_match = " || ".join(
+            f'LCASE(STR(?pt)) = "{name}" || '
+            f'STRENDS(LCASE(STR(?pt)), ".{name}")'
+            for name in safe_tables)
+        sparql = f"""
+SELECT DISTINCT ?c ?label WHERE {{
+  GRAPH <{graph}> {{
+    ?c a owl:Class ; adh:primaryTable ?pt ;
+       <http://www.w3.org/2000/01/rdf-schema#label> ?label .
+    FILTER({table_match})
+  }}
+}} LIMIT {_MAX_SEEDS}
+"""
+        try:
+            rows = client.query(sparql) or []
+        except Exception as e:  # noqa: BLE001 — caller-supplied explicit seeds are optional
+            logger.debug("[ontology_traversal] candidate table seed lookup failed: %s", e)
+            return []
+        out = []
+        seen = set()
+        for row in rows:
+            iri = str(row.get("c") or "")
+            if not iri or iri in seen:
+                continue
+            seen.add(iri)
+            out.append({"iri": iri, "label": str(row.get("label") or ""),
+                        "from_candidate_table": True})
+        return out[:_MAX_SEEDS]
 
     @staticmethod
     def _bindings_view(closure: dict) -> dict:

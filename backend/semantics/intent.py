@@ -120,6 +120,9 @@ def _normalize_payload(obj: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     for f in (payload.get("filters") or []):
         if isinstance(f, dict):
             _check_qualified(f.get("dim"))
+    for f in (payload.get("having") or []):
+        if isinstance(f, dict):
+            _check_qualified(f.get("dim"))
     for o in (payload.get("order") or []):
         if isinstance(o, dict):
             _check_qualified(o.get("by"))
