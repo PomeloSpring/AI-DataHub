@@ -4113,9 +4113,17 @@ def validate_actions(doc: dict) -> list:
 
 
 def validate_rules(doc: dict) -> list:
-    """M3 规则建模校验（权限/口径/业务约束/质量）。"""
+    """M3 规则建模校验（规则=触发条件 / 权限/口径/业务约束/质量）。
+
+    两种形态并存（存量兼容）：
+    * ``trigger``（2026-11-28 语义）：规则 = 触发条件，绑到动作/对象/场景，
+      ``trigger{on_kind, on, phase}``——悬空引用硬阻断（宁阻断勿悬空）；
+    * ``enforcement``（旧形态）：权限/约束语义，按原口径校验。
+    """
     issues: list = []
     action_keys = _m234_action_keys(doc)
+    object_keys = {str(o.get("key") or "") for o in (doc.get("objects") or [])}
+    scenario_keys = {str(s.get("key") or "") for s in (doc.get("scenarios") or [])}
     seen: set = set()
     for r in (doc.get("rules") or []):
         rkey = str(r.get("key") or "").strip()
@@ -4136,10 +4144,35 @@ def validate_rules(doc: dict) -> list:
         if not str(r.get("statement") or "").strip():
             issues.append({"category": "rule", "severity": "warn", "object": rkey,
                            "message": f"规则 {rkey!r} 缺 statement（可解释给用户的人话）"})
+        trig = r.get("trigger")
+        if isinstance(trig, dict):
+            # 新语义：规则 = 触发条件，必须精确绑到存在的动作/对象/场景
+            on_kind = str(trig.get("on_kind") or "")
+            phase = str(trig.get("phase") or "")
+            on = trig.get("on")
+            ons = [str(x) for x in on] if isinstance(on, (list, tuple)) else [str(on)] if on else []
+            if on_kind not in ("action", "object", "scenario"):
+                issues.append({"category": "rule", "severity": "error", "object": rkey,
+                               "message": f"规则 {rkey!r} 的 trigger.on_kind={on_kind!r} 不合法"
+                                          "（允许: action/object/scenario）"})
+            if phase not in ("before", "after", "when", "invariant"):
+                issues.append({"category": "rule", "severity": "error", "object": rkey,
+                               "message": f"规则 {rkey!r} 的 trigger.phase={phase!r} 不合法"
+                                          "（允许: before/after/when/invariant）"})
+            if not ons:
+                issues.append({"category": "rule", "severity": "error", "object": rkey,
+                               "message": f"规则 {rkey!r} 未绑定任何对象/动作/场景（触发条件必须有落点）"})
+            pool = {"action": action_keys, "object": object_keys,
+                    "scenario": scenario_keys}.get(on_kind, set())
+            for t in ons:
+                if t not in pool:
+                    issues.append({"category": "rule", "severity": "error", "object": rkey,
+                                   "message": f"规则 {rkey!r} 绑定的{on_kind} {t!r} 不存在（悬空引用）"})
+            continue
         enf = r.get("enforcement")
         if not isinstance(enf, dict):
             issues.append({"category": "rule", "severity": "error", "object": rkey,
-                           "message": f"规则 {rkey!r} 缺 enforcement（执行语义，投影/裁决的依据）"})
+                           "message": f"规则 {rkey!r} 缺 trigger/enforcement（触发条件或执行语义，投影/裁决的依据）"})
             continue
         if rtype == "permission":
             level = str(enf.get("level") or "")

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { createElement, useEffect } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import * as G2 from '@antv/g2'
@@ -8,10 +8,12 @@ import { createRequire } from 'node:module'
 import { normalizeRows } from '../../lib/chartBlocks'
 import { applyTheme, IS_DARK, useThemeStore, type ThemeId } from '../../stores/themeStore'
 import { useDashboardStore } from '../../stores/dashboardStore'
+import i18n from '../../i18n'
 import DashboardChart, {
   detectGroupColumn,
   isTimeColumn,
   parseTime,
+  timeBucketEnd,
   aggregateTimeData,
   groupDataByColumn,
   buildG2Spec,
@@ -506,6 +508,93 @@ describe('buildG2Spec', () => {
     expect(spec.children[0].type).toBe('line')
     const texts = spec.children.filter((c: any) => c.type === 'text').map((c: any) => c.style.text).join(' ')
     expect(texts).toContain('330')
+  })
+
+  // ── big_number_trend 环比取桶：进行中周期必须跳过（假跳水修复）────────────
+  describe('big_number_trend 环比取桶', () => {
+    const trendSpec = (trendRows: any[], config: Record<string, any> = {}) =>
+      buildG2Spec('big_number_trend', ['month', 'value'], trendRows, config, false, 400, 300) as any
+    const deltaOf = (spec: any) =>
+      spec.children.filter((c: any) => c.type === 'text').map((c: any) => c.style.text)
+        .find((t: string) => /[↑↓]/.test(t))
+    // 末桶 = 当前进行中的月份（月粒度），前两桶 = 最近两个完整月
+    const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const cur = new Date()
+    const prev1 = new Date(cur.getFullYear(), cur.getMonth() - 1, 1)
+    const prev2 = new Date(cur.getFullYear(), cur.getMonth() - 2, 1)
+    const ongoingRows = [
+      { month: ym(prev2), value: 100 },
+      { month: ym(prev1), value: 200 },
+      { month: ym(cur), value: 50 },   // 进行中：半截桶，怎么比都是假跳水
+    ]
+
+    beforeAll(async () => { await i18n.changeLanguage('zh-CN') })
+
+    it('末桶是进行中月份 → 跳到前两桶（完整月环比）并显式标注口径', () => {
+      const spec = trendSpec(ongoingRows, { time_grain: 'month' })
+      const delta = deltaOf(spec)
+      // 200 vs 100 → ↑100.0%（不是 50 vs 200 的 ↓75%）
+      expect(delta).toContain('↑ 100.0%')
+      expect(delta).toContain('当期未完不计')   // 换基期必须让用户看见（no-silent-degradation）
+    })
+
+    it('末桶已完结 → 正常取末两桶环比，不带标注', () => {
+      const spec = trendSpec([
+        { month: ym(prev2), value: 100 },
+        { month: ym(prev1), value: 200 },
+      ], { time_grain: 'month' })
+      const delta = deltaOf(spec)
+      expect(delta).toContain('↑ 100.0%')
+      expect(delta).not.toContain('当期未完不计')
+    })
+
+    it('仅两行且末桶进行中 → 不显示环比（宁可不给，不编数字）', () => {
+      const spec = trendSpec([
+        { month: ym(prev1), value: 200 },
+        { month: ym(cur), value: 50 },
+      ], { time_grain: 'month' })
+      expect(deltaOf(spec)).toBeUndefined()
+      expect(deltaOf(spec) ?? 'ok').toBe('ok')
+    })
+
+    it('showComparison=false → 不渲染涨幅行（显式关闭 ≠ 被裁掉）', () => {
+      const spec = trendSpec(ongoingRows, { time_grain: 'month', showComparison: false })
+      expect(spec.children.filter((c: any) => c.type === 'text')).toHaveLength(1)
+    })
+
+    it('键解析不出（如 Jan/Feb）→ 维持旧口径：仍显示环比、不标注', () => {
+      const spec = trendSpec([
+        { month: 'Jan', value: 100 },
+        { month: 'Feb', value: 200 },
+      ])
+      const delta = deltaOf(spec)
+      expect(delta).toContain('↑ 100.0%')
+      expect(delta).not.toContain('当期未完不计')
+    })
+  })
+
+  describe('timeBucketEnd：桶键 → 桶终点（判定完结性的唯一依据）', () => {
+    it('月粒度 %Y-%m：终点落在次月 1 日 0 点', () => {
+      expect(timeBucketEnd('2026-11', 'month')!.getTime()).toBe(new Date(2026, 11, 1).getTime())
+    })
+    it('季度 %Y-Q%q：终点落在次季首月 1 日', () => {
+      expect(timeBucketEnd('2026-Q4', 'quarter')!.getTime()).toBe(new Date(2027, 0, 1).getTime())
+    })
+    it('日 %Y-%m-%d：终点为次日 0 点', () => {
+      expect(timeBucketEnd('2026-11-28')!.getTime()).toBe(new Date(2026, 10, 29).getTime())
+    })
+    it('年 %Y：终点为次年 1 月 1 日', () => {
+      expect(timeBucketEnd('2026')!.getTime()).toBe(new Date(2027, 0, 1).getTime())
+    })
+    it('ISO 周 %x-%v：2026 第 1 周终点 = 该年首个周一 + 7 天', () => {
+      // 2026-01-01 是周四 → 2026 第 1 周从 2025-12-29（周一）开始，终点 2026-01-05
+      expect(timeBucketEnd('2026-01', 'week')!.getTime()).toBe(new Date(2026, 0, 5).getTime())
+    })
+    it('不可解析的键返回 null（调用方走旧行为，不猜）', () => {
+      expect(timeBucketEnd('Jan')).toBeNull()
+      expect(timeBucketEnd('')).toBeNull()
+      expect(timeBucketEnd(null)).toBeNull()
+    })
   })
 
   it('builds rose chart spec', () => {

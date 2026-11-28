@@ -89,6 +89,17 @@ _CALLBACKS: dict[str, str | Callable[..., Any]] = {
     "report.load": "backend.modules.viz.services.report_service:load_report",
     "report.submit": "backend.modules.viz.services.report_service:submit_report",
     "report.submission_model": "backend.modules.viz.services.report_service:ReportSubmission",
+    # 看板刷新域（viz）：Beat/监控跨模块只经回调表，不新增 flow → viz 静态依赖。
+    "dashboard_refresh.configs": "backend.modules.viz.services.dashboard_refresh_service:list_configs_for_monitor",
+    "dashboard_refresh.claim": "backend.modules.viz.services.dashboard_refresh_service:claim_scheduled_run",
+    "dashboard_refresh.execute": "backend.modules.viz.services.dashboard_refresh_service:execute_run",
+    "dashboard_refresh.runs": "backend.modules.viz.services.dashboard_refresh_service:list_runs",
+    "dashboard_refresh.cancel": "backend.modules.viz.services.dashboard_refresh_service:cancel_run",
+    "dashboard_refresh.fail_dispatch": "backend.modules.viz.services.dashboard_refresh_service:fail_dispatch",
+    "dashboard_refresh.stop": "backend.modules.viz.services.dashboard_refresh_service:stop_config",
+    "dashboard_refresh.toggle": "backend.modules.viz.services.dashboard_refresh_service:toggle_config",
+    "dashboard_refresh.trigger": "backend.modules.viz.services.dashboard_refresh_service:request_refresh",
+    "dashboard_refresh.cleanup": "backend.modules.viz.services.dashboard_refresh_service:cleanup_stale",
     # 无人值守分析域（mind）
     "mind.analyze_question": "backend.modules.mind.execution.scheduled_analysis:analyze_question",
     "mind.validate_task_as_bot": "backend.modules.mind.execution.scheduled_analysis:validate_task_as_bot",

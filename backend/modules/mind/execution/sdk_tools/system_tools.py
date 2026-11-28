@@ -265,6 +265,16 @@ async def system_capability_plan(args):
         }, is_error=True)
 
     rules = {str(r.get("key") or ""): r for r in (doc.get("rules") or [])}
+    principles = {str(p.get("key") or ""): p
+                  for p in (doc.get("permission_principles") or [])}
+
+    def _scenario_rules(scn):
+        return [{"key": rk, "statement": (rules.get(str(rk)) or {}).get("statement", "")}
+                for rk in (scn.get("uses_rules") or [])]
+
+    def _scenario_principles(scn):
+        return [{"key": pk, "statement": (principles.get(str(pk)) or {}).get("statement", "")}
+                for pk in (scn.get("uses_principles") or [])]
     try:
         from backend.core.role_service import role_service
         role_perms = role_service.get_user_role_ai_perms(
@@ -280,8 +290,8 @@ async def system_capability_plan(args):
         return _text({
             "scenario": header,
             "executable": False,
-            "rules": [{"key": rk, "statement": (rules.get(str(rk)) or {}).get("statement", "")}
-                      for rk in (scn.get("uses_rules") or [])],
+            "rules": _scenario_rules(scn),
+            "principles": _scenario_principles(scn),
             "note": "这是问答型场景：本体里没有任务步骤（flow）。按 uses_objects / uses_rules 的口径"
                     "回答即可，不得自行编造步骤顺序。",
         })
@@ -307,8 +317,8 @@ async def system_capability_plan(args):
         "executable": True,
         "step_count": len(steps),
         "steps": steps,
-        "rules": [{"key": rk, "statement": (rules.get(str(rk)) or {}).get("statement", "")}
-                  for rk in (scn.get("uses_rules") or [])],
+        "rules": _scenario_rules(scn),
+        "principles": _scenario_principles(scn),
         "note": "按 order 逐步执行：channel=ai 的步骤可直接调对应功能工具；channel=human 的步骤"
                 "必须交给人到界面操作。每步权限仍由权限码在调用时裁决，本计划不替代裁决；"
                 "you_can_run=false 的步骤不得声称已完成。",

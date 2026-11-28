@@ -40,7 +40,7 @@ export default function Screen() {
   return <ScreenPlayer key={scope ?? 0} />;
 }
 function ScreenPlayer() {
-  const { t } = useTranslation('ui');
+  const { t } = useTranslation(['ui', 'dashboard']);
   const { dashboardId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -75,7 +75,11 @@ function ScreenPlayer() {
   const currentMeta = ready ? enabled.find(d => d.id === Number(dashboardId)) : undefined;
   // 完整看板(含 charts/params)按需加载
   const [detail, setDetail] = useState<any>(null);
-  const detailRef = useRef<any>(null); detailRef.current = detail;
+  const reloadDetail = useCallback(async (id: number) => {
+    const { data } = await client.get(`/dashboard/${id}`);
+    setDetail(data);
+    useDashboardStore.getState().adoptDashboard(data);
+  }, []);
   const [detailLoading, setDetailLoading] = useState(false);
   // 切板转场：板上挂载的动效预设 > 个人偏好 > 默认档（默认 transition=none，硬切如旧）
   const { motion, cssVars: motionCss, reason: motionReason } = useMotion({ board: boardMotionRef(detail?.filters) });
@@ -108,14 +112,6 @@ function ScreenPlayer() {
       .catch(() => { if (!cancelled) { setError(tr('k_4c205276c7')); setReady(true); } });
     return () => { cancelled = true; };
   }, [retry]);
-  // 顶栏“刷新数据”：GET /dashboard/{id} 只回 data_cache（DB 缓存），必须逐图 POST
-  // charts/{id}/refresh 向数据源重查询。统一走 store（含查询资源池/超时/退出中止，
-  // 以及数据集图与 AS-BOT 设计图的可刷新口径），此处只负责拿当前看板。
-  const refreshCharts = useCallback(async (): Promise<boolean> => {
-    const d = detailRef.current;
-    if (!d?.id) return false;
-    return useDashboardStore.getState().refreshCharts(d.id, d.charts || []);
-  }, []);
   const index = enabled.findIndex(d => d.id === currentMeta?.id);
   const go = useCallback((delta: number) => {
     if (!enabled.length) return;
@@ -145,7 +141,10 @@ function ScreenPlayer() {
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
       <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">{t("k_4acd359b51")}</span></Button>
       <h1 className="min-w-0 flex-1 truncate font-semibold">{detail.name}</h1>
-      <DashboardAutoRefresh key={detail.id} onRefresh={refreshCharts} loading={detailLoading} menuItems={<>
+      {detail.cache_stale && !detail.refresh_manageable && <span role="status" className="whitespace-nowrap text-xs text-amber-600 dark:text-amber-400">{t('dashboard:autoRefresh.staleBadge')}</span>}
+      <DashboardAutoRefresh key={detail.id} dashboardId={detail.id} refreshManageable={!!detail.refresh_manageable}
+        config={detail.refresh_config} cacheStale={!!detail.cache_stale} loading={detailLoading}
+        onCompleted={() => reloadDetail(detail.id)} menuItems={<>
         <div className="space-y-2 p-2">
           <label className="block text-xs">{t("k_48293dd531")}<select aria-label={t("k_48293dd531")} className="mt-1 w-full rounded border bg-background p-2" value={detail.id} onChange={e => navigate(`/screen/${e.target.value}${location.search}`, { replace: true, state: location.state })}>{enabled.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
           <label className="block text-xs">{t("k_629780a2f8")}<select aria-label={t("k_629780a2f8")} className="mt-1 w-full rounded border bg-background p-2" value={interval} onChange={e => setIntervalValue(Number(e.target.value))}>{[...new Set([0, 5, 10, 15, 30, 60, 120, 300, interval])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{v ? tr('k_551efa4fd5', { p0: v }) : tr('k_5ecd36af5a')}</option>)}</select></label>

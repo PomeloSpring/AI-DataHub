@@ -13,10 +13,11 @@ export interface MonitorSummary {
     by_kind: Record<string, { active: number; stuck: number; failed_total: number }>;
   };
   sync_tasks: { total: number; active: number };
+  dashboard_refresh_tasks?: { total: number; active: number };
 }
 
 export interface MonitoredTask {
-  kind: 'system_job' | 'scheduled_task';
+  kind: 'system_job' | 'scheduled_task' | 'dashboard_refresh';
   task_id: number | string;
   name: string;
   description: string;
@@ -42,7 +43,7 @@ export interface MonitoredTask {
 }
 
 export interface QueuedRun {
-  kind: 'scheduled' | 'report' | 'sync';
+  kind: 'scheduled' | 'report' | 'sync' | 'dashboard_refresh';
   run_id: number;
   task_id: number | null;
   task_name: string;
@@ -115,13 +116,28 @@ export async function removeMonitoredTask(taskId: number): Promise<{ cancelled_r
   return data;
 }
 
+export async function toggleDashboardRefresh(taskId: number, isActive: boolean): Promise<{ is_active: boolean }> {
+  const { data } = await client.post(`/task-monitor/dashboard-refresh/${taskId}/toggle`, { is_active: isActive });
+  return data;
+}
+
+export async function triggerDashboardRefresh(taskId: number): Promise<{ run_id: number | null; status: string; cache_hit?: boolean }> {
+  const { data } = await client.post(`/task-monitor/dashboard-refresh/${taskId}/trigger`);
+  return data;
+}
+
+export async function stopDashboardRefresh(taskId: number): Promise<{ cancelled_runs: number }> {
+  const { data } = await client.post(`/task-monitor/dashboard-refresh/${taskId}/stop`);
+  return data;
+}
+
 export async function pauseSystemJob(jobKey: string, paused: boolean): Promise<MonitoredTask> {
   const { data } = await client.post(`/task-monitor/system-jobs/${jobKey}/pause`, { paused });
   return data;
 }
 
 export async function listQueuedRuns(params?: {
-  kind?: 'scheduled' | 'report' | 'sync';
+  kind?: 'scheduled' | 'report' | 'sync' | 'dashboard_refresh';
   status?: string;
   task_id?: number;
   page?: number;
@@ -137,7 +153,7 @@ export async function stopQueuedRun(kind: string, runId: number): Promise<{ stat
 }
 
 export async function cleanupStaleRuns(timeoutMinutes: number = 10): Promise<{
-  scheduled_runs: number; report_runs: number; sync_runs: number;
+  scheduled_runs: number; report_runs: number; sync_runs: number; dashboard_refresh_runs?: number;
   // DAG 收口结果：执行中租约过期 / 排队堵塞 / 孤儿节点（三者都算本次清理量）
   dag?: { dag_runs?: number; dag_queued_runs?: number; dag_node_runs?: number };
 }> {

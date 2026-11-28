@@ -48,7 +48,9 @@ mapfile -t SERVICES < <(grep -vE '^\s*(#|$)' "$SERVICES_CONF")
 
 # Celery 定时任务进程（无端口，经 Redis broker 通信；beat 有 Redis 租约防多实例）
 CELERY_APP="backend.modules.flow.tasks.celery_app"
-CELERY_PROCS=("celery-worker" "celery-beat")
+# web 与 dashboard-refresh-worker 必须共享按源并发上限；Redis 故障时拒接，不降级本地闸门。
+export QUERY_GATE_BACKEND="${QUERY_GATE_BACKEND:-redis}"
+CELERY_PROCS=("celery-worker" "dashboard-refresh-worker" "celery-beat")
 
 # 前端服务（特殊处理）—— 端口不在本脚本写死，唯一口径见 backend/scripts/frontend_port.sh
 # （读根目录 .env 的 FRONTEND_PORT，缺省 3000；与 docker-compose.full.yml 同源）
@@ -166,12 +168,16 @@ start_web() {
 # ═══════════════════════════════════════════════════════════════
 # 按 cmdline 查找 celery 实例（前台实例不写 pid 文件，只靠 pid 文件查重会漏，
 # 叠加启动会产生双 worker/双 beat，定时任务会被重复调度）
-# role: celery-worker | celery-beat
+# role: celery-worker | dashboard-refresh-worker | celery-beat
 find_celery_pids() {
-    local role="$1" kw="worker"
-    [ "$role" = "celery-beat" ] && kw="beat"
-    ps -eo pid,cmd | awk -v app="$CELERY_APP" -v kw=" $kw" \
-        '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}'
+    local role="$1" kw="worker" queue="-Q scheduled,default"
+    if [ "$role" = "celery-beat" ]; then
+        kw="beat"; queue=" beat"
+    elif [ "$role" = "dashboard-refresh-worker" ]; then
+        queue="-Q dashboard_refresh"
+    fi
+    ps -eo pid,cmd | awk -v app="$CELERY_APP" -v kw=" $kw" -v queue="$queue" \
+        '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 && index($0, queue) > 0 {print $1}'
 }
 
 # 构造指定 Celery 进程的命令到全局数组 CELERY_CMD
@@ -179,6 +185,8 @@ build_celery_cmd() {
     local name="$1"
     if [ "$name" = "celery-worker" ]; then
         CELERY_CMD=("$PYTHON" -m celery -A "$CELERY_APP" worker -Q scheduled,default -l info -c 4)
+    elif [ "$name" = "dashboard-refresh-worker" ]; then
+        CELERY_CMD=(env VIZ_CHART_WORKERS=4 "$PYTHON" -m celery -A "$CELERY_APP" worker -Q dashboard_refresh -l info -c 1)
     else
         CELERY_CMD=("$PYTHON" -m celery -A "$CELERY_APP" beat -l info)
     fi
@@ -278,6 +286,36 @@ stop_service() {
 # ═══════════════════════════════════════════════════════════════
 # 函数: 启动前端
 # ═══════════════════════════════════════════════════════════════
+# 查找监听指定端口的进程 PID：ss → lsof → pgrep 三级兜底（与 kill-ports.sh 同口径）。
+# 历史缺陷：只认 lsof 的环境（未安装 / 无权限映射 PID）永远查不到监听进程，
+# 表现为“启动超时”而 dev server 其实已经起来——检测失败不得伪装成启动失败。
+find_listen_pid() {
+    local port="$1" pid=""
+    if command -v ss >/dev/null 2>&1; then
+        pid=$(ss -ltnp "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+    fi
+    if [ -z "$pid" ] && command -v lsof >/dev/null 2>&1; then
+        pid=$(lsof -i :"${port}" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    fi
+    if [ -z "$pid" ] && command -v pgrep >/dev/null 2>&1; then
+        # 锚定 node vite 进程本体（npm/sh 包装层的 PID 杀不掉 dev server）
+        pid=$(pgrep -f "node .*vite --port ${port} --strictPort" 2>/dev/null | head -1)
+    fi
+    printf '%s' "$pid"
+}
+
+# 失败必须可诊断：错误信息直接带出日志尾巴，不再只丢一句“查看日志”（no-silent-degradation）
+print_log_tail() {
+    local log_file="$1"
+    if [ ! -f "$log_file" ]; then
+        echo "  （日志文件不存在: $log_file）"
+        return 0
+    fi
+    echo "  ── ${log_file} 最后 20 行 ──"
+    tail -20 "$log_file" | sed 's/^/  /'
+    echo "  ────────────────────────────"
+}
+
 start_frontend() {
     local pid_file="$PID_DIR/frontend.pid"
     local log_file="$LOG_DIR/frontend.log"
@@ -294,8 +332,8 @@ start_frontend() {
     fi
 
     # 检查端口
-    if lsof -i :"$FRONTEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-        local occupied_pid=$(lsof -i :"$FRONTEND_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    local occupied_pid=$(find_listen_pid "$FRONTEND_PORT")
+    if [ -n "$occupied_pid" ]; then
         log_error "frontend 端口 $FRONTEND_PORT 已被进程 $occupied_pid 占用"
         return 1
     fi
@@ -311,24 +349,61 @@ start_frontend() {
     cd "$FRONTEND_DIR"
     # --port 以解析出的端口为准，--strictPort 保证被占时直接失败而不是静默换口
     # （否则下方会在错的端口上找进程，表现为“启动超时”而服务其实已在另一口跑着）
-    nohup npm run dev -- --port "$FRONTEND_PORT" --strictPort >> "$log_file" 2>&1 < /dev/null &
+    # setsid：让 npm 自成会话/进程组，超时清理可整组终止，不留 vite 孤儿进程
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup npm run dev -- --port "$FRONTEND_PORT" --strictPort >> "$log_file" 2>&1 < /dev/null &
+    else
+        nohup npm run dev -- --port "$FRONTEND_PORT" --strictPort >> "$log_file" 2>&1 < /dev/null &
+    fi
     local npm_pid=$!
 
-    # 等待 vite 子进程启动并监听端口
+    # 等待监听：预算默认 60s——npm+vite 冷启动在高负载机器上可超过旧的 15s，
+    # 旧口径把“晚一点就绪”误报成启动失败（服务其实已经起来了）。
+    # 可用 FRONTEND_START_TIMEOUT 覆盖（如 120）。
+    local wait_max="${FRONTEND_START_TIMEOUT:-60}"
+    [[ "$wait_max" =~ ^[0-9]+$ ]] || wait_max=60
     local wait_count=0
-    while [ $wait_count -lt 15 ]; do
-        # 找到监听 FRONTEND_PORT 的 vite 进程
-        local vite_pid=$(lsof -i :"$FRONTEND_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
-        if [ -n "$vite_pid" ]; then
-            echo "$vite_pid" > "$pid_file"
-            log_info "frontend 启动成功 (PID: $vite_pid, 端口: $FRONTEND_PORT)"
-            return 0
+    local vite_pid=""
+    while [ "$wait_count" -lt "$wait_max" ]; do
+        vite_pid=$(find_listen_pid "$FRONTEND_PORT")
+        [ -n "$vite_pid" ] && break
+        # npm 提前退出 = 真失败：立即报错并带日志尾巴，不空等满预算
+        if ! kill -0 "$npm_pid" 2>/dev/null; then
+            log_error "frontend 启动失败：npm 进程已退出 (日志: $log_file)"
+            print_log_tail "$log_file"
+            rm -f "$pid_file"
+            return 1
         fi
         sleep 1
-        ((wait_count++))
+        wait_count=$((wait_count + 1))
     done
 
-    log_error "frontend 启动超时，查看日志: $log_file"
+    # 预算耗尽前最后一次复查（可能刚好在边界绑上）
+    [ -n "$vite_pid" ] || vite_pid=$(find_listen_pid "$FRONTEND_PORT")
+
+    if [ -n "$vite_pid" ]; then
+        echo "$vite_pid" > "$pid_file"
+        log_info "frontend 启动成功 (PID: $vite_pid, 端口: $FRONTEND_PORT, 用时 ${wait_count}s)"
+        return 0
+    fi
+
+    # 进程映射全部失效但服务实际在响应（工具/权限异常场景）：按已就绪登记，不误报失败
+    if command -v curl >/dev/null 2>&1 \
+        && curl -s -o /dev/null -m 3 "http://127.0.0.1:${FRONTEND_PORT}/"; then
+        echo "$npm_pid" > "$pid_file"
+        log_warn "frontend 已可访问但未能定位监听进程，暂以 npm PID 登记 (PID: $npm_pid)"
+        return 0
+    fi
+
+    log_error "frontend 启动超时：${wait_max}s 内未监听端口 $FRONTEND_PORT (日志: $log_file)"
+    print_log_tail "$log_file"
+    if kill -0 "$npm_pid" 2>/dev/null; then
+        # 清掉本次启动的整棵进程树：报失败却留 dev server 在跑是半态，会让下次启动误判
+        kill -- -"$npm_pid" 2>/dev/null || kill "$npm_pid" 2>/dev/null
+        sleep 1
+        kill -9 -- -"$npm_pid" 2>/dev/null
+        log_warn "已终止本次启动的前端进程 (组 PID: $npm_pid)；按上方日志修复后重跑 ./start-all.sh frontend -d"
+    fi
     rm -f "$pid_file"
     return 1
 }
@@ -358,7 +433,7 @@ stop_frontend() {
     fi
 
     # PID 文件不存在时，通过端口查找进程
-    local vite_pid=$(lsof -i :"$FRONTEND_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    local vite_pid=$(find_listen_pid "$FRONTEND_PORT")
     if [ -n "$vite_pid" ]; then
         echo -e "  停止 ${name} (PID: $vite_pid, 通过端口发现)..."
         kill "$vite_pid" 2>/dev/null
@@ -379,8 +454,9 @@ stop_frontend() {
 write_fg_port_pid() {
     local name="$1" port="$2"
     local real_pid=""
-    for _ in {1..10}; do
-        real_pid=$(lsof -i :"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+    # 30 次预算：uvicorn/vite 冷启动（先 import 再 bind）在高负载机器上可超过旧的 10s
+    for _ in {1..30}; do
+        real_pid=$(find_listen_pid "$port")
         [ -n "$real_pid" ] && break
         sleep 1
     done
@@ -460,8 +536,9 @@ start_frontend_fg() {
         return 1
     fi
 
-    if lsof -i :"$FRONTEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-        log_error "frontend 端口 $FRONTEND_PORT 已被占用"
+    local occupied_pid=$(find_listen_pid "$FRONTEND_PORT")
+    if [ -n "$occupied_pid" ]; then
+        log_error "frontend 端口 $FRONTEND_PORT 已被进程 $occupied_pid 占用"
         return 1
     fi
 
@@ -718,6 +795,8 @@ case "${1:-all}" in
         echo ""
         log_info "启动完成: ${success} 成功, ${fail} 失败"
         show_status
+        # 有失败必须非零退出：否则调用方/CI 会把“1 失败”当成功
+        [ "$fail" -eq 0 ] || exit 1
         ;;
     all)
         # 默认前台模式
@@ -728,6 +807,7 @@ case "${1:-all}" in
         ;;
     frontend)
         if [ "${2:-}" = "-d" ]; then
+            trap - SIGINT SIGTERM EXIT  # 后台单服务模式与全量 -d 一致：取消前台清理 trap，否则 fg_cleanup 会把失败退出码吞成 0
             start_frontend
         else
             start_frontend_fg "${FG_COLORS[0]}"
@@ -738,10 +818,12 @@ case "${1:-all}" in
     celery)
         # 只启动 Celery worker + beat
         if [ "${2:-}" = "-d" ]; then
+            trap - SIGINT SIGTERM EXIT  # 同 frontend -d：避免 fg_cleanup 吞掉失败退出码
             start_celery
         else
             start_celery_fg "celery-worker" "${FG_COLORS[0]}"
-            start_celery_fg "celery-beat" "${FG_COLORS[1]}"
+            start_celery_fg "dashboard-refresh-worker" "${FG_COLORS[1]}"
+            start_celery_fg "celery-beat" "${FG_COLORS[2]}"
             FG_MODE=true
             wait
         fi

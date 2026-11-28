@@ -20,7 +20,8 @@ import {
 } from '@/api/dag';
 import { useHasPerm } from '@/stores/permissionStore';
 import { DatasourceSelect } from './DatasourceSelect';
-import { DatasetSelect, useMaterializableDatasets } from './DatasetSelect';
+import { DatasetSelect, DatasetSqlPreview, useMaterializableDatasets } from './DatasetSelect';
+import { DataflowSqlPreview } from './DataflowSqlPreview';
 import { useTranslation } from 'react-i18next';
 import { t as tr } from '@/i18n/runtime';
 
@@ -553,6 +554,8 @@ export default function SyncTasks() {
                 <DatasetSelect value={form.dataset} datasets={datasets}
                   onChange={v => setForm(f => ({ ...f, dataset: v, date_arg: '' }))} />
               </div>
+              {/* 就地看数据集 SQL + 跳详情（免切页核对），与 DAG 编辑器同口径 */}
+              <DatasetSqlPreview datasetName={form.dataset} datasets={datasets} />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -644,6 +647,10 @@ export default function SyncTasks() {
               <p className="text-xs text-muted-foreground">{tr('k_56634acc0a')}</p>
               <p className="text-xs text-muted-foreground">{tr('k_f90bec6ec4')}</p>
             </div>
+
+            {/* 数据流 SQL：与 DAG 编辑器同口径，就地看当前配置将执行的完整 SQL */}
+            <DataflowSqlPreview nodeKey="materialize" nodeName={form.name}
+              config={formToGraph(form).nodes[0].config} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>{t("k_4d0b4688c7")}</Button>

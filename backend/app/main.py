@@ -34,6 +34,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend import observability
 
+# web 与 dashboard-refresh-worker 必须共享按源并发上限；显式启用 Redis 租约闸门。
+os.environ.setdefault("QUERY_GATE_BACKEND", "redis")
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),

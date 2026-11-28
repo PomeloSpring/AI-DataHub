@@ -404,16 +404,36 @@ def action_context_index(refresh: bool = False) -> dict[str, dict[str, list[str]
         title = str(scn.get("title") or scn.get("key") or "")
         for a in scn.get("uses_actions") or []:
             scenarios.setdefault(str(a), []).append(title)
-    rules: dict[str, list[str]] = {}
+    # 规则 = 触发条件（2026-11-28 语义）：动作专属触发条件 + 所属对象不变式
+    # 聚合进动作的 rules_hint；权限原则（permission_principles）不是触发条件，不进
+    # 逐动作提示；绑到场景的规则也不逐动作下发（噪声）。
+    action_object: dict[str, str] = {}
+    for obj in doc.get("objects") or []:
+        for a in obj.get("actions") or []:
+            action_object[str(a.get("action_key") or a.get("key") or "")] = str(obj.get("key") or "")
+    by_action: dict[str, list[str]] = {}
+    by_object: dict[str, list[str]] = {}
     for rule in doc.get("rules") or []:
-        target = str((rule.get("enforcement") or {}).get("action") or "")
-        if not target or target == "*":
-            continue  # 全局规则不逐动作下发（噪声），只留动作专属约束
-        statement = str(rule.get("statement") or "").strip()
-        if statement:
-            rules.setdefault(target, []).append(statement[:120])
-    out = {k: {"scenarios": scenarios.get(k, []), "rules": rules.get(k, [])}
-           for k in set(scenarios) | set(rules)}
+        trig = rule.get("trigger") or {}
+        statement = str(rule.get("statement") or "").strip()[:120]
+        if not statement:
+            continue
+        on = trig.get("on")
+        ons = [str(x) for x in on] if isinstance(on, (list, tuple)) else [str(on)] if on else []
+        if trig.get("on_kind") == "action":
+            for t in ons:
+                by_action.setdefault(t, []).append(statement)
+        elif trig.get("on_kind") == "object":
+            for t in ons:
+                by_object.setdefault(t, []).append(statement)
+
+    def _rules_for(action_key: str) -> list[str]:
+        return [*by_action.get(action_key, []),
+                *by_object.get(action_object.get(action_key, ""), [])]
+
+    out = {k: {"scenarios": scenarios.get(k, []), "rules": _rules_for(k)}
+           for k in set(scenarios) | set(by_action) | set(action_object)
+           if scenarios.get(k) or _rules_for(k)}
     _ACTION_CONTEXT_CACHE = (now, out)
     return out
 

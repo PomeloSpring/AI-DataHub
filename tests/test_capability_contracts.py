@@ -183,10 +183,12 @@ def test_flow_references_consumption_production_and_human_entries_are_valid():
     doc = catalog.build_system_ontology_doc()
     actions = _doc_actions(doc)
     rules = {rule["key"] for rule in doc["rules"]}
+    principles = {p["key"] for p in doc.get("permission_principles") or []}
     for scenario in doc["scenarios"]:
         assert set(scenario["uses_actions"]) <= set(actions)
         assert set(scenario["uses_objects"]) <= {obj["key"] for obj in doc["objects"]}
-        assert set(scenario["uses_rules"]) <= rules
+        assert set(scenario.get("uses_rules") or []) <= rules
+        assert set(scenario.get("uses_principles") or []) <= principles
         produced = set()
         for step in scenario.get("flow", []):
             assert step["action"] in actions

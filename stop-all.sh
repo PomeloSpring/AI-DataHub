@@ -24,6 +24,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 SERVICES=(
     "web"          # web 入口（单进程承载全部模块，监听口取 services.conf，Phase 4；dataengine 已退役）
     "celery-beat"    # 先停调度派发，再停 worker
+    "dashboard-refresh-worker"
     "celery-worker"
     "frontend"
 )
@@ -46,12 +47,14 @@ stop_service() {
     if [ -z "$pid" ]; then
         local port=""
         case "$name" in
-            celery-worker|celery-beat)
-                # celery 无端口，按 cmdline 兜底查找；取最小 PID 为 worker 主进程
-                # （TERM 主进程会带走池子进程，下方 pkill -P 再兜底清子进程）
+            celery-worker|celery-beat|dashboard-refresh-worker)
+                # celery 无端口，按 cmdline + 队列兜底查找，避免把另一类 worker 一并停止。
+                local kw="worker" queue="-Q scheduled,default"
+                [ "$name" = "celery-beat" ] && { kw="beat"; queue=" beat"; }
+                [ "$name" = "dashboard-refresh-worker" ] && queue="-Q dashboard_refresh"
                 pid=$(ps -eo pid,cmd | awk -v app="backend.modules.flow.tasks.celery_app" \
-                    -v kw=" ${name#celery-}" \
-                    '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 {print $1}' \
+                    -v kw=" $kw" -v queue="$queue" \
+                    '$2 != "awk" && index($0, "-m celery -A " app) > 0 && index($0, kw) > 0 && index($0, queue) > 0 {print $1}' \
                     | sort -n | head -1)
                 ;;
             frontend)   port="$FRONTEND_PORT" ;;
@@ -121,7 +124,7 @@ case "${1:-all}" in
     *)
         # celery 别名 → 一次停 worker + beat
         targets=("$1")
-        [ "$1" = "celery" ] && targets=("celery-beat" "celery-worker")
+        [ "$1" = "celery" ] && targets=("celery-beat" "dashboard-refresh-worker" "celery-worker")
         # 可停对象：常驻进程 + services.conf 分服务名（开发单端口模式）
         known_names=("${SERVICES[@]}")
         if [ -f "$PROJECT_ROOT/backend/scripts/services.conf" ]; then

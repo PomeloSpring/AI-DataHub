@@ -121,6 +121,32 @@ def build_beat_schedule() -> dict:
                 "options": {"queue": "scheduled"},
                 "kwargs": {"trigger_type": "cron"},
             }
+        # 看板整板刷新（一看板一份配置；固定周期/Cron 都进专用队列）
+        from backend.core.task_runtime import call as _dashboard_call
+        try:
+            dashboard_configs = _dashboard_call("dashboard_refresh.configs") or []
+        except Exception as exc:  # noqa: BLE001 - 新调度源故障不得拖垮既有调度源
+            logger.error("[Beat] 看板刷新配置加载失败: %s", exc)
+            dashboard_configs = []
+        for cfg in dashboard_configs:
+            dashboard_id = int(cfg.get("dashboard_id") or 0)
+            if not dashboard_id or not cfg.get("is_active"):
+                continue
+            try:
+                if cfg.get("schedule_type") == "cron":
+                    schedule_obj = WallClockCrontab(cfg["cron_expression"], cfg.get("timezone") or "Asia/Shanghai")
+                else:
+                    schedule_obj = float(cfg.get("interval_seconds") or 60)
+            except (ValueError, KeyError) as e:
+                logger.warning("[Beat] Skipping dashboard refresh %s: %s", dashboard_id, e)
+                continue
+            schedule[f"dashboard_refresh_{dashboard_id}"] = {
+                "task": "backend.modules.flow.tasks.dashboard_tasks.refresh_dashboard",
+                "schedule": schedule_obj,
+                "args": (dashboard_id,),
+                "options": {"queue": "dashboard_refresh"},
+                "kwargs": {"trigger_type": "cron" if cfg.get("schedule_type") == "cron" else "interval"},
+            }
         # DAG 工作流（active + owner 已认领）
         for wf in dag_service.list_active_scheduled():
             wf_id = wf["id"]
@@ -216,6 +242,8 @@ class DatabaseScheduler(Scheduler):
         task_name = entry.task
         if task_name == "backend.modules.flow.tasks.executor.execute_scheduled_task":
             return self._dispatch_scheduled(entry, producer, advance, **kwargs)
+        if task_name == "backend.modules.flow.tasks.dashboard_tasks.refresh_dashboard":
+            return self._dispatch_dashboard_refresh(entry, producer, advance, **kwargs)
         if task_name == "backend.modules.flow.tasks.dag_tasks.execute_dag_run":
             return self._dispatch_dag(entry, producer, advance, **kwargs)
         if task_name == "backend.modules.flow.tasks.dag_tasks.execute_sync_task":
@@ -226,7 +254,6 @@ class DatabaseScheduler(Scheduler):
 
     def _dispatch_scheduled(self, entry, producer, advance, **kwargs):
         import copy
-        from datetime import datetime, timezone
         from backend.modules.flow.services.scheduled_task_service import scheduled_task_service as service
         task_id = entry.args[0]
         task = service.get_task(task_id)
@@ -251,8 +278,34 @@ class DatabaseScheduler(Scheduler):
                           "WHERE id=%s AND status='queued'", (log_id,))
             raise
 
+    def _dispatch_dashboard_refresh(self, entry, producer, advance, **kwargs):
+        """派发前落 run；同看板已有活跃实例则跳过，重投不产生第二次取数。"""
+        import copy
+        from datetime import datetime, timezone
+        from backend.core.task_runtime import call as _runtime_call
+
+        dashboard_id = int(entry.args[0])
+        trigger_type = str((entry.kwargs or {}).get("trigger_type") or "interval")
+        if isinstance(entry.schedule, WallClockCrontab):
+            run_key = f"dashboard:{dashboard_id}:cron:{entry.schedule.run_key(dashboard_id)}"
+        else:
+            run_key = f"dashboard:{dashboard_id}:interval:{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+        run = _runtime_call("dashboard_refresh.claim", dashboard_id, run_key, trigger_type)
+        if not run:
+            if advance:
+                self.reserve(entry)
+            return None
+        dispatched = copy.copy(entry)
+        dispatched.args = (int(run["id"]),)
+        dispatched.options = {**entry.options, "task_id": run_key}
+        try:
+            return super().apply_async(dispatched, producer, advance, **kwargs)
+        except Exception as exc:
+            _runtime_call("dashboard_refresh.fail_dispatch", int(run["id"]), exc)
+            raise
+
     def _dispatch_dag(self, entry, producer, advance, **kwargs):
-        """DAG 派发：run_key 按墙钟分钟生成，重投复用同一运行实例。"""
+        """DAG 派发：run_key 按墙钟分钟生成，重投复用同一执行实例。"""
         import copy
         from datetime import datetime, timezone
         from backend.modules.flow.dag.dag_service import dag_service
@@ -289,7 +342,6 @@ class DatabaseScheduler(Scheduler):
         """同步任务派发：run_key 幂等，重投复用同一执行实例。"""
         import copy
         from datetime import datetime, timezone
-        from backend.modules.flow.dag.dag_service import dag_service
         from backend.common.db import execute_query, execute_write
         from backend.modules.flow.dag.sync_task_runner import _generate_id, _now
         task_id = entry.args[0]

@@ -64,6 +64,7 @@ def refresh_chart(
             user_id=user.get("user_id") or 0,
             workspace_id=workspace_id,
             username=user.get("username", "") or "",
+            persist_cache=False,
         )
     except NoIdentityError as e:
         raise HTTPException(status_code=403, detail=str(e))

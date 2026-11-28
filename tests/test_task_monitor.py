@@ -170,12 +170,12 @@ def test_error_hint_redacts_connection_details():
     assert "kb=4" not in scrubbed and "kb=?" in scrubbed
 
 
-def test_runs_union_covers_three_queues():
-    """队列视图必须覆盖定时执行/报表生成/同步执行三类实例。"""
+def test_runs_union_covers_four_queues():
+    """队列视图必须覆盖定时执行/报表生成/同步执行/看板刷新四类实例。"""
     union = monitor.TaskMonitorService._runs_union()
-    for table in ("adh_scheduled_logs", "adh_reports", "adh_sync_logs"):
+    for table in ("adh_scheduled_logs", "adh_reports", "adh_sync_logs", "adh_dashboard_refresh_runs"):
         assert table in union
-    assert union.count("UNION ALL") == 2
+    assert union.count("UNION ALL") == 3
 
 
 def test_list_runs_rejects_unknown_kind():

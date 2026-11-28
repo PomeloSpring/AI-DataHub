@@ -21,6 +21,7 @@ import { applyFieldFormats } from '@/lib/fieldFormat';
 import { placeholderOfShape, shapeOfControl } from '@/lib/dashboardParamAssembly';
 import { readChartPalette, readToken } from '@/lib/chartTheme';
 import i18n from '@/i18n';
+import { t as i18nTr } from '@/i18n/runtime';
 import {
   CUSTOM_PRESET, enabledPresets, effectiveGranularity, formatTime,
   fromInputValue, maxEndFor, presetLabel, resolvePreset, toInputValue, type TimeGranularity,
@@ -161,6 +162,50 @@ export function parseTime(value: any): Date | null {
   if (/^\d{13}$/.test(str)) return new Date(Number(str));
   const date = new Date(str);
   return isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * 时间桶的**周期终点**（左闭右开右端，如 '2026-11' → 12月1日 00:00）；识别不了返回 null。
+ *
+ * 用途：`big_number_trend` 的环比必须跳过「进行中」的末桶 —— 当月只过了半个月、
+ * 今天只过了半天，拿半截桶对比完整桶必然算出假跳水（2026-11-28 实测 -78%，
+ * 按天对齐实际 +7%；月初打开更会算出 -99%）。终点 > now 即该周期还没过完。
+ *
+ * 键格式与后端 `planner._TIME_GRAIN_FMT_*` 对齐；`grain`（图表 config.time_grain）
+ * 只用于消除歧义：'2026-11' 既可能是 11 月（month）也可能是第 11 周（week，%x-%v），
+ * 第二段 >12 时必为周、≤12 时由 grain 仲裁，未给 grain 按月（主流口径）。
+ * 返回 null = 不是时间键（如 "Jan"）或形状未知 → 调用方维持旧行为，不猜。
+ */
+export function timeBucketEnd(key: unknown, grain?: string): Date | null {
+  const s = String(key ?? '').trim();
+  if (!s) return null;
+  const g = String(grain || '').toLowerCase();
+  let m: RegExpExecArray | null;
+  if ((m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s)))
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6] + 1);          // second
+  if ((m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(s)))
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5] + 1);                  // minute
+  if ((m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})$/.exec(s)))
+    return new Date(+m[1], +m[2] - 1, +m[3], +m[4] + 1);                         // hour
+  if ((m = /^(\d{4})-Q([1-4])$/.exec(s)))
+    return new Date(+m[1], +m[2] * 3, 1);                                        // quarter
+  if ((m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s))) {
+    // day；ES 的 week 粒度回的是周起始日（10 位日期）→ 按 grain 延到下周一
+    const d = new Date(+m[1], +m[2] - 1, +m[3]);
+    d.setDate(d.getDate() + (g === 'week' ? 7 : 1));
+    return d;
+  }
+  if ((m = /^(\d{4})$/.exec(s))) return new Date(+m[1] + 1, 0, 1);              // year
+  if ((m = /^(\d{4})-(\d{1,2})$/.exec(s))) {
+    const n = +m[2];
+    if (g === 'week' || n > 12) {
+      // ISO 年-周（%x-%v）：1月4日必在第 1 周，4 号所在周的周一 + (n-1) 周 = 第 n 周周一，+7 天即终点
+      const jan4 = new Date(+m[1], 0, 4);
+      return new Date(+m[1], 0, 4 - ((jan4.getDay() + 6) % 7) + n * 7);
+    }
+    return new Date(+m[1], n, 1);      // month：Date 月 0-based，n=11 → 次月 1 日
+  }
+  return null;
 }
 
 // Helper: aggregate time series data
@@ -1334,14 +1379,43 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
 
     case 'big_number_trend': {
       const total = rows.reduce((sum, r) => sum + (Number(r[yCol]) || 0), 0);
-      const lastVal = Number(rows[rows.length - 1]?.[yCol]) || 0;
-      const prevVal = Number(rows[rows.length - 2]?.[yCol]) || lastVal;
-      const changePercent = prevVal ? ((lastVal - prevVal) / prevVal * 100).toFixed(1) : '0';
-      const isUp = lastVal >= prevVal;
       const valueText = total.toLocaleString();
-      const deltaText = `${isUp ? '↑' : '↓'} ${changePercent}%`;
+
+      // ── 环比取桶：末桶是「进行中周期」（当月/今天…）时必须跳过 ──────────────
+      // 半截桶 vs 完整桶必然假跳水（2026-11-28 实测 -78%，按天对齐实际 +7%；
+      // 月初打开更会算出 -99%）。对「已完成」这类状态滞后指标更失真：新单还没
+      // 流转到完成态，当月值怎么等都追不上整月。
+      // 键可解析才做判断；解析不出（如 "Jan"）或形状未知 → 维持旧口径，不猜。
+      const grain = String(config?.time_grain || config?.grain || '').toLowerCase();
+      const ends = rows.map(r => timeBucketEnd(r[xCol], grain));
+      const resolved = rows.length > 0 && ends.every(e => e !== null);
+      // 后端不保证 GROUP BY 输出有序：可解析时按时间升序取桶，否则维持原序
+      const order = resolved
+        ? rows.map((_, i) => i).sort((a, b) => ends[a]!.getTime() - ends[b]!.getTime() || a - b)
+        : rows.map((_, i) => i);
+      const n = order.length;
+      const now = Date.now();
+      const valAt = (i: number) => Number(rows[order[i]][yCol]) || 0;
+      const endAt = (i: number) => ends[order[i]]!;
+      // 默认取末两桶；末桶周期没过完 → 跳到前两桶用两个完整周期比
+      let from = n - 1, to = n - 2, skipped = false;
+      if (resolved && n >= 1 && endAt(n - 1).getTime() > now) { skipped = true; from = n - 2; to = n - 3; }
+      // 可比前提：开关没关 + 两个桶都在 + 都已完结（键解析不出时不查完结性=旧行为）。
+      // 跳过后不足两个完整桶 → 不显示环比：宁可不给，不编数字。
+      const comparable = config?.showComparison !== false && n >= 2 && from >= 0 && to >= 0
+        && (!resolved || (endAt(from).getTime() <= now && endAt(to).getTime() <= now));
+
+      let deltaText = '';
+      let isUp = true;
+      if (comparable) {
+        const lastVal = valAt(from), prevVal = valAt(to);
+        isUp = lastVal >= prevVal;
+        const changePercent = prevVal ? ((lastVal - prevVal) / prevVal * 100).toFixed(1) : '0';
+        // 跳过进行中桶 = 换了基期，必须显式标注，不得静默换口径（no-silent-degradation）
+        deltaText = `${isUp ? '↑' : '↓'} ${changePercent}%`
+          + (skipped ? i18nTr('k_60816f2fb6') : '');
+      }
       const layout = kpiNumberLayout({ width, height, valueText, deltaText });
-      const delta = layout.delta!;
 
       return {
         ...baseSpec,
@@ -1370,18 +1444,19 @@ export function buildG2Spec(chartType: string, columns: string[], rows: any[], c
               textAlign: 'center',
             },
           },
-          {
+          // 环比行可能为空（关了开关 / 没有两个完整桶可比）→ 无 delta 时整块不画
+          ...(layout.delta ? [{
             type: 'text',
             data: { value: null },
             style: {
               text: deltaText,
               x: layout.cx,
-              y: delta.y,
-              fontSize: delta.fontSize,
+              y: layout.delta.y,
+              fontSize: layout.delta.fontSize,
               fill: isUp ? '#52c41a' : '#ff4d4f',
               textAlign: 'center',
             },
-          },
+          }] : []),
         ],
       };
     }
