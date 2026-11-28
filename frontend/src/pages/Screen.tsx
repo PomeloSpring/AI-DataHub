@@ -137,12 +137,13 @@ function ScreenPlayer() {
   // 无 board id 直接进大屏：从清单首块板起播（组内 = 管理端编排首位，与「数据看板」点组合卡同一口径）
   if (!dashboardId && ready && !error && enabled.length) return <Navigate to={`/screen/${enabled[0].id}${location.search}`} replace state={location.state} />;
   if (!currentMeta || !detail || error) return <div className="p-8 text-center"><p role="status">{detailLoading || !ready ? tr('k_37dc7bfce2') : error || tr('k_e78bf30184')}</p>{error && <Button variant="outline" onClick={() => setRetry(v => v + 1)}>{t("k_e2d53a6d3a")}</Button>}<Button variant="link" onClick={() => navigate(returnPath)}>{t("k_8d2906babb")}</Button></div>;
+  const canManageRefresh = !!detail.refresh_manageable || user?.role === 'admin';
   return <div ref={root} className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background" onMouseMove={showControls} onTouchStart={showControls}>
     <header className={`z-10 flex h-12 shrink-0 items-center gap-1 border-b bg-background/95 px-3 ${fullscreen ? `absolute inset-x-0 top-0 transition-opacity ${visible ? '' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'}` : ''}`}>
       <Button size="sm" variant="ghost" onClick={() => navigate(returnPath)}><ArrowLeft className="h-4 w-4" /><span className="sr-only">{t("k_4acd359b51")}</span></Button>
       <h1 className="min-w-0 flex-1 truncate font-semibold">{detail.name}</h1>
-      {detail.cache_stale && !detail.refresh_manageable && <span role="status" className="whitespace-nowrap text-xs text-amber-600 dark:text-amber-400">{t('dashboard:autoRefresh.staleBadge')}</span>}
-      <DashboardAutoRefresh key={detail.id} dashboardId={detail.id} refreshManageable={!!detail.refresh_manageable}
+      {detail.cache_stale && !canManageRefresh && <span role="status" className="whitespace-nowrap text-xs text-amber-600 dark:text-amber-400">{t('dashboard:autoRefresh.staleBadge')}</span>}
+      <DashboardAutoRefresh key={detail.id} dashboardId={detail.id} refreshManageable={canManageRefresh}
         config={detail.refresh_config} cacheStale={!!detail.cache_stale} loading={detailLoading}
         onCompleted={() => reloadDetail(detail.id)} menuItems={<>
         <div className="space-y-2 p-2">

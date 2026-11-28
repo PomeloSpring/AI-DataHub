@@ -78,7 +78,7 @@ beforeEach(() => {
     return { data: boards };
   });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); useAuthStore.setState({ user: null }); usePermissionStore.setState({ loaded: false, unrestricted: true, perms: null, allowedMenus: null }); });
 
 describe('工作空间数据看板 — 组合卡片清单', () => {
   it('一级列组合卡：卡高固定不随看板内容撑大，可看数/未启用数显式提示', async () => {
@@ -491,6 +491,12 @@ describe('看板管理域与大屏播放', () => {
     expect(within(card).getByText('未绑角色，用户看不到')).toBeInTheDocument();
     expect(within(card).getByText('看板：尚未编排看板')).toBeInTheDocument();
     expect(within(card).getByText('角色：未分配')).toBeInTheDocument();
+  });
+  it('admin 即使命中旧看板载荷也显示整板刷新入口', async () => {
+    useAuthStore.setState({ user: { id: 1, username: 'admin', role: 'admin' } as any });
+    routes('/ws/7/dashboards/2');
+    await screen.findByText('响应式网格');
+    expect(await screen.findByRole('button', { name: '刷新数据' })).toBeInTheDocument();
   });
   it('看板浏览页顶栏刷新交给服务端异步任务，不再逐图刷浏览器', async () => {
     const withCharts = { ...board(2), refresh_manageable: true, refresh_config: {

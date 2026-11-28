@@ -865,7 +865,7 @@ def _clear_default(user_id: int, workspace_id: int = 0):
 # 短 TTL 兑底防漏失效。
 CARDS_KEY = "dash:cards:v4"            # 共享: 目录行 + 卡片预览摘要（v4: 补 tags 下发; v3: blocks → charts 摘要）
 GROUPS_KEY = "dash:groups:v2"          # 共享: 组 + 组内看板 + 组→角色绑定
-DETAIL_KEY = "dash:detail:{}"          # 共享: 单看板完整载荷(charts 含 data_cache)
+DETAIL_KEY = "dash:detail:v2:{}"       # 共享: 单看板完整载荷(v2 起含刷新管理能力与缓存 TTL 元数据)
 USER_ROLES_KEY = "dash:user_roles:{}"  # 按用户: 角色 id 集(仅分组编排用)
 PAYLOAD_TTL = 120                      # 共享载荷 TTL(写路径会提前失效)
 USER_ROLES_TTL = 30
