@@ -29,9 +29,14 @@ import { useTranslation } from 'react-i18next';
  *
  * 档位层级：只读 ⊂ 创作（`article:create`，只写草稿+提交审核）⊂ 管理（`article:manage`）；
  * 每档自足（后端 api_pattern 已含只读 GET），所以这里不做强制级联，只按码给入口。
+ *
+ * `taxonomy:manage` 是栏目/标签词表的管理码（与 article:* 并列，不参与上面的档位链）：
+ * 词表改名会级联影响全部条目的栏目口径，只给词表管理页；内容创作中的选择/打标签
+ * 仍走 article:manage（同域有意重叠，见 perm_wide_pattern_narrow_migration.sql）。
  */
 export type ContentPerm =
   | 'article:read' | 'article:create' | 'article:manage' | 'article:review' | 'article:publish'
+  | 'taxonomy:manage'
   | 'kbdoc:read' | 'kbdoc:write';
 
 /**

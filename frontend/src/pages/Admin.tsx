@@ -5,7 +5,7 @@ import { t , t as tr } from '@/i18n/runtime';
 import {
   RefreshCw, Search, Plus, Edit, Trash2, Database, Users, UserPlus,
   Wifi, Globe, Cylinder, Palette, Upload, X as XIcon, Link, AlertTriangle, Plug,
-  HelpCircle, Maximize2, Minimize2, Server,
+  HelpCircle, Maximize2, Minimize2, Server, Eye, EyeOff,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -2054,6 +2054,7 @@ function UsersTab() {
   const [createForm, setCreateForm] = useState<any>({ role: 'viewer' });
   const [editForm, setEditForm] = useState<any>({});
   const [resetPwdForm, setResetPwdForm] = useState<any>({});
+  const [showResetPwd, setShowResetPwd] = useState(false);
 
   const loadUsers = async (p?: number, sizeOverride?: number) => {
     setLoading(true);
@@ -2461,12 +2462,24 @@ function UsersTab() {
               {tr('k_31f64c4c20')}{' '}<strong>{selectedUser?.username}</strong> {tr('k_9c04e9caa2')}</p>
             <div className="space-y-2">
               <Label>{tr('k_511261d829')}</Label>
-              <Input
-                type="password"
-                placeholder={t("k_31273e6ecf")}
-                value={resetPwdForm.new_password || ''}
-                onChange={(e) => setResetPwdForm({ ...resetPwdForm, new_password: e.target.value })}
-              />
+              <div className="relative">
+                <Input
+                  type={showResetPwd ? 'text' : 'password'}
+                  placeholder={t("k_31273e6ecf")}
+                  value={resetPwdForm.new_password || ''}
+                  onChange={(e) => setResetPwdForm({ ...resetPwdForm, new_password: e.target.value })}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label={showResetPwd ? tr('k_dd909adbe3') : tr('k_5f26be784a')}
+                  onClick={() => setShowResetPwd((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showResetPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
           </div>
           <DialogFooter>
