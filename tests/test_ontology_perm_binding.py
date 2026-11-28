@@ -35,13 +35,12 @@ ROUTER_FILES = {
 DOMAIN_PREFIXES = ("ontology:", "graph:", "kb:")
 
 # 已声明例外：不由本体域码把关（只能少不能多）。
-#   * 两个 DELETE：目前只被 catalog 写域（catalog:manage）覆盖，且与同路径的 PUT/POST 共享受限
-#     的 api_method（一行一个方法集），拆不出来；收敛方向：给删除动作单独的码。
 #   * 两个图三元组写入：裸 SPARQL update 级接口（POST /graph/nodes、/relations），
 #     面向管理员/内部脚本；面向用户的 SPARQL 视图走 POST /graph/query（已归 graph:manage）。
+#   （历史例外已收敛：模型/草案 DELETE 曾只被 catalog:manage 宽模式兜住，2026-11-28 起
+#    DELETE 并入 ontology:save 的 api_method（迁移 perm_wide_pattern_narrow_migration.sql），
+#    前端删除按钮同码显隐——例外撤销，不再声明。）
 DECLARED_UNOWNED_ROUTES = {
-    ("DELETE", "/api/catalog/ontology/models/{model_id}"),
-    ("DELETE", "/api/catalog/ontology/models/{model_id}/draft"),
     ("POST", "/api/graph/nodes"),
     ("POST", "/api/graph/relations"),
 }

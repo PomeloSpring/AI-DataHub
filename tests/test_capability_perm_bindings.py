@@ -201,16 +201,22 @@ def test_self_service_and_admin_routes_are_not_double_gated(conn):
 
 
 def test_catalog_no_code_rule_lists_only_real_admin_faces():
-    """系统本体的「无码 = 仅管理员」规则不得再引用已补码的路径（历史误判）。"""
-    from backend.modules.catalog.services.system_ontology_catalog import RULES
+    """系统本体的「无码 = 仅管理员」规则不得再引用已补码的路径（历史误判）。
 
-    rule = next(r for r in RULES if r["key"] == "perm_no_code_is_admin_only")
+    perm_* 系列规则住在 PERMISSION_PRINCIPLES（不在 RULES，那里只有 constraint_*）；
+    /api/admin/metadata* 已归 catalog:manage 把关（2026-11-28 收窄迁移），纳入 stale 断言防回退。
+    """
+    from backend.modules.catalog.services.system_ontology_catalog import (
+        PERMISSION_PRINCIPLES)
+
+    rule = next(r for r in PERMISSION_PRINCIPLES if r["key"] == "perm_no_code_is_admin_only")
     stmt = rule["statement"]
-    for stale in ("/api/sites*", "/api/apps*", "/api/saved-queries*", "/api/tags "):
+    for stale in ("/api/sites*", "/api/apps*", "/api/saved-queries*", "/api/tags ",
+                  "/api/admin/metadata*"):
         assert stale not in stmt, f"规则仍把已补码的 {stale} 当作无码能力"
     assert "/api/task-monitor*" in stmt and "/api/admin/terms*" in stmt
 
-    self_service = next(r for r in RULES if r["key"] == "perm_self_service_owner_only")
+    self_service = next(r for r in PERMISSION_PRINCIPLES if r["key"] == "perm_self_service_owner_only")
     assert "/api/assets*" in self_service["statement"]
 
 

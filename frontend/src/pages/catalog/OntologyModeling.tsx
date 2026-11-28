@@ -1056,8 +1056,9 @@ export default function OntologyModeling() {
                 <Archive className="h-3.5 w-3.5 mr-1" />{t('k_2f51c18f49')}
               </Button>
             )}
-            {/* 删除模型在服务端只由 catalog 写域把关（本体码无 DELETE 落点），按同码显隐 */}
-            {model.status !== 'active' && hasPerm('catalog:manage') && (
+            {/* 删除模型归 ontology:save（api_method 已含 DELETE，与保存/撤销草案同码；
+                此前由 catalog:manage 宽模式兜住，收窄后已拆出），按同码显隐 */}
+            {model.status !== 'active' && hasPerm('ontology:save') && (
               <Button size="sm" variant="ghost" className="h-8 text-red-500 hover:text-red-600" onClick={handleDelete}
                 title={t('k_2f51c18f49')}>
                 <Trash2 className="h-3.5 w-3.5" />

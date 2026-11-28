@@ -615,16 +615,22 @@ def test_action_spec_perm_codes_are_declared():
 # 当前“配了级别但无消费方”的已声明缺口：新增码必须走登记（补投影或补把关点），
 # 不得默默多一个选了不生效的开关（no-silent-degradation §1）。
 # 收敛方向：要么在 FUNCTION_ACTION_SPECS 补安全投影，要么把 ai_access 改回 none。
+# 2026-11-28 已收敛一批 write 级空承诺 → 钉回 none 并移出本清单（迁移
+# perm_wide_pattern_narrow_migration.sql）：catalog:manage / dataset:query / graph:manage /
+# kb:manage / playground:execute / quality-review:manage / quality-rules:manage /
+# report-template:manage / scheduled:execute / standard:manage / tags:manage /
+# task-monitor:manage / vis:manage / workspace:manage。确需开放：同批补
+# PERM_GATED_ACTION_PERMS 登记或 FUNCTION_ACTION_SPECS 安全投影并配用例，再显式抬级。
 KNOWN_NO_CHANNEL_PERMS = frozenset({
-    "asbot:use", "asset:read", "audit:read", "catalog:manage", "catalog:read", "chat:use",
-    "dataset:query", "glossary:read", "graph:manage", "graph:read", "kb:manage", "kbdoc:read",
+    "asbot:use", "asset:read", "audit:read", "catalog:read", "chat:use",
+    "glossary:read", "graph:read", "kbdoc:read",
     "knowledge:manage", "knowledge:read", "lineage:read", "metrics:manage", "metrics:read",
-    "model:read", "monitor:read", "observability:read", "ontology:read", "playground:execute",
-    "playground:read", "quality-review:manage", "quality-review:read", "quality-rules:manage",
-    "quality-rules:read", "report-template:manage", "report-template:read", "scheduled:execute",
-    "sensitive:read", "standard:manage", "standard:read", "sync-logs:read", "sync:execute",
-    "sync:manage", "sync:read", "tags:manage", "task-monitor:manage", "vis:manage", "vis:read",
-    "workspace:manage", "workspace:read",
+    "model:read", "monitor:read", "observability:read", "ontology:read",
+    "playground:read", "quality-review:read",
+    "quality-rules:read", "report-template:read",
+    "sensitive:read", "standard:read", "sync-logs:read", "sync:execute",
+    "sync:manage", "sync:read", "vis:read",
+    "workspace:read",
 })
 
 

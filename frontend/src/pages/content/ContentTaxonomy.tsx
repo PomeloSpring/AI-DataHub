@@ -25,7 +25,9 @@ const nextSort = (sorts: number[]): number => (sorts.length ? Math.max(...sorts)
 export default function ContentTaxonomy() {
   const { t } = useTranslation('ui');
   const { has } = useContentPerms();
-  const canEdit = has('article:manage');
+  // 词表管理走专属码 taxonomy:manage（迁移已把菜单显隐与 categories/tags 读写面拆出）：
+  // article:manage 仍覆盖内容创作中的选择/打标签，同域有意重叠，不再做本页的编辑显隐。
+  const canEdit = has('taxonomy:manage');
   const { categories, tags, loading, error, reload } = useTaxonomy(true);
 
   const [notice, setNotice] = useState('');
