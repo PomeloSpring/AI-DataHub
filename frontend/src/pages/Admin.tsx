@@ -1721,18 +1721,10 @@ export function DatasourceTab() {
                     ) : null}
                   </div>
 
+                  {/* 卡片只留站点一行：不列 host:port 与库名（用户拍板 2026-11-28）。
+                      列表卡片是“认数据源”的地方，靠名称 + 类型 + 站点就能区分；
+                      连接地址属于基础设施细节，要看去「编辑数据源」表单（那里仍是录入口）。 */}
                   <div className="space-y-1 text-sm text-muted-foreground mb-4">
-                    <div className="flex items-center gap-2">
-                      <Globe className="h-3 w-3" />
-                      <span>{ds.host}:{ds.port}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Database className="h-3 w-3" />
-                      {/* ES 没有库名：这一行说开放索引别名（数量 + 首个名字），不拿「-」充数 */}
-                      <span>{isEsDbType(ds.db_type)
-                        ? tr('k_492639832e', { p0: esExtraOf(ds).aliases.length, p1: esExtraOf(ds).aliases[0] || tr('k_3c69de319c') })
-                        : (ds.database_name || '-')}</span>
-                    </div>
                     <div className="flex items-center gap-2">
                       <Globe className="h-3 w-3" />
                       {/* 显示站点业务名（不显示裸 code）；未站点化显式标注 */}

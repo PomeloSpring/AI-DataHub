@@ -6,7 +6,8 @@
 2. 提交时组装成 `extra_config`，`es_*` 辅助字段不得发给后端
    （ui-resource-display §2：不让管理员手拼 JSON、也不往后端塞无用字段）；
 3. 开放范围为空时前端即拒且不发请求（与后端 `_validated_es_extra` 同口径，fail-closed）；
-4. 卡片次要行显示「N 个索引别名（如 名字）」，不拿 `-` 充数；存量类型（mysql）行为零变化；
+4. 别名清单在**编辑表单**里可见（卡片次要行已不再列 host:port / 库名 / 别名数量，
+   2026-11-28 拍板：卡片只留站点）；
 5. **高级配置按类型呈现且真实往返**（超时/最大行数/连接池 = ES；连接超时/查询超时 = SQL 型）：
    只给自己的旋钮摆入口（给不相干类型摆一个没消费方的输入框 = 空承诺），
    并且“清空回到默认”必须是可表达的（两项都留空 → 传 null 而不是不提交）。
@@ -66,11 +67,6 @@ beforeEach(() => { vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('ES 型数据源表单', () => {
-  it('卡片用别名数量替代库名（不显示裸 -）', async () => {
-    await renderTab();
-    expect(screen.getByText(/2 个索引别名（如 t_software_app_operation_log）/)).toBeInTheDocument();
-  });
-
   it('编辑 ES 源：出现别名清单与策略支持说明，且不出现数据库名称输入', async () => {
     await renderTab();
     await openEdit('cloud-platform-es');

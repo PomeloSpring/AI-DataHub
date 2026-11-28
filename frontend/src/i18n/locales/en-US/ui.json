@@ -4536,7 +4536,6 @@
   "k_c61dbda058": "Manage database connections; supports MySQL, Apache Doris, PostgreSQL, SLS (PostgreSQL protocol) and Elasticsearch",
   "k_369c67721a": "Add datasource",
   "k_883fb75455": "Add your first datasource",
-  "k_492639832e": "{{p0}} index aliases (e.g. {{p1}})",
   "k_71c299c974": "No site",
   "k_8ca6b44902": "Edit datasource {{p0}}",
   "k_22ec92889a": "Delete datasource {{p0}}",

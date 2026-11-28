@@ -107,3 +107,26 @@ describe('数据源取数并发闸门录入', () => {
     expect(extra.allowed_aliases).toEqual(['t_logs']);
   });
 });
+
+// 用户拍板 2026-11-28：列表卡片不呈现连接细节（host:port / 库名），要看去编辑表单。
+// 卡片靠名称 + 类型 + 站点就能区分，多两行地址只会把真正要看的字段挤下去。
+describe('卡片不列连接细节', () => {
+  it('卡片只剩名称/类型/站点行，不出现 host、端口与库名', async () => {
+    await renderTab([row({ site_code: 'cn' })]);
+    const card = screen.getByText('prd-cn').closest('div.border')!;
+    expect(card.textContent).not.toContain('10.0.0.1');
+    expect(card.textContent).not.toContain('3306');
+    expect(card.textContent).not.toContain('adh');
+    // 站点行仍保留（本用例 sites 清单为空 → 显式标注未站点化，不回退成裸 code）
+    expect(card.textContent).toContain('未站点化');
+  });
+
+  it('编辑表单仍能看到并修改 host / 端口 / 库名（信息没丢，只是换了地方）', async () => {
+    // 账号与库名故意不同值：getByDisplayValue 同值会命中多个输入框
+    await renderTab([row({ username: 'svc_reader', database_name: 'adh' })]);
+    await openEdit('prd-cn');
+    expect(screen.getByDisplayValue('10.0.0.1')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('3306')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('adh')).toBeInTheDocument();
+  });
+});
