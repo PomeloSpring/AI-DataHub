@@ -9,6 +9,8 @@
  */
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import i18n, { LOCALE_STORAGE_KEY } from '@/i18n';
@@ -74,5 +76,13 @@ describe('登录页语言切换入口', () => {
     await userEvent.hover(trigger);
     await new Promise((r) => setTimeout(r, 120));
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
+  // 用户拍板 2026-11-28：入口挂登录表单区右上角，不再浮在视口角。
+  it('语言入口在表单卡片右上角，不是视口右上角', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'Login.tsx'), 'utf8');
+    expect(src).toMatch(
+      /<CardContent className="relative p-8 sm:p-10[\s\S]{0,400}?<div className="absolute right-4 top-4">\s*<LanguageMenu \/>/);
+    expect(src).not.toMatch(/absolute right-3 top-3 z-20/);
   });
 });

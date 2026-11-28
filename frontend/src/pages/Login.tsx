@@ -129,13 +129,6 @@ export default function Login() {
         <div className="login-orb login-orb-delay2 absolute top-1/3 right-1/4 h-64 w-64 rounded-full bg-chart-4/15 blur-3xl" />
       </div>
 
-      {/* 语言切换（用户拍板 2026-11-27：登录页也要放一份）：复用顶栏同一个 LanguageMenu，
-          不另写一套选项。setLocale 写 localStorage + changeLanguage，登录前切的语言登录后全站沿用。
-          挂视口右上角，窄屏同样可见，不挤占双栏卡片布局。 */}
-      <div className="absolute right-3 top-3 z-20">
-        <LanguageMenu />
-      </div>
-
       {/* 主体：双栏大卡片（窄屏只留表单栏） */}
       <div className="relative z-10 w-full max-w-5xl login-rise">
         <div className="grid md:grid-cols-[1.1fr_1fr] rounded-2xl border border-border/60 bg-card shadow-2xl shadow-black/20 overflow-hidden">
@@ -180,9 +173,16 @@ export default function Login() {
             <ChartSilhouette />
           </div>
 
-          {/* 右：登录表单区 */}
+          {/* 右：登录表单区（语言入口挂本区右上角，用户拍板 2026-11-28：
+              不挂视口角——浮在页角与表单卡片无关，窄屏下会贴到屏幕边显得飘） */}
           <Card className="border-0 bg-card shadow-none rounded-none">
-            <CardContent className="p-8 sm:p-10 flex flex-col justify-center min-h-[520px]">
+            <CardContent className="relative p-8 sm:p-10 flex flex-col justify-center min-h-[520px]">
+              {/* 复用顶栏同一个 LanguageMenu，不另写一套选项：setLocale 写 localStorage
+                  + changeLanguage，登录前切的语言登录后全站沿用。下拉经 Portal 挂 body，
+                  不受卡片 overflow-hidden 裁切。 */}
+              <div className="absolute right-4 top-4">
+                <LanguageMenu />
+              </div>
               {/* 移动端品牌头（左栏隐藏时补位：窄屏空紧，只显图标+名称不显标语） */}
               <div className="flex md:hidden items-center justify-center mb-8">
                 <BrandLockup brand={brand} size={40} showTagline={false} nameClassName="text-xl leading-tight text-foreground" />
