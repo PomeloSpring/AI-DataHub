@@ -212,6 +212,8 @@ def list_chat_as_bots(
 @router.get("/slash-options")
 def list_chat_slash_options(
     workspace_id: int = Query(0, description="Workspace ID"),
+    datasource_id: int = Query(0, description="当前会话数据源；站点已选择时由 site_code 重算"),
+    site_code: str = Query("", description="当前会话站点（优先于 datasource_id）"),
     as_bot_key: str = Query("", description="会话已选 AS-BOT（空=按角色解析全部生效 AS-BOT 合并）"),
     user: UserInfo = Depends(get_current_user),
 ):
@@ -232,6 +234,20 @@ def list_chat_slash_options(
     from backend.modules.mind.execution import slash_commands
 
     authorize_workspace(user, workspace_id)
+    datasource_id = int(datasource_id or 0)
+    if site_code:
+        from backend.modules.mind.services.chat_service import _apply_session_site
+        try:
+            datasource_id = _apply_session_site(
+                site_code, datasource_id, int(user["user_id"]), int(workspace_id or 0))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    elif datasource_id:
+        from backend.core.role_service import role_service
+        allowed_sources = set(role_service.get_user_allowed_datasources(
+            int(user["user_id"]), int(workspace_id or 0)))
+        if datasource_id not in allowed_sources:
+            raise HTTPException(status_code=403, detail="当前用户无权使用该数据源")
     resolved = as_bot_service.resolve_as_bots(workspace_id, user.get("role") or "",
                                              user_id=user["user_id"])
     if as_bot_key:
@@ -299,8 +315,9 @@ def list_chat_slash_options(
         allowed_subjects = scenario_access.visible_subject_keys(
             int(user["user_id"]), int(workspace_id or 0),
             role=user.get("role") or "", system_scope=_scope)
-        scenes, scenes_hidden = list_visible_paths(allowed_subjects=allowed_subjects,
-                                                  workspace_id=int(workspace_id or 0))
+        scenes, scenes_hidden = list_visible_paths(
+            allowed_subjects=allowed_subjects,
+            workspace_id=int(workspace_id or 0), datasource_id=datasource_id)
     except Exception as e:  # noqa: BLE001 — 场景候选不可用不能拖死整个面板，但必须可诊断
         logger.warning("slash-options 分析场景候选加载失败（技能与任务仍可用）: %s", e)
 
@@ -502,8 +519,9 @@ def save_message_feedback(req: FeedbackRequest, user: UserInfo = Depends(get_cur
     可观测页(Trace 列表/满意率 KPI)能直接联表命中该回合。
     无 message_uuid 的旧消息前端不传,此处兼容生成,仅计入满意度不关联 trace。
 
-    踩 + 原因/期望业务名会被每日归纳作业转成进化候选（待开发指标/维度/
-    待收编别名/待核绑定）。`digest_status='new'` 是作业水位线，保证同一批
+    踩 + 期望业务名会被每日归纳作业转成进化候选（待开发指标/维度/
+    待收编别名/待核绑定）；只有原因而没有期望业务名的反馈仍会保存，
+    但不会生成候选。`digest_status='new'` 是作业水位线，保证同一批
     负反馈不被反复归类。
     """
     import uuid as _uuid
@@ -546,7 +564,7 @@ def save_message_feedback(req: FeedbackRequest, user: UserInfo = Depends(get_cur
         ),
     )
     return {"ok": True, "message_uuid": message_uuid,
-            "will_be_digested": bool(not req.satisfied and (expected_ref or reason_key))}
+            "will_be_digested": bool(not req.satisfied and expected_ref)}
 
 
 # ── Conversation Management ──────────────────────────────────────

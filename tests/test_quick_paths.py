@@ -51,6 +51,23 @@ def test_paths_by_ids_marks_user_pinned(monkeypatch):
     assert accepted[0]["matched_triggers"] == []
 
 
+def test_paths_by_ids_enforces_workspace_and_datasource_scope(monkeypatch):
+    _patch_rows(monkeypatch, [
+        _row(1, "全局场景", "方案", ["指标"]),
+        _row(2, "当前范围", "方案", ["指标"], workspace_id=301, datasource_id=5),
+        _row(3, "其他范围", "不应注入", ["指标"], workspace_id=999, datasource_id=9),
+    ])
+
+    accepted, rejected = quick_paths.paths_by_ids(
+        ["1", "2", "3"], workspace_id=301, datasource_id=5)
+
+    assert [item["title"] for item in accepted] == ["全局场景", "当前范围"]
+    assert len(rejected) == 1
+    assert rejected[0]["id"] == "3"
+    assert rejected[0]["title"] == "", "越界场景不得通过拒因泄露标题"
+    assert "范围" in rejected[0]["reason"]
+
+
 def test_no_trigger_no_hit(monkeypatch):
     rows = [_row(1, "按月统计销售额", "方案", ["销售额"])]
     _patch_rows(monkeypatch, rows)
@@ -159,8 +176,9 @@ def test_pinned_scene_is_echoed_at_prompt_tail():
               "pinned": True}]
     prompt = compose_system_prompt(None, [], username="u", user_role="admin", quick_paths=paths)
     assert "收尾复述" in prompt
-    # 尾部复述必须排在常驻闸门之后（recency 位置才有意义）
-    assert prompt.index("## 歧义闸门") < prompt.index("收尾复述")
+    # 尾部复述必须排在常驻取数语义确认规则之后（recency 位置才有意义）。
+    # 旧标题「歧义闸门」已并入工具自主编排段，此处锁定当前实际章节标题。
+    assert prompt.index("## 取数前语义确认") < prompt.index("收尾复述")
     # 尾部复述里要带场景业务名（不带名字就等于只提了句空口号）
     tail = prompt[prompt.index("收尾复述"):]
     assert "按页面 URL 或 IP 关联用户操作路径" in tail

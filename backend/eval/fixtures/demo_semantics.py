@@ -36,6 +36,10 @@ PHYS: dict[str, dict[str, dict]] = {
         "region_code": {"data_type": "varchar", "business_desc": ""},
         "region_name": {"data_type": "varchar", "business_desc": "区域名称"},
     },
+    "t_nation": {
+        "nation_code": {"data_type": "varchar", "business_desc": ""},
+        "nation_name": {"data_type": "varchar", "business_desc": "国家名称"},
+    },
     # ── ES 源（cloud-platform-es）运行日志: 业务时间/分类列都是 keyword 带点列名 ──
     "t_equipment_operation_log": {
         "operationTime.keyword": {"data_type": "keyword", "business_desc": "操作时间"},
@@ -71,6 +75,10 @@ DIMS: dict[str, dict[str, dict]] = {
         "区域名": {"name": "区域名", "name_en": "region_name", "target_column": "region_name",
                  "category": "地理", "aliases": ["大区名"], "value_labels": {}},
     },
+    "t_nation": {
+        "国名": {"name": "国名", "name_en": "nation_name", "target_column": "nation_name",
+                 "category": "地理", "aliases": ["国家名称"], "value_labels": {}},
+    },
     # ES: 时间列是 text(keyword)，边界由服务端算好下推（引擎无 NOW()/INTERVAL）
     "t_equipment_operation_log": {
         "设备操作时间": {"name": "设备操作时间", "name_en": "es_op_time",
@@ -99,6 +107,17 @@ METRICS: dict[str, dict[str, dict]] = {
                  "formula_dsl": None, "agg_type": "SUM", "default_agg": "SUM",
                  "unit": "元", "description": "费用金额合计", "aliases": ["费用合计"],
                  "formula_dialects": None},
+        "患者数": {"name": "患者数", "name_en": "patient_count",
+                   "formula": "COUNT(DISTINCT patient_phone)", "formula_dsl": None,
+                   "agg_type": "COUNT_DISTINCT", "default_agg": "COUNT_DISTINCT",
+                   "unit": "人", "description": "患者手机号去重计数", "aliases": [],
+                   "formula_dialects": None},
+        "费用中位数": {"name": "费用中位数", "name_en": "median_amount",
+                      "formula": "", "formula_dsl": None,
+                      "agg_type": "PERCENTILE_CONT", "default_agg": "PERCENTILE_CONT",
+                      "unit": "元", "description": "费用中位数", "aliases": [],
+                      "formula_dialects": {
+                          "postgres": "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)"}},
     },
     "t_ticket_records": {
         "案例数量": {"name": "案例数量", "name_en": "case_count", "formula": "COUNT(DISTINCT ticket_id)",
@@ -197,6 +216,7 @@ BINDINGS: dict[tuple[int, str], ResolvedBinding] = {
     # 跨对象 JOIN 素材(B2/B3)
     (1, "customer"): _b(1, "customer", "t_customer"),
     (1, "region"): _b(1, "region", "t_region"),
+    (1, "nation"): _b(1, "nation", "t_nation"),
     # ES 运行日志源：force_limit=False 是故意的——ES 引擎硬要求 LIMIT，
     # planner 必须自行补齐并留痕（用例 es_mandatory_limit_with_trace 锁这条）
     (6, "cloud_es_equipment_operation_log"): _b(
@@ -212,10 +232,11 @@ LINKS: dict = {
     "edges": {
         "case": [("customer", "t_case_records.company_name = t_customer.name")],
         "customer": [("region", "t_customer.region_code = t_region.region_code")],
+        "region": [("nation", "t_region.nation_code = t_nation.nation_code")],
     },
     "names": {
         "case": "case", "customer": "customer", "客户": "customer",
-        "region": "region", "地区": "region",
+        "region": "region", "地区": "region", "nation": "nation", "国家": "nation",
     },
 }
 

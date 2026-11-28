@@ -217,9 +217,12 @@ def paths_by_ids(
     allowed_subjects: set[str] | None = None,
     limit: int = 3,
     max_requested: int = 5,
+    workspace_id: int = 0,
+    datasource_id: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """按用户显式选中的场景 id 取方案（`/` 面板选场景 → 不看触发词也强制注入）。
 
+    工作空间、数据源与主体都在服务端运行时复核；客户端候选清单不是授权凭据。
     不静默丢弃：被拒的 id 连同原因一并回传（护栏 no-silent-degradation）。
     `limit` 只封顶**注入份数**，不封顶待评定的 id 数 —— 旧写法先截断再判定，
     第 4 个选中项会连原因一起消失（用户以为选了，实际没人处理它）。超出
@@ -238,6 +241,11 @@ def paths_by_ids(
         path = by_id.get(wid)
         if not path:
             rejected.append({"id": wid, "title": "", "reason": "场景不存在或已停用"})
+            continue
+        if not _in_scope(path, workspace_id, datasource_id):
+            # 不回传标题，避免通过手工提交的场景 id 枚举其他工作空间/数据源的配置。
+            rejected.append({"id": wid, "title": "",
+                             "reason": "场景不在当前工作空间或数据源范围内"})
             continue
         if not path["content"]:
             rejected.append({"id": wid, "title": path["title"], "reason": "场景正文为空，无可注入的方案"})

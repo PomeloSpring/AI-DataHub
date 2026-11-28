@@ -9,7 +9,7 @@
 
 跨对象与窗口(Phase 2「Link 参与编译」):
   - 限定业务名(对象名.业务名)引用跨对象字段, join 路径从 canonical links[]确定性
-    解出(≤2 跳, 无路径回抛候选不猜 join), 产出 LEFT JOIN 链;
+    解出(≤3 跳, 无路径回抛候选不猜 join), 产出 LEFT JOIN 链;
   - 结构化窗口模式(window 字段)编译为"内层聚合 + 外层窗口"两层结构;
     窗口表达式仅进 SELECT 投影层; 自由形状 SQL 不在本层(走模板对象/nl2sql)。
 
@@ -282,9 +282,9 @@ def _dialect_of(db_type: str) -> str:
 
 # ── 跨对象 JOIN（Phase 2「Link 参与编译」）────────────────────────
 # LLM 只用限定业务名(对象名.业务名)引用跨对象字段; join 路径由语义层从
-# canonical links[] 确定性解出(≤2 跳), 无路径回抛候选, 不猜 join(宁缺勿错)。
+# canonical links[] 确定性解出(≤3 跳), 无路径回抛候选, 不猜 join(宁缺勿错)。
 
-_JOIN_MAX_HOPS = 2
+_JOIN_MAX_HOPS = 3
 _links_cache: dict[int, tuple[float, dict]] = {}
 _LINKS_TTL_SEC = 60.0
 # 「主对象上解析不到 → 关联对象上同名维度/指标」的推荐写法缓存
@@ -562,6 +562,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
         warnings.append(
             f"unknown db_type '{binding.db_type}', compiled with mysql dialect fallback")
 
+    if query.nest:
+        return _plan_nested_query(query, binding, dialect, column_policies)
+
     # 结构化窗口与数据集对象互斥(fail-loud, 不静默忽略窗口诉求)
     if query.window and binding.bind_kind == "dataset":
         warnings.append("window 不支持数据集对象; 请去掉 window 或改用普通对象")
@@ -623,7 +626,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
             header_map[slot] = disp
         return slot
 
-    # ①.5 跨对象引用: 限定业务名(对象名.业务名) -> links 解链 JOIN(≤2 跳)
+    # ①.5 跨对象引用: 限定业务名(对象名.业务名) -> links 解链 JOIN(≤3 跳)
     join_ctx: dict[str, tuple[_ColumnResolver, str]] = {}   # obj_ref -> (resolver, alias)
     join_parts: list[str] = []
     alias_by_obj: dict[str, str] = {}          # obj_key -> tN 别名(确定性首现序)
@@ -632,7 +635,9 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     needed: list[str] = []
     for name in [*query.dimensions, *query.metrics,
                  *[f.dim for f in query.filters],
+                 *[f.dim for f in query.having],
                  *[o.by for o in query.order],
+                 *[operand for cm in query.computed_metrics for operand in cm.operands],
                  *([query.window.metric] if query.window and query.window.metric else [])]:
         obj_ref, _ = _split_qualified(name)
         if obj_ref and obj_ref not in needed:
@@ -787,6 +792,8 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     select_items: list[tuple[str, str]] = []   # (expr, alias)
     group_by: list[str] = []
     col_roles: dict[str, str] = {}
+    metric_expressions: dict[str, str] = {}
+    computed_sources: set[str] = set()
     unresolved: list[dict] = []   # 结构化未解析项(供别名回流队列, 只含业务词)
 
     # 列级安全策略：编译期写进投影（执行后按列名脱敏在业务别名/SLS 槽位链路上对不上名）
@@ -865,10 +872,26 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
                 "term": m, "type": "metric", "reason": "unresolved", "candidates": xm,
             })
             continue
+        metric_expressions[_norm_name(m)] = expr
+        metric_expressions[_norm_name(_alias_of(m))] = expr
         alias = _proj_alias(m)
         select_items.append((expr, alias))
         col_roles[alias] = "measure"
         # 附带单位与聚合信息供溯源
+
+    for cm in query.computed_metrics:
+        expr = _compile_computed_expression(
+            cm.expr, cm.operands, metric_expressions)
+        if expr is None:
+            warnings.append(
+                f"派生指标「{cm.name}」引用了未解析指标或包含不受控语法，已被拒绝")
+            continue
+        alias = _proj_alias(cm.name)
+        select_items.append((expr, alias))
+        col_roles[alias] = "measure"
+        metric_expressions[_norm_name(cm.name)] = expr
+        metric_expressions[_norm_name(_alias_of(cm.name))] = expr
+        computed_sources.add(cm.name)
     if not select_items:
         # 至少给一个 "*" 的兜底, 但更常见是调用方忘了 metrics/dimensions
         warnings.append("no valid measure/dimension selected; returning row preview only")
@@ -916,6 +939,20 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
         if win_cond:
             where_parts.append(win_cond)
 
+    # 聚合后过滤必须引用已解析指标表达式；不把 HAVING 当作普通列过滤，
+    # 也不允许把用户给的原始字段/SQL片段拼进语句。
+    having_parts: list[str] = []
+    for f in query.having:
+        expr = metric_expressions.get(_norm_name(f.dim))
+        if not expr:
+            warnings.append(f"无法解析聚合过滤指标「{f.dim}」，HAVING 条件已跳过")
+            continue
+        cond = _render_condition(expr, f.op, f.value, f.values)
+        if cond:
+            having_parts.append(cond)
+        else:
+            warnings.append(f"聚合过滤指标「{f.dim}」的条件无效，HAVING 条件已跳过")
+
     # ④ ORDER BY
     order_parts: list[str] = []
     for o in query.order:
@@ -952,7 +989,8 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     if query.window:
         win_sql = _render_window_sql(
             query.window, table_ref, select_items, where_parts, group_by,
-            order_parts, limit_val, dialect, col_roles, warnings, slot_of)
+            order_parts, limit_val, dialect, col_roles, warnings, slot_of,
+            having_parts=having_parts)
         if not win_sql:
             return PlannedExecution(
                 sql="", secured_sql="", route=g.query_mode, dialect=dialect,
@@ -967,6 +1005,7 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
             select_items=select_items,
             where_parts=where_parts,
             group_by=group_by,
+            having_parts=having_parts,
             order_parts=order_parts,
             limit=limit_val,
             dialect=dialect,
@@ -987,6 +1026,8 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     prov["available_dimensions"] = resolver.available_dimension_names()
     # 归因: 每个请求名字的解析来源(dict_exact/dict_alias/column_map/physical_desc/phys_col/fuzzy_rejected)
     combined_sources = dict(resolver.resolution_sources())
+    for name in computed_sources:
+        combined_sources[name] = "computed"
     for _n in [*query.dimensions, *query.metrics, *[f.dim for f in query.filters]]:
         _o, _rest = _split_qualified(_n)
         if _o and _o in join_ctx:
@@ -1016,6 +1057,243 @@ def plan(query: SemanticQuery, binding: ResolvedBinding,
     )
 
 
+# ── 受控计算表达式与嵌套聚合 ─────────────────────────────────────
+
+_COMPUTED_EXPR_TOKEN_RE = re.compile(
+    r"\s*(\{[^{}]+\}|(?:\d+(?:\.\d*)?|\.\d+)|[()+\-*/])")
+
+
+def _compile_computed_expression(expr: str, operands: list[str],
+                                 metric_expressions: dict[str, str]) -> Optional[str]:
+    """把 {指标} 四则表达式编译为 SQL；不允许标识符、函数名或原始 SQL。"""
+    text = str(expr or "").strip()
+    if not text or len(text) > 256:
+        return None
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(text):
+        match = _COMPUTED_EXPR_TOKEN_RE.match(text, pos)
+        if not match:
+            return None
+        tokens.append(match.group(1))
+        pos = match.end()
+
+    declared = {_norm_name(name) for name in (operands or []) if str(name or "").strip()}
+    index = 0
+
+    def factor():
+        nonlocal index
+        if index >= len(tokens):
+            raise ValueError("missing operand")
+        token = tokens[index]
+        if token in ("+", "-"):
+            index += 1
+            return ("unary", token, factor())
+        if token == "(":
+            index += 1
+            node = expression()
+            if index >= len(tokens) or tokens[index] != ")":
+                raise ValueError("unclosed parenthesis")
+            index += 1
+            return node
+        if token.startswith("{") and token.endswith("}"):
+            name = token[1:-1].strip()
+            key = _norm_name(name)
+            if not key or key not in declared or key not in metric_expressions:
+                raise ValueError("undeclared metric")
+            index += 1
+            return ("value", metric_expressions[key])
+        if re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", token):
+            index += 1
+            return ("value", token)
+        raise ValueError("invalid token")
+
+    def term():
+        nonlocal index
+        node = factor()
+        while index < len(tokens) and tokens[index] in ("*", "/"):
+            op = tokens[index]
+            index += 1
+            node = ("binary", op, node, factor())
+        return node
+
+    def expression():
+        nonlocal index
+        node = term()
+        while index < len(tokens) and tokens[index] in ("+", "-"):
+            op = tokens[index]
+            index += 1
+            node = ("binary", op, node, term())
+        return node
+
+    def render(node) -> str:
+        if node[0] == "value":
+            return f"({node[1]})" if any(c in node[1] for c in "() ") else node[1]
+        if node[0] == "unary":
+            return f"({node[1]}{render(node[2])})"
+        _, op, left, right = node
+        lhs, rhs = render(left), render(right)
+        if op == "/":
+            return f"({lhs} / NULLIF({rhs}, 0))"
+        return f"({lhs} {op} {rhs})"
+
+    try:
+        tree = expression()
+        if index != len(tokens):
+            return None
+        return render(tree)
+    except (ValueError, IndexError):
+        return None
+
+
+def _plan_nested_query(query: SemanticQuery, binding: ResolvedBinding, dialect: str,
+                       column_policies: Optional[dict[str, str]]) -> PlannedExecution:
+    """编译受控的两层聚合：inner 语义查询作为派生表，outer 只引用其输出别名。"""
+    warnings: list[str] = []
+    nest = query.nest
+    if binding.bind_kind == "dataset":
+        return _empty_plan(binding, query, dialect,
+                           ["数据集对象不支持嵌套聚合；请使用已治理的数据集查询"])
+    if sem_dialect.engine_of(binding.db_type) == "es":
+        return _empty_plan(binding, query, dialect,
+                           ["Elasticsearch SQL 不支持派生表，已拒绝嵌套聚合"])
+    if (query.metrics or query.dimensions or query.filters or query.having
+            or query.computed_metrics or query.window):
+        return _empty_plan(binding, query, dialect,
+                           ["nest 不能与顶层 metrics/dimensions/filters/having/window 混用"])
+    if not nest.inner.metrics and not nest.inner.dimensions:
+        return _empty_plan(binding, query, dialect,
+                           ["nest.inner 至少需要一个已声明指标或维度"])
+    if not nest.outer.metrics:
+        return _empty_plan(binding, query, dialect,
+                           ["nest.outer.metrics 不能为空"])
+
+    # 子查询负责聚合完整的 inner 结果；响应行数限制只放在外层，避免先截断再聚合。
+    # huge 表仍由普通 plan 的护栏检查，未授权全扫且没有过滤条件时会拒绝。
+    inner_guardrail = binding.guardrail.model_copy(
+        update={"force_limit": False, "max_rows": None})
+    inner_binding = binding.model_copy(update={"guardrail": inner_guardrail})
+    inner_query = query.model_copy(update={
+        "metrics": list(nest.inner.metrics),
+        "dimensions": list(nest.inner.dimensions),
+        "filters": list(nest.inner.filters),
+        "having": [], "computed_metrics": [], "nest": None,
+        "order": [], "limit": None, "window": None,
+    })
+    inner_plan = plan(inner_query, inner_binding, column_policies=column_policies)
+    warnings.extend(inner_plan.warnings or [])
+    if not inner_plan.sql or any(
+            "无法解析" in w or "未配置" in w or "no valid" in w for w in warnings):
+        if not warnings:
+            warnings.append("nest.inner 未能生成有效聚合 SQL")
+        return _empty_plan(binding, query, dialect, warnings)
+
+    # inner SELECT alias → 在子查询中可安全引用的列名（SLS 会使用 ASCII 槽位）。
+    header_inverse = {
+        _norm_name(original): slot
+        for slot, original in (inner_plan.output_header_map or {}).items()
+    }
+    inner_names = [*nest.inner.dimensions, *nest.inner.metrics]
+    inner_columns = {
+        _norm_name(name): header_inverse.get(
+            _norm_name(_alias_of(name)), _alias_of(name))
+        for name in inner_names
+    }
+
+    select_items: list[tuple[str, str]] = []
+    outer_metric_exprs: dict[str, str] = {}
+    output_header_map: dict[str, str] = {}
+    ascii_out = sem_dialect.engine_of(binding.db_type) == "sls"
+    output_slots: dict[str, str] = {}
+
+    def outer_alias(name: str) -> str:
+        display = _alias_of(name)
+        if not ascii_out:
+            return display
+        slot = output_slots.get(display)
+        if slot is None:
+            slot = f"o{len(output_slots)}"
+            output_slots[display] = slot
+            output_header_map[slot] = display
+        return slot
+
+    for metric in nest.outer.metrics:
+        agg = metric.agg.upper()
+        source = metric.of.strip()
+        if source == "*":
+            if agg != "COUNT":
+                warnings.append("nest.outer 只有 COUNT 可以聚合 *")
+                return _empty_plan(binding, query, dialect, warnings)
+            expr = "COUNT(*)"
+        else:
+            inner_alias = inner_columns.get(_norm_name(source))
+            if not inner_alias:
+                warnings.append(f"nest.outer 指标「{metric.name}」引用了未投影的 inner 字段")
+                return _empty_plan(binding, query, dialect, warnings)
+            ref = _quote_alias(inner_alias, dialect)
+            expr = f"COUNT(DISTINCT {ref})" if agg == "COUNT_DISTINCT" else f"{agg}({ref})"
+        alias = outer_alias(metric.name)
+        select_items.append((expr, alias))
+        outer_metric_exprs[_norm_name(metric.name)] = expr
+        outer_metric_exprs[_norm_name(_alias_of(metric.name))] = expr
+
+    where_parts: list[str] = []
+    for f in nest.outer.filters:
+        inner_alias = inner_columns.get(_norm_name(f.dim))
+        if not inner_alias:
+            warnings.append(f"nest.outer filter 引用了未投影的 inner 字段「{f.dim}」")
+            return _empty_plan(binding, query, dialect, warnings)
+        cond = _render_condition(_quote_alias(inner_alias, dialect), f.op, f.value, f.values)
+        if not cond:
+            warnings.append(f"nest.outer filter「{f.dim}」条件无效")
+            return _empty_plan(binding, query, dialect, warnings)
+        where_parts.append(cond)
+
+    having_parts: list[str] = []
+    for f in nest.outer.having:
+        expr = outer_metric_exprs.get(_norm_name(f.dim))
+        if not expr:
+            warnings.append(f"nest.outer having 引用了未声明的外层指标「{f.dim}」")
+            return _empty_plan(binding, query, dialect, warnings)
+        cond = _render_condition(expr, f.op, f.value, f.values)
+        if not cond:
+            warnings.append(f"nest.outer having「{f.dim}」条件无效")
+            return _empty_plan(binding, query, dialect, warnings)
+        having_parts.append(cond)
+
+    order_parts: list[str] = []
+    output_aliases = {
+        _norm_name(m.name): outer_alias(m.name) for m in nest.outer.metrics
+    }
+    for order in query.order:
+        alias = output_aliases.get(_norm_name(order.by))
+        if not alias:
+            warnings.append(f"nest.order 引用了未投影的外层指标「{order.by}」")
+            return _empty_plan(binding, query, dialect, warnings)
+        order_parts.append(f"{_quote_alias(alias, dialect)} {'DESC' if order.desc else 'ASC'}")
+
+    g = binding.guardrail
+    limit = query.limit
+    if limit is None:
+        limit = g.max_rows or (_DEFAULT_LIMIT if g.force_limit else None)
+    sql = _render_sql(
+        table_ref=f"({inner_plan.sql}) AS _nest",
+        select_items=select_items,
+        where_parts=where_parts,
+        group_by=[], order_parts=order_parts, limit=limit, dialect=dialect,
+        having_parts=having_parts,
+    )
+    provenance = _provenance(binding, query)
+    provenance["nested"] = True
+    return PlannedExecution(
+        sql=sql, secured_sql=sql, dialect=dialect, route=g.query_mode,
+        datasource_id=binding.datasource_id,
+        resolved_tables=inner_plan.resolved_tables,
+        guardrail=g, access=binding.access, provenance=provenance,
+        warnings=warnings, output_header_map=output_header_map,
+    )
+
+
 # ── SQL renderer (简单确定性, 不依赖 sqlglot) ─────────────────
 
 def _render_sql(
@@ -1026,6 +1304,7 @@ def _render_sql(
     order_parts: list[str],
     limit: Optional[int],
     dialect: str = "mysql",
+    having_parts: Optional[list[str]] = None,
 ) -> str:
     # 别名引用符随方言: MySQL 反引号 / PG 双引号(否则 PG 下 `AS \`x\`` 非法)
     proj = ", ".join(
@@ -1037,6 +1316,8 @@ def _render_sql(
         parts.append("WHERE " + " AND ".join(where_parts))
     if group_by:
         parts.append("GROUP BY " + ", ".join(group_by))
+    if having_parts:
+        parts.append("HAVING " + " AND ".join(having_parts))
     if order_parts:
         parts.append("ORDER BY " + ", ".join(order_parts))
     if limit is not None:
@@ -1056,6 +1337,7 @@ def _render_window_sql(
     col_roles: dict[str, str],
     warnings: list[str],
     slot_of: Optional[dict[str, str]] = None,
+    having_parts: Optional[list[str]] = None,
 ) -> Optional[str]:
     """结构化窗口 -> "内层聚合 + 外层窗口" 两层结构(窗口与 GROUP BY 不同层)。
 
@@ -1082,7 +1364,9 @@ def _render_window_sql(
         warnings.append("window 需要至少一个已解析的指标/维度")
         return None
 
-    inner = _render_sql(table_ref, select_items, where_parts, group_by, [], None, dialect)
+    inner = _render_sql(
+        table_ref, select_items, where_parts, group_by, [], None, dialect,
+        having_parts=having_parts)
     m_q = _quote_alias(target, dialect) if target else ""
     part_all = [_quote_alias(a, dialect) for a in dim_aliases]
     part_no_time = [_quote_alias(a, dialect) for a in dim_aliases if a not in time_aliases]
