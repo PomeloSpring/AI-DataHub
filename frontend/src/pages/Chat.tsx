@@ -269,7 +269,11 @@ export default function Chat() {
   useEffect(() => {
     let cancelled = false;
     setSlashError('');
-    client.get('/chat/slash-options', { params: { workspace_id: selectedWorkspaceId || 0 } })
+    client.get('/chat/slash-options', { params: {
+      workspace_id: selectedWorkspaceId || 0,
+      datasource_id: selectedSiteCode ? 0 : (selectedDsId || 0),
+      site_code: selectedSiteCode || '',
+    } })
       .then(({ data }) => {
         if (cancelled) return;
         setSlashOptions({
@@ -288,7 +292,7 @@ export default function Chat() {
         setSlashError(e?.response?.data?.detail || t('slash.searchFailed', { hint: slashTriggerHint() }));
       });
     return () => { cancelled = true; };
-  }, [selectedWorkspaceId]);
+  }, [selectedWorkspaceId, selectedDsId, selectedSiteCode]);
 
   const slashMenu = useSlashMenu(slashOptions, slashQuery);
   const slashOpen = slashQuery !== null;

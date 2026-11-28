@@ -133,16 +133,36 @@ CASES += [
        {"hit": True, "retrieval_source": "ontology_traversal"},
        "图遍历策略应能以候选表为种子遍历本体图并返回关系",
        status="known_defect",
-       status_note=("实测 rag_source=ontology_traversal:no_seed —— 传了 target_tables 仍被判为无种子，"
-                    "说明该策略的种子来源不是候选表而是别的东西（关键词/对象 key），"
-                    "种子抽取契约与调用方口径不一致。缺口在种子抽取侧，不是图里没有数据。"),
+       status_note=("实测 rag_source=ontology_traversal:no_seed。只读核验发现 prd-cn 本体图没有"
+                    "与 t_case_records 匹配的 primaryTable/mapsColumn，也没有可解析的 case 对象 key；"
+                    "当前只能按候选表回填元数据，不能证明已做图遍历。需先同步/补齐本体图种子，"
+                    "再解除该已知缺陷。"),
        tags="recall,graph,seed_gap", sort=50),
 ]
+
+
+# 明确已被当前 seed 契约取代的旧用例。只在显式传入
+# ``--apply --reconcile-obsolete`` 时退役，默认播种仍不覆盖人工维护的数据。
+LEGACY_RETIREMENTS = {
+    "ret_route_business_object_reaches_source": (
+        "旧 route_resolved 断言已被当前契约取代：v0.5 不再要求业务本体 objects[].route；"
+        "由 ret_route_layer_retired_returns_none 覆盖现行行为。"),
+}
+
+CASE_NOTE_UPDATES = {
+    "ret_ontology_traversal_needs_seed": (
+        "实测 rag_source=ontology_traversal:no_seed。只读核验发现 prd-cn 本体图没有"
+        "与 t_case_records 匹配的 primaryTable/mapsColumn，也没有可解析的 case 对象 key；"
+        "当前只能按候选表回填元数据，不能证明已做图遍历。需先同步/补齐本体图种子，"
+        "再解除该已知缺陷。"),
+}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="落库（默认只报告）")
+    ap.add_argument("--reconcile-obsolete", action="store_true",
+                    help="与 --apply 同用：仅退役/更正文内明确列出的旧用例状态")
     args = ap.parse_args()
 
     from backend.eval import store
@@ -162,12 +182,16 @@ def main() -> int:
 
     defects = [c["case_key"] for c in CASES if c["case_status"] == "known_defect"]
     print(f"L3 检索层用例 {len(CASES)} 条；known_defect {len(defects)} 条: {defects}")
+    if LEGACY_RETIREMENTS:
+        print("当前契约已取代的旧用例：", sorted(LEGACY_RETIREMENTS))
     by_cap: dict[str, int] = {}
     for c in CASES:
         by_cap[c["capability"]] = by_cap.get(c["capability"], 0) + 1
     print("按能力契约：", by_cap)
 
     if not args.apply:
+        if args.reconcile_obsolete:
+            print("--reconcile-obsolete 需要与 --apply 同用；当前为 dry-run，未修改数据。")
         print("\n(dry-run，未落库。元库恢复可达后先复核实测条目数，再 --apply)")
         return 0
 
@@ -178,7 +202,22 @@ def main() -> int:
             continue
         store.create_case(c, created_by="seed_eval_retrieval_suite")
         created += 1
-    print(f"已新建 {created} 条，已存在跳过 {skipped} 条（不覆盖人工改过的用例）。")
+    retired = 0
+    if args.reconcile_obsolete:
+        by_key = {r.get("case_key"): r
+                  for r in store.list_cases(suite=SUITE, active_only=False)}
+        for key, status_note in LEGACY_RETIREMENTS.items():
+            row = by_key.get(key)
+            if row and row.get("case_status") != "retired":
+                store.update_case(int(row["id"]), {
+                    "case_status": "retired", "status_note": status_note,
+                })
+                retired += 1
+        for key, status_note in CASE_NOTE_UPDATES.items():
+            row = by_key.get(key)
+            if row and row.get("status_note") != status_note:
+                store.update_case(int(row["id"]), {"status_note": status_note})
+    print(f"已新建 {created} 条，已存在跳过 {skipped} 条，退役过期用例 {retired} 条。")
     return 0
 
 

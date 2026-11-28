@@ -348,7 +348,7 @@ class TestCrossObjectSuggestions:
         edges = {"a": [("b", "A.x = B.x"), ("dead", "")],
                  "b": [("c", "B.y = C.y")],
                  "c": [("d", "C.z = D.z")]}
-        assert planner._reachable_objects(edges, "a") == ["b", "c"]
+        assert planner._reachable_objects(edges, "a") == ["b", "c", "d"]
         assert planner._reachable_objects(edges, "a", max_hops=1) == ["b"]
 
     def test_unresolved_dimension_carries_qualified_suggestion(self, patched, binding,

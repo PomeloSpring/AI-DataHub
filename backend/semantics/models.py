@@ -69,6 +69,48 @@ class SemanticWindow(BaseModel):
         description='附加参数: rolling 用 {"preceding": N}; period_compare 用 {"lag": N}')
 
 
+class SemanticComputedMetric(BaseModel):
+    """以已声明指标为操作数的受控派生指标。表达式只允许 {指标名} 与算术符号。"""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=128)
+    expr: str = Field(..., min_length=1, max_length=256)
+    operands: list[str] = Field(default_factory=list)
+
+
+class SemanticNestedMetric(BaseModel):
+    """嵌套聚合的外层指标定义。"""
+    model_config = ConfigDict(extra="forbid")
+
+    of: str = Field(..., min_length=1, max_length=128)
+    agg: Literal["SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT"]
+    name: str = Field(..., min_length=1, max_length=128)
+
+
+class SemanticNestedInner(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metrics: list[str] = Field(default_factory=list)
+    dimensions: list[str] = Field(default_factory=list)
+    filters: list[SemanticFilter] = Field(default_factory=list)
+
+
+class SemanticNestedOuter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metrics: list[SemanticNestedMetric] = Field(default_factory=list)
+    filters: list[SemanticFilter] = Field(default_factory=list)
+    having: list[SemanticFilter] = Field(default_factory=list)
+
+
+class SemanticNestedQuery(BaseModel):
+    """受控两层聚合声明；不接受自由 SQL 子查询。"""
+    model_config = ConfigDict(extra="forbid")
+
+    inner: SemanticNestedInner
+    outer: SemanticNestedOuter
+
+
 class SemanticQuery(BaseModel):
     """LLM/大屏对语义层的唯一入口契约。
 
@@ -85,6 +127,14 @@ class SemanticQuery(BaseModel):
         default_factory=list,
         description="分组维度(adh_dimensions.name 或对象属性)；跨对象引用用限定业务名 '对象名.维度名'")
     filters: list[SemanticFilter] = Field(default_factory=list)
+    having: list[SemanticFilter] = Field(
+        default_factory=list,
+        description="聚合后过滤；dim 必须引用已解析的指标或派生指标")
+    computed_metrics: list[SemanticComputedMetric] = Field(
+        default_factory=list,
+        description="受控算术派生指标；expr 仅引用已声明的 {指标名}，不接受物理列或 SQL")
+    nest: Optional[SemanticNestedQuery] = Field(
+        None, description="受控的内层分组 + 外层聚合，不接受自由子查询 SQL")
     order: list[SemanticOrder] = Field(default_factory=list)
     limit: Optional[int] = Field(None, ge=1, le=10000)
     time_grain: Optional[TimeGrain] = None

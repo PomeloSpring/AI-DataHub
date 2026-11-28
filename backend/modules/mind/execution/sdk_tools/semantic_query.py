@@ -15,6 +15,7 @@ secured_sql；Phase 6.2 将切至 `backend.semantics.execution`（datafusion-pyt
 import asyncio
 import json
 import logging
+import time
 from typing import Annotated, Optional
 
 from backend.modules.mind.execution.sdk_tools.catalog_tools import _text, record_execute_error
@@ -48,6 +49,21 @@ _MAX_ROWS = 200
 # 预算咬住的行必须显式标注（truncated / rows_shown / truncated_note），不得静默少给。
 _MAX_PAYLOAD_CHARS = 16000
 _MIN_PAYLOAD_CHARS = 2000  # 批量均分下限；_MAX_BATCH=8 ⇒ 16000//8=2000，整次调用仍不超预算
+
+
+def _record_semantic_phase(name: str, started_at: float, *, status: str,
+                           output_text: str = "", error_text: str = "") -> None:
+    """记录语义查询子阶段耗时；只写阶段、计数和安全错误，不写 SQL 或结果值。"""
+    try:
+        from backend import observability
+        observability.record_span(
+            kind="phase", name=name, status=status,
+            duration_ms=max(0, int(round((time.perf_counter() - started_at) * 1000))),
+            output_text=(output_text or "")[:500],
+            error_text=(error_text or "")[:300],
+        )
+    except Exception as exc:  # noqa: BLE001 — 观测旁路不得影响查询
+        logger.debug("[run_semantic_query] phase span ignored: %s", type(exc).__name__)
 
 
 def _peek_intent_object(payload: dict) -> str:
@@ -372,7 +388,20 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
                  "unresolved": _safe_unresolved(reason="forbidden", term=q.object, type="object")},
                 True)
 
-    p = await asyncio.to_thread(plan, q, binding)
+    plan_started = time.perf_counter()
+    try:
+        p = await asyncio.to_thread(plan, q, binding)
+    except Exception as exc:  # noqa: BLE001 — 记录后保持既有失败语义
+        _record_semantic_phase("semantic_plan", plan_started, status="error",
+                               error_text=type(exc).__name__)
+        raise
+    plan_unresolved = (p.provenance or {}).get("unresolved_terms") or []
+    _record_semantic_phase(
+        "semantic_plan", plan_started,
+        status="success" if p.sql else "blocked",
+        output_text=(f"sql_ready={bool(p.sql)}; warnings={len(p.warnings or [])}; "
+                     f"unresolved={len(plan_unresolved)}"),
+    )
 
     # 进化候选入口（自进化闭环）：被拒近似词/未解析词自动落入待审队列。
     # 写入失败不得影响取数主链（FDE §4 旁路约束），但也不能静默：按 warning 带
@@ -434,12 +463,19 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
         "redact": [binding.physical_table, binding.dataset_ref],
     }
 
+    execution_started = time.perf_counter()
     try:
         result = await asyncio.to_thread(execute_plan, q, binding, p, policy_ctx, "")
     except SemanticError as e:
         # 执行阶段原始引擎错因写进管理端 trace(对外仍只回脱敏文案), 供区分
         # 编译缺陷/连接故障/权限拦截 —— 否则日志滚后无法回溯本轮问答。
         record_execute_error("run_semantic_query", e)
+        safe_error = _sanitize_execute_error(e, _effective_db_type(q.datasource_id))
+        _record_semantic_phase(
+            "semantic_execute", execution_started, status="error",
+            output_text=f"blocked_at={str(e.blocked_at or '')[:80]}",
+            error_text=safe_error,
+        )
         payload_out = {
             "object": binding.object_key,
             "intent": intent_echo,
@@ -455,13 +491,23 @@ async def _execute_single(raw_payload: dict, ctx) -> tuple[dict, bool]:
             # 同样是“缺口”，不得只在成功分支下发。
             **({"unresolved": _gap} if _gap else {}),
             "columns": [], "rows": [], "row_count": 0, "execution_ms": None,
-            "error": _sanitize_execute_error(e, _effective_db_type(q.datasource_id)),
+            "error": safe_error,
             "blocked_at": e.blocked_at,
             "needs_approval": bool((e.detail or {}).get("needs_approval")),
         }
         if (e.detail or {}).get("proposed_edit"):
             payload_out["proposed_edit"] = e.detail["proposed_edit"]
         return payload_out, True
+    except Exception as exc:  # noqa: BLE001 — 观测后仍交给现有上层异常处理
+        _record_semantic_phase("semantic_execute", execution_started, status="error",
+                               error_text=f"执行异常（{type(exc).__name__}）")
+        raise
+
+    _record_semantic_phase(
+        "semantic_execute", execution_started, status="success",
+        output_text=(f"row_count={int(result.row_count)}; "
+                     f"engine_elapsed_ms={int(result.elapsed_ms or 0)}"),
+    )
 
     names = [c.name for c in result.columns]
     rows_records = [dict(zip(names, row)) for row in result.rows]  # LLM 契约为 records
