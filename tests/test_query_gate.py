@@ -19,7 +19,8 @@ from backend.core import query_gate as qg
 
 
 @pytest.fixture(autouse=True)
-def clean_gates():
+def clean_gates(monkeypatch):
+    monkeypatch.setenv("QUERY_GATE_BACKEND", "local")
     qg.reset_gates()
     yield
     qg.reset_gates()
@@ -580,4 +581,99 @@ def test_exec_fail_text_passes_queue_message_through():
     assert _exec_fail_text(msg, "mysql", "capacity_queue") == msg
     # 类别丢了就不能假装是排队（否则任何错误都能套“并发”话术），回通用文案
     assert "并发上限" not in _exec_fail_text(msg, "mysql", "")
+
+
+class _FakeRedisGate:
+    """最小 Redis 有序集合替身，供分布式闸门原子脚本测试。"""
+    def __init__(self):
+        self.data = {}
+        self.lock = threading.RLock()
+
+    def _bucket(self, key):
+        return self.data.setdefault(key, {})
+
+    def zadd(self, key, mapping):
+        with self.lock:
+            self._bucket(key).update({token: float(score) for token, score in mapping.items()})
+        return len(mapping)
+
+    def zrem(self, key, token):
+        with self.lock:
+            return int(self._bucket(key).pop(token, None) is not None)
+
+    def zcard(self, key):
+        with self.lock:
+            return len(self._bucket(key))
+
+    def zrank(self, key, token):
+        with self.lock:
+            ordered = sorted(self._bucket(key).items(), key=lambda item: (item[1], item[0]))
+            for idx, (candidate, _) in enumerate(ordered):
+                if candidate == token:
+                    return idx
+            return None
+
+    def zremrangebyscore(self, key, minimum, maximum):
+        with self.lock:
+            bucket = self._bucket(key)
+            doomed = [token for token, score in bucket.items() if score <= float(maximum)]
+            for token in doomed:
+                bucket.pop(token, None)
+            return len(doomed)
+
+    def eval(self, script, numkeys, *args):
+        assert numkeys == 2
+        holders, waiters, token, now, lease, limit, waiter_ttl = args
+        now, lease, limit, waiter_ttl = map(float, (now, lease, limit, waiter_ttl))
+        with self.lock:
+            self.zremrangebyscore(holders, "-inf", now)
+            self.zremrangebyscore(waiters, "-inf", now)
+            if len(self._bucket(holders)) < int(limit):
+                self._bucket(holders)[token] = now + lease
+                self._bucket(waiters).pop(token, None)
+                return 1
+            self._bucket(waiters)[token] = now + waiter_ttl
+            return 0
+
+
+def test_distributed_gate_shares_limit_across_instances(monkeypatch):
+    fake = _FakeRedisGate()
+    monkeypatch.setattr(qg.DistributedSourceGate, "_client", lambda self: fake)
+    first = qg.DistributedSourceGate(901, limit=1, wait_s=0.15, label="shared-source")
+    second = qg.DistributedSourceGate(901, limit=1, wait_s=0.15, label="shared-source")
+    holder = first.acquire()
+    errors = []
+
+    def waiter():
+        try:
+            second.acquire()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=waiter, daemon=True)
+    thread.start()
+    thread.join(2)
+    assert len(errors) == 1 and isinstance(errors[0], qg.QueryQueueTimeout)
+    first.release(holder)
+    handle = second.acquire()
+    assert handle.waited_ms >= 0
+    second.release(handle)
+    assert second.active == 0
+
+
+def test_distributed_gate_redis_failure_is_loud(monkeypatch):
+    class Broken:
+        def eval(self, *args, **kwargs):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(qg.DistributedSourceGate, "_client", lambda self: Broken())
+    gate = qg.DistributedSourceGate(902, limit=1, wait_s=0.1)
+    with pytest.raises(qg.GateIntegrityError):
+        gate.acquire()
+
+
+def test_gate_for_selects_redis_backend(monkeypatch):
+    monkeypatch.setenv("QUERY_GATE_BACKEND", "redis")
+    gate = qg.gate_for(903, limit=1, wait_s=0.1)
+    assert isinstance(gate, qg.DistributedSourceGate)
 

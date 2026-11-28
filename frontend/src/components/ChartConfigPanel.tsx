@@ -571,6 +571,26 @@ export default function ChartConfigPanel({ open, chart, onClose, onSave }: Chart
                 </>
               )}
 
+              {/* 趋势大数字（big_number_trend）设置：环比开关 */}
+              {(config.chartType || chart.chart_type) === 'big_number_trend' && (
+                <>
+                  <Separator />
+                  <div className="space-y-4">
+                    <h4 className="font-medium">{t("k_13543aab4d")}</h4>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={config.showComparison !== false}
+                        onCheckedChange={v => updateConfig('showComparison', v)}
+                      />
+                      <Label>{t("k_93b61be385")}</Label>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      💡 环比取最近两个完整周期；当期未过完时自动跳过并在涨幅处标注
+                    </p>
+                  </div>
+                </>
+              )}
+
               <Separator />
 
               <div className="space-y-4">

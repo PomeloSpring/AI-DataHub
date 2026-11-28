@@ -185,12 +185,6 @@ export default function Analysis() {
     );
   }
   const board = (liveBoard ?? detail) as any;
-  // 顶栏“刷新数据” = 逐图 POST charts/{id}/refresh 向数据源重查询。
-  // 只 GET /dashboard/{id} 是回读 DB 缓存，数据永远不变（缺陷，不是特性）。
-  const refreshData = async () => {
-    if (!board?.id) return false;
-    return useDashboardStore.getState().refreshCharts(board.id, board.charts || []);
-  };
   const wantedId = managementPreview ? dashboardId : current?.id ?? 0;
   const play = () => navigate(`/screen/${board.id}?group=${currentGroup?.id ?? 0}&from=${encodeURIComponent(location.pathname)}`, { state: { from: location.pathname } });
   const edit = () => navigate(`/dashboard/editor/${board.id}`, { state: { from: location.pathname } });
@@ -246,8 +240,11 @@ export default function Analysis() {
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {!!updatedText && <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:block"
           title={t('browse.updatedTitle', { time: updatedText })}>{t('browse.updatedAt', { time: updatedText })}</span>}
+        {board.cache_stale && !board.refresh_manageable && <span role="status" className="whitespace-nowrap text-xs text-amber-600 dark:text-amber-400">{t('autoRefresh.staleBadge')}</span>}
         <div role="toolbar" aria-label={t('browse.toolbarAria')} className="flex shrink-0 items-center gap-1 rounded-full bg-muted/60 p-1 ring-1 ring-border/60">
-          <DashboardAutoRefresh key={board.id} onRefresh={refreshData} loading={detailLoading} menuItems={<>
+          <DashboardAutoRefresh key={board.id} dashboardId={board.id} refreshManageable={!!board.refresh_manageable}
+            config={board.refresh_config} cacheStale={!!board.cache_stale} loading={detailLoading}
+            onCompleted={() => loadDetail(board.id)} menuItems={<>
             <DropdownMenuItem disabled={board.status !== 'enabled'} onClick={play}><Play className="mr-2 h-4 w-4" />{t('browse.playScreen')}</DropdownMenuItem>
             {managementPreview && board.editable && <DropdownMenuItem onClick={edit}><Edit className="mr-2 h-4 w-4" />{t('browse.editBoard')}</DropdownMenuItem>}
           </>} />

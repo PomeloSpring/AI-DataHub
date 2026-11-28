@@ -31,7 +31,8 @@ import {
 } from '@/api/dag';
 import { udfApi, type Udf } from '@/api/udf';
 import { DatasourceSelect } from './DatasourceSelect';
-import { DatasetSelect, useMaterializableDatasets } from './DatasetSelect';
+import { DatasetSelect, DatasetSqlPreview, useMaterializableDatasets } from './DatasetSelect';
+import { DataflowSqlPreview } from './DataflowSqlPreview';
 import DagDataflowView from './DagDataflowView';
 import { useTranslation } from 'react-i18next';
 
@@ -237,7 +238,8 @@ function toGraph(rfNodes: Node[], rfEdges: Edge[], existing: DagGraph): DagGraph
 }
 
 // ── 物化节点配置（数据集 → 已登记目标表；分区/预算/批量） ──────────
-function MaterializeConfigPanel({ config, set, watermark, watermarkReady }: {
+function MaterializeConfigPanel({ nodeKey, nodeName, config, set, watermark, watermarkReady }: {
+  nodeKey: string; nodeName?: string;
   config: any; set: (patch: any) => void;
   watermark?: WatermarkItem; watermarkReady: boolean;
 }) {
@@ -257,6 +259,8 @@ function MaterializeConfigPanel({ config, set, watermark, watermarkReady }: {
           <DatasetSelect value={config.dataset} datasets={datasets}
             onChange={v => set({ dataset: v, partition: { ...partition, date_arg: '' } })} />
         </div>
+        {/* 就地看数据集 SQL + 跳详情（免切页核对）；正文来自详情接口，按选中项懒加载 */}
+        <DatasetSqlPreview datasetName={config.dataset} datasets={datasets} />
       </div>
       <div>
         <label className="text-xs font-medium text-muted-foreground">{t("k_6daeb016b3")}</label>
@@ -358,6 +362,9 @@ function MaterializeConfigPanel({ config, set, watermark, watermarkReady }: {
         </div>
         <p className="text-[10px] text-muted-foreground">{tr('k_56634acc0a')}</p>
       </div>
+
+      {/* 数据流 SQL：与「导出 SQL」同一条编译链，就地看当前配置将执行的完整 SQL */}
+      <DataflowSqlPreview nodeKey={nodeKey} nodeName={nodeName} config={config} />
     </>
   );
 }
@@ -380,7 +387,8 @@ function NodeConfigPanel({
       </div>
 
       {node.type === 'materialize' && (
-        <MaterializeConfigPanel config={config} set={set}
+        <MaterializeConfigPanel nodeKey={node.key} nodeName={node.name}
+          config={config} set={set}
           watermark={watermark} watermarkReady={watermarkReady} />
       )}
 

@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+import os
 from backend.common import config as _config  # 加载统一环境配置（含 Redis 凭据装配）
 
 import redis
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 # 必须取装配后的串（REDIS_URL 缺凭据时自动补 REDIS_PASSWORD）：否则 worker 连不上
 # broker、beat 租约丢失暂停派发，定时任务整体停摆（只刷 "Authentication required."）。
 REDIS_URL = _config.REDIS_URL
+# worker 与 web 共享同一份数据源并发预算；Redis 故障时查询显式拒接。
+os.environ.setdefault("QUERY_GATE_BACKEND", "redis")
 
 app = Celery("adh_tasks")
 
@@ -39,7 +42,7 @@ app.conf.update(
                               "visibility_timeout": 3700},
     result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
     imports=("backend.modules.flow.tasks.executor", "backend.modules.flow.tasks.dag_tasks",
-             "backend.modules.flow.tasks.eval_tasks"),
+             "backend.modules.flow.tasks.eval_tasks", "backend.modules.flow.tasks.dashboard_tasks"),
     beat_scheduler="backend.modules.flow.tasks.beat_schedule:DatabaseScheduler",
 
     # Serialization
@@ -70,11 +73,13 @@ app.conf.update(
     # Queues
     task_queues={
         "scheduled": {"exchange": "scheduled", "routing_key": "scheduled"},
+        "dashboard_refresh": {"exchange": "dashboard_refresh", "routing_key": "dashboard_refresh"},
         "default": {"exchange": "default", "routing_key": "default"},
     },
     task_default_queue="default",
     task_routes={
         "backend.modules.flow.tasks.executor.*": {"queue": "scheduled"},
+        "backend.modules.flow.tasks.dashboard_tasks.*": {"queue": "dashboard_refresh"},
         # 显式命名的报表生成任务（按名派发，见 core/task_runtime.send_task）
         "flow.generate_report": {"queue": "scheduled"},
         # 评测任务耗时不定（检索/LLM 集），与定时分析同走 scheduled 队列；

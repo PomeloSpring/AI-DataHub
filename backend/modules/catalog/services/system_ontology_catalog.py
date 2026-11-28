@@ -1481,160 +1481,53 @@ def _attach_flow_bindings(scenarios: list[dict], objects: list[dict]) -> list[di
     return out
 
 
+#: 规则 = **触发条件**（2026-11-28 语义拍板）：什么时候触发、触发前必须成立什么、对象不变式。
+#: 权限（能不能执行）**不是规则**——由权限码层唯一裁决（adh_role_perms + adh_perm_registry +
+#: perm_link），本体只留 PERMISSION_PRINCIPLES 说明与 requires_permission 投影，不构成第二权限真源。
+#: 绑定形态：trigger{on_kind: action|object|scenario, on: <key|[keys]>, phase: before|after|when|invariant}；
+#: 引用完整性在 build 时硬校验（悬空即拒，宁阻断勿悬空）。
+def _R(key: str, rtype: str, statement: str, source: str, *,
+       on_kind: str, on, phase: str) -> dict:
+    return {"key": key, "type": rtype, "statement": statement, "source": source,
+            "trigger": {"on_kind": on_kind, "on": on, "phase": phase}}
+
+
 RULES: list[dict] = [
-    {
-        "key": "perm_admin_full_by_role_perms",
-        "type": "permission",
-        "statement": "管理员按角色勾选的权限码可发起全部系统动作；敏感基线仍对所有人生效，不因任何规则弱化",
-        "source": "as-bot-system-waker §3 / security-guardrails §3",
-        "enforcement": {"subject": "role:admin", "action": "*", "level": "allow"},
-    },
-    {
-        "key": "perm_ai_write_fail_closed",
-        "type": "permission",
-        "statement": "AI 写动作必须持对应权限码且 ai_access=write，否则直接拒绝（fail-closed）；"
-                     "无提议→审批→执行回路，不存在待审批队列",
-        "source": "as-bot-system-waker §3",
-        "enforcement": {"subject": "ai:as_bot", "action": "*", "level": "deny"},
-    },
-    {
-        "key": "perm_analyst_write_deny",
-        "type": "permission",
-        "statement": "业务分析师默认不发起系统治理动作（建模/发布等归治理岗，确需开放时由管理员勾权限码）",
-        "source": "最小权限原则",
-        "enforcement": {"subject": "role:analyst", "action": "*", "level": "deny"},
-    },
-    {
-        "key": "perm_viewer_write_deny",
-        "type": "permission",
-        "statement": "只读角色不发起任何系统治理动作",
-        "source": "最小权限原则",
-        "enforcement": {"subject": "role:viewer", "action": "*", "level": "deny"},
-    },
-    {
-        "key": "constraint_metric_single_source",
-        "type": "metric_constraint",
-        "statement": "指标/维度口径唯一登记在字典（adh_metrics/adh_dimensions）；"
-                     "本体对象只引用指标名，不得把指标当属性写进 properties（会造出幽灵列）",
-        "source": "ontology-modeling §3",
-        "enforcement": {"rule": "metrics_by_name_reference"},
-    },
-    {
-        "key": "constraint_data_engineering_ai_closed",
-        "type": "business_constraint",
-        "statement": "数据同步/DAG/UDF/定时物化属运维专属：不生成 AI 工具、不参与 AI 动作裁决、"
-                     "不向模型广告；确需变更时由人在运维界面操作",
-        "source": "data-sync-engineering §2",
-        "enforcement": {"rule": "ai_zero_access"},
-    },
-    {
-        "key": "quality_sensitive_baseline_immutable",
-        "type": "quality",
-        "statement": "敏感字段基线（block/mask）对所有人生效（含管理员），角色策略与 RLS 不得弱化或覆盖",
-        "source": "security-guardrails §3",
-        "enforcement": {"rule": "sensitive_baseline_wins"},
-    },
-    {
-        "key": "constraint_ontology_two_phase",
-        "type": "business_constraint",
-        "statement": "本体改动只落草案，发布（独立权限码）后才级联重展开对象/重建图谱/同步知识库；"
-                     "不得绕过级联直接改派生表",
-        "source": "ontology-modeling §1",
-        "enforcement": {"rule": "draft_then_publish"},
-    },
-    {
-        "key": "perm_capability_own_code",
-        "type": "permission",
-        "statement": "平台每项能力只由它自己的权限码把关：UI 显隐（hasPerm）、HTTP 中间件（api_pattern）、"
-                     "AI 侧（require_write_perm）三处必须同码；子路径用字面量后缀锚定，"
-                     "禁用 /models* 这类宽模式（一行方法集跨 pattern 求笛卡尔积，会连带放行同前缀其它动作）。",
-        "source": "ontology-modeling §9.3",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "allow", "perm_code": "*"},
-    },
-    {
-        "key": "perm_ontology_write_codes",
-        "type": "permission",
-        "statement": "本体写动作分码把关：保存草案 ontology:save、发布 ontology:publish、"
-                     "激活/归档/恢复 ontology:activate、生成 ontology:generate、导入 ontology:import；"
-                     "发布是独立动作与独立码，不得被激活码带过。",
-        "source": "ontology-modeling §9.2",
-        "enforcement": {"subject": "role:*", "action": "ontology.save_model", "level": "allow",
-                          "perm_code": "ontology:save"},
-    },
-    {
-        "key": "perm_graph_write_graph_manage",
-        "type": "permission",
-        "statement": "重建/同步命名图与原生 SPARQL（/api/graph/query 可按语句 form 执行 update）归 graph:manage；"
-                     "读图 GET 归 graph:read；裸三元组写入 POST /api/graph/{nodes,relations} 当前无本体域码（仅管理员）。",
-        "source": "ontology-modeling §9.2",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
-                          "perm_code": "graph:manage"},
-    },
-    {
-        "key": "perm_kb_sync_kb_manage",
-        "type": "permission",
-        "statement": "模型→知识库同步（kb-sync）与挂接知识库归 kb:manage；kb:read 只读，"
-                     "知识库动作不得挂在 ontology:activate 上。",
-        "source": "ontology-modeling §9.2",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
-                          "perm_code": "kb:manage"},
-    },
-    {
-        "key": "perm_union_no_isolation",
-        "type": "permission",
-        "statement": "角色持多码按并集放行：catalog:read / catalog:manage 的 /api/catalog* 覆盖整个本体前缀，"
-                     "收回 ontology:* 码并不等于收回能力；建只读本体角色前必须先收窄 catalog 码（并给数据产品独立码）。",
-        "source": "ontology-modeling §9.4",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "allow",
-                          "perm_code": "catalog:read"},
-    },
-    {
-        "key": "perm_no_code_is_admin_only",
-        "type": "permission",
-        "statement": "下面这些路径不匹配任何权限码，中间件 fail-closed（403），实际只有管理员旁路可达："
-                     "运维/管理端点 /api/admin/terms*、/api/admin/metadata*、/api/admin/table-info*、"
-                     "/api/admin/relations* 写面、/api/admin/sync*、/api/admin/execution-layers*、"
-                     "/api/admin/cache*、/api/admin/menu-tree* 写面、/api/admin/brand 写面、/api/admin/release-notes*、"
-                     "/api/task-monitor*、/api/model-train*、POST /api/graph/{nodes,relations}，"
-                     "这些路由另由 require_admin 依赖把门（不是靠码）。"
-                     "新增能力必须登记权限码，不得把 admin 旁路当默认授权。",
-        "source": "ontology-modeling §9.4 / api_permission fail-closed",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "deny"},
-    },
-    {
-        "key": "perm_self_service_owner_only",
-        "type": "permission",
-        "statement": "个人自助面不按权限码拦，而由中间件白名单 + 路由层属主校验把关（只看自己的数据）："
-                     "/api/assets*（个人资产）、/api/release-notes* 读（公告与已读状态）、/api/memory*（用户记忆）、"
-                     "/api/workspace-assets/*（空间文件）、/api/chat/session-file*（会话文件）、/api/users/me*；"
-                     "个人资产菜单显隐仍用 asset:read。给这些面另设域码等于与属主校验重复裁决，不采用。",
-        "source": "ontology-modeling §9.2 / api_permission _SELF_ROUTE_PATTERNS",
-        "enforcement": {"subject": "role:*", "action": "*", "level": "allow"},
-    },
-    {
-        "key": "perm_ai_channel_two_consumers",
-        "type": "permission",
-        "statement": "AI 可调用级别只有两类消费方：功能工具登记（ai_action_key）与执行期权限码把关"
-                     "（perm_link.PERM_GATED_ACTION_PERMS）；两者皆无即 none（配了不生效，不得当能力广告）。",
-        "source": "as-bot-system-waker §3",
-        "enforcement": {"subject": "ai:as_bot", "action": "*", "level": "deny"},
-    },
-    {
-        "key": "constraint_content_review_before_publish",
-        "type": "business_constraint",
-        "statement": "内容必须先落草稿并提交审核，审核通过才发布；不得跳过审核直接上线；"
-                     "发布后再次修改会回到草稿态（需重新审核）。",
-        "source": "内容中心发布流程",
-        "enforcement": {"rule": "draft_then_review"},
-    },
-    {
-        "key": "constraint_dashboard_preview_before_publish",
-        "type": "business_constraint",
-        "statement": "看板必须先确认业务范围并完成治理预览，再用 dashboard:manage 发布；"
-                     "发布后修改会使旧预览失效，需重新预览再发布。",
-        "source": "as-bot-system-waker §4",
-        "enforcement": {"rule": "preview_then_publish"},
-    },
+    _R("constraint_metric_single_source", "metric_constraint",
+       "指标/维度口径唯一登记在字典（adh_metrics/adh_dimensions）；本体对象只引用指标名，不得把指标当属性写进 properties（会造出幽灵列）",
+       "ontology-modeling §3", on_kind="object", on=["metric", "dimension"], phase="invariant"),
+    _R("constraint_data_engineering_ai_closed", "business_constraint",
+       "数据同步/DAG/UDF/定时物化属运维专属：不生成 AI 工具、不参与 AI 动作裁决、不向模型广告；确需变更时由人在运维界面操作",
+       "data-sync-engineering §2", on_kind="object", on=["sync_task", "dag_workflow", "udf"], phase="invariant"),
+    _R("quality_sensitive_baseline_immutable", "quality",
+       "敏感字段基线（block/mask）对所有人生效（含管理员），角色策略与 RLS 不得弱化或覆盖",
+       "security-guardrails §3", on_kind="object", on=["sensitive_field", "rls_policy"], phase="invariant"),
+    _R("constraint_ontology_two_phase", "business_constraint",
+       "本体改动只落草案，发布（独立权限码）后才级联重展开对象/重建图谱/同步知识库；不得绕过级联直接改派生表",
+       "ontology-modeling §1", on_kind="object", on=["ontology_model"], phase="invariant"),
+    _R("constraint_content_review_before_publish", "business_constraint",
+       "内容必须先落草稿并提交审核，审核通过才发布；不得跳过审核直接上线；发布后再次修改会回到草稿态（需重新审核）。",
+       "内容中心发布流程", on_kind="action", on="content_review.publish", phase="before"),
+    _R("constraint_dashboard_preview_before_publish", "business_constraint",
+       "看板必须先确认业务范围并完成治理预览，再用 dashboard:manage 发布；发布后修改会使旧预览失效，需重新预览再发布。",
+       "as-bot-system-waker §4", on_kind="action", on="dashboard.publish", phase="before"),
+]
+
+#: 权限原则 = 「能不能执行」的可读说明（投影自权限码层；执行裁决只在 perm_link/中间件）。
+#: 2026-11-28 从 rules 拆出：权限语义不是触发条件，混在 rules 里既语义错位又像第二权限真源。
+PERMISSION_PRINCIPLES: list[dict] = [
+    {"key": "perm_admin_full_by_role_perms", "type": "permission", "statement": "管理员按角色勾选的权限码可发起全部系统动作；敏感基线仍对所有人生效，不因任何规则弱化", "source": "as-bot-system-waker §3 / security-guardrails §3", "applies_to": "role:admin", "level": "allow"},
+    {"key": "perm_ai_write_fail_closed", "type": "permission", "statement": "AI 写动作必须持对应权限码且 ai_access=write，否则直接拒绝（fail-closed）；无提议→审批→执行回路，不存在待审批队列", "source": "as-bot-system-waker §3", "applies_to": "ai:as_bot", "level": "deny"},
+    {"key": "perm_analyst_write_deny", "type": "permission", "statement": "业务分析师默认不发起系统治理动作（建模/发布等归治理岗，确需开放时由管理员勾权限码）", "source": "最小权限原则", "applies_to": "role:analyst", "level": "deny"},
+    {"key": "perm_viewer_write_deny", "type": "permission", "statement": "只读角色不发起任何系统治理动作", "source": "最小权限原则", "applies_to": "role:viewer", "level": "deny"},
+    {"key": "perm_capability_own_code", "type": "permission", "statement": "平台每项能力只由它自己的权限码把关：UI 显隐（hasPerm）、HTTP 中间件（api_pattern）、AI 侧（require_write_perm）三处必须同码；子路径用字面量后缀锚定，禁用 /models* 这类宽模式（一行方法集跨 pattern 求笛卡尔积，会连带放行同前缀其它动作）。", "source": "ontology-modeling §9.3", "applies_to": "role:*", "level": "allow", "perm_code": "*"},
+    {"key": "perm_ontology_write_codes", "type": "permission", "statement": "本体写动作分码把关：保存草案 ontology:save、发布 ontology:publish、激活/归档/恢复 ontology:activate、生成 ontology:generate、导入 ontology:import；发布是独立动作与独立码，不得被激活码带过。", "source": "ontology-modeling §9.2", "applies_to": "role:*", "level": "allow", "perm_code": "ontology:save"},
+    {"key": "perm_graph_write_graph_manage", "type": "permission", "statement": "重建/同步命名图与原生 SPARQL（/api/graph/query 可按语句 form 执行 update）归 graph:manage；读图 GET 归 graph:read；裸三元组写入 POST /api/graph/{nodes,relations} 当前无本体域码（仅管理员）。", "source": "ontology-modeling §9.2", "applies_to": "role:*", "level": "allow", "perm_code": "graph:manage"},
+    {"key": "perm_kb_sync_kb_manage", "type": "permission", "statement": "模型→知识库同步（kb-sync）与挂接知识库归 kb:manage；kb:read 只读，知识库动作不得挂在 ontology:activate 上。", "source": "ontology-modeling §9.2", "applies_to": "role:*", "level": "allow", "perm_code": "kb:manage"},
+    {"key": "perm_union_no_isolation", "type": "permission", "statement": "角色持多码按并集放行：catalog:read / catalog:manage 的 /api/catalog* 覆盖整个本体前缀，收回 ontology:* 码并不等于收回能力；建只读本体角色前必须先收窄 catalog 码（并给数据产品独立码）。", "source": "ontology-modeling §9.4", "applies_to": "role:*", "level": "allow", "perm_code": "catalog:read"},
+    {"key": "perm_no_code_is_admin_only", "type": "permission", "statement": "下面这些路径不匹配任何权限码，中间件 fail-closed（403），实际只有管理员旁路可达：运维/管理端点 /api/admin/terms*、/api/admin/metadata*、/api/admin/table-info*、/api/admin/relations* 写面、/api/admin/sync*、/api/admin/execution-layers*、/api/admin/cache*、/api/admin/menu-tree* 写面、/api/admin/brand 写面、/api/admin/release-notes*、/api/task-monitor*、/api/model-train*、POST /api/graph/{nodes,relations}，这些路由另由 require_admin 依赖把门（不是靠码）。新增能力必须登记权限码，不得把 admin 旁路当默认授权。", "source": "ontology-modeling §9.4 / api_permission fail-closed", "applies_to": "role:*", "level": "deny"},
+    {"key": "perm_self_service_owner_only", "type": "permission", "statement": "个人自助面不按权限码拦，而由中间件白名单 + 路由层属主校验把关（只看自己的数据）：/api/assets*（个人资产）、/api/release-notes* 读（公告与已读状态）、/api/memory*（用户记忆）、/api/workspace-assets/*（空间文件）、/api/chat/session-file*（会话文件）、/api/users/me*；个人资产菜单显隐仍用 asset:read。给这些面另设域码等于与属主校验重复裁决，不采用。", "source": "ontology-modeling §9.2 / api_permission _SELF_ROUTE_PATTERNS", "applies_to": "role:*", "level": "allow"},
+    {"key": "perm_ai_channel_two_consumers", "type": "permission", "statement": "AI 可调用级别只有两类消费方：功能工具登记（ai_action_key）与执行期权限码把关（perm_link.PERM_GATED_ACTION_PERMS）；两者皆无即 none（配了不生效，不得当能力广告）。", "source": "as-bot-system-waker §3", "applies_to": "ai:as_bot", "level": "deny"},
 ]
 
 
@@ -1647,7 +1540,7 @@ SCENARIOS: list[dict] = [
         "actors": ["role:admin"],
         "uses_objects": ["ontology_model", "dataset"],
         "uses_actions": ["ontology.generate_material", "ontology.save_draft"],
-        "uses_rules": ["perm_admin_full_by_role_perms"],
+        "uses_principles": ["perm_admin_full_by_role_perms"],
         "eval_seed": ["本体建模进度如何？还有哪些表没有进本体？"],
     },
     {
@@ -1689,7 +1582,7 @@ SCENARIOS: list[dict] = [
         "actors": ["role:admin"],
         "uses_objects": ["data_product", "dataset", "dashboard"],
         "uses_actions": ["dataset.list", "product.contract_change"],
-        "uses_rules": ["perm_admin_full_by_role_perms"],
+        "uses_principles": ["perm_admin_full_by_role_perms"],
         "flow": [
             {"order": 1, "action": "dataset.list",
              "purpose": "先摸清受影响的数据集与消费方清单",
@@ -1697,7 +1590,7 @@ SCENARIOS: list[dict] = [
             {"order": 2, "action": "product.contract_change",
              "purpose": "携影响面到数据产品页提交契约变更（AI 无此写工具，由人确认）",
              "consumes": "受影响清单",
-             "gated_by": ["perm_admin_full_by_role_perms"]},
+             "gated_by_principles": ["perm_admin_full_by_role_perms"]},
         ],
         "eval_seed": ["改这张表的契约会影响哪些看板？"],
     },
@@ -1709,7 +1602,7 @@ SCENARIOS: list[dict] = [
         "actors": ["role:admin"],
         "uses_objects": ["dashboard_design", "dashboard", "dataset"],
         "uses_actions": ["dashboard.list", "dashboard.publish"],
-        "uses_rules": ["perm_ai_write_fail_closed", "constraint_dashboard_preview_before_publish"],
+        "uses_rules": ["constraint_dashboard_preview_before_publish"], "uses_principles": ["perm_ai_write_fail_closed"],
         "flow": [
             {"order": 1, "action": "dashboard.list",
              "purpose": "确认现有看板与目标归属，避免重名覆盖",
@@ -1717,8 +1610,7 @@ SCENARIOS: list[dict] = [
             {"order": 2, "action": "dashboard.publish",
              "purpose": "确认业务范围并完成治理预览后发布（发布只能由人在看板设计面板完成）",
              "consumes": "目标看板清单",
-             "gated_by": ["constraint_dashboard_preview_before_publish",
-                            "perm_ai_write_fail_closed"]},
+             "gated_by": ["constraint_dashboard_preview_before_publish"], "gated_by_principles": ["perm_ai_write_fail_closed"]},
         ],
         "eval_seed": ["发布看板需要什么条件？"],
     },
@@ -1730,7 +1622,7 @@ SCENARIOS: list[dict] = [
         "actors": ["role:admin"],
         "uses_objects": ["role", "permission", "menu", "as_bot"],
         "uses_actions": [],
-        "uses_rules": ["perm_ai_write_fail_closed"],
+        "uses_principles": ["perm_ai_write_fail_closed"],
         "eval_seed": ["哪些权限点配了 AI 级别但没有消费方？"],
     },
     {
@@ -1816,8 +1708,7 @@ SCENARIOS: list[dict] = [
         "actors": ["role:admin"],
         "uses_objects": ["permission", "menu", "role", "as_bot", "ontology_model"],
         "uses_actions": [],
-        "uses_rules": ["perm_capability_own_code", "perm_no_code_is_admin_only",
-                        "perm_ai_channel_two_consumers"],
+        "uses_principles": ["perm_capability_own_code", "perm_no_code_is_admin_only", "perm_ai_channel_two_consumers"],
         "eval_seed": ["重建本体图谱需要什么权限码？",
                       "哪些功能还没有权限码，只能管理员用？",
                       "这个权限码管哪些接口？"],
@@ -1872,6 +1763,7 @@ def validate_catalog(objects: list[dict] | None = None) -> list[str]:
         errors.append("动作 key 重复: " + ", ".join(dup_actions))
     akey_set = set(action_keys)
     rkey_set = {str(r.get('key') or '') for r in RULES}
+    pkey_set = {str(p.get('key') or '') for p in PERMISSION_PRINCIPLES}
     for r in RULES:
         enf = r.get("enforcement") or {}
         act = str(enf.get("action") or "")
@@ -1879,12 +1771,12 @@ def validate_catalog(objects: list[dict] | None = None) -> list[str]:
             errors.append(f"规则 {r.get('key')} 引用了不存在的动作: {act}")
     for s in SCENARIOS:
         for field, valid in (("uses_objects", key_set), ("uses_actions", akey_set),
-                             ("uses_rules", rkey_set)):
+                             ("uses_rules", rkey_set), ("uses_principles", pkey_set)):
             for ref in (s.get(field) or []):
                 if str(ref) not in valid:
                     errors.append(f"场景 {s.get('key')} 的 {field} 引用了不存在的项: {ref}")
     errors.extend(_action_binding_errors(akey_set))
-    errors.extend(_flow_errors(akey_set, rkey_set))
+    errors.extend(_flow_errors(akey_set, rkey_set, pkey_set))
     errors.extend(_scenario_alias_errors())
     errors.extend(_binding_errors(key_set))
     return errors
@@ -1947,7 +1839,8 @@ def _action_binding_errors(akey_set: set[str]) -> list[str]:
     return errors
 
 
-def _flow_errors(akey_set: set[str], rkey_set: set[str]) -> list[str]:
+def _flow_errors(akey_set: set[str], rkey_set: set[str],
+                  pkey_set: set[str] | None = None) -> list[str]:
     """任务流（scenarios[].flow）自检。
 
     这是「串联」与「平铺清单」的区别所在：
@@ -1965,6 +1858,7 @@ def _flow_errors(akey_set: set[str], rkey_set: set[str]) -> list[str]:
             errors.append(f"场景 {skey} 的 flow 必须是非空数组（无步骤请直接不写 flow）")
             continue
         uses_actions = {str(x) for x in (s.get("uses_actions") or [])}
+        uses_principles = {str(x) for x in (s.get("uses_principles") or [])}
         uses_rules = {str(x) for x in (s.get("uses_rules") or [])}
         orders: list[int] = []
         produced: set[str] = set()
@@ -1985,6 +1879,11 @@ def _flow_errors(akey_set: set[str], rkey_set: set[str]) -> list[str]:
                 orders.append(int(raw if raw is not None else i))
             except (TypeError, ValueError):
                 errors.append(f"场景 {skey} 第 {i} 步 order={raw!r} 非整数")
+            for pk in (st.get("gated_by_principles") or []):
+                if str(pk) not in (pkey_set or set()):
+                    errors.append(f"场景 {skey} 第 {i} 步 gated_by_principles 引用了不存在 的原则: {pk!r}")
+                elif str(pk) not in uses_principles:
+                    errors.append(f"场景 {skey} 第 {i} 步的原则门 {pk!r} 未列在 uses_principles")
             for rk in (st.get("gated_by") or []):
                 if str(rk) not in rkey_set:
                     errors.append(f"场景 {skey} 第 {i} 步 gated_by 引用了不存在的规则: {rk!r}")
@@ -2041,6 +1940,45 @@ def _scenario_alias_errors() -> list[str]:
     return errors
 
 
+def _validate_rule_bindings(doc: dict) -> list[str]:
+    """规则/权限原则的引用完整性硬校验（悬空即拒，宁阻断勿悬空）。
+
+    规则 = 触发条件，必须精确绑到存在的动作/对象/场景；
+    场景 uses_rules/uses_principles 不得指向不存在的条目。"""
+    errors: list[str] = []
+    action_keys = set(ACTION_CONTRACTS)
+    obj_keys = {str(o.get("key")) for o in doc.get("objects") or []}
+    scn_keys = {str(s.get("key")) for s in doc.get("scenarios") or []}
+    rule_keys = {str(r.get("key")) for r in doc.get("rules") or []}
+    principle_keys = {str(p.get("key")) for p in doc.get("permission_principles") or []}
+    for r in doc.get("rules") or []:
+        key = str(r.get("key") or "")
+        trig = r.get("trigger") or {}
+        on_kind = str(trig.get("on_kind") or "")
+        phase = str(trig.get("phase") or "")
+        on = trig.get("on")
+        ons = list(on) if isinstance(on, (list, tuple)) else [on] if on else []
+        if on_kind not in ("action", "object", "scenario"):
+            errors.append(f"规则 {key} 的 trigger.on_kind 非法: {on_kind!r}")
+        if phase not in ("before", "after", "when", "invariant"):
+            errors.append(f"规则 {key} 的 trigger.phase 非法: {phase!r}")
+        if not ons:
+            errors.append(f"规则 {key} 未绑定任何对象/动作/场景（触发条件必须有落点）")
+        pool = {"action": action_keys, "object": obj_keys, "scenario": scn_keys}.get(on_kind, set())
+        for t in ons:
+            if str(t) not in pool:
+                errors.append(f"规则 {key} 绑定的{on_kind} {str(t)!r} 不存在（悬空引用）")
+    for s in doc.get("scenarios") or []:
+        skey = str(s.get("key") or "")
+        for rk in s.get("uses_rules") or []:
+            if str(rk) not in rule_keys:
+                errors.append(f"场景 {skey} 的 uses_rules 引用不存在的规则 {str(rk)!r}")
+        for pk in s.get("uses_principles") or []:
+            if str(pk) not in principle_keys:
+                errors.append(f"场景 {skey} 的 uses_principles 引用不存在的原则 {str(pk)!r}")
+    return errors
+
+
 def build_system_ontology_doc() -> dict:
     """组装系统本体 canonical doc（确定性输出，不含时间戳）。
 
@@ -2062,8 +2000,12 @@ def build_system_ontology_doc() -> dict:
         "contract_digest": contract_digest(ACTION_CONTRACTS),
         "objects": objects,
         "rules": copy.deepcopy(RULES),
+        "permission_principles": copy.deepcopy(PERMISSION_PRINCIPLES),
         "scenarios": _attach_flow_bindings(SCENARIOS, objects),
     }
+    binding_errors = _validate_rule_bindings(doc)
+    if binding_errors:
+        raise ValueError("系统本体规则绑定自检失败: " + "; ".join(binding_errors[:20]))
     drift = validate_document_contracts(doc)
     if drift:
         raise ValueError("系统本体动作契约漂移: " + "; ".join(drift[:20]))

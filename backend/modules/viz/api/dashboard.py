@@ -3,7 +3,6 @@
 Migrated from backend/api/dashboard.py. Uses service layer for all business logic.
 """
 
-import asyncio
 import logging
 
 import pymysql
@@ -12,9 +11,9 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 from backend.common.auth import get_current_user, get_workspace_id, require_admin
-from backend.common.db import DBConnection
 from backend.core import viz_query_pool
 from backend.core.governed_query import NoIdentityError
+from backend.modules.viz.services.dashboard_refresh_service import dashboard_refresh_service
 from backend.modules.viz.services.dashboard_service import (
     dashboard_service,
     chart_service,
@@ -23,7 +22,6 @@ from backend.modules.viz.services.dashboard_service import (
     check_dashboard_editable,
     chart_identity_from_user,
     reorder_groups,
-    _invalidate_dashboard_payload,
     _DASHBOARD_PAGE_SIZE_MAX,
 )
 
@@ -158,6 +156,18 @@ class ChartBatchSave(BaseModel):
     changed: Optional[dict] = {}
     deleted: Optional[list] = []
     metadata: Optional[dict] = None
+
+
+class DashboardRefreshConfigRequest(BaseModel):
+    schedule_type: str = "disabled"
+    interval_seconds: Optional[int] = None
+    cron_expression: Optional[str] = None
+    timezone: Optional[str] = "Asia/Shanghai"
+    cache_ttl_seconds: Optional[int] = None
+
+
+class DashboardRefreshToggleRequest(BaseModel):
+    is_active: bool
 
 
 class ChartRefreshRequest(BaseModel):
@@ -715,6 +725,7 @@ async def refresh_chart_endpoint(
             user_id=user.get("user_id") or 0,
             workspace_id=workspace_id,
             username=user.get("username", "") or "",
+            persist_cache=False,
         )
         return result
     except (viz_query_pool.VizQueryBusy, viz_query_pool.VizQueryExpired) as e:
@@ -730,36 +741,66 @@ async def refresh_chart_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{dashboard_id}/refresh")
+@router.post("/{dashboard_id}/refresh", status_code=202)
 async def refresh_all_charts_endpoint(
     dashboard_id: int,
-    req: dict = {},
     user: dict = Depends(get_current_user),
-    workspace_id: int = Depends(get_workspace_id),
 ):
-    """整板重查（服务端并发）：逐图结果与单图刷新同形状，失败项带可读原因。
-
-    为什么在服务端并发：浏览器 HTTP/1.1 每源只有 6 条连接，让前端逐图并发既受这个
-    上限约束、又会和同页其它请求抢连接。这里一次请求下发整板，图与图之间在
-    `core/viz_query_pool` 的**专用有界通道**里并发，主应用的线程/连接资源不受影响。
-    服务层自己提交到该通道（此处不再嵌套一层，避免占着通道线程等通道线程）。
-    """
+    """管理动作：整板刷新进入 Celery 专用队列，TTL 内直接命中缓存。"""
     try:
-        result = await asyncio.to_thread(
-            chart_service.refresh_all_charts,
-            dashboard_id, params=req.get("params", {}),
-            user_id=user.get("user_id") or 0,
-            workspace_id=workspace_id,
-            username=user.get("username", "") or "",
-        )
-        return result
-    except (viz_query_pool.VizQueryBusy, viz_query_pool.VizQueryExpired) as e:
-        raise HTTPException(status_code=503, detail=str(e), headers={"Retry-After": "5"})
-    except NoIdentityError as e:
+        return dashboard_refresh_service.request_refresh(dashboard_id, user)
+    except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.exception("Failed to refresh all charts")
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/{dashboard_id}/refresh-config")
+def get_refresh_config_endpoint(dashboard_id: int, user: dict = Depends(get_current_user)):
+    from backend.modules.viz.services.dashboard_refresh_service import assert_refresh_manageable
+    try:
+        assert_refresh_manageable(dashboard_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return dashboard_refresh_service.get_config(dashboard_id)
+
+
+@router.put("/{dashboard_id}/refresh-config")
+def save_refresh_config_endpoint(dashboard_id: int, req: DashboardRefreshConfigRequest,
+                                  user: dict = Depends(get_current_user)):
+    try:
+        return dashboard_refresh_service.save_config(dashboard_id, req.model_dump(), user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/{dashboard_id}/refresh-config")
+def toggle_refresh_config_endpoint(dashboard_id: int, req: DashboardRefreshToggleRequest,
+                                    user: dict = Depends(get_current_user)):
+    try:
+        return dashboard_refresh_service.toggle_config(dashboard_id, req.is_active, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{dashboard_id}/refresh-runs/{run_id}")
+def get_refresh_run_endpoint(dashboard_id: int, run_id: int,
+                             user: dict = Depends(get_current_user)):
+    try:
+        run = dashboard_refresh_service.get_run(run_id, dashboard_id, user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not run:
+        raise HTTPException(status_code=404, detail="刷新实例不存在")
+    return run
 
 
 @router.put("/{dashboard_id}/layout")

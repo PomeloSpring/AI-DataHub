@@ -85,6 +85,24 @@ def remove_monitored_task(task_id: int, user: dict = Depends(_monitor_access)):
     return _call(task_monitor_service.remove_task, task_id)
 
 
+@router.post("/dashboard-refresh/{dashboard_id}/toggle")
+def toggle_dashboard_refresh(dashboard_id: int, req: ToggleRequest,
+                              user: dict = Depends(_monitor_access)):
+    return _call(task_monitor_service.toggle_dashboard_refresh, dashboard_id, req.is_active, user)
+
+
+@router.post("/dashboard-refresh/{dashboard_id}/trigger", status_code=202)
+def trigger_dashboard_refresh(dashboard_id: int, user: dict = Depends(_monitor_access)):
+    return _call(task_monitor_service.trigger_dashboard_refresh, dashboard_id, user)
+
+
+@router.post("/dashboard-refresh/{dashboard_id}/stop")
+def stop_dashboard_refresh(dashboard_id: int, user: dict = Depends(_monitor_access)):
+    from backend.core.task_runtime import call
+    return {"dashboard_id": dashboard_id,
+            "cancelled_runs": call("dashboard_refresh.stop", dashboard_id)}
+
+
 @router.post("/system-jobs/{job_key}/pause")
 def pause_system_job(job_key: str, req: PauseRequest, user: dict = Depends(_monitor_access)):
     """暂停/恢复系统内置任务；内置任务不支持移除。"""

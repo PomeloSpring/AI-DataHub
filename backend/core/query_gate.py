@@ -19,8 +19,8 @@
    重入靠**本线程在本网关上的句柄栈**判定（不是计数器），所以“拿了不还”不会让后续查询
    永久旁路闸门：上一个句柄一旦 released，栈顶就不成立，下一次 acquire 重新真占位；
 5. 名额必须在 `finally` 归还（异常/超时/权限拒绝都不留泄漏），release 幂等；
-6. 闸门是**进程内**的：web 单进程（`backend/app/main.py`）时即等价全局；celery-worker 与
-   多副本部署**必须**先换成 Redis 租约式闸门，否则上限会被乘上进程数（这里不假装已跨进程限流）。
+6. 闸门默认本地实现供单进程测试/开发；生产启动脚本设置 `QUERY_GATE_BACKEND=redis`，
+   web 与 dashboard-refresh-worker 共享 Redis 租约式上限。Redis 故障时显式拒接，绝不静默回退本地实现。
 
 上限与排队预算都可在「数据源管理 → 高级配置」按源配（`adh_datasources.extra_config.max_concurrency`
 / `queue_wait_sec`），缺省取下面的常量；缺省值刻意保持"不改配置行为零变化"的宽松量级，
@@ -107,15 +107,16 @@ class _Waiter:
 class _Handle:
     """一次名额占用句柄：`passthrough=True` 是同线程嵌套的重入记账，不占新名额。"""
 
-    __slots__ = ("gate", "waited_ms", "started", "passthrough", "released")
+    __slots__ = ("gate", "waited_ms", "started", "passthrough", "released", "token")
 
     def __init__(self, gate, waited_ms: int, started: Optional[float],
-                 passthrough: bool = False):
+                 passthrough: bool = False, token: str = ""):
         self.gate = gate
         self.waited_ms = waited_ms
         self.started = started
         self.passthrough = passthrough
         self.released = False
+        self.token = token
 
 
 class SourceGate:
@@ -282,6 +283,162 @@ class SourceGate:
             self._release_one(duration)
 
 
+class DistributedSourceGate(SourceGate):
+    """Redis 租约式按源闸门：web 与 dashboard-refresh-worker 共享同一份上限。
+
+    生产启动由 ``QUERY_GATE_BACKEND=redis`` 启用。Redis 不可用时抛
+    ``GateIntegrityError``，绝不回退进程内闸门——那会把多进程限流伪装成已生效。
+    租约到期自动回收，进程崩溃不会永久占槽。
+    """
+
+    _LEASE_SECONDS = 900
+    _ACQUIRE_LUA = """
+        local holders = KEYS[1]
+        local waiters = KEYS[2]
+        local token = ARGV[1]
+        local now = tonumber(ARGV[2])
+        local lease = tonumber(ARGV[3])
+        local limit = tonumber(ARGV[4])
+        local waiter_ttl = tonumber(ARGV[5])
+        redis.call('ZREMRANGEBYSCORE', holders, '-inf', now)
+        redis.call('ZREMRANGEBYSCORE', waiters, '-inf', now)
+        local active = redis.call('ZCARD', holders)
+        if active < limit then
+            redis.call('ZADD', holders, now + lease, token)
+            redis.call('ZREM', waiters, token)
+            return 1
+        end
+        redis.call('ZADD', waiters, now + waiter_ttl, token)
+        return 0
+    """
+
+    def __init__(self, datasource_id: int, limit: Optional[int] = None,
+                 wait_s: Optional[float] = None, label: str = ""):
+        super().__init__(datasource_id, limit=limit, wait_s=wait_s, label=label)
+        self._redis = None
+        self._prefix = f"adh:query-gate:{self.datasource_id}"
+
+    def _client(self):
+        if self._redis is None:
+            import redis
+            from backend.common.config import REDIS_URL
+            self._redis = redis.from_url(REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
+        return self._redis
+
+    def _keys(self):
+        return f"{self._prefix}:holders", f"{self._prefix}:waiters"
+
+    def _integrity(self, exc: BaseException):
+        logger.exception("Redis 取数闸门不可用 datasource=%s", self.datasource_id)
+        raise GateIntegrityError(
+            f"数据源「{self.label or self.datasource_id}」的分布式并发调度暂不可用，"
+            "已暂停接收新查询；请稍后重试或联系管理员") from exc
+
+    @property
+    def active(self):
+        try:
+            holders, _ = self._keys()
+            now = time.time()
+            self._client().zremrangebyscore(holders, "-inf", now)
+            return int(self._client().zcard(holders))
+        except Exception as exc:  # noqa: BLE001
+            self._integrity(exc)
+
+    @active.setter
+    def active(self, value):
+        # SourceGate.__init__ 会写本地计数；分布式实现忽略它，真实值只认 Redis。
+        self._active_shadow = int(value or 0)
+
+    @property
+    def queued(self):
+        try:
+            _, waiters = self._keys()
+            now = time.time()
+            self._client().zremrangebyscore(waiters, "-inf", now)
+            return int(self._client().zcard(waiters))
+        except Exception as exc:  # noqa: BLE001
+            self._integrity(exc)
+
+    def snapshot(self) -> dict:
+        active = self.active
+        queued = self.queued
+        return {"datasource_id": self.datasource_id, "label": self.label,
+                "limit": self.limit, "active": active, "queued": queued,
+                "wait_s": self.wait_s, "avg_query_ms": int(self.avg_query_ms()),
+                "estimated_wait_s": self.estimated_wait_s(max(1, queued))}
+
+    def acquire(self) -> _Handle:
+        import uuid
+
+        if self._holding():
+            handle = _Handle(self, 0, None, passthrough=True)
+            self._held_stack().append(handle)
+            return handle
+        token = uuid.uuid4().hex
+        holders, waiters = self._keys()
+        t0 = time.monotonic()
+        deadline = t0 + self.wait_s
+        client = None
+        try:
+            client = self._client()
+            while True:
+                now = time.time()
+                granted = client.eval(
+                    self._ACQUIRE_LUA, 2, holders, waiters, token, now,
+                    self._LEASE_SECONDS, self.limit, max(5.0, self.wait_s + 5))
+                if int(granted) == 1:
+                    waited_ms = int((time.monotonic() - t0) * 1000)
+                    handle = _Handle(self, waited_ms, time.monotonic(), token=token)
+                    self._held_stack().append(handle)
+                    return handle
+                if time.monotonic() >= deadline:
+                    rank = client.zrank(waiters, token)
+                    client.zrem(waiters, token)
+                    position = max(1, int(rank) + 1) if rank is not None else 1
+                    waited_ms = int((time.monotonic() - t0) * 1000)
+                    raise QueryQueueTimeout(self.queue_message(position, waited_ms))
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        except QueryQueueTimeout:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if client is not None:
+                try:
+                    client.zrem(waiters, token)
+                except Exception:
+                    pass
+            self._integrity(exc)
+
+    def release(self, handle: _Handle) -> None:
+        if handle is None or handle.released:
+            return
+        stack = self._held_stack()
+        if stack and stack[-1] is handle:
+            stack.pop()
+        elif handle in stack:
+            stack.remove(handle)
+        duration = (int((time.monotonic() - handle.started) * 1000)
+                    if handle.started else None)
+        handle.started = None
+        handle.released = True
+        if handle.passthrough:
+            return
+        if duration and duration > 0:
+            self._durations.append(duration)
+        last_error = None
+        for _ in range(3):
+            try:
+                holders, waiters = self._keys()
+                client = self._client()
+                client.zrem(holders, handle.token)
+                client.zrem(waiters, handle.token)
+                return
+            except Exception as exc:  # noqa: BLE001 - 重试后仍失败由租约到期兜底
+                last_error = exc
+                time.sleep(0.05)
+        logger.error("Redis 取数闸门归还失败 datasource=%s token=%s; 等待租约到期: %s",
+                     self.datasource_id, handle.token, last_error)
+
+
 # ── 注册表（按数据源分桶）───────────────────────────────────────────────
 _GATES: dict[int, SourceGate] = {}
 _REGISTRY_LOCK = threading.Lock()
@@ -289,12 +446,19 @@ _REGISTRY_LOCK = threading.Lock()
 
 def gate_for(datasource_id: int, *, limit: Optional[int] = None,
              wait_s: Optional[float] = None, label: str = "") -> SourceGate:
-    """取该数据源的闸门；已存在则**就地更新**上限/预算（配置改完立即生效）。"""
+    """取该数据源的闸门；已存在则**就地更新**上限/预算（配置改完立即生效）。
+
+    默认本地实现供单进程测试/开发；生产启动脚本显式设置 ``QUERY_GATE_BACKEND=redis``。
+    """
     key = int(datasource_id or 0)
+    backend = str(os.getenv("QUERY_GATE_BACKEND", "local")).strip().lower()
+    if backend not in ("local", "redis"):
+        raise ValueError(f"QUERY_GATE_BACKEND 只能是 local 或 redis，当前值 {backend!r}")
+    gate_cls = DistributedSourceGate if backend == "redis" else SourceGate
     with _REGISTRY_LOCK:
         gate = _GATES.get(key)
-        if gate is None:
-            gate = _GATES[key] = SourceGate(key, limit=limit, wait_s=wait_s, label=label)
+        if gate is None or not isinstance(gate, gate_cls):
+            gate = _GATES[key] = gate_cls(key, limit=limit, wait_s=wait_s, label=label)
             return gate
     if limit is not None:
         gate.set_limit(limit)

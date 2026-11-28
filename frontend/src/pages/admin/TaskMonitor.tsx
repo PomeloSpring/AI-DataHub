@@ -31,7 +31,7 @@ import {
   fetchMonitorSummary, listMonitoredTasks, stopMonitoredTask, removeMonitoredTask,
   pauseSystemJob, listQueuedRuns, stopQueuedRun, cleanupStaleRuns,
   listMonitoredSyncTasks, toggleMonitoredSyncTask, stopMonitoredSyncTask,
-  removeMonitoredSyncTask, listKbSyncState,
+  removeMonitoredSyncTask, listKbSyncState, toggleDashboardRefresh, triggerDashboardRefresh, stopDashboardRefresh,
   type MonitorSummary, type MonitoredTask, type QueuedRun, type SyncTaskRow, type KbSyncRow,
 } from '@/api/taskMonitor';
 import { dagApi, type DagRun } from '@/api/dag';
@@ -50,6 +50,7 @@ const STATUS_MAP: Record<string, { label: string; className: string }> = {
 
 const RUN_KIND_LABEL: Record<string, string> = {
   scheduled: t('k_225dd64c40'), report: t('k_8be9be9eb2'), sync: t('k_6579270bad'),
+  dashboard_refresh: t('k_dashboard_refresh_kind'),
 };
 
 function StatusBadge({ status }: { status: string | null }) {
@@ -74,6 +75,10 @@ function runProgress(run: QueuedRun): string {
   }
   if (run.kind === 'report') {
     return run.raw_status === 'queued' ? tr('k_e5ac1d2029') : run.raw_status === 'running' ? tr('k_1ae3a9842b') : '—';
+  }
+  if (run.kind === 'dashboard_refresh') {
+    const done = (run.done_count ?? 0) + (run.fail_count ?? 0);
+    return run.total_count ? tr('k_2d0c716605', { p0: done, p1: run.total_count }) : '—';
   }
   return tr('k_a112f7aa24', { p0: run.rows_read ?? 0, p1: run.rows_written ?? 0 });
 }
@@ -154,7 +159,7 @@ export default function TaskMonitor() {
   const [keyword, setKeyword] = useState('');
   const [runs, setRuns] = useState<QueuedRun[]>([]);
   const [runsTotal, setRunsTotal] = useState(0);
-  const [runKind, setRunKind] = useState<'all' | 'scheduled' | 'report' | 'sync'>('all');
+  const [runKind, setRunKind] = useState<'all' | 'scheduled' | 'report' | 'sync' | 'dashboard_refresh'>('all');
   const [runStatus, setRunStatus] = useState('active');
   const [runPage, setRunPage] = useState(1);
   const [syncTasks, setSyncTasks] = useState<SyncTaskRow[]>([]);
@@ -216,9 +221,9 @@ export default function TaskMonitor() {
     setDetailTask(task);
     setDetailSync(null);
     setTaskRuns([]);
-    if (task.kind !== 'scheduled_task') return;
+    if (task.kind === 'system_job') return;
     setTaskRunsLoading(true);
-    listQueuedRuns({ kind: 'scheduled', task_id: Number(task.task_id), page: 1, size: 5 })
+    listQueuedRuns({ kind: task.kind === 'dashboard_refresh' ? 'dashboard_refresh' : 'scheduled', task_id: Number(task.task_id), page: 1, size: 5 })
       .then(res => setTaskRuns(res.items))
       .catch((error: any) => toast.error(tr('k_6e59714ddf', { p0: error?.response?.data?.detail || error?.message || tr('k_10821483f0') })))
       .finally(() => setTaskRunsLoading(false));
@@ -244,6 +249,36 @@ export default function TaskMonitor() {
       load();
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || t('k_5fa802bef5'));
+    }
+  };
+
+  const handleTriggerDashboard = async (task: MonitoredTask) => {
+    try {
+      const res = await triggerDashboardRefresh(Number(task.task_id));
+      toast.success(res.cache_hit ? t('k_dashboard_refresh_cache_hit') : t('k_dashboard_refresh_triggered'));
+      load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || t('k_5fa802bf5'));
+    }
+  };
+
+  const handleToggleDashboard = async (task: MonitoredTask) => {
+    try {
+      await toggleDashboardRefresh(Number(task.task_id), !task.enabled);
+      toast.success(task.enabled ? t('k_dashboard_refresh_paused') : t('k_dashboard_refresh_resumed'));
+      load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || t('k_5fa802bf5'));
+    }
+  };
+
+  const handleStopDashboard = async (task: MonitoredTask) => {
+    try {
+      const res = await stopDashboardRefresh(Number(task.task_id));
+      toast.success(t('k_8f5669bdac', { p0: res.cancelled_runs }));
+      load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || t('k_fd59df83b0'));
     }
   };
 
@@ -273,7 +308,7 @@ export default function TaskMonitor() {
       // DAG run/排队/节点也是本次实际清理的实例，漏计会让用户看到
       // 「没有需要清理的实例」而实际刚清了三条（结果与事实不符）。
       const total = (res.scheduled_runs || 0) + (res.report_runs || 0) + (res.sync_runs || 0)
-        + (res.dag?.dag_runs || 0) + (res.dag?.dag_queued_runs || 0) + (res.dag?.dag_node_runs || 0);
+        + (res.dashboard_refresh_runs || 0) + (res.dag?.dag_runs || 0) + (res.dag?.dag_queued_runs || 0) + (res.dag?.dag_node_runs || 0);
       toast.success(total > 0 ? t('k_765ef66697', { p0: total }) : t('k_5bdf569289'));
       load();
     } catch (error: any) {
@@ -331,8 +366,9 @@ export default function TaskMonitor() {
 
       {/* Summary */}
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <StatCard icon={Timer} label={t("k_1b4617fcc9")} value={summary.scheduled_tasks.active} />
+          <StatCard icon={RefreshCw} label={t("k_dashboard_refresh_tasks")} value={summary.dashboard_refresh_tasks?.active || 0} />
           <StatCard icon={Database} label={t("k_286b4866f7")} value={summary.system_jobs.total} />
           <StatCard icon={Activity} label={t("k_f83c5bc23a")} value={summary.runs.active} />
           <StatCard icon={AlertTriangle} label={t("k_8b0b572e65")} value={summary.runs.stuck} warn />
@@ -425,7 +461,18 @@ export default function TaskMonitor() {
                     <td className="p-3">{task.active_runs}</td>
                     <td className="p-3" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
-                        {task.kind === 'system_job' ? (
+                        {task.kind === 'dashboard_refresh' ? (
+                          <>
+                            <Button variant="ghost" size="sm" title={t('k_dashboard_refresh_trigger')}
+                                    onClick={() => handleTriggerDashboard(task)}><Play className="h-4 w-4" /></Button>
+                            <Button variant="ghost" size="sm" title={task.enabled ? t('k_7da47ee794') : t('k_b88b276e2a')}
+                                    onClick={() => handleToggleDashboard(task)}>
+                              {task.enabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                            </Button>
+                            <Button variant="ghost" size="sm" title={t('k_42156672d4')}
+                                    onClick={() => handleStopDashboard(task)}><Square className="h-4 w-4" /></Button>
+                          </>
+                        ) : task.kind === 'system_job' ? (
                           <>
                             <Button variant="ghost" size="sm" title={task.enabled ? t('k_7da47ee794') : t('k_b88b276e2a')}
                                     onClick={() => handlePauseJob(task, task.enabled)}>
@@ -467,6 +514,7 @@ export default function TaskMonitor() {
                 <SelectItem value="scheduled">{t("k_225dd64c40")}</SelectItem>
                 <SelectItem value="report">{t("k_8be9be9eb2")}</SelectItem>
                 <SelectItem value="sync">{t("k_6579270bad")}</SelectItem>
+                <SelectItem value="dashboard_refresh">{t("k_dashboard_refresh_kind")}</SelectItem>
               </SelectContent>
             </Select>
             <Select value={runStatus} onValueChange={v => { setRunStatus(v); setRunPage(1); }}>

@@ -429,6 +429,8 @@ def build_capability_plan(scenario: dict, *, contract: ActiveContract | None = N
             contract = load_active_contract()
     active = contract
     rules = {str(r.get("key") or ""): r for r in (active.doc.get("rules") or [])}
+    principles = {str(p.get("key") or ""): p
+                  for p in (active.doc.get("permission_principles") or [])}
     flow = sorted((x for x in (scenario.get("flow") or []) if isinstance(x, dict)),
                   key=lambda st: int(st.get("order") or 99)
                   if str(st.get("order") or "").lstrip("-").isdigit() else 99)
@@ -448,6 +450,9 @@ def build_capability_plan(scenario: dict, *, contract: ActiveContract | None = N
             "rule_gates": [{"key": str(rk),
                             "statement": (rules.get(str(rk)) or {}).get("statement", "")}
                            for rk in (st.get("gated_by") or [])],
+            "principle_gates": [{"key": str(pk),
+                                 "statement": (principles.get(str(pk)) or {}).get("statement", "")}
+                                for pk in (st.get("gated_by_principles") or [])],
         }
         try:
             act = resolve_action(action_key, active)
@@ -481,6 +486,9 @@ def build_capability_plan(scenario: dict, *, contract: ActiveContract | None = N
         "rules": [{"key": str(rk),
                    "statement": (rules.get(str(rk)) or {}).get("statement", "")}
                   for rk in (scenario.get("uses_rules") or [])],
+        "principles": [{"key": str(pk),
+                        "statement": (principles.get(str(pk)) or {}).get("statement", "")}
+                       for pk in (scenario.get("uses_principles") or [])],
         "model_id": active.model_id,
         "fingerprint": active.fingerprint,
     }

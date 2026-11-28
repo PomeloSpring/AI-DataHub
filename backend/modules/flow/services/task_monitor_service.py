@@ -21,7 +21,7 @@ from backend.common.db import execute_query, execute_write
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ("queued", "running")
-RUN_KINDS = ("scheduled", "report", "sync")
+RUN_KINDS = ("scheduled", "report", "sync", "dashboard_refresh")
 
 # 报表生成态 → 统一运行态
 _REPORT_STATUS_MAP = {"ready": "success", "degraded": "partial", "legacy": "success",
@@ -92,6 +92,14 @@ class TaskMonitorService:
             "SELECT SUM(status IN ('running')) AS active, "
             "SUM(status='running' AND started_at<=NOW()-INTERVAL 10 MINUTE) AS stuck, "
             "SUM(status='failed') AS failed_total FROM adh_sync_logs")[0] or {}
+        dashboard_runs = execute_query(
+            "SELECT SUM(status IN ('queued','running')) AS active, "
+            "SUM(status IN ('queued','running') AND lease_expires_at IS NOT NULL "
+            "AND lease_expires_at<=UTC_TIMESTAMP()) AS stuck, "
+            "SUM(status='failed') AS failed_total, SUM(status='timeout') AS timeout_total "
+            "FROM adh_dashboard_refresh_runs")[0] or {}
+        dashboard_tasks = execute_query(
+            "SELECT COUNT(*) AS total, SUM(is_active=1) AS active FROM adh_dashboard_refresh_configs")[0] or {}
         sync_tasks = execute_query(
             "SELECT COUNT(*) AS total, SUM(is_active=1) AS active FROM adh_sync_tasks")[0] or {}
         from backend.common import system_jobs
@@ -103,16 +111,19 @@ class TaskMonitorService:
             "system_jobs": {"total": len(jobs),
                             "paused": sum(1 for j in jobs if not int(j.get("is_active") or 0))},
             "runs": {
-                "active": sum(int(r.get("active") or 0) for r in (sched_runs, report_runs, sync_runs)),
-                "stuck": sum(int(r.get("stuck") or 0) for r in (sched_runs, report_runs, sync_runs)),
-                "failed_total": sum(int(r.get("failed_total") or 0) for r in (sched_runs, report_runs, sync_runs)),
-                "timeout_total": sum(int(r.get("timeout_total") or 0) for r in (sched_runs,)),
+                "active": sum(int(r.get("active") or 0) for r in (sched_runs, report_runs, sync_runs, dashboard_runs)),
+                "stuck": sum(int(r.get("stuck") or 0) for r in (sched_runs, report_runs, sync_runs, dashboard_runs)),
+                "failed_total": sum(int(r.get("failed_total") or 0) for r in (sched_runs, report_runs, sync_runs, dashboard_runs)),
+                "timeout_total": sum(int(r.get("timeout_total") or 0) for r in (sched_runs, dashboard_runs)),
                 "by_kind": {
                     "scheduled": {k: int(sched_runs.get(k) or 0) for k in ("active", "stuck", "failed_total")},
                     "report": {k: int(report_runs.get(k) or 0) for k in ("active", "stuck", "failed_total")},
                     "sync": {k: int(sync_runs.get(k) or 0) for k in ("active", "stuck", "failed_total")},
+                    "dashboard_refresh": {k: int(dashboard_runs.get(k) or 0) for k in ("active", "stuck", "failed_total")},
                 },
             },
+            "dashboard_refresh_tasks": {"total": int(dashboard_tasks.get("total") or 0),
+                                        "active": int(dashboard_tasks.get("active") or 0)},
             "sync_tasks": {"total": int(sync_tasks.get("total") or 0),
                            "active": int(sync_tasks.get("active") or 0)},
         }
@@ -123,6 +134,21 @@ class TaskMonitorService:
         """统一任务清单：source=system(内置) / user(用户创建)。"""
         items = []
         if source in (None, "", "system"):
+            from backend.core.task_runtime import call
+            for cfg in call("dashboard_refresh.configs") or []:
+                items.append({
+                    "kind": "dashboard_refresh", "task_id": cfg["dashboard_id"],
+                    "name": cfg["name"], "description": "看板默认参数整板重查",
+                    "schedule": cfg.get("schedule") or "关闭", "timezone": cfg.get("timezone"),
+                    "task_type": "dashboard_refresh", "source": "system", "removable": False,
+                    "enabled": bool(cfg.get("is_active")), "workspace_id": int(cfg.get("workspace_id") or 0),
+                    "ownership": "system", "owner_name": cfg.get("owner_name") or "系统",
+                    "last_run_at": cfg.get("last_run_at"), "last_status": cfg.get("last_status"),
+                    "last_result": cfg.get("last_error_message") or "",
+                    "run_count": int(cfg.get("run_count") or 0),
+                    "active_runs": int(cfg.get("active_runs") or 0),
+                    "stuck_runs": int(cfg.get("stuck_runs") or 0),
+                })
             for job in self.list_system_jobs():
                 items.append({
                     "kind": "system_job", "task_id": job["job_key"], "name": job["name"],
@@ -292,7 +318,24 @@ class TaskMonitorService:
             "CONCAT('读取 ', COALESCE(sl.rows_read,0), ' 行，写入 ', COALESCE(sl.rows_written,0), ' 行'), "
             "NULL, sl.error_message, NULL, NULL, NULL, sl.rows_read, sl.rows_written, "
             "(sl.status='running' AND sl.started_at<=NOW()-INTERVAL 10 MINUTE) AS is_stuck "
-            "FROM adh_sync_logs sl LEFT JOIN adh_sync_tasks st ON st.id=sl.sync_task_id"
+            "FROM adh_sync_logs sl LEFT JOIN adh_sync_tasks st ON st.id=sl.sync_task_id "
+            "UNION ALL "
+            "SELECT CONVERT('dashboard_refresh' USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "r.id, r.dashboard_id, CONVERT(COALESCE(d.name,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "d.workspace_id, CONVERT(r.status USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "CONVERT(r.status USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "CONVERT(r.trigger_type USING utf8mb4) COLLATE utf8mb4_unicode_ci, r.queued_at, r.finished_at, "
+            "CASE WHEN r.started_at IS NULL THEN NULL ELSE TIMESTAMPDIFF(MICROSECOND, r.started_at, "
+            "COALESCE(r.finished_at, UTC_TIMESTAMP())) / 1000 END, "
+            "CONVERT(COALESCE(r.worker_id,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "CONVERT(COALESCE(r.result_summary,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "CONVERT(COALESCE(r.error_code,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "CONVERT(COALESCE(r.error_message,'') USING utf8mb4) COLLATE utf8mb4_unicode_ci, "
+            "r.succeeded_charts, r.failed_charts, r.total_charts, "
+            "NULL, NULL, "
+            "(r.status IN ('queued','running') AND r.lease_expires_at IS NOT NULL "
+            " AND r.lease_expires_at<=UTC_TIMESTAMP()) "
+            "FROM adh_dashboard_refresh_runs r LEFT JOIN adh_dashboards d ON d.id=r.dashboard_id"
         )
 
     def stop_run(self, kind: str, run_id: int) -> dict:
@@ -315,6 +358,11 @@ class TaskMonitorService:
                 "UPDATE adh_sync_logs SET status='cancelled', finished_at=NOW(), "
                 "error_message='任务已被停止' WHERE id=%s AND status='running'", (run_id,))
             if not changed:
+                raise ValueError("任务已结束，不能停止")
+            return {"kind": kind, "run_id": run_id, "status": "cancelled"}
+        if kind == "dashboard_refresh":
+            from backend.core.task_runtime import call
+            if not call("dashboard_refresh.cancel", int(run_id)):
                 raise ValueError("任务已结束，不能停止")
             return {"kind": kind, "run_id": run_id, "status": "cancelled"}
         raise ValueError(f"未知队列类型: {kind}")
@@ -341,8 +389,20 @@ class TaskMonitorService:
             "UPDATE adh_sync_logs SET status='failed', finished_at=NOW(), "
             "error_message='执行超过租约未完成，已按超时清理' "
             "WHERE status='running' AND started_at<=NOW()-INTERVAL %s MINUTE", (timeout_minutes,))
+        dashboard = call("dashboard_refresh.cleanup", timeout_minutes)
         dag = dag_service.cleanup_stale_runs(timeout_minutes)
-        return {"scheduled_runs": sched, "report_runs": reports, "sync_runs": sync, "dag": dag}
+        return {"scheduled_runs": sched, "report_runs": reports, "sync_runs": sync,
+                "dashboard_refresh_runs": dashboard, "dag": dag}
+
+    # ── 看板刷新任务 ───────────────────────────────────────────────────
+
+    def toggle_dashboard_refresh(self, dashboard_id: int, is_active: bool, user: dict) -> dict:
+        from backend.core.task_runtime import call
+        return call("dashboard_refresh.toggle", int(dashboard_id), bool(is_active), user)
+
+    def trigger_dashboard_refresh(self, dashboard_id: int, user: dict) -> dict:
+        from backend.core.task_runtime import call
+        return call("dashboard_refresh.trigger", int(dashboard_id), user)
 
     # ── 同步任务 ─────────────────────────────────────────────────────
 

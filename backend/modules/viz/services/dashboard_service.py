@@ -10,12 +10,13 @@ Tables: adh_dashboards, adh_charts, adh_chart_snapshots, adh_saved_queries
 """
 
 import copy
+import hashlib
 import json
 import logging
 import math
 import re
 import time
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -26,6 +27,10 @@ from backend.common.ttl_cache import dashboard_cache
 from backend.core.governed_query import governed_execute, NoIdentityError
 
 logger = logging.getLogger(__name__)
+
+
+class ChartRefreshCancelled(RuntimeError):
+    """刷新实例已取消/租约失效：丢弃当前结果，禁止继续写缓存。"""
 
 
 # ── Utility Functions ────────────────────────────────────────────────────────
@@ -119,17 +124,23 @@ def _normalize_chart(row: dict) -> dict:
                              row.get("id"), field, type(value).__name__)
                 value = {}
         row[field] = value
-    for ts in ("created_at", "updated_at"):
+    for ts in ("created_at", "updated_at", "data_cache_at"):
         if hasattr(row.get(ts), "isoformat"):
             row[ts] = row[ts].isoformat()
     row.setdefault("source_type", "query")
     row.setdefault("source_id", None)
     row.setdefault("data_cache", None)
+    row.setdefault("data_cache_at", None)
+    row.setdefault("data_cache_key", None)
+    row.setdefault("data_cache_scope", None)
     row.setdefault("query_source", "raw_sql")
     if (row.get("config") or {}).get("as_bot_design"):
         # 设计者的 SQL/预览不能经普通图表详情或共享缓存分发。
         row.pop("sql_query", None)
         row["data_cache"] = None
+        row["data_cache_at"] = None
+        row["data_cache_key"] = None
+        row["data_cache_scope"] = None
     return row
 
 
@@ -492,7 +503,29 @@ def _chart_cache_json(chart: dict, columns, rows, extra: dict | None = None) -> 
     return text
 
 
-def _write_chart_cache(chart: dict, columns, rows, extra: dict | None = None) -> None:
+def _chart_cache_key(chart: dict, params: dict | None = None, scope: str = "") -> str:
+    """图表级缓存键：图表口径 + 默认参数 + 安全作用域。"""
+    raw = json.dumps({
+        "chart_id": int(chart.get("id") or 0),
+        "source_type": chart.get("source_type"),
+        "source_id": chart.get("source_id"),
+        "config": _json_loads_safe(chart.get("config")) or {},
+        "semantic_query": _json_loads_safe(chart.get("semantic_query")) or {},
+        "params": params or {},
+        "scope": scope or "",
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _expected_cache_key(chart: dict, board_key: str, scope: str) -> str:
+    """整板基键 + 当前图表口径 + 安全作用域，读侧与写侧必须同源。"""
+    raw = f"{board_key}:{_chart_cache_key(chart, {}, scope)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _write_chart_cache(chart: dict, columns, rows, extra: dict | None = None,
+                      cache_key: str | None = None, cache_scope: str = "",
+                      refresh_run_id: int | None = None) -> None:
     """写图表首屏缓存（**短连接**：只在 UPDATE 这一瞬占用元数据库连接）。
 
     为什么不复用调用方的连接：取数可能卡在数据源上几十秒（实测单图 20~28s），而元
@@ -501,21 +534,36 @@ def _write_chart_cache(chart: dict, columns, rows, extra: dict | None = None) ->
     8 路并发刷新 24 图 15 分钟不返回，是等连接不是慢）。连接只用于写缓存，写完立刻归还。
     """
     cache = _chart_cache_json(chart, columns, rows, extra)
+    key = _expected_cache_key(chart, cache_key or "", cache_scope)
+    cache_at = datetime.now(timezone.utc).replace(tzinfo=None)
     conn = get_metadata_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE adh_charts SET data_cache = %s, updated_at = %s WHERE id = %s",
-                (cache, _now(), chart["id"]),
-            )
+            if refresh_run_id is not None:
+                cur.execute(
+                    "UPDATE adh_charts c JOIN adh_dashboard_refresh_runs r "
+                    "ON r.dashboard_id=c.dashboard_id AND r.id=%s AND r.status='running' "
+                    "SET c.data_cache=%s,c.data_cache_at=%s,c.data_cache_key=%s,c.data_cache_scope=%s,"
+                    "c.updated_at=%s WHERE c.id=%s",
+                    (int(refresh_run_id), cache, cache_at, key, cache_scope, _now(), chart["id"]))
+                if cur.rowcount != 1:
+                    raise ChartRefreshCancelled("刷新实例已取消或租约失效，结果已丢弃")
+            else:
+                cur.execute(
+                    "UPDATE adh_charts SET data_cache=%s,data_cache_at=%s,data_cache_key=%s,"
+                    "data_cache_scope=%s,updated_at=%s WHERE id=%s",
+                    (cache, cache_at, key, cache_scope, _now(), chart["id"]))
         conn.commit()
     finally:
         conn.close()
 
 
-def _cache_chart_result(chart: dict, result: dict) -> None:
+def _cache_chart_result(chart: dict, result: dict, cache_key: str | None = None,
+                        cache_scope: str = "", refresh_run_id: int | None = None) -> None:
     """把取数结果写进 adh_charts.data_cache(不另开一份口径, 只刷缓存)。"""
-    _write_chart_cache(chart, result.get("columns"), result.get("rows"), _paging_extra(result))
+    _write_chart_cache(chart, result.get("columns"), result.get("rows"),
+                       _paging_extra(result), cache_key=cache_key, cache_scope=cache_scope,
+                       refresh_run_id=refresh_run_id)
 
 
 # ── 模板示例数据（demo chart）──────────────────────────────────────────────────
@@ -892,7 +940,8 @@ def publish_design_in_transaction(cur, doc, queries, scope, user):
         if doc["operation"] == "update":
             cid = selection["chart_id"]
             cur.execute("UPDATE adh_charts SET name=%s,chart_type=%s,sql_query=%s,config=%s,position=%s,source_id=%s,"
-                        "semantic_query=%s,query_source=%s,workspace_id=%s,data_cache=NULL,updated_at=UTC_TIMESTAMP() "
+                        "semantic_query=%s,query_source=%s,workspace_id=%s,data_cache=NULL,data_cache_at=NULL,"
+                                                "data_cache_key=NULL,data_cache_scope=NULL,updated_at=UTC_TIMESTAMP() "
                         "WHERE id=%s AND dashboard_id=%s", (*values, cid, dashboard_id))
         else:
             cur.execute("INSERT INTO adh_charts (name,chart_type,sql_query,config,position,source_id,semantic_query,"
@@ -1571,6 +1620,9 @@ class DashboardService:
         _mark_editable([result], user_id, user_role)
         # 本地化必须在深拷贝之后（缓存本体语言无关）
         _localize_dashboard_row(result)
+        from backend.modules.viz.services.dashboard_refresh_service import decorate_dashboard_payload
+        decorate_dashboard_payload(result, int(user_id or 0), user_role or "",
+                                   workspace_id=int(result.get("workspace_id") or 0))
         return result
 
     def create_dashboard(self, data: dict, user_id: int) -> int:
@@ -1653,6 +1705,11 @@ class DashboardService:
                     if json_field in data and data[json_field] is not None:
                         updates.append(f"`{json_field}` = %s")
                         params.append(json.dumps(data[json_field]))
+                if "params" in data and data["params"] is not None:
+                    # 默认参数是共享缓存的查询口径之一；改口径必须同批清缓存，不能等 TTL 兜底。
+                    cur.execute(
+                        "UPDATE adh_charts SET data_cache=NULL,data_cache_at=NULL,data_cache_key=NULL,"
+                        "data_cache_scope=NULL WHERE dashboard_id=%s", (dashboard_id,))
 
                 for bool_field in ("is_public", "is_default"):
                     if bool_field in data and data[bool_field] is not None:
@@ -1950,6 +2007,8 @@ class ChartService:
                     if field not in data:
                         continue
                     value = data[field]
+                    if field == "data_cache" and value is None:
+                        continue
                     if field in ("name", "chart_type", "source_type", "query_source") and not value:
                         raise ValueError(f"{field} cannot be empty")
                     if field == "sql_query" and str(value or "").strip():
@@ -1962,6 +2021,11 @@ class ChartService:
                         value = json.dumps(value, ensure_ascii=False) if value is not None else None
                     sets.append(f"`{field}`=%s")
                     params.append(value)
+                if any(field in data for field in (
+                        "chart_type", "config", "source_type", "source_id", "semantic_query", "query_source")) \
+                        or ("data_cache" in data and data.get("data_cache") is None):
+                    sets.extend(("data_cache=NULL", "data_cache_at=NULL", "data_cache_key=NULL",
+                                 "data_cache_scope=NULL"))
                 if sets:
                     sets.append("updated_at=%s")
                     params.extend([now, chart_id, dashboard_id])
@@ -2090,7 +2154,9 @@ class ChartService:
 
     def _refresh_dataset_chart(self, chart: dict, params: dict,
                                user_id: int, workspace_id: int, username: str,
-                               *, page_size: int = None, page_num: int = None) -> dict:
+                               *, page_size: int = None, page_num: int = None,
+                               persist_cache: bool = True, cache_key: str | None = None,
+                               cache_scope: str = "", refresh_run_id: int | None = None) -> dict:
         """数据集图表(source_type='dataset'): 统一经数据集治理入口取数.
 
         不把数据集 SQL 复制进图表行 —— 保持数据集单口径(数据集改了图表即生效);
@@ -2179,13 +2245,18 @@ class ChartService:
         # 本次响应仍把完整行回给前端，不得拿“用户开了大页”去撑大首屏预览的存储。
         # 分页元信息（total/paging）随缓存一起写：首屏要知道“共多少行、能不能跳页”，
         # 少了它就会把首页当成全量。
-        _write_chart_cache(chart, data.get("columns"), data.get("rows"), _paging_extra(data))
+        if persist_cache:
+            _write_chart_cache(chart, data.get("columns"), data.get("rows"),
+                               _paging_extra(data), cache_key=cache_key, cache_scope=cache_scope,
+                               refresh_run_id=refresh_run_id)
         return data
 
     def refresh_chart(self, dashboard_id: int, chart_id: int, params: dict = None,
                       page_size: int = None, page_num: int = None,
                       user_id: int = 0,
-                      workspace_id: int = 0, username: str = "") -> dict:
+                      workspace_id: int = 0, username: str = "", *,
+                      persist_cache: bool = True, cache_key: str | None = None,
+                      cache_scope: str = "", refresh_run_id: int | None = None) -> dict:
         """按查看者身份重查一个图表（取数通道唯一：数据集 / 声明式语义 / AS-BOT 设计）。
 
         2026-11-06 拍板后图表不再自带 SQL：旧的"执行图表 SQL + 客户端传 count_sql"
@@ -2218,11 +2289,15 @@ class ChartService:
             return refresh_designed_chart(chart, user_id)
         return self._refresh_by_channel(
             chart, params, user_id, workspace_id, username, dashboard_id,
-            page_size=page_size, page_num=page_num)
+            page_size=page_size, page_num=page_num,
+            persist_cache=persist_cache, cache_key=cache_key, cache_scope=cache_scope,
+            refresh_run_id=refresh_run_id)
 
     def _refresh_by_channel(self, chart: dict, params: dict, user_id: int,
                             workspace_id: int, username: str, dashboard_id: int,
-                            *, page_size: int = None, page_num: int = None) -> dict:
+                            *, page_size: int = None, page_num: int = None,
+                            persist_cache: bool = True, cache_key: str | None = None,
+                            cache_scope: str = "", refresh_run_id: int | None = None) -> dict:
         """单图重查的通道分派（`refresh_chart` 与 `refresh_all_charts` 共用一份实现）。
 
         分派次序即口径优先级；任何一条都不回退到下一条（拿别通道的数据充数 = 错数）。
@@ -2240,7 +2315,9 @@ class ChartService:
         if chart.get("source_type") == "dataset" and chart.get("source_id"):
             return self._refresh_dataset_chart(
                 chart, params, user_id, workspace_id, username,
-                page_size=page_size, page_num=page_num)
+                page_size=page_size, page_num=page_num,
+                persist_cache=persist_cache, cache_key=cache_key, cache_scope=cache_scope,
+                refresh_run_id=refresh_run_id)
         server_channel = _is_server_generated_channel(chart)
         intent = _semantic_intent(chart)
         if intent is not None:
@@ -2251,7 +2328,9 @@ class ChartService:
             result = _execute_via_semantic(intent, params, user_id,
                                            chart.get("workspace_id") or workspace_id,
                                            _get_chart_datasource_id(chart), None)
-            _cache_chart_result(chart, result)
+            if persist_cache:
+                _cache_chart_result(chart, result, cache_key=cache_key, cache_scope=cache_scope,
+                                    refresh_run_id=refresh_run_id)
             return result
         if not server_channel and str(chart.get("sql_query") or "").strip():
             # 存量直写 SQL 图表（收编未覆盖或库外手工写入）：不拿旧口径默默继续跑，
@@ -2272,7 +2351,9 @@ class ChartService:
 
     def refresh_all_charts(self, dashboard_id: int, params: dict = None,
                            user_id: int = 0, workspace_id: int = 0,
-                           username: str = "") -> dict:
+                           username: str = "", *,
+                           persist_cache: bool = True, cache_key: str | None = None,
+                           cache_scope: str = "", refresh_run_id: int | None = None) -> dict:
         """整板重查：逐图走与 `refresh_chart` 同一套通道分派。
 
         取数走治理护城河; 无可信身份 -> fail-closed 整体拒绝(I5)。
@@ -2302,10 +2383,20 @@ class ChartService:
             """单图重查（跑在专用通道里，与主应用的线程/连接资源隔离）。"""
             cid = chart["id"]
             try:
+                if refresh_run_id is not None:
+                    active = execute_query(
+                        "SELECT id FROM adh_dashboard_refresh_runs WHERE id=%s AND dashboard_id=%s "
+                        "AND status='running'", (int(refresh_run_id), int(dashboard_id)), fetchone=True)
+                    if not active:
+                        raise ChartRefreshCancelled("刷新实例已取消或租约失效")
                 if (_json_loads_safe(chart.get("config")) or {}).get("as_bot_design"):
                     return refresh_designed_chart(chart, user_id)
                 return self._refresh_by_channel(
-                    chart, params, user_id, workspace_id, username, dashboard_id)
+                    chart, params, user_id, workspace_id, username, dashboard_id,
+                    persist_cache=persist_cache, cache_key=cache_key, cache_scope=cache_scope,
+                    refresh_run_id=refresh_run_id)
+            except ChartRefreshCancelled:
+                raise
             except Exception as e:  # noqa: BLE001  逐图上报可诊断原因(已脱敏)
                 logger.warning("[ChartRefresh] chart=%s 失败: %s", cid, e)
                 return {"error": str(e)}

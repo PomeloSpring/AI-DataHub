@@ -492,10 +492,12 @@ describe('看板管理域与大屏播放', () => {
     expect(within(card).getByText('看板：尚未编排看板')).toBeInTheDocument();
     expect(within(card).getByText('角色：未分配')).toBeInTheDocument();
   });
-  it('看板浏览页顶栏刷新逐图 POST 重查询，不再只 GET 回读缓存', async () => {
-    // 缺陷回归锁：浏览页曾把 GET /dashboard/{id}（只回 data_cache）当刷新，
-    // 且图表刷新/查询按钮依赖 store 当前看板 → 点了没反应
-    const withCharts = { ...board(2), charts: [
+  it('看板浏览页顶栏刷新交给服务端异步任务，不再逐图刷浏览器', async () => {
+    const withCharts = { ...board(2), refresh_manageable: true, refresh_config: {
+      dashboard_id: 2, schedule_type: 'disabled', interval_seconds: null, cron_expression: null,
+      timezone: 'Asia/Shanghai', cache_ttl_seconds: 60, is_active: false, version: 0,
+      last_run_at: null, last_status: null, run_count: 0,
+    }, charts: [
       { id: 21, chart_type: 'bar', sql_query: 'SELECT 1', config: {}, dashboard_id: 2 },
       { id: 22, chart_type: 'table_value', source_type: 'dataset', source_id: 9, config: {}, dashboard_id: 2 },
       { id: 23, chart_type: 'widget_search', config: {}, dashboard_id: 2 },
@@ -503,21 +505,18 @@ describe('看板管理域与大屏播放', () => {
     vi.mocked(client.get).mockImplementation(async url => {
       if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
       if (/^\/dashboard\/2$/.test(url)) return { data: withCharts };
+      if (url === '/dashboard/2/refresh-runs/9') return { data: { run_id: 9, status: 'success' } };
       const m = /^\/dashboard\/(\d+)$/.exec(url);
       if (m) return { data: board(Number(m[1])) };
       return { data: [] };
     });
-    vi.mocked(client.post).mockResolvedValue({ data: { columns: ['c'], rows: [] } } as any);
+    vi.mocked(client.post).mockResolvedValue({ data: { run_id: 9, status: 'queued' } } as any);
     routes('/ws/7/dashboards/2');
     await screen.findByText('响应式网格');
     await waitFor(() => expect(useDashboardStore.getState().currentId).toBe(2));
-    const getsBefore = vi.mocked(client.get).mock.calls.length;
     fireEvent.click(await screen.findByRole('button', { name: '刷新数据' }));
-    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(client.post).mock.calls.map(([url]) => url).sort())
-      .toEqual(['/dashboard/2/charts/21/refresh', '/dashboard/2/charts/22/refresh']);
-    // 刷新不掺 GET：数据必须来自数据源重查询，而不是回读 DB 缓存
-    expect(vi.mocked(client.get).mock.calls.length).toBe(getsBefore);
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/dashboard/2/refresh'));
+    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/dashboard/2/refresh-runs/9'));
   });
   it('非法播放范围不发起看板请求', () => {
     routes('/screen/2?group=-1'); expect(screen.getByRole('alert')).toHaveTextContent('范围无效');
@@ -531,10 +530,12 @@ describe('看板管理域与大屏播放', () => {
     fireEvent.click(screen.getByRole('button', { name: '退出大屏' })); await screen.findByText('响应式网格');
     expect(screen.getByTestId('path')).toHaveTextContent('/ws/7/dashboards/2');
   });
-  it('大屏顶栏刷新会对每个数据图表 push 重查询（不只回读 DB 缓存）', async () => {
-    // 锁定行为：刷新按钮必须逐个 POST charts/{id}/refresh 向数据源重查询；
-    // widget_ 组件无 SQL 不参与；GET /dashboard/{id} 只回 data_cache，不能当刷新。
-    const withCharts = { ...board(2), charts: [
+  it('大屏顶栏刷新同样进入服务端异步任务', async () => {
+    const withCharts = { ...board(2), refresh_manageable: true, refresh_config: {
+      dashboard_id: 2, schedule_type: 'disabled', interval_seconds: null, cron_expression: null,
+      timezone: 'Asia/Shanghai', cache_ttl_seconds: 60, is_active: false, version: 0,
+      last_run_at: null, last_status: null, run_count: 0,
+    }, charts: [
       { id: 21, chart_type: 'bar', sql_query: 'SELECT 1', config: {} },
       { id: 22, chart_type: 'line', semantic_query: { object: 'orders' }, config: {} },
       { id: 23, chart_type: 'widget_search', config: {} },
@@ -542,20 +543,19 @@ describe('看板管理域与大屏播放', () => {
     vi.mocked(client.get).mockImplementation(async url => {
       if (url === '/dashboard/groups/visible') return { data: groupsFixture() };
       if (/^\/dashboard\/2$/.test(url)) return { data: withCharts };
+      if (url === '/dashboard/2/refresh-runs/9') return { data: { run_id: 9, status: 'success' } };
       const m = /^\/dashboard\/(\d+)$/.exec(url);
       if (m) return { data: board(Number(m[1])) };
       return { data: [] };
     });
-    vi.mocked(client.post).mockResolvedValue({ data: { columns: ['c'], rows: [[1]] } } as any);
+    vi.mocked(client.post).mockResolvedValue({ data: { run_id: 9, status: 'queued' } } as any);
     routes('/screen/2?group=7');
     // 大屏播放已改走响应式页面网格（按宽铺满 + 纵向滚动），不再是整块缩放的像素画布
     await screen.findByText('响应式网格');
     expect(screen.queryByText('大屏画布')).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: '刷新数据' }));
-    await waitFor(() => expect(client.post).toHaveBeenCalledTimes(2));
-    const posts = vi.mocked(client.post).mock.calls.map(([url]) => url).sort();
-    expect(posts).toEqual(['/dashboard/2/charts/21/refresh', '/dashboard/2/charts/22/refresh']);
-    expect(vi.mocked(client.post).mock.calls[0][1]).toEqual(expect.objectContaining({ params: expect.any(Object) }));
+    await waitFor(() => expect(client.post).toHaveBeenCalledWith('/dashboard/2/refresh'));
+    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/dashboard/2/refresh-runs/9'));
   });
 });
 
